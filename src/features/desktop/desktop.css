@@ -1,0 +1,40 @@
+/* 服务器桌面窗格：上面一行工具栏，下面是画面；没连上时画面区居中放卡片 */
+.desk { position: relative; display: flex; flex-direction: column; width: 100%; height: 100%; min-height: 0; background: var(--surface-term); }
+.desk--full { background: #000; }
+.desk__bar { flex: none; display: flex; align-items: center; gap: 4px; height: 32px; padding: 0 8px; border-bottom: 1px solid var(--border); }
+.desk__bar .pl-select { height: 24px; padding: 0 22px 0 8px; font-size: var(--fs-xs); }
+.desk__bar .pane__title { flex: 0 1 auto; max-width: 40%; margin-right: 8px; }
+.desk__status { flex: 1; min-width: 0; font-size: var(--fs-xs); color: var(--text-muted); }
+.desk__body { position: relative; flex: 1; min-height: 0; }
+.desk__screen { position: absolute; inset: 0; overflow: hidden; }
+.desk__screen--idle { visibility: hidden; }
+.desk__card { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); display: flex; flex-direction: column; gap: 10px; width: min(360px, calc(100% - 32px)); padding: 16px; background: var(--panel-solid); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow-pop); font-size: var(--fs-sm); }
+.desk__card--wide { width: min(480px, calc(100% - 32px)); }
+.desk__card p { margin: 0; color: var(--text-muted); }
+.desk__error { min-height: 18px; color: var(--danger) !important; font-size: var(--fs-xs); overflow-wrap: anywhere; }
+.desk__actions { display: flex; justify-content: flex-end; gap: 8px; }
+.desk__cmd { margin: 0; padding: 8px 10px; border-radius: var(--r-md); background: var(--chip); font-size: var(--fs-xs); white-space: pre-wrap; word-break: break-all; }
+.desk__list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.desk__row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 8px; border: 1px solid var(--border); border-radius: var(--r-md); }
+.desk__row-name { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.desk__tag { padding: 1px 6px; border-radius: 4px; background: var(--chip); color: var(--text-muted); font-size: var(--fs-xs); white-space: nowrap; }
+.desk__tag--warn { color: var(--warn); }
+
+/* 新建桌面：卡片里的一块（有已有桌面时在列表下面，用分隔线隔开） */
+.desk__create { display: flex; flex-direction: column; gap: 8px; }
+.desk__list + .desk__create { padding-top: 10px; border-top: 1px solid var(--border); }
+.desk__create-row { display: flex; align-items: center; gap: 8px; }
+.desk__create-row .pl-select { flex: 1; min-width: 0; }
+.desk__create-row > .pl-btn:only-child { margin-left: auto; }
+.desk__hint { font-size: var(--fs-xs); }
+/* 新建进度：知道总量时是进度条，不知道时来回移动 */
+.desk__progress { position: relative; height: 4px; border-radius: 2px; background: var(--chip); overflow: hidden; }
+.desk__progress > span { position: absolute; inset: 0 auto 0 0; background: var(--accent); transition: width 200ms linear; }
+.desk__progress > .desk__progress-busy { width: 30%; animation: desk-busy 1.2s ease-in-out infinite; }
+@keyframes desk-busy { 0% { left: -30%; } 100% { left: 100%; } }
+/* 获取失败：每一步的原因 */
+.desk__reasons { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; font-size: var(--fs-xs); }
+.desk__reasons li { display: grid; grid-template-columns: minmax(0, 11em) 1fr; gap: 8px; }
+.desk__reasons li > span:first-child { color: var(--text-muted); }
+/* 画面上方的一行提示 */
+.desk__note { position: absolute; top: 8px; left: 50%; transform: translateX(-50%); z-index: 2; display: flex; align-items: center; gap: 6px; max-width: calc(100% - 32px); padding: 4px 6px 4px 12px; border-radius: var(--r-md); background: var(--panel-solid); border: 1px solid var(--border); box-shadow: var(--shadow-pop); font-size: var(--fs-xs); }

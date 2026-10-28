@@ -1,0 +1,15 @@
+/* 有新版本的提示条：和断网提示一样浮在窗口底部 */
+.upd-banner {
+  display: flex; align-items: center; gap: 10px; max-width: calc(100vw - 32px);
+  padding: 10px 14px; border-radius: var(--r-xl); border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border));
+  background: color-mix(in srgb, var(--panel-solid) 92%, var(--accent)); box-shadow: var(--shadow-pop);
+}
+.upd-banner > svg { flex: none; color: var(--accent); }
+.upd-banner__text { display: flex; flex-direction: column; gap: 2px; font-size: var(--fs-sm); line-height: 1.5; min-width: 0; }
+.upd-notes { margin: 0; white-space: pre-wrap; font-family: inherit; color: var(--text); }
+.upd-progress { height: 6px; border-radius: 3px; background: var(--border); overflow: hidden; margin: 8px 0; }
+.upd-progress__bar { height: 100%; background: var(--accent); transition: width 200ms ease; }
+.upd-progress__bar[data-indeterminate] { animation: upd-pulse 1.2s ease-in-out infinite; }
+@keyframes upd-pulse { 0%, 100% { opacity: 0.35; } 50% { opacity: 1; } }
+.upd-hint { color: var(--text-dim); font-size: var(--fs-sm); }
+.upd-error { color: var(--danger); }
