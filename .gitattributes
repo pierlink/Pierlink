@@ -1,0 +1,5 @@
+# 统一使用 LF 换行，避免 Windows 检出时改变测试数据（CI 曾因此失败）
+* text=auto eol=lf
+*.png binary
+*.ico binary
+*.icns binary

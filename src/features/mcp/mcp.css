@@ -1,0 +1,111 @@
+/* AI 接入（MCP）：确认框、标题栏状态、设置页 */
+
+.mcp-confirm { display: flex; flex-direction: column; gap: 10px; line-height: 1.6; }
+.mcp-confirm p { margin: 0; }
+.mcp-confirm__targets { margin: 0; padding-left: 20px; }
+.mcp-confirm__action { margin: 0; padding: 8px 10px; max-height: 240px; overflow: auto; white-space: pre-wrap; word-break: break-all; border-radius: var(--r-md); background: var(--chip); border: 1px solid var(--border); font-size: var(--fs-sm); }
+.mcp-confirm__more { color: var(--text-dim); font-size: var(--fs-xs); }
+
+.mcp-pop { width: min(440px, calc(100vw - 16px)); }
+.mcp-pop__body { overflow: auto; padding: 8px 12px 12px; display: flex; flex-direction: column; gap: 4px; scrollbar-width: thin; }
+.mcp-pop__section { margin-top: 8px; color: var(--text-dim); font-size: var(--fs-xs); font-weight: 600; }
+.mcp-pop__row { font-size: var(--fs-sm); }
+.mcp-pop__attention { display: flex; align-items: center; gap: 6px; padding: 6px 8px; border-radius: var(--r-md); background: color-mix(in srgb, var(--danger) 12%, transparent); color: var(--danger); font-size: var(--fs-xs); }
+.mcp-pop__act { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: var(--fs-xs); color: var(--text-muted); }
+.mcp-pop__act--bad { color: var(--danger); }
+.mcp-pop__time { flex: none; color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.mcp-pop__tool { flex: none; }
+.mcp-pop__outcome { flex: none; margin-left: auto; }
+
+.mcp-settings { display: flex; flex-direction: column; gap: 12px; }
+.mcp-card { display: flex; flex-direction: column; gap: 8px; padding: 12px; border-radius: var(--r-lg); border: 1px solid var(--border); background: var(--card); }
+.mcp-card__head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.mcp-card__title { font-weight: 600; margin-right: auto; }
+.mcp-entry { display: flex; flex-direction: column; gap: 8px; padding-top: 10px; border-top: 1px solid var(--border); }
+.mcp-entry__state { font-size: var(--fs-xs); color: var(--text-dim); }
+.mcp-entry__state--running { color: var(--ok, var(--accent)); }
+.mcp-entry__state--error, .mcp-entry__state--waiting_password { color: var(--danger); }
+.mcp-entry__actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.mcp-cmd { display: flex; align-items: flex-start; gap: 6px; padding: 6px 8px; border-radius: var(--r-md); background: var(--chip); }
+.mcp-cmd code { flex: 1; min-width: 0; white-space: pre-wrap; word-break: break-all; font-size: var(--fs-xs); }
+.mcp-cmd__copy { flex: none; display: inline-grid; place-items: center; width: 24px; height: 24px; border: 0; border-radius: var(--r-sm); background: none; color: var(--text-muted); cursor: pointer; }
+.mcp-cmd__copy:hover { background: var(--hover); color: var(--text); }
+.mcp-perms { display: flex; flex-direction: column; gap: 6px; }
+.mcp-perms__label { margin-top: 4px; font-size: var(--fs-xs); font-weight: 600; color: var(--text-muted); }
+.mcp-perms__folder { display: flex; align-items: center; gap: 6px; font-size: var(--fs-sm); }
+.mcp-perms__add { display: flex; align-items: flex-end; gap: 8px; flex-wrap: wrap; }
+.mcp-perms__add .pl-field { flex: 1; min-width: 220px; }
+.mcp-perms__servers { display: flex; flex-wrap: wrap; gap: 6px 16px; }
+.mcp-remembered { display: flex; align-items: center; gap: 8px; font-size: var(--fs-xs); color: var(--text-muted); }
+
+/* AI 打开的终端：标签上的“AI”标记、窗格顶部的提示条 */
+.ai-badge { display: inline-flex; align-items: center; padding: 0 5px; height: 16px; border-radius: 8px; background: var(--accent-soft); color: var(--accent); font-size: 10px; font-weight: 700; letter-spacing: 0.04em; flex: none; }
+.ai-bar { display: flex; align-items: center; gap: 8px; height: 33px; flex: none; padding: 0 10px; font-size: var(--fs-xs); background: var(--accent-soft); color: var(--text); border-bottom: 1px solid var(--border); }
+.ai-bar--warn { background: color-mix(in srgb, var(--danger) 14%, transparent); }
+.ai-bar__text { flex: 0 1 auto; min-width: 0; }
+.set-row__hint--warn { color: var(--warn); }
+.mcp-pop__outcome--auto { color: var(--warn); }
+
+/* MCP 板块 */
+.mcp-page { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; gap: 8px; }
+.mcp-page__empty { flex: 1; }
+.mcp-page__head { display: flex; align-items: center; gap: 14px; padding: 10px 14px; flex-wrap: wrap; }
+.mcp-page__title { display: flex; align-items: center; gap: 10px; }
+.mcp-page__title h1 { margin: 0; font-size: var(--fs-lg); font-weight: 600; }
+.mcp-page__spacer { flex: 1; }
+/* 固定宽度：数量变化不挤动右边的按钮 */
+.mcp-page__sessions { min-width: 9em; text-align: right; font-size: var(--fs-sm); color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.mcp-page__off { flex: 1; display: flex; flex-direction: column; align-items: flex-start; gap: 10px; padding: 24px; }
+.mcp-page__off p { margin: 0; max-width: 640px; }
+.mcp-page__body { flex: 1; min-height: 0; display: flex; gap: 8px; }
+.mcp-list { width: 300px; flex: none; display: flex; flex-direction: column; gap: 6px; padding: 12px; overflow: auto; }
+.mcp-list__label { margin-top: 8px; font-size: var(--fs-xs); color: var(--text-dim); }
+.mcp-list__empty { margin: 0; padding: 4px 2px; }
+.mcp-list__add { margin-top: 4px; }
+.mcp-row { gap: 4px; }
+.mcp-row__icon { display: inline-flex; color: var(--text-muted); }
+.mcp-row__dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--text-dim); }
+.mcp-row__dot--running { background: var(--ok); }
+.mcp-row__dot--connecting, .mcp-row__dot--reconnecting, .mcp-row__dot--waiting_password { background: var(--warn); }
+.mcp-row__dot--error { background: var(--danger); }
+.mcp-row__count { flex: none; min-width: 3.5em; text-align: right; font-size: var(--fs-xs); color: var(--accent); }
+.mcp-row__count--none { color: transparent; }
+.mcp-detail { gap: 12px; }
+.mcp-detail__grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; align-items: start; }
+.mcp-detail__card { display: flex; flex-direction: column; gap: 8px; padding: 12px 14px; border-radius: var(--r-lg); background: var(--card); border: 1px solid var(--border); min-width: 0; }
+.mcp-detail__card h3 { margin: 4px 0 0; font-size: var(--fs-sm); font-weight: 600; }
+.mcp-detail__row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 4px 8px; }
+/* 端口错误放在下面预留好的一行里 */
+.mcp-port__err { order: 3; flex-basis: 100%; min-height: 16px; font-size: var(--fs-xs); color: var(--danger); }
+.mcp-detail__sessions { margin: 0; padding-left: 18px; font-size: var(--fs-sm); }
+.mcp-add { display: flex; flex-direction: column; gap: 6px; max-height: 320px; overflow: auto; }
+.mcp-activity { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 10px; padding: 12px 14px; }
+.mcp-activity__bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.mcp-activity__bar .pl-select { min-width: 200px; }
+.mcp-activity__empty { margin: 0; }
+.mcp-activity__scroll { flex: 1; min-height: 0; overflow: auto; }
+.mcp-table { width: 100%; border-collapse: collapse; font-size: var(--fs-sm); table-layout: fixed; }
+.mcp-table th { position: sticky; top: 0; background: var(--panel); text-align: left; font-weight: 500; color: var(--text-dim); font-size: var(--fs-xs); padding: 6px 8px; border-bottom: 1px solid var(--border); }
+.mcp-table td { padding: 6px 8px; border-bottom: 1px solid var(--border); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; vertical-align: top; }
+.mcp-table__result--ok { color: var(--ok); }
+.mcp-table__result--bad { color: var(--danger); }
+.mcp-table__approval { margin-left: 6px; font-size: var(--fs-xs); color: var(--warn); }
+@media (max-width: 1000px) { .mcp-detail__grid { grid-template-columns: 1fr; } }
+.mcp-table th { position: sticky; }
+.mcp-table__resize { position: absolute; top: 0; right: 0; width: 7px; height: 100%; cursor: col-resize; border-right: 1px solid var(--border); }
+.mcp-table__resize:hover { border-right-color: var(--accent); }
+/* 交给 AI 的终端：窗格标题栏里的标记和“收回”（放在标题栏里，不另起一行，终端不被挤动） */
+.pane__ai { display: inline-flex; align-items: center; gap: 6px; flex: 0 1 auto; min-width: 0; max-width: 55%; height: 20px; padding: 0 2px 0 4px; border-radius: 10px; background: var(--accent-soft); font-size: var(--fs-xs); color: var(--text); }
+.pane__ai-back { flex: none; height: 18px; padding: 0 8px; border: 0; border-radius: 9px; background: transparent; color: var(--accent); font: inherit; cursor: pointer; }
+.pane__ai-back:hover { background: var(--hover); }
+/* 一键添加：按钮一行，结果固定一行 */
+.mcp-oneclick { display: flex; flex-direction: column; gap: 6px; }
+.mcp-oneclick__buttons { display: flex; flex-wrap: wrap; gap: 6px; }
+.mcp-oneclick__result { min-height: 18px; font-size: var(--fs-xs); color: var(--text-muted); }
+.mcp-oneclick__result--ok { color: var(--ok); }
+.mcp-oneclick__result--error { color: var(--danger); }
+
+/* 最近操作：有输出的那条可以点开看输出结尾 */
+.mcp-pop__act--out { cursor: pointer; }
+.mcp-pop__act--out:hover { background: var(--hover); }
+.mcp-pop__out { max-height: 220px; overflow: auto; margin: 2px 0 6px; padding: 6px 8px; border-radius: var(--r-sm); background: var(--chip); font-size: var(--fs-xs); white-space: pre-wrap; word-break: break-all; }

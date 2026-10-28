@@ -1,0 +1,729 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    # 只改文档时不跑
+    paths-ignore:
+      - "docs/**"
+      - "**/*.md"
+  pull_request:
+    paths-ignore:
+      - "docs/**"
+      - "**/*.md"
+  workflow_dispatch:
+    inputs:
+      e2e:
+        description: "打包后在 Windows 上装好真实安装包做端到端测试（多花约 20 分钟 Windows 时间）"
+        type: boolean
+        default: false
+      installer_run:
+        description: "只跑端到端测试：用这次运行（填运行编号）打好的安装包，跳过编译打包"
+        type: string
+        default: ""
+      old_installer_run:
+        description: "升级测试用的旧版安装包所在运行（默认是 0.1.0 的安装包；0.3.1 的是 40202924639）；留空跳过升级测试"
+        type: string
+        default: "40198321902"
+      engine:
+        description: "内置 SSH 引擎试验：Linux 上多种 sshd 配置和老版本服务器、Windows 上编译和 ssh-agent"
+        type: boolean
+        default: false
+      update_test:
+        description: "自动更新的真实流程：用这次临时生成的签名密钥打两个版本，装旧版后一键更新到新版（多花约 40 分钟 Windows 时间）"
+        type: boolean
+        default: false
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  frontend:
+    name: 前端：类型检查、构建、许可证
+    if: github.event_name != 'workflow_dispatch' || inputs.installer_run == ''
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npx tsc -b
+      - run: npx vite build
+      - run: npx vite build --config vite.mobile.config.ts
+      - run: npx vitest run --passWithNoTests
+      - run: npm run check:licenses
+
+  core:
+    name: Rust 核心：格式、静态检查、测试、许可证
+    if: github.event_name != 'workflow_dispatch' || inputs.installer_run == ''
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy -p pierlink-core --all-targets -- -D warnings
+      - run: cargo clippy -p pierlink-ssh-engine --all-targets -- -D warnings
+      - name: 下载测试用 Syncthing（固定版本，校验 SHA-256）
+        run: |
+          mkdir -p "$RUNNER_TEMP/syncthing" && cd "$RUNNER_TEMP/syncthing"
+          curl -fsSLo st.tar.gz https://github.com/syncthing/syncthing/releases/download/v2.1.7/syncthing-linux-amd64-v2.1.7.tar.gz
+          echo "2edc416e7ed136b7c858ed5f3f02a3b8316589605e54c380228ceea7acbf0142  st.tar.gz" | sha256sum -c -
+          tar xzf st.tar.gz
+          echo "PIERLINK_TEST_SYNCTHING=$RUNNER_TEMP/syncthing/syncthing-linux-amd64-v2.1.7/syncthing" >> "$GITHUB_ENV"
+      - run: cargo test -p pierlink-core
+      - name: 服务器桌面：真起 TigerVNC 读到真实画面；新建、关闭 Pierlink 桌面；免 root 从软件源获取 TigerVNC
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q tigervnc-standalone-server x11-xserver-utils x11-utils xauth socat openssh-server
+          # 这几项要从软件源下载，软件源偶尔慢或断：失败时重跑一次
+          # 免 root 轻量桌面要从软件源下几十 MB、在这里常超时：已在真实的精简服务器上验收，这里跳过
+          run_real() { PIERLINK_TEST_TIGERVNC=/usr/bin/Xtigervnc PIERLINK_TEST_APT=1 cargo test -p pierlink-core --lib vnc::real_tests -- --ignored --test-threads=1 --skip 免_root_轻量桌面; }
+          run_real || run_real
+      - run: cargo test -p pierlink-ssh-engine -- --test-threads=1
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check licenses
+
+  engine-linux:
+    name: 内置 SSH 引擎试验：Linux（多种 sshd 配置、老版本服务器）
+    if: github.event_name == 'workflow_dispatch' && inputs.engine
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: 搭测试用 sshd（只许密钥、只许密码、密码加验证码；另一个会话数上限 2）
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq openssh-server libpam-google-authenticator
+          T="$RUNNER_TEMP/engine"; mkdir -p "$T"
+          ssh-keygen -q -t ed25519 -N '' -f "$T/key"
+          for u in plkey plpw plotp; do sudo useradd -m -s /bin/bash "$u"; done
+          # 测试密码和验证码密钥都在运行时随机生成，日志里遮住
+          PW=$(openssl rand -hex 12); OTPPW=$(openssl rand -hex 12)
+          SECRET=$(python3 -c "import base64,os;print(base64.b32encode(os.urandom(10)).decode())")
+          echo "::add-mask::$PW"; echo "::add-mask::$OTPPW"; echo "::add-mask::$SECRET"
+          echo "plpw:$PW" | sudo chpasswd
+          echo "plotp:$OTPPW" | sudo chpasswd
+          sudo install -d -m 700 -o plkey -g plkey /home/plkey/.ssh
+          sudo install -m 600 -o plkey -g plkey "$T/key.pub" /home/plkey/.ssh/authorized_keys
+          printf '%s\n" RATE_LIMIT 100 30\n" WINDOW_SIZE 17\n" TOTP_AUTH\n' "$SECRET" | sudo tee /home/plotp/.google_authenticator >/dev/null
+          sudo chown plotp:plotp /home/plotp/.google_authenticator
+          sudo chmod 400 /home/plotp/.google_authenticator
+          # 密码之后再要验证码；没有 .google_authenticator 的用户跳过这一步
+          echo 'auth required pam_google_authenticator.so nullok' | sudo tee -a /etc/pam.d/sshd >/dev/null
+          sudo mkdir -p /run/sshd
+          sudo ssh-keygen -A
+          for port in 2223 2224; do
+            extra=""; [ "$port" = 2224 ] && extra="MaxSessions 2"
+            sudo tee "$T/sshd_$port.conf" >/dev/null <<EOF
+          Port $port
+          ListenAddress 127.0.0.1
+          HostKey /etc/ssh/ssh_host_ed25519_key
+          HostKey /etc/ssh/ssh_host_rsa_key
+          PidFile $T/sshd_$port.pid
+          UsePAM yes
+          PubkeyAuthentication yes
+          PasswordAuthentication yes
+          KbdInteractiveAuthentication yes
+          AllowTcpForwarding yes
+          AllowStreamLocalForwarding yes
+          ClientAliveInterval 1
+          ClientAliveCountMax 2
+          RekeyLimit 64M
+          Subsystem sftp internal-sftp
+          $extra
+          Match User plkey
+            AuthenticationMethods publickey
+          Match User plpw
+            AuthenticationMethods password keyboard-interactive
+          Match User plotp
+            AuthenticationMethods keyboard-interactive
+          EOF
+            sudo /usr/sbin/sshd -t -f "$T/sshd_$port.conf"
+            sudo /usr/sbin/sshd -f "$T/sshd_$port.conf"
+          done
+          {
+            echo "PIERLINK_ENGINE_SSHD=127.0.0.1:2223"
+            echo "PIERLINK_ENGINE_MAXSESS=127.0.0.1:2224"
+            echo "PIERLINK_ENGINE_KEY_USER=plkey"
+            echo "PIERLINK_ENGINE_KEY=$T/key"
+            echo "PIERLINK_ENGINE_PW_USER=plpw"
+            echo "PIERLINK_ENGINE_PW=$PW"
+            echo "PIERLINK_ENGINE_OTP_USER=plotp"
+            echo "PIERLINK_ENGINE_OTP_PW=$OTPPW"
+            echo "PIERLINK_ENGINE_OTP_SECRET=$SECRET"
+          } >> "$GITHUB_ENV"
+      - name: 老版本服务器（Docker：CentOS 7 的 OpenSSH 7.4、CentOS 6 的 OpenSSH 5.3）
+        continue-on-error: true
+        run: |
+          T="$RUNNER_TEMP/engine"; PUB=$(cat "$T/key.pub")
+          start_old() { # 名字 镜像 存档源版本 本机端口
+            docker run -d --name "$1" -p "127.0.0.1:$4:22" "$2" bash -c "
+              sed -i -e 's/^mirrorlist/#mirrorlist/' -e 's|^#baseurl=http://mirror.centos.org/centos/\$releasever|baseurl=http://vault.centos.org/$3|' /etc/yum.repos.d/CentOS-*.repo &&
+              yum -q -y install openssh-server &&
+              ssh-keygen -q -t rsa -b 2048 -N '' -f /etc/ssh/ssh_host_rsa_key &&
+              useradd plkey && mkdir -p /home/plkey/.ssh && echo '$PUB' > /home/plkey/.ssh/authorized_keys &&
+              chown -R plkey:plkey /home/plkey/.ssh && chmod 700 /home/plkey/.ssh && chmod 600 /home/plkey/.ssh/authorized_keys &&
+              exec /usr/sbin/sshd -D -e" >/dev/null
+          }
+          start_old openssh74 centos:7 7.9.2009 2274
+          start_old openssh53 centos:6 6.10 2253
+          OLD=""
+          for item in openssh74:2274 openssh53:2253; do
+            name=${item%%:*}; port=${item##*:}
+            for i in $(seq 1 120); do
+              if timeout 3 bash -c "exec 3<>/dev/tcp/127.0.0.1/$port; head -c 4 <&3" 2>/dev/null | grep -q SSH; then
+                OLD="$OLD${OLD:+,}$name=127.0.0.1:$port"; break
+              fi
+              sleep 2
+            done
+            echo "$name 最后几行日志："; docker logs "$name" 2>&1 | tail -3
+          done
+          echo "可用的老版本服务器：${OLD:-无}"
+          if [ -n "$OLD" ]; then echo "PIERLINK_ENGINE_OLD=$OLD" >> "$GITHUB_ENV"; fi
+      - name: 引擎测试（包括需要上面这些服务器的项）
+        run: cargo test --no-fail-fast -p pierlink-ssh-engine -- --include-ignored --nocapture --test-threads=1
+      - name: 改过的 russh 自带的写缓冲测试（联网取它的开发依赖）
+        if: success() || failure()
+        run: cargo test --manifest-path vendor/russh/Cargo.toml --lib sshbuffer
+
+  engine-windows:
+    name: 内置 SSH 引擎试验：Windows（编译、ssh-agent）
+    if: github.event_name == 'workflow_dispatch' && inputs.engine
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: 启动 Windows 自带的 ssh-agent 并加载测试密钥
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-Service ssh-agent -StartupType Manual
+          Start-Service ssh-agent
+          $key = Join-Path $env:RUNNER_TEMP 'agent_rsa'
+          & "$env:SystemRoot\System32\OpenSSH\ssh-keygen.exe" -q -t rsa -b 3072 -N '' -f $key
+          icacls $key /inheritance:r /grant "${env:USERNAME}:F" | Out-Null
+          & "$env:SystemRoot\System32\OpenSSH\ssh-add.exe" $key
+          "PIERLINK_ENGINE_AGENT_PUBKEY=$(Get-Content "$key.pub")" >> $env:GITHUB_ENV
+      - run: cargo test -p pierlink-ssh-engine -- --nocapture --test-threads=1
+
+  windows:
+    name: Windows：生成前端类型、打包安装程序
+    if: github.event_name != 'workflow_dispatch' || inputs.installer_run == ''
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: npm ci
+      - name: 准备随包分发的 Syncthing 与 OpenSSH（固定版本，校验 SHA-256）
+        run: node scripts/fetch-bundled.mjs
+      - name: 生成第三方许可证汇总
+        run: node scripts/gen-notices.mjs
+      - name: 构建前端（Tauri 编译时需要 dist 目录）
+        # 只打包、不做类型检查：新命令的前端类型要在下一步才生成，类型检查由“前端”任务和打包步骤负责
+        run: npx vite build && npx vite build --config vite.mobile.config.ts
+      - name: 静态检查 Tauri 外壳
+        run: cargo clippy -p pierlink --all-targets -- -D warnings
+      - name: 重新生成前端类型
+        # 用独立小程序而不是测试：Windows 上 Tauri 的测试程序缺少应用清单，启动会报 STATUS_ENTRYPOINT_NOT_FOUND
+        run: cargo run -p pierlink-export-bindings
+      - name: 上传生成的前端类型
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bindings
+          path: src/bindings/
+      - name: 启动本机 OpenSSH 服务器（Windows 端到端测试用）
+        # 失败不阻止后续步骤：没设置环境变量时端到端测试会跳过，但会在日志里留下原因
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $cap = Get-WindowsCapability -Online -Name 'OpenSSH.Server*' | Select-Object -First 1
+          if ($cap.State -ne 'Installed') { Add-WindowsCapability -Online -Name $cap.Name | Out-Null }
+          $key = Join-Path $env:RUNNER_TEMP 'pl_e2e_key'
+          & "$env:SystemRoot\System32\OpenSSH\ssh-keygen.exe" -q -t ed25519 -N '' -f $key
+          # ssh 要求私钥只有当前用户能读
+          icacls $key /inheritance:r /grant "${env:USERNAME}:F" | Out-Null
+          New-Item -ItemType Directory -Force "$env:ProgramData\ssh" | Out-Null
+          $auth = "$env:ProgramData\ssh\administrators_authorized_keys"
+          Get-Content "$key.pub" | Set-Content -Encoding ascii $auth
+          icacls $auth /inheritance:r /grant "Administrators:F" /grant "SYSTEM:F" | Out-Null
+          # 第一次启动生成默认配置；在配置最前面打开服务器端日志（写到 ProgramData\ssh\logs），
+          # 偶发的连接卡住时能看出服务器卡在哪一步。必须放在开头：默认配置末尾有 Match 段
+          Start-Service sshd
+          Stop-Service sshd
+          $conf = "$env:ProgramData\ssh\sshd_config"
+          Set-Content -Encoding ascii $conf ("SyslogFacility LOCAL0`nLogLevel DEBUG`n" + (Get-Content -Raw $conf))
+          Start-Service sshd
+          $deadline = (Get-Date).AddSeconds(30)
+          while (-not (Test-NetConnection 127.0.0.1 -Port 22 -InformationLevel Quiet)) {
+            if ((Get-Date) -gt $deadline) { throw 'sshd 没有在 30 秒内开始监听' }
+            Start-Sleep -Seconds 1
+          }
+          "PIERLINK_TEST_WIN_SSHD_KEY=$key" >> $env:GITHUB_ENV
+          "PIERLINK_TEST_WIN_SSHD_USER=$env:USERNAME" >> $env:GITHUB_ENV
+      - name: 核心测试（含 Windows 凭据管理器、本机 sshd 端到端、真实 Syncthing）
+        run: cargo test -p pierlink-core
+        env:
+          # 安装包自带的 Windows 版 Syncthing（上一步已下载并校验）
+          PIERLINK_TEST_SYNCTHING: ${{ github.workspace }}\src-tauri\resources\syncthing\syncthing.exe
+      - name: 核心测试失败时保存 sshd 服务器端日志
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-sshd-logs
+          path: C:\ProgramData\ssh\logs
+          retention-days: 14
+      - name: 检查前端类型是否已提交
+        shell: bash
+        run: |
+          git add -N src/bindings
+          if ! git diff --exit-code -- src/bindings; then
+            echo "::error::src/bindings 与 Rust 命令不一致：请下载 bindings 工件并提交"
+            exit 1
+          fi
+      - name: 打包安装程序（设了签名密钥时同时生成自动更新用的签名和 latest.json）
+        shell: pwsh
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:TAURI_SIGNING_PRIVATE_KEY) {
+            npx tauri build --config src-tauri/tauri.updater.conf.json
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            node scripts/gen-latest-json.mjs
+          } else {
+            Write-Host '没有签名密钥：只打安装包，不生成自动更新文件'
+            npx tauri build
+          }
+          exit $LASTEXITCODE
+      - name: 自动填密码端到端（打包出的 Pierlink.exe 经命名管道取内存里的密码，密码登录本机 sshd）
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not (Get-Service sshd -ErrorAction SilentlyContinue)) { Write-Host '跳过：本机 sshd 没有启动'; exit 0 }
+          # 一次性的本机账户，只在这台用完即弃的 CI 机器上存在
+          $pw = 'Pl-' + [guid]::NewGuid().ToString('N').Substring(0, 16) + '!a1'
+          Write-Host "::add-mask::$pw"
+          # 不用 net user：密码超过 14 位时它会停下来问“是否继续”，在 CI 里默认取消，账户建不成
+          New-LocalUser -Name pltest -Password (ConvertTo-SecureString $pw -AsPlainText -Force) -PasswordNeverExpires | Out-Null
+          # CI 机器的 sshd_config 用 AllowGroups 限制了能登录的组：把测试账户加进列出的第一个组
+          $cfg = Get-Content "$env:ProgramData\ssh\sshd_config" | Where-Object { $_ -match '^\s*AllowGroups\s+' } | Select-Object -First 1
+          Write-Host "sshd 的 AllowGroups：$cfg"
+          if ($cfg) {
+            $group = (($cfg -replace '^\s*AllowGroups\s+', '').Trim() -split '\s+')[0].Trim('"')
+            Add-LocalGroupMember -Group $group -Member pltest
+          }
+          $env:PIERLINK_TEST_PW_USER = 'pltest'
+          $env:PIERLINK_TEST_PW_PASS = $pw
+          $env:PIERLINK_TEST_ASKPASS_EXE = (Resolve-Path target\release\pierlink.exe).Path
+          # 诊断：账户密码本身在 Windows 层面是否有效
+          Add-Type -AssemblyName System.DirectoryServices.AccountManagement
+          $ctx = New-Object System.DirectoryServices.AccountManagement.PrincipalContext('Machine')
+          Write-Host "测试账户密码有效：$($ctx.ValidateCredentials('pltest', $pw))"
+          $ErrorActionPreference = 'Continue'
+          cargo test -p pierlink-core --test windows_askpass -- --nocapture
+          $code = $LASTEXITCODE
+          # 诊断：sshd 自己记录的登录过程
+          Get-WinEvent -LogName 'OpenSSH/Operational' -MaxEvents 30 -ErrorAction SilentlyContinue |
+            Sort-Object TimeCreated | ForEach-Object { Write-Host "sshd: $($_.Message)" }
+          exit $code
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pierlink-windows-installer
+          path: target/release/bundle/nsis/*.exe
+          retention-days: 14
+      - name: 上传发版用的文件（安装包、签名、latest.json；只有设了签名密钥才有）
+        uses: actions/upload-artifact@v4
+        with:
+          name: pierlink-release
+          path: |
+            target/release/bundle/nsis/*-setup.exe
+            target/release/bundle/nsis/*-setup.exe.sig
+            target/release/bundle/nsis/latest.json
+          if-no-files-found: ignore
+          retention-days: 30
+
+  e2e-windows:
+    name: Windows 端到端：装真实安装包，像用户一样操作
+    needs: windows
+    # 只在手动触发并勾选 e2e 时运行（节省私有仓库的 Actions 分钟数）；
+    # 填了 installer_run 时打包任务被跳过，直接用那次运行的安装包
+    if: >-
+      !cancelled() && github.event_name == 'workflow_dispatch' && inputs.e2e &&
+      (needs.windows.result == 'success' || inputs.installer_run != '')
+    runs-on: windows-latest
+    timeout-minutes: 60
+    # 读取别的运行的安装包工件需要 actions: read
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@v4
+        with:
+          name: pierlink-windows-installer
+          path: installer
+          run-id: ${{ inputs.installer_run || github.run_id }}
+          github-token: ${{ github.token }}
+      - uses: actions/download-artifact@v4
+        if: inputs.old_installer_run != ''
+        with:
+          name: pierlink-windows-installer
+          path: installer-old
+          run-id: ${{ inputs.old_installer_run }}
+          github-token: ${{ github.token }}
+      - name: 启动本机 OpenSSH 服务器（当作“服务器”连接）
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $cap = Get-WindowsCapability -Online -Name 'OpenSSH.Server*' | Select-Object -First 1
+          if ($cap.State -ne 'Installed') { Add-WindowsCapability -Online -Name $cap.Name | Out-Null }
+          $key = Join-Path $env:RUNNER_TEMP 'pl_e2e_key'
+          & "$env:SystemRoot\System32\OpenSSH\ssh-keygen.exe" -q -t ed25519 -N '' -f $key
+          icacls $key /inheritance:r /grant "${env:USERNAME}:F" | Out-Null
+          New-Item -ItemType Directory -Force "$env:ProgramData\ssh" | Out-Null
+          $auth = "$env:ProgramData\ssh\administrators_authorized_keys"
+          Get-Content "$key.pub" | Set-Content -Encoding ascii $auth
+          icacls $auth /inheritance:r /grant "Administrators:F" /grant "SYSTEM:F" | Out-Null
+          Start-Service sshd
+          $deadline = (Get-Date).AddSeconds(30)
+          while (-not (Test-NetConnection 127.0.0.1 -Port 22 -InformationLevel Quiet)) {
+            if ((Get-Date) -gt $deadline) { throw 'sshd 没有在 30 秒内开始监听' }
+            Start-Sleep -Seconds 1
+          }
+          "PIERLINK_TEST_WIN_SSHD_KEY=$key" >> $env:GITHUB_ENV
+          "PIERLINK_TEST_WIN_SSHD_USER=$env:USERNAME" >> $env:GITHUB_ENV
+      - name: 升级测试 1：装旧版，加一台服务器
+        if: inputs.old_installer_run != ''
+        shell: pwsh
+        env:
+          E2E_OUT: ${{ runner.temp }}\e2e-out
+          E2E_PHASE: old
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $setup = Get-ChildItem installer-old -Filter *-setup.exe | Select-Object -First 1
+          Write-Host "安装旧版：$($setup.Name)"
+          Start-Process $setup.FullName -ArgumentList '/S' -Wait
+          $env:PIERLINK_EXE = "$env:LOCALAPPDATA\Pierlink\Pierlink.exe"
+          node tests/e2e-windows/stage5.mjs
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          # 和用户在安装界面选默认的“升级（先删旧程序文件，数据保留）”一样：
+          # 新安装程序会在原地运行旧版的卸载程序（_?= 安装目录），成功后删掉卸载程序本身
+          $dir = "$env:LOCALAPPDATA\Pierlink"
+          Start-Process "$dir\uninstall.exe" -ArgumentList '/S', "_?=$dir" -Wait
+          Remove-Item "$dir\uninstall.exe" -ErrorAction SilentlyContinue
+          Write-Host "旧版卸载后安装目录里剩下：$((Get-ChildItem $dir -Force | ForEach-Object Name) -join ', ')"
+          # 0.1.0 的数据在安装目录；0.3 起已经在 %LOCALAPPDATA%\com.pierlink.desktop
+          if (-not (Test-Path "$dir\pierlink.db") -and -not (Test-Path "$env:LOCALAPPDATA\com.pierlink.desktop\pierlink.db")) { throw '升级时卸载旧版把数据库删了' }
+      - name: 静默安装新版（按用户安装到 %LOCALAPPDATA%）
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $setup = Get-ChildItem installer -Filter *-setup.exe | Select-Object -First 1
+          Write-Host "安装：$($setup.Name)"
+          Start-Process $setup.FullName -ArgumentList '/S' -Wait
+          $dir = "$env:LOCALAPPDATA\Pierlink"
+          Write-Host "安装目录里的程序：$((Get-ChildItem $dir -Filter *.exe).Name -join ', ')"
+          $exe = Join-Path $dir 'Pierlink.exe'
+          if (-not (Test-Path $exe)) { throw '安装后找不到 Pierlink.exe' }
+          # 开发用的小工具不能进安装包
+          if (Test-Path (Join-Path $dir 'export_bindings.exe')) { throw '安装包里带了开发工具 export_bindings.exe' }
+          "PIERLINK_EXE=$exe" >> $env:GITHUB_ENV
+      - name: 升级测试 2：数据搬到新位置；关窗口缩到托盘；退出确认
+        if: ${{ !cancelled() && inputs.old_installer_run != '' }}
+        shell: pwsh
+        env:
+          E2E_OUT: ${{ runner.temp }}\e2e-out
+          E2E_PHASE: upgrade
+        run: node tests/e2e-windows/stage5.mjs
+      - name: 端到端测试（每步截图）
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        env:
+          E2E_OUT: ${{ runner.temp }}\e2e-out
+        run: node tests/e2e-windows/run.mjs
+      # 一台真正的 Linux 服务器：WSL2 里的 Ubuntu（用户 pl 密钥登录、用户 plpw 只能密码登录，localhost:2222）。
+      # 用来测 Windows sshd 测不到的：资源概览的 CPU/内存/磁盘条、bash 下的广播和片段、sudo 密码提示。
+      # 不连任何外部服务器：公开仓库的日志谁都能看，地址和私钥都不能出现在这里。
+      - name: 装 WSL Ubuntu（当作 Linux 服务器）
+        if: ${{ !cancelled() }}
+        uses: Vampire/setup-wsl@v7.0.0
+        with:
+          distribution: Ubuntu-24.04
+          wsl-version: 2
+          additional-packages: openssh-server libpam-google-authenticator tigervnc-standalone-server tigervnc-tools x11-xserver-utils xauth openbox dbus-bin
+      - name: 在 WSL 里启动 sshd（localhost:2222，密钥登录和密码登录各一个用户）
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $distro = 'Ubuntu-24.04'
+          $key = Join-Path $env:RUNNER_TEMP 'pl_wsl_key'
+          & "$env:SystemRoot\System32\OpenSSH\ssh-keygen.exe" -q -t ed25519 -N '' -f $key
+          icacls $key /inheritance:r /grant "${env:USERNAME}:F" | Out-Null
+          # 只允许密码登录的测试用户 plpw（测“输一次密码，所有功能共用”）：密码运行时随机生成，日志里遮住
+          $pw = -join ((48..57) + (65..90) + (97..122) | Get-Random -Count 24 | ForEach-Object { [char]$_ })
+          Write-Output "::add-mask::$pw"
+          # 要密码加验证码的用户 plotp（测 0.4.0“要验证码的服务器登录一次，所有功能共用”）：密码和验证码密钥运行时随机生成，日志里遮住
+          $otpPw = -join ((48..57) + (65..90) + (97..122) | Get-Random -Count 24 | ForEach-Object { [char]$_ })
+          $raw = New-Object byte[] 10
+          [System.Security.Cryptography.RandomNumberGenerator]::Fill($raw)
+          $bits = ($raw | ForEach-Object { [Convert]::ToString($_, 2).PadLeft(8, '0') }) -join ''
+          $b32 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567'
+          $otpSecret = -join (0..15 | ForEach-Object { $b32[[Convert]::ToInt32($bits.Substring($_ * 5, 5), 2)] })
+          Write-Output "::add-mask::$otpPw"
+          Write-Output "::add-mask::$otpSecret"
+          # wsl.exe 从当前目录（仓库根目录）启动，脚本、公钥和密码文件都用相对路径
+          Copy-Item "$key.pub" pl_wsl_key.pub
+          Set-Content -NoNewline -Encoding ascii pl_wsl_pw.txt $pw
+          Set-Content -NoNewline -Encoding ascii pl_wsl_otp.txt "$otpPw $otpSecret"
+          try {
+            wsl.exe -d $distro -u root -- bash tests/e2e-windows/wsl-sshd.sh pl_wsl_key.pub pl_wsl_pw.txt pl_wsl_otp.txt
+            if ($LASTEXITCODE) { throw "在 WSL 里配置 sshd 失败：退出码 $LASTEXITCODE" }
+          } finally {
+            Remove-Item pl_wsl_key.pub, pl_wsl_pw.txt, pl_wsl_otp.txt -ErrorAction SilentlyContinue
+          }
+          # 先临时启动一次 sshd 试登录；这一步结束时它会被一起结束，
+          # 阶段 6 的测试脚本会在自己的步骤里再启动（PIERLINK_TEST_LINUX_WSL）
+          $logs = Join-Path $env:RUNNER_TEMP 'e2e-out'
+          New-Item -ItemType Directory -Force $logs | Out-Null
+          $sshd = Start-Process wsl.exe -ArgumentList '-d', $distro, '-u', 'root', '--', '/usr/sbin/sshd', '-D', '-e' -NoNewWindow -PassThru `
+            -RedirectStandardOutput (Join-Path $logs 'wsl-sshd-probe.out.log') -RedirectStandardError (Join-Path $logs 'wsl-sshd-probe.log')
+          $ssh = "$env:SystemRoot\System32\OpenSSH\ssh.exe"
+          $deadline = (Get-Date).AddSeconds(90)
+          do {
+            Start-Sleep -Seconds 2
+            $out = & $ssh -i $key -p 2222 -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=NUL -o LogLevel=ERROR -o ConnectTimeout=5 pl@localhost 'echo "login ok: $(id -un)@$(hostname)"; df -P / | tail -1' 2>&1
+            $ok = $LASTEXITCODE -eq 0
+            if (-not $ok -and (Get-Date) -gt $deadline) { throw "90 秒内没能登录 WSL 里的 sshd：$out" }
+          } until ($ok)
+          Write-Host ($out -join "`n")
+          wsl.exe -d $distro -u root -- pkill -x sshd
+          Stop-Process -Id $sshd.Id -ErrorAction SilentlyContinue
+          "PIERLINK_TEST_LINUX_WSL=$distro" >> $env:GITHUB_ENV
+          "PIERLINK_TEST_LINUX_HOST=localhost" >> $env:GITHUB_ENV
+          "PIERLINK_TEST_LINUX_PORT=2222" >> $env:GITHUB_ENV
+          "PIERLINK_TEST_LINUX_USER=pl" >> $env:GITHUB_ENV
+          "PIERLINK_TEST_LINUX_KEY=$key" >> $env:GITHUB_ENV
+          "PIERLINK_TEST_LINUX_PW_USER=plpw" >> $env:GITHUB_ENV
+          "PIERLINK_TEST_LINUX_PW_PASS=$pw" >> $env:GITHUB_ENV
+          "PIERLINK_TEST_LINUX_OTP_USER=plotp" >> $env:GITHUB_ENV
+          "PIERLINK_TEST_LINUX_OTP_PASS=$otpPw" >> $env:GITHUB_ENV
+          "PIERLINK_TEST_LINUX_OTP_SECRET=$otpSecret" >> $env:GITHUB_ENV
+      - name: 阶段 6：端口转发、广播输入、命令片段、资源概览
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        env:
+          E2E_OUT: ${{ runner.temp }}\e2e-out
+        run: node tests/e2e-windows/stage6.mjs
+      - name: 0.4.0：连接方式的默认值和切换（内置 SSH / 系统 OpenSSH）、检查更新
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        env:
+          E2E_OUT: ${{ runner.temp }}\e2e-out
+        run: node tests/e2e-windows/stage7.mjs
+      - name: 0.5.0：AI 接入（MCP）——本机入口、确认框、AI 终端、文件工具、服务器入口
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        env:
+          E2E_OUT: ${{ runner.temp }}\e2e-out
+        run: node tests/e2e-windows/stage8.mjs
+      - name: 0.8.0：服务器桌面（VNC）——检测、连接、密码、画面
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        env:
+          E2E_OUT: ${{ runner.temp }}\e2e-out
+        run: node tests/e2e-windows/stage9.mjs
+      - name: 静默卸载（不删数据）：程序没了、数据还在
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          taskkill /IM Pierlink.exe /F 2>$null
+          $global:LASTEXITCODE = 0  # 程序已经退出时 taskkill 返回非零，不算失败
+          $dir = "$env:LOCALAPPDATA\Pierlink"
+          Start-Process "$dir\uninstall.exe" -ArgumentList '/S' -Wait
+          $deadline = (Get-Date).AddSeconds(90)
+          while ((Test-Path "$dir\Pierlink.exe") -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 500 }
+          if (Test-Path "$dir\Pierlink.exe") {
+            # 定位用：还有哪些相关进程在运行（可能占着程序文件）
+            Get-CimInstance Win32_Process | Where-Object { $_.Name -match 'Pierlink|uninstall|Au_|ssh|syncthing|msedgewebview2' } |
+              ForEach-Object { Write-Host ("{0} {1} {2}" -f $_.ProcessId, $_.Name, $_.ExecutablePath) }
+            throw '卸载后程序还在'
+          }
+          $db = "$env:LOCALAPPDATA\com.pierlink.desktop\pierlink.db"
+          if (-not (Test-Path $db)) { throw "不勾选删除数据时，数据库不应被删：$db" }
+          # 数据已经搬走，安装目录应当整个删掉
+          if (Test-Path $dir) { throw "卸载后安装目录还在：$((Get-ChildItem $dir -Recurse -Force | ForEach-Object FullName) -join ', ')" }
+      - name: 重装后服务器和设置都还在
+        if: ${{ !cancelled() && inputs.old_installer_run != '' }}
+        shell: pwsh
+        env:
+          E2E_OUT: ${{ runner.temp }}\e2e-out
+          E2E_PHASE: reinstalled
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $setup = Get-ChildItem installer -Filter *-setup.exe | Select-Object -First 1
+          Start-Process $setup.FullName -ArgumentList '/S' -Wait
+          node tests/e2e-windows/stage5.mjs
+      - name: 用卸载界面勾选“同时删除我的数据”：数据和程序都删干净
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        env:
+          E2E_OUT: ${{ runner.temp }}\e2e-out
+        run: |
+          $setup = Get-ChildItem installer -Filter *-setup.exe | Select-Object -First 1
+          if (-not (Test-Path "$env:LOCALAPPDATA\Pierlink\uninstall.exe")) { Start-Process $setup.FullName -ArgumentList '/S' -Wait }
+          ./tests/e2e-windows/uninstall-delete-data.ps1
+      - name: 升级后还没打开过新版就卸载并勾选删除数据：旧位置的数据也删掉
+        if: ${{ !cancelled() && inputs.old_installer_run != '' }}
+        shell: pwsh
+        env:
+          E2E_OUT: ${{ runner.temp }}\e2e-out\未打开新版
+          E2E_PHASE: old
+          E2E_CASE: 升级后未打开就删除数据
+          E2E_EXPECT_DATA: old
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Remove-Item -Recurse -Force "$env:LOCALAPPDATA\com.pierlink.desktop" -ErrorAction SilentlyContinue
+          $old = Get-ChildItem installer-old -Filter *-setup.exe | Select-Object -First 1
+          Start-Process $old.FullName -ArgumentList '/S' -Wait
+          $env:PIERLINK_EXE = "$env:LOCALAPPDATA\Pierlink\Pierlink.exe"
+          node tests/e2e-windows/stage5.mjs
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $dir = "$env:LOCALAPPDATA\Pierlink"
+          Start-Process "$dir\uninstall.exe" -ArgumentList '/S', "_?=$dir" -Wait
+          Remove-Item "$dir\uninstall.exe" -ErrorAction SilentlyContinue
+          $new = Get-ChildItem installer -Filter *-setup.exe | Select-Object -First 1
+          Start-Process $new.FullName -ArgumentList '/S' -Wait
+          # 不启动新版：数据还在安装目录里，由卸载钩子删除
+          ./tests/e2e-windows/uninstall-delete-data.ps1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e-windows-screens
+          path: ${{ runner.temp }}\e2e-out
+          retention-days: 14
+
+  update-windows:
+    name: 自动更新：装旧版，检查到新版后一键更新（临时签名密钥、本机更新地址）
+    if: github.event_name == 'workflow_dispatch' && inputs.update_test
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: npm ci
+      - name: 准备随包分发的 Syncthing 与 OpenSSH（固定版本，校验 SHA-256）
+        run: node scripts/fetch-bundled.mjs
+      - name: 生成第三方许可证汇总
+        run: node scripts/gen-notices.mjs
+      - name: 临时签名密钥和本机更新地址（只用于这次运行，和正式的签名密钥无关）
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $dir = Join-Path $env:RUNNER_TEMP 'upd'
+          New-Item -ItemType Directory -Force $dir | Out-Null
+          $pw = -join ((48..57) + (65..90) + (97..122) | Get-Random -Count 24 | ForEach-Object { [char]$_ })
+          Write-Output "::add-mask::$pw"
+          $key = Join-Path $dir 'test.key'
+          npx tauri signer generate --ci --password $pw --write-keys $key --force
+          if ($LASTEXITCODE) { throw '生成临时签名密钥失败' }
+          $conf = @{
+            bundle = @{ createUpdaterArtifacts = $true }
+            plugins = @{ updater = @{
+              pubkey = (Get-Content -Raw "$key.pub").Trim()
+              endpoints = @('http://127.0.0.1:18765/latest.json')
+              # 更新插件默认只认 https；本机测试服务是 http，只在这份测试配置里放开（正式配置不受影响）
+              dangerousInsecureTransportProtocol = $true
+              windows = @{ installMode = 'passive' }
+            } }
+          }
+          $conf | ConvertTo-Json -Depth 6 | Set-Content -Encoding utf8 (Join-Path $dir 'updater-test.conf.json')
+          '{"version":"9.9.9"}' | Set-Content -Encoding ascii (Join-Path $dir 'version.conf.json')
+          # 临时密钥只在这次运行里用；内容是一行 base64，也遮住
+          $keyText = (Get-Content -Raw $key).Trim()
+          Write-Output "::add-mask::$keyText"
+          "TAURI_SIGNING_PRIVATE_KEY=$keyText" >> $env:GITHUB_ENV
+          "TAURI_SIGNING_PRIVATE_KEY_PASSWORD=$pw" >> $env:GITHUB_ENV
+          "UPD_DIR=$dir" >> $env:GITHUB_ENV
+      - name: 打“旧版”（当前版本号）
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          npx tauri build --config "$env:UPD_DIR\updater-test.conf.json"
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          New-Item -ItemType Directory -Force "$env:UPD_DIR\old" | Out-Null
+          Copy-Item target\release\bundle\nsis\*-setup.exe "$env:UPD_DIR\old\"
+      - name: 打“新版”（版本号 9.9.9，只用于这次测试），生成 latest.json
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Remove-Item target\release\bundle\nsis\* -Recurse -Force
+          npx tauri build --config "$env:UPD_DIR\updater-test.conf.json" --config "$env:UPD_DIR\version.conf.json"
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $serve = Join-Path $env:UPD_DIR 'serve'
+          New-Item -ItemType Directory -Force $serve | Out-Null
+          $exe = Get-ChildItem target\release\bundle\nsis -Filter *-setup.exe | Select-Object -First 1
+          if (-not (Test-Path "$($exe.FullName).sig")) { throw "新版没有生成签名文件：$($exe.Name).sig" }
+          Copy-Item $exe.FullName, "$($exe.FullName).sig" $serve
+          $manifest = @{
+            version = '9.9.9'
+            notes = '自动更新测试'
+            pub_date = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+            platforms = @{ 'windows-x86_64' = @{
+              signature = (Get-Content -Raw "$($exe.FullName).sig").Trim()
+              url = "http://127.0.0.1:18765/$([uri]::EscapeDataString($exe.Name))"
+            } }
+          }
+          $manifest | ConvertTo-Json -Depth 6 | Set-Content -Encoding utf8 (Join-Path $serve 'latest.json')
+          Write-Host "新版：$($exe.Name)，$([math]::Round($exe.Length / 1MB, 1)) MB"
+      - name: 装旧版，检查更新，一键更新到新版（每步截图）
+        shell: pwsh
+        env:
+          E2E_OUT: ${{ runner.temp }}\e2e-update-out
+          UPDATE_TO: "9.9.9"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $setup = Get-ChildItem "$env:UPD_DIR\old" -Filter *-setup.exe | Select-Object -First 1
+          Write-Host "安装旧版：$($setup.Name)"
+          Start-Process $setup.FullName -ArgumentList '/S' -Wait
+          $env:PIERLINK_EXE = "$env:LOCALAPPDATA\Pierlink\Pierlink.exe"
+          node tests/e2e-windows/update.mjs "$env:UPD_DIR\serve"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e-update-screens
+          path: ${{ runner.temp }}\e2e-update-out
+          retention-days: 14

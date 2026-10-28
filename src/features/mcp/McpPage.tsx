@@ -1,0 +1,479 @@
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
+import { Monitor, Plus, Server, Trash2 } from "lucide-react";
+import { Banner, Button, Checkbox, Dialog, Notice, Segmented, Select, Switch } from "../../components";
+import { formatError } from "../../errors";
+import { getServersApi, type ServerRecord } from "../servers/api";
+import { defaultServerEntry, getMcpApi, type EntrySettings, type McpActivity, type McpConnectInfo, type McpEntryState, type McpSettings, type McpStatus } from "./api";
+import { CommandLine, EntryPermissions, PortInput } from "./McpParts";
+import "./mcp.css";
+
+type Tab = "entries" | "activity";
+/** 选中的入口：本机（windows）或服务器 ID */
+type EntryId = string;
+
+/**
+ * 顶部导航里的“MCP”板块：让 Claude Code 等 AI 助手通过 Pierlink 操作这台电脑和服务器。
+ * 两个标签：入口（左边入口列表，右边选中入口的接入命令、审批方式、权限、端口和令牌）、操作记录（全部 AI 操作）。
+ * 改动立即保存，按顺序一个接一个保存。
+ */
+export function McpPage() {
+  const { t } = useTranslation();
+  const [settings, setSettings] = useState<McpSettings | null>(null);
+  const [status, setStatus] = useState<McpStatus | null>(null);
+  const [info, setInfo] = useState<McpConnectInfo | null>(null);
+  const [servers, setServers] = useState<ServerRecord[]>([]);
+  const [activity, setActivity] = useState<McpActivity[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [tab, setTab] = useState<Tab>("entries");
+  const [selected, setSelected] = useState<EntryId>("windows");
+  const [adding, setAdding] = useState<string[] | null>(null);
+  const [stopping, setStopping] = useState(false);
+  const saving = useRef(Promise.resolve());
+
+  useEffect(() => {
+    let alive = true;
+    const offs: (() => void)[] = [];
+    const keep = (u: () => void) => { if (alive) offs.push(u); else u(); };
+    void getMcpApi().then(async (api) => {
+      try {
+        const [s, st, i, a] = await Promise.all([api.getSettings(), api.status(), api.connectInfo(), api.activity(200)]);
+        if (!alive) return;
+        setSettings(s); setStatus(st); setInfo(i); setActivity(a);
+      } catch (e) {
+        if (alive) setError(formatError(e));
+      }
+      void api.onEntries((entries) => setStatus((st) => (st ? { ...st, entries } : st))).then(keep);
+      void api.onSessions(() => void api.status().then((st) => { if (alive) setStatus(st); }, () => {})).then(keep);
+      void api.onActivity((a) => setActivity((list) => [a, ...list].slice(0, 500))).then(keep);
+    });
+    void getServersApi().then((api) => api.list()).then((list) => { if (alive) setServers(list); }, () => {});
+    return () => { alive = false; offs.forEach((u) => u()); };
+  }, []);
+
+  /** 保存（按顺序，后一次等前一次）；失败时恢复成后端的设置并显示原因 */
+  const save = (next: McpSettings) => {
+    setSettings(next);
+    setError(null);
+    saving.current = saving.current.then(async () => {
+      const api = await getMcpApi();
+      try {
+        setSettings(await api.setSettings(next));
+        setInfo(await api.connectInfo());
+      } catch (e) {
+        setError(formatError(e));
+        setSettings(await api.getSettings());
+      }
+    });
+  };
+
+  const serverName = (id: string) => (id === "windows" ? t("mcp.entryWindows") : servers.find((s) => s.id === id)?.name ?? id);
+  const sessions = status?.sessions ?? [];
+  const sessionsOf = (id: EntryId) => sessions.filter((s) => s.entry === id);
+  const entryState = (id: string): McpEntryState | undefined => status?.entries.find((x) => x.serverId === id);
+
+  const stopAll = async () => {
+    setStopping(true);
+    try { await (await getMcpApi()).stopAll(); } catch (e) { setError(formatError(e)); } finally { setStopping(false); }
+  };
+
+  if (!settings) {
+    return <section className="pl-panel mcp-page__empty">{error ? <Banner tone="danger" title={error} /> : null}</section>;
+  }
+
+  return (
+    <div className="mcp-page">
+      <header className="pl-panel mcp-page__head">
+        <div className="mcp-page__title">
+          <h1>{t("nav.mcp")}</h1>
+          <Switch label={t("mcp.enable")} checked={settings.enabled} onChange={(v) => save({ ...settings, enabled: v })} />
+        </div>
+        <Segmented<Tab> label={t("nav.mcp")} value={tab} onChange={setTab} options={[
+          { value: "entries", label: t("mcp.tabEntries") },
+          { value: "activity", label: t("mcp.tabActivity") },
+        ]} />
+        <span className="mcp-page__spacer" />
+        {/* 连着的 AI 数和“全部停止”占固定位置：数量变化、按钮出现消失都不挤动别的内容 */}
+        <span className="mcp-page__sessions">{t("mcp.connectedCount", { count: sessions.length })}</span>
+        <Button size="sm" variant="danger-ghost" disabled={stopping || sessions.length === 0} onClick={() => void stopAll()}>{t("mcp.stopAll")}</Button>
+      </header>
+
+      {/* 出错提示浮在底部提示区，不把列表和详情往下推；点“知道了”或下一次操作时消失 */}
+      {error && (
+        <Notice order={0}>
+          <div className="ws-load-error">
+            <Banner tone="danger" title={error} actions={<Button size="sm" variant="ghost" onClick={() => setError(null)}>{t("mcp.gotIt")}</Button>} />
+          </div>
+        </Notice>
+      )}
+
+      {!settings.enabled ? (
+        <section className="pl-panel mcp-page__off">
+          <p>{t("mcp.intro")}</p>
+          <p className="set-row__hint">{t("mcp.enableHint")}</p>
+          <Button variant="primary" onClick={() => save({ ...settings, enabled: true })}>{t("mcp.enable")}</Button>
+        </section>
+      ) : tab === "entries" ? (
+        <div className="mcp-page__body">
+          <nav className="pl-panel mcp-list" aria-label={t("mcp.tabEntries")}>
+            <EntryRow
+              icon={<Monitor size={15} />}
+              name={t("mcp.entryWindows")}
+              sub={t("mcp.entryWindowsSub")}
+              on={settings.windows.enabled}
+              state={settings.windows.enabled ? (status && !status.pipeRunning ? "error" : "running") : "stopped"}
+              sessions={sessionsOf("windows").length}
+              selected={selected === "windows"}
+              onSelect={() => setSelected("windows")}
+            />
+            <div className="mcp-list__label">{t("mcp.serverEntries")}</div>
+            {settings.servers.length === 0 && <p className="sync-muted mcp-list__empty">{t("mcp.noServerEntries")}</p>}
+            {settings.servers.map((s) => (
+              <EntryRow
+                key={s.serverId}
+                icon={<Server size={15} />}
+                name={serverName(s.serverId)}
+                sub={`127.0.0.1:${s.port}`}
+                on={s.entry.enabled}
+                state={s.entry.enabled ? entryState(s.serverId)?.state ?? "connecting" : "stopped"}
+                sessions={sessionsOf(s.serverId).length}
+                selected={selected === s.serverId}
+                onSelect={() => setSelected(s.serverId)}
+              />
+            ))}
+            <button type="button" className="sync-map__add mcp-list__add" onClick={() => setAdding([])}>
+              <Plus size={13} />{t("mcp.addEntries")}
+            </button>
+          </nav>
+          <EntryDetail
+            id={selected}
+            settings={settings}
+            servers={servers}
+            status={status}
+            info={info}
+            serverName={serverName}
+            sessions={sessionsOf(selected)}
+            onSave={save}
+            onRemoved={() => setSelected("windows")}
+          />
+        </div>
+      ) : (
+        <ActivityView activity={activity} settings={settings} serverName={serverName} onError={setError} />
+      )}
+
+      {adding && (
+        <AddEntriesDialog
+          servers={servers.filter((s) => !settings.servers.some((x) => x.serverId === s.id))}
+          picked={adding}
+          onPick={setAdding}
+          onCancel={() => setAdding(null)}
+          onAdd={() => {
+            save({ ...settings, servers: [...settings.servers, ...adding.map(defaultServerEntry)] });
+            if (adding.length) setSelected(adding[0]);
+            setAdding(null);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+/** 左边列表里的一个入口 */
+function EntryRow({ icon, name, sub, on, state, sessions, selected, onSelect }: {
+  icon: React.ReactNode; name: string; sub: string; on: boolean; state: string; sessions: number; selected: boolean; onSelect: () => void;
+}) {
+  const { t } = useTranslation();
+  return (
+    <button type="button" className="task-row mcp-row" aria-current={selected} onClick={onSelect}>
+      <span className="task-row__head">
+        <span className={`mcp-row__dot mcp-row__dot--${on ? state : "stopped"}`} aria-hidden="true" />
+        <span className="mcp-row__icon" aria-hidden="true">{icon}</span>
+        <span className="task-row__name pl-ellipsis">{name}</span>
+        <span className="task-row__spacer" />
+        {/* 连着的 AI：没有时也占位，数量出现不改变行宽 */}
+        <span className={`mcp-row__count${sessions ? "" : " mcp-row__count--none"}`}>{sessions ? t("mcp.aiCount", { count: sessions }) : "·"}</span>
+      </span>
+      <span className="task-row__detail mono">{on ? t(`mcp.entryState.${state}`, { defaultValue: state }) : t("mcp.entryOff")} · {sub}</span>
+    </button>
+  );
+}
+
+/** 右边：选中入口的详情 */
+function EntryDetail({ id, settings, servers, status, info, serverName, sessions, onSave, onRemoved }: {
+  id: EntryId;
+  settings: McpSettings;
+  servers: ServerRecord[];
+  status: McpStatus | null;
+  info: McpConnectInfo | null;
+  serverName: (id: string) => string;
+  sessions: McpStatus["sessions"];
+  onSave: (s: McpSettings) => void;
+  onRemoved: () => void;
+}) {
+  const { t } = useTranslation();
+  const windows = id === "windows";
+  const index = settings.servers.findIndex((s) => s.serverId === id);
+  const server = index >= 0 ? settings.servers[index] : null;
+  if (!windows && !server) return <section className="pl-panel sync-detail" />;
+  const entry: EntrySettings = windows ? settings.windows : server!.entry;
+  const setEntry = (next: EntrySettings) => onSave(windows
+    ? { ...settings, windows: next }
+    : { ...settings, servers: settings.servers.map((s, j) => (j === index ? { ...s, entry: next } : s)) });
+  const st = server ? status?.entries.find((x) => x.serverId === id) : undefined;
+  const commands = windows ? info?.windows.map((c) => c.text) ?? [] : info?.servers.find((x) => x.serverId === id)?.commands ?? [];
+  const [rotated, setRotated] = useState<{ ok: boolean; text: string } | null>(null);
+  useEffect(() => { setRotated(null); }, [id]);
+  const rotate = async () => {
+    setRotated(null);
+    try {
+      await (await getMcpApi()).rotateToken(id);
+      setRotated({ ok: true, text: t("mcp.rotated") });
+    } catch (e) {
+      setRotated({ ok: false, text: formatError(e) });
+    }
+  };
+
+  return (
+    <section className="pl-panel sync-detail mcp-detail">
+      <div className="sync-detail__head">
+        <h2>{serverName(id)}</h2>
+        <span className="sync-detail__spacer" />
+        <Switch label={windows ? t("mcp.windowsEntry") : t("mcp.serverEntryEnable")} checked={entry.enabled} onChange={(v) => setEntry({ ...entry, enabled: v })} />
+        {server && (
+          <Button size="sm" variant="danger-ghost" icon={<Trash2 size={13} />}
+            onClick={() => { onSave({ ...settings, servers: settings.servers.filter((_, j) => j !== index) }); onRemoved(); }}>{t("mcp.removeEntry")}</Button>
+        )}
+      </div>
+      <p className="set-row__hint">{windows ? t("mcp.windowsEntryHint") : t("mcp.serverEntriesHint")}</p>
+      {windows && status && !status.pipeRunning && <Banner tone="warn" title={t("mcp.pipeUnavailable")}>{status.pipeError}</Banner>}
+      {st?.error && <Banner tone="danger" title={formatError(st.error)} />}
+      {server && <Banner tone="warn" title={t("mcp.serverRiskShort")} />}
+
+      <div className="mcp-detail__grid">
+        <div className="mcp-detail__card">
+          <h3>{t("mcp.oneClick")}</h3>
+          <OneClickAdd serverId={windows ? null : id} serverName={serverName(id)} />
+          <h3>{windows ? t("mcp.connectCommands") : t("mcp.serverCommands")}</h3>
+          {commands.map((c) => <CommandLine key={c} text={c} />)}
+          {server && (
+            <div className="mcp-detail__row">
+              <PortInput label={t("mcp.port")} value={server.port} onCommit={(port) => onSave({ ...settings, servers: settings.servers.map((s, j) => (j === index ? { ...s, port } : s)) })} />
+              <Button size="sm" title={t("mcp.rotateTokenHint")} onClick={() => void rotate()}>{t("mcp.rotateToken")}</Button>
+            </div>
+          )}
+          {server && (
+            <span className={`mcp-oneclick__result pl-ellipsis${rotated ? (rotated.ok ? " mcp-oneclick__result--ok" : " mcp-oneclick__result--error") : ""}`} role="status" title={rotated?.text}>{rotated?.text ?? ""}</span>
+          )}
+          <h3>{t("mcp.sessionsOfEntry")}</h3>
+          {sessions.length === 0
+            ? <p className="sync-muted">{t("mcp.noSessions")}</p>
+            : <ul className="mcp-detail__sessions">{sessions.map((s) => <li key={s.id} className="pl-ellipsis">{s.client || t("mcp.unknownClient")}</li>)}</ul>}
+          {entry.remembered && (
+            <div className="mcp-remembered">{t("mcp.remembered")}<Button size="sm" variant="ghost" onClick={() => setEntry({ ...entry, remembered: false })}>{t("mcp.forget")}</Button></div>
+          )}
+        </div>
+        <div className="mcp-detail__card">
+          <h3>{t("mcp.sectionPermissions")}</h3>
+          <EntryPermissions entry={entry} servers={servers} exclude={server?.serverId} windowsWarning={!windows} onChange={setEntry} />
+        </div>
+      </div>
+    </section>
+  );
+}
+
+/** 客户端的显示名 */
+const CLIENT_NAMES = { claude: "Claude Code", codex: "Codex", cursor: "Cursor", gemini: "Gemini CLI" } as const;
+/** 本机能一键添加的；服务器上能一键添加的 */
+const LOCAL_CLIENTS = ["claude", "codex", "cursor"] as const;
+const SERVER_CLIENTS = ["claude", "codex", "gemini"] as const;
+
+/**
+ * 一键添加：本机入口加进 Claude Code / Codex / Cursor；服务器入口在那台服务器上加进 Claude Code / Codex / Gemini CLI。
+ * 结果写在按钮下面固定高度的一行里，不挤动下面的内容
+ */
+function OneClickAdd({ serverId, serverName }: { serverId: string | null; serverName: string }) {
+  const { t } = useTranslation();
+  const [busy, setBusy] = useState<string | null>(null);
+  const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null);
+  // 装了哪些客户端：本机直接查，服务器要连过去查；没装的按钮灰掉并说明。查不到（服务器连不上）时不限制
+  const [installed, setInstalled] = useState<Record<keyof typeof CLIENT_NAMES, boolean> | null>(null);
+  useEffect(() => {
+    let alive = true;
+    setInstalled(null);
+    void getMcpApi().then((api) => (serverId === null ? api.detectClients() : api.detectServerClients(serverId))).then(
+      (c) => { if (alive) setInstalled(c); },
+      () => { if (alive) setInstalled({ claude: true, codex: true, cursor: true, gemini: true }); },
+    );
+    return () => { alive = false; };
+  }, [serverId]);
+  const run = async (key: string, f: () => Promise<string>) => {
+    setBusy(key);
+    setResult(null);
+    try {
+      setResult({ ok: true, text: await f() });
+    } catch (e) {
+      setResult({ ok: false, text: formatError(e) });
+    } finally {
+      setBusy(null);
+    }
+  };
+  const local = (client: (typeof LOCAL_CLIENTS)[number]) => run(client, async () => {
+    const detail = await (await getMcpApi()).installLocal(client);
+    return client === "cursor" ? t("mcp.addedCursor", { path: detail }) : t("mcp.added", { client: CLIENT_NAMES[client] });
+  });
+  const remote = (id: string, client: (typeof SERVER_CLIENTS)[number]) => run(client, async () => {
+    await (await getMcpApi()).installServer(id, client);
+    return t("mcp.addedServer", { server: serverName, client: CLIENT_NAMES[client] });
+  });
+  return (
+    <div className="mcp-oneclick">
+      <div className="mcp-oneclick__buttons">
+        {serverId === null
+          ? LOCAL_CLIENTS.map((c) => {
+              const missing = installed !== null && !installed[c];
+              return (
+                <Button key={c} size="sm" disabled={busy !== null || installed === null || missing}
+                  title={missing ? t("mcp.clientMissing", { client: CLIENT_NAMES[c] }) : undefined} onClick={() => void local(c)}>
+                  {busy === c ? t("mcp.adding") : missing ? t("mcp.addToMissing", { client: CLIENT_NAMES[c] }) : t("mcp.addTo", { client: CLIENT_NAMES[c] })}
+                </Button>
+              );
+            })
+          : SERVER_CLIENTS.map((c) => {
+              const missing = installed !== null && !installed[c];
+              return (
+                <Button key={c} size="sm" disabled={busy !== null || installed === null || missing}
+                  title={missing ? (c === "claude" ? t("mcp.serverClientMissing", { client: CLIENT_NAMES[c], server: serverName }) : t("mcp.serverClientMissingOther", { client: CLIENT_NAMES[c], server: serverName })) : undefined} onClick={() => void remote(serverId, c)}>
+                  {busy === c ? t("mcp.adding") : missing ? t("mcp.addOnServerMissing", { client: CLIENT_NAMES[c] }) : t("mcp.addOnServerTo", { client: CLIENT_NAMES[c] })}
+                </Button>
+              );
+            })}
+      </div>
+      <span className={`mcp-oneclick__result pl-ellipsis${result ? (result.ok ? " mcp-oneclick__result--ok" : " mcp-oneclick__result--error") : ""}`} role="status" title={result?.text}>
+        {result?.text ?? ""}
+      </span>
+    </div>
+  );
+}
+
+/** 一次添加多台服务器的入口 */
+function AddEntriesDialog({ servers, picked, onPick, onCancel, onAdd }: {
+  servers: ServerRecord[]; picked: string[]; onPick: (ids: string[]) => void; onCancel: () => void; onAdd: () => void;
+}) {
+  const { t } = useTranslation();
+  const toggle = (id: string) => onPick(picked.includes(id) ? picked.filter((x) => x !== id) : [...picked, id]);
+  return (
+    <Dialog
+      title={t("mcp.addEntries")}
+      onDismiss={onCancel}
+      actions={<>
+        <Button onClick={onCancel}>{t("common.cancel")}</Button>
+        <Button variant="primary" disabled={picked.length === 0} onClick={onAdd}>{t("mcp.addEntriesCount", { count: picked.length })}</Button>
+      </>}
+    >
+      <p className="set-row__hint">{t("mcp.addEntriesHint")}</p>
+      {servers.length === 0
+        ? <p className="sync-muted">{t("mcp.noAddable")}</p>
+        : <div className="mcp-add">{servers.map((s) => <Checkbox key={s.id} label={s.host ? `${s.name}  ·  ${s.username ? `${s.username}@` : ""}${s.host}` : s.name} checked={picked.includes(s.id)} onChange={() => toggle(s.id)} />)}</div>}
+    </Dialog>
+  );
+}
+
+/** 操作记录表格的列：键和默认宽度（像素）；“内容”列占剩下的宽度 */
+const COLUMNS = [
+  { key: "time", width: 130 }, { key: "client", width: 150 }, { key: "entry", width: 130 }, { key: "tool", width: 120 },
+  { key: "target", width: 110 }, { key: "summary", width: 0 }, { key: "result", width: 170 },
+] as const;
+const WIDTHS_KEY = "pierlink.mcp.activityColumns";
+
+/** 读记住的列宽；读不到用默认值 */
+function loadWidths(): Record<string, number> {
+  try {
+    const saved = JSON.parse(window.localStorage.getItem(WIDTHS_KEY) ?? "{}") as Record<string, number>;
+    return Object.fromEntries(COLUMNS.map((c) => [c.key, typeof saved[c.key] === "number" ? saved[c.key] : c.width]));
+  } catch {
+    return Object.fromEntries(COLUMNS.map((c) => [c.key, c.width]));
+  }
+}
+
+/** “操作记录”标签：全部 AI 操作，可按入口筛选 */
+function ActivityView({ activity, settings, serverName, onError }: {
+  activity: McpActivity[]; settings: McpSettings; serverName: (id: string) => string; onError: (e: string) => void;
+}) {
+  const { t } = useTranslation();
+  const [filter, setFilter] = useState("");
+  const [widths, setWidths] = useState<Record<string, number>>(loadWidths);
+  /** 拖动表头右边的竖条调列宽；松手时记住 */
+  const startResize = (key: string, e: React.PointerEvent) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const th = (e.currentTarget as HTMLElement).parentElement;
+    const start = th?.getBoundingClientRect().width ?? widths[key];
+    let latest = widths;
+    const move = (ev: PointerEvent) => {
+      latest = { ...latest, [key]: Math.max(60, Math.round(start + ev.clientX - startX)) };
+      setWidths(latest);
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      try { window.localStorage.setItem(WIDTHS_KEY, JSON.stringify(latest)); } catch { /* 记不住也不影响使用 */ }
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  };
+  const rows = useMemo(() => activity.filter((a) => !filter || a.entry === filter), [activity, filter]);
+  // 今天的只显示时间，更早的带上月日（整列宽度固定，不会被截断）
+  const time = (ms: number) => {
+    const d = new Date(ms);
+    const clock = d.toLocaleTimeString([], { hour12: false });
+    return d.toDateString() === new Date().toDateString() ? clock : `${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")} ${clock}`;
+  };
+  const outcome = (a: McpActivity) => (a.outcome === "ok" ? t("mcp.outcome.ok") : a.outcome === "denied" || a.outcome === "cancelled" ? t(`mcp.outcome.${a.outcome}`) : t("mcp.outcome.failed"));
+  return (
+    <section className="pl-panel mcp-activity">
+      <div className="mcp-activity__bar">
+        <Select label={t("mcp.filterEntry")} value={filter} onChange={setFilter} options={[
+          { value: "", label: t("mcp.filterAll") },
+          { value: "windows", label: t("mcp.entryWindows") },
+          ...settings.servers.map((s) => ({ value: s.serverId, label: serverName(s.serverId) })),
+        ]} />
+        <span className="mcp-page__spacer" />
+        <span className="sync-muted">{t("mcp.auditHint")}</span>
+        <Button size="sm" onClick={() => void getMcpApi().then((api) => api.openLogFolder()).catch((e: unknown) => onError(formatError(e)))}>{t("mcp.openLogFolder")}</Button>
+      </div>
+      {rows.length === 0 ? <p className="sync-muted mcp-activity__empty">{t("mcp.noActivity")}</p> : (
+        <div className="mcp-activity__scroll">
+          <table className="mcp-table">
+            <colgroup>{COLUMNS.map((c) => <col key={c.key} style={widths[c.key] ? { width: widths[c.key] } : undefined} />)}</colgroup>
+            <thead>
+              <tr>
+                {COLUMNS.map((c) => (
+                  <th key={c.key}>
+                    {t(`mcp.col.${c.key}`)}
+                    <span className="mcp-table__resize" role="separator" aria-orientation="vertical" title={t("mcp.resizeColumn")} onPointerDown={(e) => startResize(c.key, e)} />
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((a, i) => (
+                <tr key={`${a.timeMs}-${i}`} className={a.outcome === "ok" ? "" : "mcp-table__bad"}>
+                  <td className="mono" title={new Date(a.timeMs).toLocaleString()}>{time(a.timeMs)}</td>
+                  <td title={a.client || t("mcp.unknownClient")}>{a.client || t("mcp.unknownClient")}</td>
+                  <td title={serverName(a.entry)}>{serverName(a.entry)}</td>
+                  <td className="mono" title={a.tool}>{a.tool}</td>
+                  <td title={a.target ? serverName(a.target) : undefined}>{a.target ? serverName(a.target) : "—"}</td>
+                  <td className="mono mcp-table__summary" title={a.summary}>{a.summary}</td>
+                  <td title={[outcome(a), a.approval === "user" || a.approval === "session" || a.approval === "auto" ? t(`mcp.approvedByLong.${a.approval}`) : ""].filter(Boolean).join(" · ")}>
+                    <span className={`mcp-table__result mcp-table__result--${a.outcome === "ok" ? "ok" : "bad"}`}>{outcome(a)}</span>
+                    {(a.approval === "user" || a.approval === "session" || a.approval === "auto") && <span className="mcp-table__approval">{t(`mcp.approvedByLong.${a.approval}`)}</span>}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </section>
+  );
+}

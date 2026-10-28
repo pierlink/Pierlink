@@ -1,0 +1,7 @@
+/* 全局鼠标提示（代替浏览器自带的 title 提示） */
+.pl-tip {
+  position: fixed; z-index: 3000; max-width: 360px; padding: 5px 9px; border-radius: var(--r-sm);
+  background: var(--menu-bg); color: var(--text); border: 1px solid var(--border-strong); box-shadow: var(--shadow-pop);
+  font-size: var(--fs-xs); line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; pointer-events: none;
+}
+.pl-tip--above { transform: translateY(-100%); }

@@ -1,0 +1,63 @@
+/* 手机页面：单列、底部标签栏；按钮至少 44px 高方便手指点；字号不小于 15px（iOS 输入框小于 16px 会自动放大） */
+html, body, #root { height: 100%; }
+body { margin: 0; background: var(--bg-solid); color: var(--text); font-family: var(--font-ui); font-size: 15px; -webkit-text-size-adjust: 100%; }
+.m-center { display: grid; place-items: center; height: 100%; color: var(--text-muted); }
+.m-app { display: flex; flex-direction: column; height: 100%; }
+.m-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: calc(env(safe-area-inset-top) + 10px) 16px 10px; border-bottom: 1px solid var(--border); background: var(--panel-solid); }
+.m-head__title { font-weight: 700; }
+.m-head__state { font-size: 13px; color: var(--ok); }
+.m-head__state--off { color: var(--danger); }
+.m-main { flex: 1; min-height: 0; overflow: auto; -webkit-overflow-scrolling: touch; }
+.m-tabs { display: grid; grid-template-columns: repeat(4, 1fr); border-top: 1px solid var(--border); background: var(--panel-solid); padding-bottom: env(safe-area-inset-bottom); }
+.m-tabs__item { position: relative; height: 52px; border: 0; background: none; color: var(--text-muted); font: inherit; font-size: 14px; }
+.m-tabs__item[aria-current="page"] { color: var(--accent); font-weight: 600; }
+.m-badge { position: absolute; top: 6px; margin-left: 4px; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; background: var(--danger); color: var(--on-danger); font-size: 12px; line-height: 18px; }
+.m-page { display: flex; flex-direction: column; gap: 12px; padding: 12px 12px 24px; }
+.m-card { display: flex; flex-direction: column; gap: 8px; padding: 12px 14px; border-radius: var(--r-lg); background: var(--card); border: 1px solid var(--border); }
+.m-card--danger { border-color: var(--danger); }
+.m-card h2 { margin: 0; font-size: 15px; }
+.m-card p { margin: 0; }
+.m-row { display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 0 2px; border-bottom: 1px solid var(--border); }
+.m-row:last-child { border-bottom: 0; }
+.m-row--button { width: 100%; padding: 0 14px; border: 1px solid var(--border); border-radius: var(--r-lg); background: var(--card); color: var(--text); font: inherit; text-align: left; }
+.m-row__main { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.m-row__side { flex: none; font-size: 13px; color: var(--text-muted); }
+.m-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--text-dim); }
+.m-dot--on { background: var(--ok); }
+.m-muted { margin: 0; color: var(--text-muted); font-size: 14px; }
+.m-error { margin: 0; color: var(--danger); font-size: 14px; }
+.m-warn { margin: 0; padding: 0 12px; color: var(--warn); font-size: 14px; }
+.m-status { min-height: 20px; margin: 0; padding: 0 12px; font-size: 14px; color: var(--danger); }
+.m-code { margin: 0; padding: 8px 10px; border-radius: var(--r-md); background: var(--chip); font-family: var(--font-mono); font-size: 13px; white-space: pre-wrap; word-break: break-all; }
+.m-actions { display: flex; gap: 10px; }
+.m-actions .m-btn { flex: 1; }
+.m-btn { min-height: 44px; padding: 0 16px; border: 1px solid var(--border-strong); border-radius: var(--r-md); background: var(--field-solid); color: var(--text); font: inherit; font-weight: 600; }
+.m-btn:disabled { opacity: 0.5; }
+.m-btn--small { min-height: 36px; padding: 0 12px; font-weight: 500; }
+.m-btn--primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.m-btn--danger { background: var(--danger); border-color: var(--danger); color: var(--on-danger); }
+.m-act { display: grid; grid-template-columns: auto 1fr auto; gap: 2px 10px; padding: 10px 14px; border-bottom: 1px solid var(--border); font-size: 14px; }
+.m-act__time { color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.m-act__main { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.m-act__out { color: var(--ok); }
+.m-act__out--bad { color: var(--danger); }
+.m-act__sum { grid-column: 1 / -1; color: var(--text-muted); font-family: var(--font-mono); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 配对 */
+.m-pair { display: flex; flex-direction: column; gap: 14px; max-width: 420px; margin: 0 auto; padding: calc(env(safe-area-inset-top) + 32px) 20px 24px; }
+.m-pair h1 { margin: 0; font-size: 24px; }
+.m-field { display: flex; flex-direction: column; gap: 6px; font-size: 14px; color: var(--text-muted); }
+.m-field input, .m-term__line input { height: 44px; padding: 0 12px; border: 1px solid var(--border-strong); border-radius: var(--r-md); background: var(--field-solid); color: var(--text); font-size: 16px; }
+.m-field .m-code-input { font-family: var(--font-mono); letter-spacing: 1px; }
+/* 终端 */
+.m-term { display: flex; flex-direction: column; height: 100%; }
+.m-term__bar { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-bottom: 1px solid var(--border); }
+.m-term__title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.m-term__screen { flex: 1; min-height: 0; margin: 0; padding: 8px 10px; overflow: auto; background: var(--surface-term); font-family: var(--font-mono); font-size: 12px; line-height: 1.35; white-space: pre; }
+.m-term__input { display: flex; flex-direction: column; gap: 8px; padding: 8px 12px 4px; border-top: 1px solid var(--border); }
+.m-keys { display: flex; gap: 6px; overflow-x: auto; }
+.m-key { flex: none; min-width: 48px; height: 38px; border: 1px solid var(--border-strong); border-radius: var(--r-md); background: var(--chip); color: var(--text); font-family: var(--font-mono); font-size: 14px; }
+.m-term__line { display: flex; gap: 8px; }
+.m-term__line input { flex: 1; min-width: 0; font-family: var(--font-mono); }
+.m-sheet { display: flex; flex-direction: column; gap: 8px; margin: 8px 12px; padding: 12px; border: 1px solid var(--danger); border-radius: var(--r-lg); background: var(--card); }
+.m-sheet p { margin: 0; }
+.m-list { margin: 0; padding-left: 20px; font-size: 14px; overflow-wrap: anywhere; }
