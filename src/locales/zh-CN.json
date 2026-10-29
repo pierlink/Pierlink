@@ -425,7 +425,11 @@
       "process_failed": "命令没能运行：{{reason}}",
       "shell_unavailable": "这台电脑上没有这个 shell",
       "file_busy": "文件被别的程序占用，暂时写不进去：{{path}}",
-      "network_folder": "不支持网络盘上的文件夹：{{path}}"
+      "network_folder": "不支持网络盘上的文件夹：{{path}}",
+      "cancelled": "操作已取消",
+      "file_too_large": "文件太大（上限 {{max_bytes}} 字节）",
+      "not_found": "文件或文件夹不存在：{{path}}",
+      "path_outside": "不在允许的文件夹里：{{path}}"
     },
     "tunnel": {
       "port_unavailable": "本机没有可用的端口",
@@ -554,7 +558,8 @@
       "listen_failed": "没能在这个地址和端口上开启（端口被占用？）：{{reason}}",
       "stopped": "手机入口没有开着",
       "assets": "安装包里缺少手机页面，请重新安装 Pierlink",
-      "task_failed": "操作意外中断：{{reason}}"
+      "task_failed": "操作意外中断：{{reason}}",
+      "invalid_request": "名字要是 1 到 80 个字符，不能有控制字符"
     },
     "vnc": {
       "probe_timeout": "桌面没有回应",
@@ -2073,6 +2078,6 @@
     "popOut": "在独立窗口打开",
     "poppedTitle": "已在独立窗口打开",
     "showHere": "在这里显示",
-    "typeTooLong": "文字太长，没有逐字输入；已放进远程剪贴板，请在远程程序里粘贴"
+    "typeTooLong": "文字太长，已放进远程剪贴板，请在远程程序里粘贴"
   }
 }

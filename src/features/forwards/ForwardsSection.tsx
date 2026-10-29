@@ -6,7 +6,7 @@ import { formatError, isAppError } from "../../errors";
 import { describeForward, getForwardsApi, type ForwardInput, type ForwardKind, type ForwardRecord, type ForwardStatus } from "./api";
 import "./forwards.css";
 import { passwordBus } from "../passwords/bus";
-import { openInBrowser } from "../shell/clipboard";
+import { openInBrowser, writeClipboardText } from "../shell/clipboard";
 import { loginServer, needsLogin } from "../servers/login";
 
 /** 状态文字的色调 */
@@ -120,7 +120,7 @@ export function ForwardsSection({ serverId }: { serverId: string }) {
           onContextMenu={(e) => menu.open(e, [
             { id: "toggle", label: f.enabled ? t("forwards.disable") : t("forwards.enable"), onSelect: () => toggle(f, !f.enabled) },
             ...(f.kind === "local" ? [{ id: "browser", label: t("forwards.openBrowser"), disabled: f.status.state !== "running", onSelect: () => openBrowser(f) }] : []),
-            { id: "copy", label: t("forwards.copyAddress"), onSelect: () => void navigator.clipboard.writeText(address(f)) },
+            { id: "copy", label: t("forwards.copyAddress"), onSelect: () => void writeClipboardText(address(f)) },
             { kind: "separator" as const, id: "s1" },
             { id: "edit", label: t("forwards.edit"), onSelect: () => setEditing(f) },
             { kind: "separator" as const, id: "s2" },

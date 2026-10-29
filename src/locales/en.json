@@ -426,7 +426,11 @@
       "process_failed": "The command couldn't run: {{reason}}",
       "shell_unavailable": "This shell isn't available on this computer",
       "file_busy": "The file is in use by another program: {{path}}",
-      "network_folder": "Folders on network drives are not supported: {{path}}"
+      "network_folder": "Folders on network drives are not supported: {{path}}",
+      "cancelled": "The operation was cancelled",
+      "file_too_large": "The file is too large (limit {{max_bytes}} bytes)",
+      "not_found": "The file or folder doesn't exist: {{path}}",
+      "path_outside": "Not inside an allowed folder: {{path}}"
     },
     "tunnel": {
       "port_unavailable": "No local port is available",
@@ -555,7 +559,8 @@
       "listen_failed": "Couldn't open on that address and port (port in use?): {{reason}}",
       "stopped": "Phone access isn't on",
       "assets": "The phone page is missing from the installation; reinstall Pierlink",
-      "task_failed": "The operation stopped unexpectedly: {{reason}}"
+      "task_failed": "The operation stopped unexpectedly: {{reason}}",
+      "invalid_request": "The name must be 1 to 80 characters without control characters"
     },
     "vnc": {
       "probe_timeout": "The desktop did not respond",

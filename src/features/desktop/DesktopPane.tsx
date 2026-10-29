@@ -354,28 +354,39 @@ export function DesktopPane({ serverId, visible, title, controls, windowTitle, s
     rfb.clipboardPasteFrom(text);
   }, []);
 
-  // 和 Windows 一样用 Ctrl+C、Ctrl+V 复制粘贴：
-  // 在远程画面里按 Ctrl+V（或 Ctrl+Shift+V）时，先把 Windows 剪贴板发过去，再补发这个 V；
-  // 按住的 Ctrl、Shift 已经由 noVNC 发给远程了。点进远程画面、切回这个窗口时也同步一次
+  // 和 Windows 一样用 Ctrl+C、Ctrl+V 复制粘贴：在远程画面里按 Ctrl+V（或 Ctrl+Shift+V）时，
+  // 先把 Windows 剪贴板发过去，再补发这个 V（按住的 Ctrl、Shift 已经由 noVNC 发给远程了）。
+  // 只在按 Ctrl+V 时发：点进画面时不发，免得刚复制的口令之类一点画面就到了服务器上
   useEffect(() => {
     const el = screenRef.current;
     if (!el) return;
+    /** Ctrl 现在是不是还按着：读剪贴板要等一会儿，补发 V 时 Ctrl 可能已经松开 */
+    let ctrlHeld = false;
+    const XK_CONTROL_L = 0xffe3;
     const onKey = (ev: KeyboardEvent) => {
-      if (ev.code !== "KeyV" || !ev.ctrlKey || ev.altKey || ev.metaKey || !rfbRef.current) return;
+      if (ev.key === "Control") ctrlHeld = ev.type === "keydown";
+      if (ev.type !== "keydown" || ev.code !== "KeyV" || !ev.ctrlKey || ev.altKey || ev.metaKey || !rfbRef.current) return;
       ev.preventDefault();
       ev.stopPropagation();
-      const keysym = ev.shiftKey ? 0x56 : 0x76;
-      void pushClipboard().finally(() => rfbRef.current?.sendKey(keysym, "KeyV"));
+      const shift = ev.shiftKey;
+      void pushClipboard().finally(() => {
+        const rfb = rfbRef.current;
+        if (!rfb) return;
+        if (ctrlHeld) { rfb.sendKey(shift ? 0x56 : 0x76, "KeyV"); return; }
+        // 已经松开了 Ctrl：自己补一次 Ctrl+V，否则远程收到的只是一个 v
+        rfb.sendKey(XK_CONTROL_L, "ControlLeft", true);
+        rfb.sendKey(0x76, "KeyV");
+        rfb.sendKey(XK_CONTROL_L, "ControlLeft", false);
+      });
     };
-    const onFocus = () => { void pushClipboard(); };
-    const onWindowFocus = () => { if (el.contains(document.activeElement)) void pushClipboard(); };
+    const onBlur = () => { ctrlHeld = false; };
     el.addEventListener("keydown", onKey, true);
-    el.addEventListener("focusin", onFocus);
-    window.addEventListener("focus", onWindowFocus);
+    el.addEventListener("keyup", onKey, true);
+    window.addEventListener("blur", onBlur);
     return () => {
       el.removeEventListener("keydown", onKey, true);
-      el.removeEventListener("focusin", onFocus);
-      window.removeEventListener("focus", onWindowFocus);
+      el.removeEventListener("keyup", onKey, true);
+      window.removeEventListener("blur", onBlur);
     };
   }, [pushClipboard]);
 
@@ -630,7 +641,7 @@ function CreateFailed({ state, onRetry, onBack }: {
     return true;
   });
   const acquireFailed = state.failures.length > 0;
-  const copy = (text: string) => { void navigator.clipboard.writeText(text).then(() => setCopied(text)); };
+  const copy = (text: string) => { void writeClipboardText(text).then(() => setCopied(text)); };
   const pick = async () => {
     const path = await (await getDesktopApi()).pickPackage().catch(() => null);
     if (path) onRetry({ ...request, manualPackage: path });
@@ -712,7 +723,7 @@ function SessionList({ detection, onConnect, onCreate }: {
           <>
             <pre className="mono desk__cmd">{cmd}</pre>
             <div className="desk__actions">
-              <Button onClick={() => { void navigator.clipboard.writeText(cmd).then(() => setCopied(true)); }}>{copied ? t("desktop.copied") : t("desktop.copy")}</Button>
+              <Button onClick={() => { void writeClipboardText(cmd).then(() => setCopied(true)); }}>{copied ? t("desktop.copied") : t("desktop.copy")}</Button>
             </div>
           </>
         )}

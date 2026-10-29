@@ -6,6 +6,7 @@ import { formatError } from "../../errors";
 import { getSnippetsApi, type SnippetRecord } from "./api";
 import { parseVariables, prepareForSend, render } from "./variables";
 import "./snippets.css";
+import { writeClipboardText } from "../shell/clipboard";
 
 /** 发送一条片段：text 为替换变量后的命令；execute 为真时再按一次回车 */
 export type SendSnippet = (text: string, execute: boolean) => void;
@@ -51,7 +52,7 @@ export function SnippetsPage({ group, groups, targets, onSend }: { group: string
     if (parseVariables(s.body).length > 0 || targets > 1) { setFilling({ s, execute }); return; }
     onSend(prepareForSend(s.body), execute);
   };
-  const copy = (text: string) => void navigator.clipboard.writeText(text).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500); });
+  const copy = (text: string) => void writeClipboardText(text).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500); });
 
   return (
     <div className="snip">

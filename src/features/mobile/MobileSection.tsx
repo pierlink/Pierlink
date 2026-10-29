@@ -180,7 +180,11 @@ export function MobileSection() {
           <span className="set-row__hint">{t("mobileSettings.enableHint")}</span>
         </span>
         <span className="set-row__control">
-          <Switch label={t("mobileSettings.enable")} checked={status.enabled} onChange={(v) => void configure(v, status.bind ?? status.addresses.find((a) => a.kind === "tailscale")?.ip ?? null)} />
+          <Switch label={t("mobileSettings.enable")} checked={status.enabled} onChange={(v) => {
+            // 保存过的地址已经不在列表里（如以前选的 IPv6 地址、换了网络）：打开时改用 Tailscale 或第一个可用地址
+            const listed = status.bind && status.addresses.some((a) => a.ip === status.bind) ? status.bind : null;
+            void configure(v, v ? listed ?? status.addresses.find((a) => a.kind === "tailscale")?.ip ?? status.addresses[0]?.ip ?? null : status.bind);
+          }} />
         </span>
       </div>
       <div className="set-row">

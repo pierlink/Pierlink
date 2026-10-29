@@ -31,6 +31,33 @@ async fn 配对记录浏览器并且只使用实际来源地址() {
 }
 
 #[tokio::test]
+async fn 空白或清理后为空的浏览器标识不保存空字符串() {
+    let entry = MemoryEntry::new();
+    for agent in ["", " \t ", "\u{85}"] {
+        let invite = entry.server.create_invite().unwrap();
+        let response = entry
+            .connect()
+            .request(
+                "POST",
+                "/api/pair",
+                &format!("X-Pierlink: 1\r\nUser-Agent: {agent}\r\n"),
+                &json!({"code":invite.code,"device_name":"手机"}).to_string(),
+            )
+            .await;
+        assert_eq!(response.status, 200);
+        let id = response.json()["id"].as_str().unwrap().to_owned();
+        let device = entry
+            .server
+            .list_devices()
+            .unwrap()
+            .into_iter()
+            .find(|d| d.id == id)
+            .unwrap();
+        assert_eq!(device.user_agent, None);
+    }
+}
+
+#[tokio::test]
 async fn 活跃信息同来源节流而换网络立即写入且失败认证不更新() {
     let entry = MemoryEntry::new();
     let (id, cookie) = entry.pair().await;

@@ -664,7 +664,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             String::from_utf8_lossy(&out.stdout).trim(),
-            r#"{"claude":false,"codex":true}"#
+            r#"{"claude":false,"codex":true,"gemini":false}"#
         );
     }
 

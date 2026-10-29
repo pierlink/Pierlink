@@ -114,15 +114,29 @@ await rec.step(p, "换成要密码的 :5：输密码后连上、画面是蓝色�
   return await status();
 });
 
-await rec.step(p, "全屏：整个页面全屏、桌面铺满窗口（鼠标指针和悬停提示不会被挡住）；再点一次退出", async () => {
+await rec.step(p, "全屏：和终端分屏时也盖住整个窗口（旁边的窗格、分隔条、侧栏都在下面）；再点一次退出", async () => {
   if (!vnc) return "跳过";
+  // 先在桌面旁边开一个本机终端
+  await u.click('.desk__bar .pane__btn--split');
+  const item = await u.waitFor(`(()=>{const i=[...document.querySelectorAll('[role=menuitem]')].findIndex(x=>/PowerShell|Command Prompt/.test(x.textContent)); return i>=0 ? String(i) : null;})()`, "分屏菜单里的本机终端", 5000);
+  await u.click("[role=menuitem]", Number(item));
+  await u.waitFor(`[...document.querySelectorAll('.pane-slot')].filter(s=>s.style.display!=='none').length === 2`, "桌面旁边多了一个终端", 15000);
+  await sleep(1500);
   await u.click('.desk__bar button[aria-label="Full screen"]');
   await u.waitFor(`document.fullscreenElement === document.documentElement && !!document.querySelector('.desk--full')`, "进入全屏", 8000);
-  const cover = await p.js(`(()=>{const r=document.querySelector('.desk--full').getBoundingClientRect(); return Math.abs(r.width-innerWidth)<2 && Math.abs(r.height-innerHeight)<2 && r.top===0 && r.left===0;})()`);
-  if (!cover) throw new Error("全屏后桌面没有铺满窗口");
+  // 窗口里各处点下去都应该是全屏的桌面
+  const missed = await p.js(`(()=>{const pts=[]; for (const s of [...document.querySelectorAll('.pane-slot')].filter(s=>s.style.display!=='none')) { const r=s.getBoundingClientRect(); pts.push(['窗格', r.x+r.width/2, r.y+r.height/2]); } pts.push(['左上', 20, 20], ['右下', innerWidth-20, innerHeight-20], ['左边', 60, innerHeight/2]); return pts.filter(([,x,y])=>!document.elementFromPoint(x,y)?.closest('.desk--full')).map(([n])=>n);})()`);
+  if (missed.length) throw new Error(`全屏后这些地方没被桌面盖住：${missed.join("、")}`);
   await u.click('.desk__bar button[aria-label="Full screen"]');
   await u.waitFor(`!document.fullscreenElement && !document.querySelector('.desk--full')`, "退出全屏", 8000);
-  return "全屏铺满，能退出";
+  // 关掉旁边的终端
+  const close = await p.js(`[...document.querySelectorAll('.pane-slot')].filter(s=>s.style.display!=='none').findIndex(s=>!s.querySelector('.desk'))`);
+  await p.js(`[...document.querySelectorAll('.pane-slot')].filter(s=>s.style.display!=='none')[${close}]?.querySelector('.pane__btn--close')?.click()`);
+  // 终端还在启动时会问一次“仍在运行”，直接确认关闭
+  await sleep(800);
+  await p.js(`document.querySelector('.pl-dialog .pl-btn--danger, .pl-dialog .pl-btn--primary')?.click()`);
+  await u.waitFor(`[...document.querySelectorAll('.pane-slot')].filter(s=>s.style.display!=='none').length === 1`, "关掉旁边的终端", 10000);
+  return "分屏时全屏也盖住整个窗口，能退出";
 });
 
 await rec.step(p, "弹到独立窗口：主窗口的桌面窗格关掉、侧栏出现标识；再打开桌面不新开窗格；关掉独立窗口后标识消失", async () => {

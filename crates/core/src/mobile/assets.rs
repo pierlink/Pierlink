@@ -110,23 +110,26 @@ fn relative_path(path: &str) -> Result<PathBuf, AppError> {
 }
 
 fn read(root: &Path, relative: &Path, accepts_gzip: bool) -> Result<Asset, AppError> {
+    let root =
+        std::fs::canonicalize(root).map_err(|_| error("mobile.assets", "无法检查网页资源目录"))?;
     let mut requested = if relative.as_os_str().is_empty() {
         root.join("index.html")
     } else {
         root.join(relative)
     };
-    let path = match resolve(root, &requested)? {
+    let path = match resolve(&root, &requested)? {
         Some(path) => path,
         None => {
             requested = root.join("index.html");
-            resolve(root, &requested)?.ok_or_else(|| error("mobile.not_found", "网页首页不存在"))?
+            resolve(&root, &requested)?
+                .ok_or_else(|| error("mobile.not_found", "网页首页不存在"))?
         }
     };
     // 原文件须存在且安全，才能选择它旁边的压缩文件；回退首页时也使用首页的压缩文件。
     check_file(&path)?;
     let mut gzip_name = requested.as_os_str().to_os_string();
     gzip_name.push(".gz");
-    let gzip_path = resolve(root, Path::new(&gzip_name))?;
+    let gzip_path = resolve(&root, Path::new(&gzip_name))?;
     if let Some(gzip) = &gzip_path {
         check_file(gzip)?;
     }
@@ -242,6 +245,34 @@ mod tests {
         let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
         encoder.write_all(bytes).unwrap();
         encoder.finish().unwrap()
+    }
+
+    #[tokio::test]
+    async fn 未规范化的资源根可读取原文件压缩文件和回退首页() {
+        let root = crate::test_support::tempdir();
+        let assets = root.path().join("assets");
+        std::fs::create_dir(&assets).unwrap();
+        let plain = b"console.log(1)";
+        let compressed = gzip(plain);
+        for name in ["app.js", "index.html"] {
+            std::fs::write(assets.join(name), plain).unwrap();
+            std::fs::write(assets.join(format!("{name}.gz")), &compressed).unwrap();
+        }
+        let unnormalized = assets.join("..").join("assets");
+        for path in ["/app.js", "/route/page"] {
+            for accept in [None, Some("gzip")] {
+                let response = serve(unnormalized.clone(), path, accept).await.unwrap();
+                let body = response.into_body().collect().await.unwrap().to_bytes();
+                assert_eq!(
+                    body.as_ref(),
+                    if accept.is_some() {
+                        &compressed[..]
+                    } else {
+                        plain
+                    }
+                );
+            }
+        }
     }
 
     #[tokio::test]

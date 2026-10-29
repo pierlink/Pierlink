@@ -58,9 +58,10 @@ impl Sandbox {
             )
         }
     }
-    /// 规范化绝对 path 并检查授权前缀；返回可读路径或 mcp.path_* / mcp.not_found。
+    /// 规范化绝对 path 并检查授权前缀；返回可读路径或带原因的路径、网络盘、占用、缺失错误。
     pub fn resolve_read(&self, path: &str) -> Result<PathBuf, AppError> {
         let path = Path::new(path);
+        reject_network_folder(path)?;
         valid_path(path)?;
         let resolved = canonical(path)?;
         self.contains(&resolved)?;
@@ -69,6 +70,7 @@ impl Sandbox {
     /// 规范化 path 的父目录再拼接文件名；已有目标另查链接及类型，返回可替换的普通文件路径。
     pub fn resolve_write(&self, path: &str) -> Result<PathBuf, AppError> {
         let path = Path::new(path);
+        reject_network_folder(path)?;
         valid_path(path)?;
         let name = path
             .file_name()
@@ -157,6 +159,10 @@ fn path_error(code: &str, path: &Path, reason: &str) -> AppError {
         .with("reason", reason)
 }
 fn io_error(error: std::io::Error, path: &Path) -> AppError {
+    #[cfg(windows)]
+    if let Some(code @ (32 | 33)) = error.raw_os_error() {
+        return path_error("mcp.file_busy", path, "文件被别的程序占用").with("os_code", code);
+    }
     let (code, reason) = if error.kind() == std::io::ErrorKind::NotFound {
         ("mcp.not_found", "文件或父目录不存在")
     } else {
@@ -207,7 +213,6 @@ fn path_within(path: &Path, folder: &Path) -> bool {
     }
 }
 fn valid_path(path: &Path) -> Result<(), AppError> {
-    reject_network_folder(path)?;
     let invalid = || {
         path_error(
             "mcp.path_invalid",
@@ -320,7 +325,7 @@ pub(super) fn read_cancelled(
     if size <= HASH_LIMIT {
         let mut buffer = [0; 32768];
         loop {
-            let count = read_chunk(&mut file, &mut buffer, cancelled)?;
+            let count = read_chunk(&mut file, &mut buffer, &path, cancelled)?;
             digest.update(&buffer[..count]);
             if count == 0 || digest.skipped() {
                 break;
@@ -336,6 +341,7 @@ pub(super) fn read_cancelled(
         let count = read_chunk(
             &mut file,
             &mut buffer[..(limit - bytes.len()).min(32768)],
+            &path,
             cancelled,
         )?;
         if count == 0 {
@@ -373,14 +379,20 @@ pub(super) fn read_cancelled(
 pub(super) fn read_chunk(
     reader: &mut impl Read,
     buffer: &mut [u8],
+    path: &Path,
     cancelled: &AtomicBool,
 ) -> Result<usize, AppError> {
-    check_cancel(cancelled)?;
-    let count = reader
-        .read(buffer)
-        .map_err(|_| AppError::new("mcp.path_invalid").with("reason", "无法读取文件"))?;
-    check_cancel(cancelled)?;
-    Ok(count)
+    loop {
+        check_cancel(cancelled)?;
+        match reader.read(buffer) {
+            Ok(count) => {
+                check_cancel(cancelled)?;
+                return Ok(count);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(io_error(error, path)),
+        }
+    }
 }
 pub(super) fn check_metadata(file: &fs::File, before: &fs::Metadata) -> Result<(), AppError> {
     let after = file
@@ -541,17 +553,28 @@ fn atomic_write(
 }
 fn persist_error(error: std::io::Error, target: &Path) -> AppError {
     let os_code = error.raw_os_error();
-    // Windows 的共享冲突和锁冲突才表示占用；权限、磁盘等错误不误报为占用。
+    // Windows 原子替换也会把缺少删除共享报成拒绝访问，探测后才能区分占用与权限不足。
     #[cfg(windows)]
-    if matches!(os_code, Some(32 | 33)) {
-        return path_error("mcp.file_busy", target, "文件被别的程序占用")
-            .with("os_code", os_code.unwrap_or_default());
+    if os_code == Some(5) && target_is_busy(target) {
+        return path_error("mcp.file_busy", target, "文件被别的程序占用").with("os_code", 5);
     }
     let mut result = io_error(error, target);
     if let Some(code) = os_code {
         result = result.with("os_code", code);
     }
     result
+}
+#[cfg(windows)]
+fn target_is_busy(target: &Path) -> bool {
+    use std::os::windows::fs::OpenOptionsExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        DELETE, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    };
+    fs::OpenOptions::new()
+        .access_mode(DELETE)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .open(target)
+        .is_err_and(|error| error.raw_os_error() == Some(32))
 }
 #[derive(Debug, Serialize)]
 pub(super) struct FileEdited {
@@ -692,6 +715,62 @@ pub fn is_dangerous_path(path: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct Reader<F>(F);
+    impl<F: FnMut(&mut [u8]) -> std::io::Result<usize>> Read for Reader<F> {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            (self.0)(buffer)
+        }
+    }
+
+    #[test]
+    fn 分块读取重试中断且失败带路径并响应取消() {
+        use std::io::{Error, ErrorKind};
+        use std::sync::atomic::Ordering;
+        let path = Path::new("文件.txt");
+        let cancelled = AtomicBool::new(false);
+        let mut buffer = [0; 2];
+        let mut attempts = 0;
+        let mut reader = Reader(|buffer: &mut [u8]| {
+            attempts += 1;
+            if attempts <= 2 {
+                return Err(ErrorKind::Interrupted.into());
+            }
+            buffer.copy_from_slice(b"ok");
+            Ok(2)
+        });
+        assert_eq!(
+            read_chunk(&mut reader, &mut buffer, path, &cancelled).unwrap(),
+            2
+        );
+        assert_eq!(buffer, *b"ok");
+        assert_eq!(attempts, 3);
+
+        let mut reader = Reader(|_: &mut [u8]| Err(Error::from(ErrorKind::PermissionDenied)));
+        let error = read_chunk(&mut reader, &mut buffer, path, &cancelled).unwrap_err();
+        assert_eq!(error.code, "mcp.path_invalid");
+        assert_eq!(error.params["path"], fs_local::display_path(path));
+        assert!(!error.params["reason"].is_empty());
+
+        let mut reader = Reader(|_: &mut [u8]| {
+            cancelled.store(true, Ordering::Release);
+            Err(Error::from(ErrorKind::Interrupted))
+        });
+        assert_eq!(
+            read_chunk(&mut reader, &mut buffer, path, &cancelled)
+                .unwrap_err()
+                .code,
+            "mcp.cancelled"
+        );
+        let mut reader = Reader(|_: &mut [u8]| panic!("取消后不能继续读取"));
+        assert_eq!(
+            read_chunk(&mut reader, &mut buffer, path, &cancelled)
+                .unwrap_err()
+                .code,
+            "mcp.cancelled"
+        );
+    }
+
     #[test]
     fn 沙箱拒绝跳出设备名数据流并原子读写列目录() {
         let root = crate::test_support::tempdir();
@@ -949,14 +1028,21 @@ mod editing_tests {
             );
             assert_eq!(result.name(), if utf16 { "utf-16le" } else { "utf-8" });
         }
-        fs::write(path, "a\r\nb\nx\na\nb\n").unwrap();
-        assert_eq!(
-            edit_file(&sb, path, "a\nb", "c\nd", false, None)
-                .unwrap()
-                .replacements,
-            1
-        );
-        assert_eq!(fs::read_to_string(path).unwrap(), "a\r\nb\nx\nc\nd\n");
+        for old in ["a\nb", "a\r\nb"] {
+            let original = "a\r\nb\nx\na\nb\n";
+            fs::write(path, original).unwrap();
+            let error = edit_file(&sb, path, old, "c\nd", false, None).unwrap_err();
+            assert_eq!(error.code, "mcp.edit_not_unique");
+            assert_eq!(error.params["count"], "2");
+            assert_eq!(fs::read_to_string(path).unwrap(), original);
+            assert_eq!(
+                edit_file(&sb, path, old, "c\nd", true, None)
+                    .unwrap()
+                    .replacements,
+                2
+            );
+            assert_eq!(fs::read_to_string(path).unwrap(), "c\r\nd\nx\nc\nd\n");
+        }
     }
     #[test]
     fn 授权校验保留不可用目录原因且不扩大边界() {
@@ -982,6 +1068,24 @@ mod editing_tests {
             fs_local::display_path(&missing)
         );
         assert_eq!(sb.unavailable_folders[1].code, "mcp.network_folder");
+        for path in [
+            r"\\server\share\folder",
+            r"\\?\UNC\server\share\folder",
+            "//server/share/folder",
+        ] {
+            assert_eq!(
+                validate_folder(Path::new(path)).unwrap_err().code,
+                "mcp.network_folder"
+            );
+            assert_eq!(
+                sb.resolve_read(path).unwrap_err().code,
+                "mcp.network_folder"
+            );
+            assert_eq!(
+                sb.resolve_write(path).unwrap_err().code,
+                "mcp.network_folder"
+            );
+        }
     }
     #[test]
     fn 超大文件按字节不计算散列且读写限制明确() {
@@ -1032,27 +1136,77 @@ mod editing_tests {
         let sb = Sandbox::new(&[root.path().into()]);
         let path = root.path().join("busy.txt");
         fs::write(&path, "原文").unwrap();
-        // 允许读取原文，禁止删除共享，使最终原子替换失败。
+        let path = fs_local::plain_canonical(&path).unwrap();
+        for share in [1, 3] {
+            // 允许读取原文，禁止删除共享，使最终原子替换失败。
+            let held = fs::OpenOptions::new()
+                .read(true)
+                .share_mode(share)
+                .open(&path)
+                .unwrap();
+            assert!(target_is_busy(&path));
+            let error = persist_error(std::io::Error::from_raw_os_error(5), &path);
+            assert_eq!(error.code, "mcp.file_busy");
+            assert_eq!(error.params["os_code"], "5");
+            for error in [
+                write_file(&sb, path.to_str().unwrap(), "替换").unwrap_err(),
+                edit_file(&sb, path.to_str().unwrap(), "原文", "替换", false, None).unwrap_err(),
+            ] {
+                assert_eq!(error.code, "mcp.file_busy");
+                assert_eq!(error.params["reason"], "文件被别的程序占用");
+                assert_eq!(error.params["path"], fs_local::display_path(&path));
+                assert!(error.params.contains_key("os_code"));
+            }
+            assert_eq!(fs::read_to_string(&path).unwrap(), "原文");
+            assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
+            drop(held);
+        }
+        assert!(!target_is_busy(&path));
+        let denied = persist_error(std::io::Error::from_raw_os_error(5), &path);
+        assert_eq!(denied.code, "mcp.path_invalid");
+        assert_eq!(denied.params["os_code"], "5");
+        for code in [32, 33] {
+            let error = persist_error(std::io::Error::from_raw_os_error(code), &path);
+            assert_eq!(error.code, "mcp.file_busy");
+            assert_eq!(error.params["os_code"], code.to_string());
+        }
+        write_file(&sb, path.to_str().unwrap(), "替换").unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "替换");
+    }
+    #[cfg(windows)]
+    #[test]
+    fn 独占打开使读写编辑均返回占用与系统码() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let root = crate::test_support::tempdir();
+        let sb = Sandbox::new(&[root.path().into()]);
+        let path = root.path().join("busy.txt");
+        fs::write(&path, "原文").unwrap();
+        let path = fs_local::plain_canonical(&path).unwrap();
         let held = fs::OpenOptions::new()
             .read(true)
-            .share_mode(1)
+            .share_mode(0)
             .open(&path)
             .unwrap();
-        let error = write_file(&sb, path.to_str().unwrap(), "替换").unwrap_err();
-        assert_eq!(error.code, "mcp.file_busy");
-        assert_eq!(error.params["reason"], "文件被别的程序占用");
-        assert_eq!(error.params["os_code"], "32");
+        let text = path.to_str().unwrap();
+        for error in [
+            open_file(&path).unwrap_err(),
+            read_file(&sb, text, 0, 1024).unwrap_err(),
+            read_lines(&sb, text, 1, 1).unwrap_err(),
+            write_file(&sb, text, "替换").unwrap_err(),
+            edit_file(&sb, text, "原文", "替换", false, None).unwrap_err(),
+        ] {
+            assert_eq!(error.code, "mcp.file_busy");
+            assert!(error.params.contains_key("os_code"));
+            assert_eq!(error.params["path"], fs_local::display_path(&path));
+        }
+        drop(held);
         assert_eq!(fs::read_to_string(&path).unwrap(), "原文");
         assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
-        drop(held);
-        assert_ne!(
-            persist_error(std::io::Error::from_raw_os_error(5), &path).code,
-            "mcp.file_busy"
-        );
-        assert_eq!(
-            persist_error(std::io::Error::from_raw_os_error(33), &path).code,
-            "mcp.file_busy"
-        );
+        for code in [32, 33] {
+            let error = io_error(std::io::Error::from_raw_os_error(code), &path);
+            assert_eq!(error.code, "mcp.file_busy");
+            assert_eq!(error.params["os_code"], code.to_string());
+        }
     }
     #[cfg(windows)]
     #[test]

@@ -6,7 +6,7 @@ use super::{
 use crate::error::AppError;
 use encoding_rs::{Decoder, DecoderResult, Encoding, UTF_8, UTF_16BE, UTF_16LE};
 use serde_json::{Value, json};
-use std::{io::Read, sync::atomic::AtomicBool};
+use std::{io::Read, path::Path, sync::atomic::AtomicBool};
 
 pub(super) fn lines(
     sb: &Sandbox,
@@ -22,7 +22,7 @@ pub(super) fn lines(
     let mut sample = [0; 8000];
     let mut len = 0;
     while len < sample.len() {
-        let count = files::read_chunk(&mut file, &mut sample[len..], cancelled)?;
+        let count = files::read_chunk(&mut file, &mut sample[len..], &resolved, cancelled)?;
         if count == 0 {
             break;
         }
@@ -38,13 +38,22 @@ pub(super) fn lines(
             cancelled
         )?));
     }
-    let mut result = scan(&mut file, sample, metadata.len(), offset, limit, cancelled)?;
+    let mut result = scan(
+        &mut file,
+        &resolved,
+        sample,
+        metadata.len(),
+        offset,
+        limit,
+        cancelled,
+    )?;
     files::check_metadata(&file, &metadata)?;
     result["mtime_ms"] = json!(files::mtime(&metadata));
     Ok(result)
 }
 fn scan(
     reader: &mut impl Read,
+    path: &Path,
     sample: &[u8],
     size: u64,
     offset: u64,
@@ -75,7 +84,7 @@ fn scan(
     let mut buffer = [0; 32768];
     let mut skip = bom;
     loop {
-        let count = files::read_chunk(&mut reader, &mut buffer, cancelled)?;
+        let count = files::read_chunk(&mut reader, &mut buffer, path, cancelled)?;
         digest.update(&buffer[..count]);
         let start = skip.min(count);
         skip -= start;
@@ -269,7 +278,16 @@ mod tests {
             cancel_after: usize::MAX,
             cancelled: &cancelled,
         };
-        let result = scan(&mut reader, &[], bytes.len() as u64, 2, 1, &cancelled).unwrap();
+        let result = scan(
+            &mut reader,
+            Path::new("file.txt"),
+            &[],
+            bytes.len() as u64,
+            2,
+            1,
+            &cancelled,
+        )
+        .unwrap();
         assert_eq!(reader.read, bytes.len());
         assert_eq!(result["content"], "     2\tlast\n");
         assert_eq!(result["sha256"], files::hash(&bytes));
@@ -277,9 +295,17 @@ mod tests {
         reader.read = 0;
         reader.cancel_after = 32768;
         assert_eq!(
-            scan(&mut reader, &[], bytes.len() as u64, 1, 1, &cancelled)
-                .unwrap_err()
-                .code,
+            scan(
+                &mut reader,
+                Path::new("file.txt"),
+                &[],
+                bytes.len() as u64,
+                1,
+                1,
+                &cancelled
+            )
+            .unwrap_err()
+            .code,
             "mcp.cancelled"
         );
         assert_eq!(reader.read, 32768);
@@ -290,6 +316,7 @@ mod tests {
             bytes.extend_from_slice(&tail);
             let result = scan(
                 &mut std::io::Cursor::new(&bytes),
+                Path::new("file.txt"),
                 &[],
                 bytes.len() as u64,
                 3,
@@ -307,6 +334,7 @@ mod tests {
         assert!(files::FileDigest::new(files::HASH_LIMIT + 1).skipped());
         let result = scan(
             &mut std::io::Cursor::new(b"first\nlast\n"),
+            Path::new("file.txt"),
             &[],
             files::HASH_LIMIT + 1,
             2,

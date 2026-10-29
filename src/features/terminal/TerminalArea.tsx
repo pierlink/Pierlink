@@ -419,8 +419,13 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
   const openServer = (id: string, target: Target, desktop = false) => {
     const s = servers.find((x) => x.id === id);
     if (!s) return;
-    // 每台服务器只开一个桌面：已经弹到独立窗口里了，就把那个窗口提到前面
+    // 每台服务器只开一个桌面：已经弹到独立窗口里了，就把那个窗口提到前面；主窗口里已经开着，就切到那个窗格
     if (desktop && popouts.has(id)) { void focusDesktopWindow(id); return; }
+    if (desktop) {
+      const open = Object.values(panesRef.current).find((p) => p.desktop && p.spec.kind === "server" && p.spec.serverId === id);
+      const tab = open && tabsRef.current.find((x) => paneIds(x.layout).includes(open.id));
+      if (open && tab) { setActiveTab(tab.key); focusPane(tab.key, open.id); return; }
+    }
     if (desktop) connect({ spec: { kind: "server", serverId: s.id }, title: t("desktop.paneTitle", { name: s.name }), subtitle: s.address, quick: null, target, desktop: true });
     else connect({ spec: { kind: "server", serverId: s.id }, title: s.name, subtitle: s.address, quick: null, target });
   };

@@ -145,15 +145,17 @@ impl Document {
         }
         Ok(bytes)
     }
-    // 直接匹配优先；归一化只用于查找，返回的字节范围仍指向原文。
+    // 混合换行统一归一化匹配，避免漏掉仅分隔符不同的重复内容；返回范围仍指向原文。
     pub(super) fn match_ranges(&self, old: &str) -> Vec<std::ops::Range<usize>> {
-        let direct: Vec<_> = self
-            .text
-            .match_indices(old)
-            .map(|(i, s)| i..i + s.len())
-            .collect();
-        if !direct.is_empty() {
-            return direct;
+        if self.line_ending() != "mixed" {
+            let direct: Vec<_> = self
+                .text
+                .match_indices(old)
+                .map(|(i, s)| i..i + s.len())
+                .collect();
+            if !direct.is_empty() {
+                return direct;
+            }
         }
         let normalized = self.text.replace("\r\n", "\n");
         let needle = old.replace("\r\n", "\n");

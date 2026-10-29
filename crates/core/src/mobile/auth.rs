@@ -176,7 +176,9 @@ impl Shared {
         let device = Device {
             id: uuid::Uuid::new_v4().to_string(),
             name: name.into(),
-            user_agent: user_agent.map(clean_user_agent),
+            user_agent: user_agent
+                .map(clean_user_agent)
+                .filter(|value| !value.is_empty()),
             last_ip: Some(peer.to_string()),
             permissions: Permissions::default(),
             created_at: now(),

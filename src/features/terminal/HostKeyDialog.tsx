@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { Check, Copy, ShieldQuestion } from "lucide-react";
 import { Button, Dialog, IconButton } from "../../components";
 import type { HostKeyStep } from "./types";
+import { writeClipboardText } from "../shell/clipboard";
 
 type Confirm = Extract<HostKeyStep, { kind: "confirm" }>;
 
@@ -29,7 +30,7 @@ export function HostKeyDialog({ step, busy, onAccept, onCancel }: Props) {
   const { t } = useTranslation();
   const [copied, setCopied] = useState(false);
   const copy = () => {
-    void navigator.clipboard.writeText(step.fingerprint).then(() => {
+    void writeClipboardText(step.fingerprint).then(() => {
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
     });
