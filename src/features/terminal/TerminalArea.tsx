@@ -10,8 +10,12 @@ import { HostKeyDialog } from "./HostKeyDialog";
 import { reorder, tabPart, zoneAt, zoneBox, type Box, type DragWhat, type DropAt } from "./paneDrag";
 import { TerminalView, type TermHandle } from "./TerminalView";
 import { DesktopPane } from "../desktop/DesktopPane";
+import { focusDesktopWindow, useDesktopPopouts } from "../desktop/popouts";
 import type { HostKeyStep, OpenSpec, RemoteSpec } from "./types";
 import { parseQuickTarget } from "./util";
+import { droppedText } from "./localPaths";
+import { openInBrowser, writeClipboardText } from "../shell/clipboard";
+import { inTauri } from "../shell/TitleBar";
 import { useSettings } from "../settings/store";
 import { computeRects, insertBeside, pairNodes, pairSpan, pane as leaf, paneIds, removePane, resizeAt, seriesCount, splitPane, swapPanes, type Dir, type Layout, type Rect, type Side } from "./panes";
 import { FilePanel } from "../files/FilePanel";
@@ -83,7 +87,8 @@ interface Conn {
 }
 type Pending =
   | { kind: "paste"; text: string; resolve: (ok: boolean) => void }
-  | { kind: "link"; url: string }
+  /** error：打开或复制失败的原因 */
+  | { kind: "link"; url: string; error?: string }
   /** busy：正在检查服务器指纹 */
   | { kind: "quick"; value: string; error: string | null; busy?: boolean; target: Target }
   | { kind: "hostkey"; conn: Conn; step: Extract<HostKeyStep, { kind: "confirm" }>; busy: boolean }
@@ -267,6 +272,37 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
   const lineBuffers = useRef(new Map<string, LineBuffer>());
   // 每个终端窗格的操作句柄（命令片段用）
   const handles = useRef(new Map<string, TermHandle>());
+  /** 从资源管理器拖着文件经过的本机终端窗格（高亮提示松手会填入路径） */
+  const [fileDrop, setFileDrop] = useState<string | null>(null);
+  useEffect(() => {
+    if (!inTauri) return;
+    /** 拖放位置（相对窗口的物理像素）下面是不是一个运行中的本机终端 */
+    const localPaneAt = (pos: { x: number; y: number }): string | null => {
+      const ratio = window.devicePixelRatio || 1;
+      const id = document.elementFromPoint(pos.x / ratio, pos.y / ratio)?.closest<HTMLElement>("[data-pane]")?.dataset.pane;
+      const p = id ? panesRef.current[id] : undefined;
+      return id && p && p.spec.kind === "local" && !p.desktop && p.status === "running" ? id : null;
+    };
+    let off: (() => void) | undefined;
+    let alive = true;
+    void import("@tauri-apps/api/webview")
+      .then(({ getCurrentWebview }) => getCurrentWebview().onDragDropEvent((ev) => {
+        const d = ev.payload;
+        if (d.type === "leave") { setFileDrop(null); return; }
+        const id = localPaneAt(d.position);
+        if (d.type !== "drop") { setFileDrop(id); return; }
+        setFileDrop(null);
+        const p = id ? panesRef.current[id] : undefined;
+        if (!id || p?.spec.kind !== "local" || !d.paths.length) return;
+        // 只填路径不回车；遵守括号粘贴模式，和粘贴一样
+        const h = handles.current.get(id);
+        h?.paste(droppedText(p.spec.shellId, d.paths));
+        h?.focus();
+        void import("@tauri-apps/api/window").then(({ getCurrentWindow }) => getCurrentWindow().setFocus()).catch(() => undefined);
+      }))
+      .then((u) => { if (alive) off = u; else u(); }, (e: unknown) => console.error(formatError(e)));
+    return () => { alive = false; off?.(); };
+  }, []);
   /** 用户自己打开（或点“连接”恢复）的终端：挂载后把焦点给它，不用先点一下；AI 打开的终端不抢焦点 */
   const focusOnMount = useRef(new Set<string>());
 
@@ -379,9 +415,17 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
     if (!spec) { setPending({ kind: "quick", value, error: t("terminal.invalidTarget"), target }); return; }
     connect({ spec, title: spec.host, subtitle: spec.user ? `${spec.user}@${spec.host}` : spec.host, quick: value, target });
   };
+  const popouts = useDesktopPopouts();
   const openServer = (id: string, target: Target, desktop = false) => {
     const s = servers.find((x) => x.id === id);
     if (!s) return;
+    // 每台服务器只开一个桌面：已经弹到独立窗口里了，就把那个窗口提到前面；主窗口里已经开着，就切到那个窗格
+    if (desktop && popouts.has(id)) { void focusDesktopWindow(id); return; }
+    if (desktop) {
+      const open = Object.values(panesRef.current).find((p) => p.desktop && p.spec.kind === "server" && p.spec.serverId === id);
+      const tab = open && tabsRef.current.find((x) => paneIds(x.layout).includes(open.id));
+      if (open && tab) { setActiveTab(tab.key); focusPane(tab.key, open.id); return; }
+    }
     if (desktop) connect({ spec: { kind: "server", serverId: s.id }, title: t("desktop.paneTitle", { name: s.name }), subtitle: s.address, quick: null, target, desktop: true });
     else connect({ spec: { kind: "server", serverId: s.id }, title: s.name, subtitle: s.address, quick: null, target });
   };
@@ -935,6 +979,16 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
   });
   tabViewsRef.current = tabViews;
 
+  /** 在窗格旁边开一个同样的终端：同一台服务器，或同一种本机终端 */
+  const splitSame = (tab: string, paneId: string, dir: Dir) => {
+    const cur = panesRef.current[paneId];
+    if (!cur) return;
+    const target: Target = { tab, pane: paneId, dir };
+    if (cur.spec.kind === "local") openShellIn(cur.spec.shellId, target);
+    else if (cur.spec.kind === "server") openServer(cur.spec.serverId, target);
+    else connect({ spec: cur.spec, title: cur.title, subtitle: cur.subtitle, quick: null, target });
+  };
+
   /** 分屏菜单：新窗格里打开哪个终端。窗格太小、拆开后会小于最小尺寸时只显示原因 */
   const splitEntries = (m: NonNullable<typeof splitMenu>): MenuEntry[] => {
     if (!canSplit(m.pane, m.dir)) {
@@ -946,11 +1000,7 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
       ? [{
           id: "same",
           label: t("terminal.splitSame", { name: cur.title }),
-          onSelect: () => {
-            if (cur.spec.kind === "local") openShellIn(cur.spec.shellId, target);
-            else if (cur.spec.kind === "server") openServer(cur.spec.serverId, target);
-            else connect({ spec: cur.spec, title: cur.title, subtitle: cur.subtitle, quick: null, target });
-          },
+          onSelect: () => splitSame(m.tab, m.pane, m.dir),
         }, { kind: "separator", id: "s0" }]
       : [];
     return [
@@ -1126,6 +1176,7 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
                         serverId={p.spec.serverId}
                         visible={visible}
                         windowTitle={p.title}
+                        onPoppedOut={() => dropPanes(tab.key, [id])}
                         title={(
                           <span className="pane__title pl-ellipsis" title={p.subtitle} onPointerDown={(e) => beginDrag(e, { kind: "pane", id, tab: tab.key }, p.title)}>
                             <strong>{p.title}</strong>
@@ -1168,6 +1219,10 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
                       onError={(e) => onPaneError(id, e)}
                       confirmPaste={(text) => new Promise((resolve) => setPending({ kind: "paste", text, resolve }))}
                       openLink={(url) => setPending({ kind: "link", url })}
+                      cwd={p.cwd}
+                      onSplit={(dir) => splitSame(tab.key, id, dir)}
+                      canSplit={(dir) => canSplit(id, dir)}
+                      fileDrop={fileDrop === id}
                       broadcasting={inBroadcast}
                       onInput={inBroadcast ? (data) => onBroadcastInput(tab.key, id, data) : undefined}
                       onOutput={inBroadcast ? (tail) => onBroadcastOutput(tab.key, id, tail) : undefined}
@@ -1244,11 +1299,19 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
           onDismiss={() => setPending(null)}
           actions={<>
             <Button onClick={() => setPending(null)}>{t("common.cancel")}</Button>
-            <Button variant="primary" onClick={() => { window.open(pending.url, "_blank", "noopener"); setPending(null); }}>{t("terminal.open")}</Button>
+            <Button onClick={() => {
+              const { url } = pending;
+              void writeClipboardText(url).then(() => setPending(null), (e: unknown) => setPending({ kind: "link", url, error: formatError(e) }));
+            }}>{t("terminal.copyLink")}</Button>
+            <Button variant="primary" onClick={() => {
+              const { url } = pending;
+              void openInBrowser(url).then(() => setPending(null), (e: unknown) => setPending({ kind: "link", url, error: formatError(e) }));
+            }}>{t("terminal.open")}</Button>
           </>}
         >
           {t("terminal.openLinkBody")}
-          <div className="mono pl-card" style={{ marginTop: 10, wordBreak: "break-all", fontSize: "var(--fs-sm)" }}>{pending.url}</div>
+          <div className="mono pl-card term-link__url">{pending.url}</div>
+          {pending.error && <p className="term-link__error" role="alert">{pending.error}</p>}
         </Dialog>
       )}
       {pending?.kind === "hostkey" && (

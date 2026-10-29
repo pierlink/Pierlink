@@ -23,6 +23,7 @@ import { PasswordHost } from "../passwords/PasswordHost";
 import { ServerExportDialog } from "../servers/ServerExportDialog";
 import { ImportReportDialog } from "../settings/ImportReportDialog";
 import { importServers, type ImportResult } from "../settings/profileApi";
+import { writeClipboardText } from "../shell/clipboard";
 
 type Modal =
   | { kind: "edit"; server: ServerRecord | null }
@@ -131,7 +132,7 @@ export function WorkspacePage() {
             onDeploy: (id) => { const s = byId(id); if (s) setModal({ kind: "deploy", server: s }); },
             onCopyAddress: (id) => {
               const s = byId(id);
-              if (s) void navigator.clipboard.writeText(serverAddress(s)).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500); });
+              if (s) void writeClipboardText(serverAddress(s)).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500); });
             },
           }}
         />

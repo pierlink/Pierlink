@@ -6,12 +6,13 @@ import type { ServerRecord } from "../servers/api";
 import { getMcpApi, type EntrySettings, type McpApproval } from "./api";
 import { addFolder, removeFolder, toggleServer } from "./model";
 import "./mcp.css";
+import { writeClipboardText } from "../shell/clipboard";
 
 /** 一段可复制的命令 */
 export function CommandLine({ text }: { text: string }) {
   const { t } = useTranslation();
   const [copied, setCopied] = useState(false);
-  const copy = () => void navigator.clipboard.writeText(text).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500); });
+  const copy = () => void writeClipboardText(text).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500); });
   return (
     <div className="mcp-cmd">
       <code className="mono">{text}</code>

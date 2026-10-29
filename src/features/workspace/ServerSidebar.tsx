@@ -1,9 +1,10 @@
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { ArrowDownUp, ChevronDown, Plus, RefreshCw, Search } from "lucide-react";
+import { ArrowDownUp, ChevronDown, Monitor, Plus, RefreshCw, Search } from "lucide-react";
 import { IconButton, Menu, Segmented, StatusDot, useContextMenu, type MenuEntry } from "../../components";
 import type { ServerView } from "./types";
 import { BuiltinSshNotice } from "./BuiltinSshNotice";
+import { focusDesktopWindow, useDesktopPopouts } from "../desktop/popouts";
 
 type Filter = "all" | "favorites" | "online";
 
@@ -34,6 +35,7 @@ export function ServerSidebar({ servers, selectedId, onSelect, actions }: { serv
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<Filter>("all");
   const ctx = useContextMenu(t("workspace.servers"));
+  const popouts = useDesktopPopouts();
   const [importMenu, setImportMenu] = useState<{ x: number; y: number } | null>(null);
 
   const groups = useMemo(() => {
@@ -129,6 +131,13 @@ export function ServerSidebar({ servers, selectedId, onSelect, actions }: { serv
               </span>
               {s.syncState !== "none" && (
                 <RefreshCw size={13} role="img" aria-label={t("workspace.hasSync")} color={s.syncState === "warn" ? "var(--warn)" : s.syncState === "busy" ? "var(--accent)" : "var(--ok)"} />
+              )}
+              {popouts.has(s.id) && (
+                // 桌面开在独立窗口里：点一下把那个窗口提到前面
+                <span className="srv-row__desk" role="img" title={t("workspace.desktopInWindow")} aria-label={t("workspace.desktopInWindow")}
+                  onClick={(e) => { e.stopPropagation(); void focusDesktopWindow(s.id); }}>
+                  <Monitor size={13} aria-hidden="true" />
+                </span>
               )}
               {s.openTabs > 0 && <span className="srv-row__count" title={t("workspace.openTabs", { count: s.openTabs })}>{s.openTabs}</span>}
             </button>

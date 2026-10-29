@@ -14,6 +14,7 @@ pub mod error;
 pub mod fs_local;
 pub mod info;
 pub mod keys;
+pub mod links;
 pub mod mcp;
 pub mod mobile;
 pub mod monitor;

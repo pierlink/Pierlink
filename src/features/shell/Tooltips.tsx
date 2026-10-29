@@ -87,6 +87,15 @@ export function Tooltips() {
       hide();
       current = null;
     };
+    // React 改了按钮的 title（如“全屏”换成“退出全屏”）会把属性写回去：立刻接管，免得浏览器自带的提示也冒出来
+    const mo = new MutationObserver((records) => {
+      for (const r of records) {
+        if (!(r.target instanceof HTMLElement) || r.target.getAttribute("title") === null || r.target.closest(".xterm-screen")) continue;
+        tipTarget(r.target);
+        if (r.target === current && shown) show();
+      }
+    });
+    mo.observe(document.body, { subtree: true, attributes: true, attributeFilter: ["title"] });
     const onDown = () => hide();
     const onKey = () => hide();
     const onScroll = () => hide();
@@ -99,6 +108,7 @@ export function Tooltips() {
     window.addEventListener("blur", hide);
     return () => {
       clear();
+      mo.disconnect();
       document.removeEventListener("pointerover", onOver, true);
       document.removeEventListener("pointermove", onMove, true);
       document.removeEventListener("pointerout", onOut, true);

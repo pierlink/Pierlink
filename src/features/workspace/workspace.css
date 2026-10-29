@@ -64,3 +64,7 @@
 /* 升级后的一次性说明（放在服务器列表里，不盖住界面） */
 .srv-notice { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; margin: 2px 0 4px; padding: 10px; border-radius: var(--r-md); border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--border)); background: color-mix(in srgb, var(--panel-solid) 92%, var(--accent)); font-size: var(--fs-sm); line-height: 1.5; color: var(--text-muted); }
 .srv-notice b { color: var(--text); }
+
+/* 服务器桌面开在独立窗口里的标识（点一下提到前面） */
+.srv-row__desk { display: inline-flex; padding: 2px; border-radius: var(--r-sm); color: var(--accent); cursor: pointer; }
+.srv-row__desk:hover { background: var(--chip); }

@@ -14,6 +14,7 @@ import { ChmodDialog, DeleteDialog } from "./FileDialogs";
 import { onDirChanged, useTransfers } from "./transfers";
 import type { FileEntry, Listing, Loc } from "./types";
 import "./files.css";
+import { writeClipboardText } from "../shell/clipboard";
 
 /** 终端的打开方式 → 文件所在的机器 */
 function locOf(spec: OpenSpec): Loc {
@@ -267,7 +268,7 @@ export function FilePanel({ paneId, spec, title, cwd, commands, sessionId, onClo
   const local = loc.kind === "local";
   const isDirEntry = (e: FileEntry) => e.kind === "dir" || (e.kind === "symlink" && e.targetIsDir === true);
   /** 复制到剪贴板（多个路径每行一个） */
-  const copy = (text: string) => void navigator.clipboard.writeText(text);
+  const copy = (text: string) => void writeClipboardText(text);
   /** 空白处的菜单：新建、刷新、复制当前路径 */
   const backgroundMenu = (dir: string): MenuEntry[] => [
     { id: "new-dir", label: t("files.newFolder"), icon: <FolderPlus size={13} />, onSelect: () => setCreating("dir") },

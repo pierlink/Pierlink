@@ -108,6 +108,10 @@ pub struct MobileDeviceDto {
     pub name: String,
     pub created_ms: f64,
     pub last_seen_ms: Option<f64>,
+    /// 配对时浏览器报告的 User-Agent
+    pub user_agent: Option<String>,
+    /// 最近一次连过来的 IP
+    pub last_ip: Option<String>,
     pub permissions: MobilePermissionsDto,
 }
 
@@ -213,6 +217,11 @@ fn addresses() -> Vec<MobileAddressDto> {
         .into_iter()
         .filter_map(|i| {
             let ip = i.ip();
+            // 只列 IPv4：手机经 Tailscale（100.x）或局域网连 IPv4 就够了；IPv6 地址（如 ::1）
+            // 在用户的电脑上打不开，和对应的 IPv4 地址重复列出只会让人困惑
+            if !ip.is_ipv4() {
+                return None;
+            }
             kind_of(&ip).map(|kind| MobileAddressDto {
                 ip: ip.to_string(),
                 kind: kind.into(),
@@ -372,7 +381,9 @@ pub async fn mobile_configure(
     if port < 1024 {
         return Err(AppError::new("mobile.invalid_port"));
     }
-    if let Some(b) = &bind
+    // 只在打开时检查地址：关闭时地址可能已经不在了（比如先关了 Tailscale），照样要能关掉
+    if enabled
+        && let Some(b) = &bind
         && !addresses().iter().any(|a| &a.ip == b)
     {
         return Err(AppError::new("mobile.invalid_bind"));
@@ -422,6 +433,8 @@ fn device_dto(d: pierlink_core::mobile::Device) -> MobileDeviceDto {
         // core 的时间是秒
         created_ms: d.created_at as f64 * 1000.0,
         last_seen_ms: Some(d.last_active_at as f64 * 1000.0),
+        user_agent: d.user_agent,
+        last_ip: d.last_ip,
         permissions: MobilePermissionsDto {
             view: d.permissions.view,
             input: d.permissions.input,
@@ -484,6 +497,40 @@ pub async fn mobile_set_permissions(
         &app,
         json!({ "action": "set_permissions", "device": id, "permissions": p, "result": "ok" }),
     );
+    Ok(())
+}
+
+/// 给一台手机改名（入口关着时也能改）
+#[tauri::command]
+#[specta::specta]
+pub async fn mobile_rename(app: AppHandle, id: String, name: String) -> Result<(), AppError> {
+    let state = app.state::<MobileState>();
+    let server = state.server.lock().await;
+    match server.as_ref() {
+        Some(srv) => srv.rename_device(&id, &name)?,
+        None => app
+            .state::<DbState>()
+            .with(|db| pierlink_core::mobile::rename_in(db, &id, &name))?,
+    }
+    eprintln!("手机改名: 设备={id}");
+    record(
+        &app,
+        json!({ "action": "rename", "device": id, "result": "ok" }),
+    );
+    let _ = app.emit(CHANGED_EVENT, ());
+    Ok(())
+}
+
+/// 作废还没用过的邀请码（设置页关掉二维码时）；入口没开时什么都不做
+#[tauri::command]
+#[specta::specta]
+pub async fn mobile_cancel_invite(app: AppHandle) -> Result<(), AppError> {
+    let state = app.state::<MobileState>();
+    let server = state.server.lock().await;
+    if let Some(srv) = server.as_ref() {
+        srv.cancel_invites();
+        eprintln!("作废手机邀请码");
+    }
     Ok(())
 }
 

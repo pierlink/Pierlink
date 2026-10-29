@@ -102,6 +102,9 @@
 .pane-grid { position: relative; flex: 1; min-height: 0; }
 /* 每格独立层叠（xterm 内部元素带 z-index，不隔离会盖住分隔条） */
 .pane-slot { position: absolute; min-width: 0; min-height: 0; isolation: isolate; z-index: 0; }
+/* 窗格里的远程桌面全屏时：整个窗格抬到旁边的窗格、分隔条、侧栏、标签栏之上（否则窗格各自的层叠上下文会让它们盖在全屏桌面上面）；
+   对话框（900）和通知（950）仍在它上面，全屏时 AI 的确认框照样看得见 */
+.pane-slot:has(.desk--full) { z-index: 100; }
 .pane { position: absolute; inset: 0; display: flex; flex-direction: column; container-type: inline-size; }
 /* 多个窗格时每格留出细边，当前窗格描边高亮 */
 .pane--multi { inset: 3px; border: 1px solid var(--border); border-radius: var(--r-md); overflow: hidden; transition: border-color var(--dur-fast); }
@@ -188,3 +191,16 @@ body.pane-checking, body.pane-checking * { cursor: progress !important; }
 }
 .pane--broadcast, .pane--broadcast.pane--active { border-color: var(--warn); box-shadow: 0 0 0 1px var(--warn) inset; }
 .pane__btn--broadcast { color: var(--warn); }
+
+/* 链接确认框：网址可以选中复制 */
+.term-link__url { margin-top: 10px; word-break: break-all; font-size: var(--fs-sm); user-select: text; cursor: text; }
+.term-link__error { margin: 8px 0 0; color: var(--danger); font-size: var(--fs-sm); }
+
+/* 从资源管理器拖文件到本机终端上方 */
+.term-filedrop {
+  position: absolute; inset: 0; z-index: 6; pointer-events: none;
+  display: flex; align-items: center; justify-content: center;
+  border: 2px dashed var(--accent); border-radius: var(--r-sm);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+.term-filedrop span { padding: 6px 12px; border-radius: var(--r-sm); background: var(--surface); color: var(--text); font-size: var(--fs-sm); box-shadow: var(--shadow-sm, 0 1px 3px rgb(0 0 0 / 0.2)); }

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import i18n from "../i18n";
+import { History, LayoutDashboard, ShieldCheck, SquareTerminal, type LucideIcon } from "lucide-react";
+import i18n from "./i18n";
 import { api, ApiError, type Me } from "./api";
 import { PairScreen } from "./PairScreen";
 import { OverviewTab } from "./OverviewTab";
@@ -54,17 +55,20 @@ export function MobileApp() {
 
   // 被撤销或会话失效：回到配对
   const onAuthLost = () => setMe(null);
-  const tabs: { id: Tab; label: string; badge?: number }[] = [
-    { id: "overview", label: t("mobile.tab.overview") },
-    { id: "terminals", label: t("mobile.tab.terminals") },
-    { id: "confirms", label: t("mobile.tab.confirms"), badge: pending },
-    { id: "activity", label: t("mobile.tab.activity") },
+  const tabs: { id: Tab; label: string; icon: LucideIcon; badge?: number }[] = [
+    { id: "overview", label: t("mobile.tab.overview"), icon: LayoutDashboard },
+    { id: "terminals", label: t("mobile.tab.terminals"), icon: SquareTerminal },
+    { id: "confirms", label: t("mobile.tab.confirms"), icon: ShieldCheck, badge: pending },
+    { id: "activity", label: t("mobile.tab.activity"), icon: History },
   ];
   return (
     <div className="m-app">
       <header className="m-head">
         <span className="m-head__title">Pierlink</span>
-        <span className={`m-head__state${online ? "" : " m-head__state--off"}`}>{online ? me.name : t("mobile.offline")}</span>
+        <span className={`m-head__state${online ? "" : " m-head__state--off"}`}>
+          <span className={`m-dot${online ? " m-dot--on" : ""}`} aria-hidden="true" />
+          {online ? me.name : t("mobile.offline")}
+        </span>
       </header>
       <main className="m-main">
         {tab === "overview" && <OverviewTab me={me} version={changes.overview} onAuthLost={onAuthLost} />}
@@ -75,8 +79,8 @@ export function MobileApp() {
       <nav className="m-tabs" aria-label="Pierlink">
         {tabs.map((x) => (
           <button key={x.id} type="button" className="m-tabs__item" aria-current={tab === x.id ? "page" : undefined} onClick={() => setTab(x.id)}>
+            <span className="m-tabs__icon"><x.icon size={20} aria-hidden="true" />{x.badge ? <span className="m-badge">{x.badge}</span> : null}</span>
             {x.label}
-            {x.badge ? <span className="m-badge">{x.badge}</span> : null}
           </button>
         ))}
       </nav>

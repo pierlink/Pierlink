@@ -175,7 +175,9 @@ pub(super) fn execute(
                 value["commands"] =
                     json!(target.kind == TargetKind::Server || permissions.windows_commands);
                 if target.kind == TargetKind::Windows {
-                    value["folders"] = json!(files::Sandbox::new(&permissions.folders).folders);
+                    let sandbox = files::Sandbox::new(&permissions.folders);
+                    value["folders"] = json!(sandbox.folders);
+                    value["unavailable_folders"] = json!(sandbox.unavailable_folders);
                     value["home"] = json!(local::home()?);
                     value["shells"] = json!(available);
                     value["path_style"] = json!("windows");
@@ -641,11 +643,12 @@ fn file_call(
     match name {
         "read_file" => {
             if args.contains_key("byte_offset") || args.contains_key("max_bytes") {
-                Ok(json!(files::read_file(
+                Ok(json!(files::read_cancelled(
                     &sandbox,
                     path,
                     number(args, "byte_offset", 0),
-                    number(args, "max_bytes", 1024 * 1024)
+                    number(args, "max_bytes", 1024 * 1024),
+                    cancelled,
                 )?))
             } else {
                 Ok(read::lines(

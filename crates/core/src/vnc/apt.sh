@@ -41,6 +41,69 @@ missing_packages() {
         [ "$installed" = 'install ok installed' ] || printf '%s\n' "$apt_package"
     done
 }
+# 先遍历必需依赖，再处理候选组；未选候选的子依赖不会进入闭包。
+dependency_closure() {
+    dependency_names < "$work/depends" > "$work/available"
+    missing_packages < "$work/available" > "$work/missing"
+    awk -v roots="$*" '
+        FILENAME==ARGV[1] {available[$0]=1; installed[$0]=1; next}
+        FILENAME==ARGV[2] {delete installed[$0]; next}
+        /^[a-z0-9][a-z0-9+.-]*(:[a-z0-9][a-z0-9-]*)?$/ {parent=$0; group=0; next}
+        /^[^ ]/ {parent=""; next}
+        /^ [ |]*(Pre)?Depends: / {
+            if(parent=="") next
+            if(!group) {group=++groups; owner[group]=parent}
+            name=$NF; virtual=(name ~ /^</)
+            if(!virtual) candidate[group,++lengths[group]]=name
+            last=group
+            if($0 !~ /^ *\|/) group=0
+            next
+        }
+        /^    [a-z0-9]/ && virtual && parent!="" {
+            candidate[last,++lengths[last]]=$1
+        }
+        function add(name) {
+            if(!selected[name] && !installed[name]) {selected[name]=1; queue[++tail]=name}
+        }
+        function satisfied(g, i,n) {
+            for(i=1;i<=lengths[g];i++) {
+                n=candidate[g,i]
+                if(selected[n] || installed[n]) return 1
+            }
+            return 0
+        }
+        function choose(g, i,n) {
+            if(satisfied(g)) return
+            for(i=1;i<=lengths[g];i++) {
+                n=candidate[g,i]
+                if(available[n]) {add(n); return}
+            }
+            exit 1
+        }
+        END {
+            n=split(roots,root," ")
+            for(i=1;i<=n;i++) {if(!available[root[i]]) exit 1; add(root[i])}
+            # 入口自身即使已安装也要展开，以便为专用副本补齐依赖。
+            for(i=1;i<=n;i++) if(!selected[root[i]]) {selected[root[i]]=1; queue[++tail]=root[i]}
+            head=1
+            while(1) {
+                while(head<=tail) {
+                    p=queue[head++]
+                    for(g=1;g<=groups;g++) if(owner[g]==p) {
+                        if(lengths[g]==1) choose(g)
+                        else pending[++pending_count]=g
+                    }
+                }
+                if(!pending_count) break
+                g=pending[1]
+                for(i=1;i<pending_count;i++) pending[i]=pending[i+1]
+                pending_count--
+                choose(g)
+            }
+            for(i=1;i<=tail;i++) print queue[i]
+        }
+    ' "$work/available" "$work/missing" "$work/depends"
+}
 apt_unpack() {
     command -v apt-get >/dev/null && command -v apt-cache >/dev/null && command -v dpkg-query >/dev/null && command -v dpkg-deb >/dev/null || fail light_unavailable '需要 apt-get、apt-cache 和 dpkg'
     apt_root=$HOME/.cache/pierlink/apt
@@ -51,7 +114,7 @@ apt_unpack() {
     mkdir -p "$apt_root/lists/partial" "$apt_root/cache/archives/partial" || fail permission_denied
     apt_attempt apt-get update -o APT::Update::Error-Mode=any || fail download_failed "软件源索引更新失败：$apt_reason"
     apt_command apt-cache depends --recurse --no-recommends --no-suggests --no-conflicts --no-breaks --no-replaces --no-enhances "$@" > "$work/depends" 2>/dev/null || fail download_failed '无法计算发行版依赖'
-    dependency_names < "$work/depends" > "$work/closure"
+    dependency_closure "$@" > "$work/closure" || fail download_failed '依赖组中没有可用的软件包'
     missing_packages < "$work/closure" > "$work/packages"
     # 入口程序保留自己的副本；其余依赖（包括字体和总线）优先复用系统已装包。
     printf '%s\n' "$version_package" >> "$work/packages"

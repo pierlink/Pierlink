@@ -4,9 +4,11 @@ import RFB from "@novnc/novnc";
 import { AppWindow, ClipboardPaste, Expand, Maximize, Minimize, Power, Unplug, X } from "lucide-react";
 import { Button, Checkbox, Dialog, Select } from "../../components";
 import { formatError, isAppError } from "../../errors";
-import { readClipboardText } from "../shell/clipboard";
-import { DesktopChannel } from "./channel";
+import { readClipboardText, writeClipboardText } from "../shell/clipboard";
+import { typingKeysyms } from "./keysyms";
+import { openDesktopWindow } from "./popouts";
 import { inTauri } from "../shell/TitleBar";
+import { DesktopChannel } from "./channel";
 import { desktopWindowUrl } from "./DesktopWindow";
 import {
   acquireFailures, getDesktopApi,
@@ -105,7 +107,7 @@ function savePrefs(p: ViewPrefs) {
  * 服务器桌面窗格：检测服务器上的 VNC 桌面，选一个连接，用 noVNC 显示。
  * 数据经 SSH 走后端，本机和服务器都不开端口。
  */
-export function DesktopPane({ serverId, visible, title, controls, windowTitle, standalone }: {
+export function DesktopPane({ serverId, visible, title, controls, windowTitle, standalone, onPoppedOut }: {
   serverId: string;
   visible: boolean;
   /** 独立窗口的标题（如“gpu-dev 桌面”）；不给就不显示“在独立窗口打开” */
@@ -116,6 +118,8 @@ export function DesktopPane({ serverId, visible, title, controls, windowTitle, s
   title?: ReactNode;
   /** 窗格自己的按钮（分屏、关闭），放在工具栏最右边 */
   controls?: ReactNode;
+  /** 已经在独立窗口里打开：由上层关掉这个窗格（不给就留在这里显示“已在独立窗口打开”） */
+  onPoppedOut?: () => void;
 }) {
   const { t } = useTranslation();
   const [phase, setPhase] = useState<Phase>({ kind: "detecting" });
@@ -143,6 +147,10 @@ export function DesktopPane({ serverId, visible, title, controls, windowTitle, s
   /** 一行提示（如“断开后服务器可能结束这个桌面”），点 × 关掉 */
   const [notice, setNotice] = useState<string | null>(null);
   const [confirmStop, setConfirmStop] = useState(false);
+  /** 最近一次在 Windows 和远程之间同步过的剪贴板文字：同样的内容不来回发 */
+  const lastClip = useRef<string | null>(null);
+  /** 全屏是这个窗格要的（页面全屏时只有它铺满窗口） */
+  const wantFull = useRef(false);
 
   const disconnect = useCallback(() => {
     rfbRef.current?.disconnect();
@@ -185,6 +193,8 @@ export function DesktopPane({ serverId, visible, title, controls, windowTitle, s
     rfb.compressionLevel = QUALITY[p.quality].compression;
     rfb.background = "transparent";
     rfb.focusOnClick = true;
+    // 远程程序把鼠标指针设成看不见时，显示一个小点，免得找不到鼠标在哪
+    rfb.showDotCursor = true;
     rfb.addEventListener("connect", () => {
       // 此时还是服务器原本的尺寸（跟随窗口的改尺寸请求在这之后才发）
       const r = rfb as unknown as RfbInternals;
@@ -213,9 +223,12 @@ export function DesktopPane({ serverId, visible, title, controls, windowTitle, s
       connRef.current = null;
       setPhase((cur) => (cur.kind === "password" || cur.kind === "popped" ? cur : { kind: "closed", session, error: closedReason || (clean ? null : t("desktop.lost")) }));
     });
+    // 远程复制了东西：由后端写进 Windows 剪贴板（网页方式要求窗口在前台，远程在后台复制时会写不进去）
     rfb.addEventListener("clipboard", (e) => {
       const text = (e as CustomEvent<{ text: string }>).detail?.text;
-      if (text) void navigator.clipboard.writeText(text).catch(() => {});
+      if (!text) return;
+      lastClip.current = text;
+      void writeClipboardText(text).catch(() => {});
     });
   }, [disconnect, serverId, t]);
 
@@ -314,11 +327,74 @@ export function DesktopPane({ serverId, visible, title, controls, windowTitle, s
     if (visible && phase.kind === "connected") rfbRef.current?.focus();
   }, [visible, phase.kind]);
 
+  // 全屏：整个页面全屏、桌面铺满窗口。只让桌面这一块全屏时，noVNC 挂在页面上的鼠标指针和悬停提示都看不见
   useEffect(() => {
-    const onChange = () => setFullscreen(document.fullscreenElement === rootRef.current);
+    const onChange = () => {
+      if (!document.fullscreenElement) wantFull.current = false;
+      setFullscreen(!!document.fullscreenElement && wantFull.current);
+    };
     document.addEventListener("fullscreenchange", onChange);
-    return () => document.removeEventListener("fullscreenchange", onChange);
+    return () => {
+      document.removeEventListener("fullscreenchange", onChange);
+      if (wantFull.current && document.fullscreenElement) void document.exitFullscreen().catch(() => undefined);
+    };
   }, []);
+  const toggleFullscreen = () => {
+    if (fullscreen) { void document.exitFullscreen().catch(() => undefined); return; }
+    wantFull.current = true;
+    void document.documentElement.requestFullscreen().catch(() => { wantFull.current = false; });
+  };
+
+  /** 把 Windows 剪贴板的文字发到远程剪贴板（和上次同步的一样就不发） */
+  const pushClipboard = useCallback(async () => {
+    const text = await readClipboardText().catch(() => "");
+    const rfb = rfbRef.current;
+    if (!rfb || !text || text === lastClip.current) return;
+    lastClip.current = text;
+    rfb.clipboardPasteFrom(text);
+  }, []);
+
+  // 和 Windows 一样用 Ctrl+C、Ctrl+V 复制粘贴：在远程画面里按 Ctrl+V（或 Ctrl+Shift+V）时，
+  // 先把 Windows 剪贴板发过去，再补发这个 V（按住的 Ctrl、Shift 已经由 noVNC 发给远程了）。
+  // 只在按 Ctrl+V 时发：点进画面时不发，免得刚复制的口令之类一点画面就到了服务器上
+  useEffect(() => {
+    const el = screenRef.current;
+    if (!el) return;
+    /** Ctrl 现在是不是还按着：读剪贴板要等一会儿，补发 V 时 Ctrl 可能已经松开 */
+    let ctrlHeld = false;
+    const XK_CONTROL_L = 0xffe3;
+    const onKey = (ev: KeyboardEvent) => {
+      if (ev.key === "Control") ctrlHeld = ev.type === "keydown";
+      if (ev.type !== "keydown" || ev.code !== "KeyV" || !ev.ctrlKey || ev.altKey || ev.metaKey || !rfbRef.current) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      const shift = ev.shiftKey;
+      void pushClipboard().finally(() => {
+        const rfb = rfbRef.current;
+        if (!rfb) return;
+        if (ctrlHeld) { rfb.sendKey(shift ? 0x56 : 0x76, "KeyV"); return; }
+        // 已经松开了 Ctrl：自己补一次 Ctrl+V，否则远程收到的只是一个 v
+        rfb.sendKey(XK_CONTROL_L, "ControlLeft", true);
+        rfb.sendKey(0x76, "KeyV");
+        rfb.sendKey(XK_CONTROL_L, "ControlLeft", false);
+      });
+    };
+    const released = () => { ctrlHeld = false; };
+    // 在画面外松开 Ctrl（焦点还在这个窗口，不会触发 blur）、画面失去焦点时，也要当作松开了
+    const onDocKeyUp = (ev: KeyboardEvent) => { if (ev.key === "Control") ctrlHeld = false; };
+    el.addEventListener("keydown", onKey, true);
+    el.addEventListener("keyup", onKey, true);
+    el.addEventListener("focusout", released);
+    document.addEventListener("keyup", onDocKeyUp, true);
+    window.addEventListener("blur", released);
+    return () => {
+      el.removeEventListener("keydown", onKey, true);
+      el.removeEventListener("keyup", onKey, true);
+      el.removeEventListener("focusout", released);
+      document.removeEventListener("keyup", onDocKeyUp, true);
+      window.removeEventListener("blur", released);
+    };
+  }, [pushClipboard]);
 
   // 换分辨率：跟随窗口交给 noVNC；原始改回连上时的尺寸；预设直接改（服务器还没说支持时先记下）
   const applyResolution = (rfb: RFB, resolution: string, pierlink: boolean) => {
@@ -331,27 +407,44 @@ export function DesktopPane({ serverId, visible, title, controls, windowTitle, s
     followingRef.current = mode !== "original" && !pierlink;
   };
 
+  // 独立窗口被直接关掉：先把被改过的远程分辨率改回去、断开，再关窗口（关窗口时页面来不及做清理）
+  useEffect(() => {
+    if (!standalone || !inTauri) return;
+    let off: (() => void) | undefined;
+    let alive = true;
+    void import("@tauri-apps/api/window").then(({ getCurrentWindow }) => getCurrentWindow().onCloseRequested(async () => {
+      const rfb = rfbRef.current;
+      if (followingRef.current && rfb && restoreRemoteSize(rfb, originalSize.current)) await new Promise((r) => setTimeout(r, 300));
+      followingRef.current = false;
+      disconnect();
+    })).then((u) => { if (alive) off = u; else u(); }, () => undefined);
+    return () => { alive = false; off?.(); };
+  }, [standalone, disconnect]);
+
   // 断开前把被改过的远程分辨率改回去，稍等发出去再断开
   const leave = () => {
     if (followingRef.current && rfbRef.current && restoreRemoteSize(rfbRef.current, originalSize.current)) setTimeout(disconnect, 300);
     else disconnect();
   };
 
-  // 在独立窗口打开：新窗口自己连（自动连上次连的这个桌面），这里断开
+  // 在独立窗口打开：新窗口自己连（自动连上次连的这个桌面），开出来后这里断开。
+  // 不把远程分辨率改回去：新窗口接着用（跟随窗口时它会按自己的大小再改）
   const popOut = async () => {
     if (phase.kind !== "connected" || !windowTitle) return;
     const session = phase.session;
-    const url = desktopWindowUrl(serverId, windowTitle);
-    if (inTauri) {
-      const { WebviewWindow } = await import("@tauri-apps/api/webviewWindow");
-      const win = new WebviewWindow(`desktop-${Date.now()}`, { url, title: windowTitle, width: 1280, height: 800, minWidth: 640, minHeight: 480 });
-      // 窗口没开出来：在这里重新连上，不要停在“已在独立窗口打开”
-      void win.once("tauri://error", () => { void connect(session); });
-    } else {
-      window.open(url.replace(/^index\.html/, "/"), "_blank");
+    let opened = false;
+    try {
+      opened = await openDesktopWindow(serverId, windowTitle, desktopWindowUrl(serverId, windowTitle));
+    } catch (e) {
+      // 后端的错误本身就是“没能打开独立窗口：原因”，不再套一层
+      setNotice(isAppError(e) ? formatError(e) : t("desktop.popOutFailed", { reason: String(e) }));
+      return;
     }
-    setPhase({ kind: "popped", session });
-    leave();
+    if (!opened) return;
+    followingRef.current = false;
+    disconnect();
+    if (onPoppedOut) onPoppedOut();
+    else setPhase({ kind: "popped", session });
   };
 
   const updatePrefs = (patch: Partial<ViewPrefs>) => {
@@ -366,10 +459,17 @@ export function DesktopPane({ serverId, visible, title, controls, windowTitle, s
     rfb.compressionLevel = QUALITY[next.quality].compression;
   };
 
-  const pasteToRemote = async () => {
-    const text = await readClipboardText().catch(() => null);
-    if (text) rfbRef.current?.clipboardPasteFrom(text);
-    rfbRef.current?.focus();
+  /** 把 Windows 剪贴板里的文字直接输入到远程（中文也能输），同时放进远程剪贴板；太长时只放进剪贴板 */
+  const typeToRemote = async () => {
+    const text = await readClipboardText().catch(() => "");
+    const rfb = rfbRef.current;
+    if (!rfb) return;
+    rfb.focus();
+    if (!text) return;
+    if (text !== lastClip.current) { lastClip.current = text; rfb.clipboardPasteFrom(text); }
+    const keys = typingKeysyms(text);
+    if (!keys) { setNotice(t("desktop.typeTooLong")); return; }
+    for (const k of keys) rfb.sendKey(k, null);
   };
 
   const submitPassword = (e: React.FormEvent) => {
@@ -416,11 +516,11 @@ export function DesktopPane({ serverId, visible, title, controls, windowTitle, s
                 ...(session?.pierlink ? [] : [{ value: "original", label: t("desktop.resOriginal") }]),
                 ...PRESETS.map((v) => ({ value: v, label: v.replace("x", "×") })),
               ]} />
-            <button type="button" className="pane__btn" title={t("desktop.paste")} aria-label={t("desktop.paste")} onClick={() => void pasteToRemote()}>
+            <button type="button" className="pane__btn" title={t("desktop.paste")} aria-label={t("desktop.paste")} onClick={() => void typeToRemote()}>
               <ClipboardPaste size={14} />
             </button>
             <button type="button" className="pane__btn" title={fullscreen ? t("desktop.exitFullscreen") : t("desktop.fullscreen")} aria-label={t("desktop.fullscreen")}
-              onClick={() => (fullscreen ? void document.exitFullscreen() : void rootRef.current?.requestFullscreen())}>
+              onClick={toggleFullscreen}>
               {fullscreen ? <Minimize size={14} /> : <Maximize size={14} />}
             </button>
             <button type="button" className="pane__btn" title={t("desktop.disconnect")} aria-label={t("desktop.disconnect")} onClick={leave}>
@@ -555,7 +655,7 @@ function CreateFailed({ state, onRetry, onBack }: {
     return true;
   });
   const acquireFailed = state.failures.length > 0;
-  const copy = (text: string) => { void navigator.clipboard.writeText(text).then(() => setCopied(text)); };
+  const copy = (text: string) => { void writeClipboardText(text).then(() => setCopied(text)); };
   const pick = async () => {
     const path = await (await getDesktopApi()).pickPackage().catch(() => null);
     if (path) onRetry({ ...request, manualPackage: path });
@@ -637,7 +737,7 @@ function SessionList({ detection, onConnect, onCreate }: {
           <>
             <pre className="mono desk__cmd">{cmd}</pre>
             <div className="desk__actions">
-              <Button onClick={() => { void navigator.clipboard.writeText(cmd).then(() => setCopied(true)); }}>{copied ? t("desktop.copied") : t("desktop.copy")}</Button>
+              <Button onClick={() => { void writeClipboardText(cmd).then(() => setCopied(true)); }}>{copied ? t("desktop.copied") : t("desktop.copy")}</Button>
             </div>
           </>
         )}

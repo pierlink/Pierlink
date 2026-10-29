@@ -6,6 +6,7 @@ import { formatError, isAppError } from "../../errors";
 import { describeForward, getForwardsApi, type ForwardInput, type ForwardKind, type ForwardRecord, type ForwardStatus } from "./api";
 import "./forwards.css";
 import { passwordBus } from "../passwords/bus";
+import { openInBrowser, writeClipboardText } from "../shell/clipboard";
 import { loginServer, needsLogin } from "../servers/login";
 
 /** 状态文字的色调 */
@@ -96,7 +97,10 @@ export function ForwardsSection({ serverId }: { serverId: string }) {
       .finally(() => setBusy(null));
   };
   const address = (f: ForwardRecord) => (f.kind === "remote" ? `127.0.0.1:${f.remotePort}` : `127.0.0.1:${f.localPort}`);
-  const openBrowser = (f: ForwardRecord) => window.open(`http://127.0.0.1:${f.localPort}/`, "_blank", "noopener");
+  // 用 Windows 的默认浏览器打开（WebView2 里的 window.open 不会交给系统浏览器）
+  const openBrowser = (f: ForwardRecord) => {
+    void openInBrowser(`http://127.0.0.1:${f.localPort}/`).catch((e: unknown) => setError({ title: t("forwards.openFailed", { name: f.name }), text: errorText(t, e) }));
+  };
 
   return (
     <section className="fwd" aria-label={t("forwards.title")}>
@@ -116,7 +120,7 @@ export function ForwardsSection({ serverId }: { serverId: string }) {
           onContextMenu={(e) => menu.open(e, [
             { id: "toggle", label: f.enabled ? t("forwards.disable") : t("forwards.enable"), onSelect: () => toggle(f, !f.enabled) },
             ...(f.kind === "local" ? [{ id: "browser", label: t("forwards.openBrowser"), disabled: f.status.state !== "running", onSelect: () => openBrowser(f) }] : []),
-            { id: "copy", label: t("forwards.copyAddress"), onSelect: () => void navigator.clipboard.writeText(address(f)) },
+            { id: "copy", label: t("forwards.copyAddress"), onSelect: () => void writeClipboardText(address(f)) },
             { kind: "separator" as const, id: "s1" },
             { id: "edit", label: t("forwards.edit"), onSelect: () => setEditing(f) },
             { kind: "separator" as const, id: "s2" },

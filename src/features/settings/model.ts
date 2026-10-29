@@ -16,12 +16,8 @@ export interface AppSettings {
     defaultShell: string | null;
     /** 粘贴多行内容前确认 */
     confirmMultilinePaste: boolean;
-    /** 有选中文字时右键直接复制（不弹菜单） */
-    rightClickCopy: boolean;
-    /** 没有选中文字时右键直接粘贴（不弹菜单） */
-    rightClickPaste: boolean;
-    /** 粘贴快捷键：选 Ctrl+Shift+V 时 Ctrl+V 发给程序；Ctrl+Shift+V 一直能粘贴 */
-    pasteKey: "ctrlV" | "ctrlShiftV";
+    /** 右键复制粘贴：有选中文字时右键复制，没有时右键粘贴；打开后右键不再弹菜单 */
+    rightClickCopyPaste: boolean;
     /** 关闭正在运行的终端标签前确认 */
     confirmClose: boolean;
     /** 广播输入时，回车前确认危险命令（rm -rf、reboot 等） */
@@ -54,7 +50,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   theme: "dark",
   language: "system",
   closeToTray: true,
-  terminal: { fontSize: 13, cursorStyle: "bar", cursorBlink: true, scrollback: 10000, defaultShell: null, confirmMultilinePaste: true, rightClickCopy: false, rightClickPaste: false, pasteKey: "ctrlV", confirmClose: true, broadcastConfirmDanger: true },
+  terminal: { fontSize: 13, cursorStyle: "bar", cursorBlink: true, scrollback: 10000, defaultShell: null, confirmMultilinePaste: true, rightClickCopyPaste: false, confirmClose: true, broadcastConfirmDanger: true },
   updates: { autoCheck: true },
   notices: { builtinSsh: false },
   syncDefaults: { watchDelayS: 10, conflictMode: "ask", keepVersions: true, ignoreRules: DEFAULT_IGNORE_RULES },
@@ -91,9 +87,8 @@ export function normalizeSettings(raw: unknown): AppSettings {
       scrollback: clamp(t.scrollback, 1000, 100000, d.terminal.scrollback),
       defaultShell: typeof t.defaultShell === "string" && t.defaultShell.length <= 200 ? t.defaultShell : null,
       confirmMultilinePaste: bool(t.confirmMultilinePaste, d.terminal.confirmMultilinePaste),
-      rightClickCopy: bool(t.rightClickCopy, d.terminal.rightClickCopy),
-      rightClickPaste: bool(t.rightClickPaste, d.terminal.rightClickPaste),
-      pasteKey: oneOf(t.pasteKey, ["ctrlV", "ctrlShiftV"] as const, d.terminal.pasteKey),
+      // 0.9.2 以前是两个开关（右键直接复制、右键直接粘贴）：开过其中任何一个，就当作打开了合并后的开关
+      rightClickCopyPaste: bool(t.rightClickCopyPaste, t.rightClickCopy === true || t.rightClickPaste === true || d.terminal.rightClickCopyPaste),
       broadcastConfirmDanger: bool(t.broadcastConfirmDanger, d.terminal.broadcastConfirmDanger),
       confirmClose: bool(t.confirmClose, d.terminal.confirmClose),
     },

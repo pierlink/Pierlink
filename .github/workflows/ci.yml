@@ -21,10 +21,10 @@ on:
         description: "只跑端到端测试：用这次运行（填运行编号）打好的安装包，跳过编译打包"
         type: string
         default: ""
-      old_installer_run:
-        description: "升级测试用的旧版安装包所在运行（本仓库里的运行编号）；留空跳过升级测试"
+      old_release:
+        description: "升级测试用的旧版：本仓库 Releases 里的版本标签（如 v0.9.1；只有公开仓库 pierlink/Pierlink 有 Release）；留空跳过升级测试"
         type: string
-        default: ""
+        default: "v0.9.1"
       engine:
         description: "内置 SSH 引擎试验：Linux 上多种 sshd 配置和老版本服务器、Windows 上编译和 ssh-agent"
         type: boolean
@@ -389,13 +389,12 @@ jobs:
           path: installer
           run-id: ${{ inputs.installer_run || github.run_id }}
           github-token: ${{ github.token }}
-      - uses: actions/download-artifact@v4
-        if: inputs.old_installer_run != ''
-        with:
-          name: pierlink-windows-installer
-          path: installer-old
-          run-id: ${{ inputs.old_installer_run }}
-          github-token: ${{ github.token }}
+      - name: 下载升级测试用的旧版安装包（本仓库的 Release）
+        if: inputs.old_release != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download "${{ inputs.old_release }}" -R "${{ github.repository }}" -p '*-setup.exe' -D installer-old
       - name: 启动本机 OpenSSH 服务器（当作“服务器”连接）
         continue-on-error: true
         shell: pwsh
@@ -419,7 +418,7 @@ jobs:
           "PIERLINK_TEST_WIN_SSHD_KEY=$key" >> $env:GITHUB_ENV
           "PIERLINK_TEST_WIN_SSHD_USER=$env:USERNAME" >> $env:GITHUB_ENV
       - name: 升级测试 1：装旧版，加一台服务器
-        if: inputs.old_installer_run != ''
+        if: inputs.old_release != ''
         shell: pwsh
         env:
           E2E_OUT: ${{ runner.temp }}\e2e-out
@@ -456,11 +455,12 @@ jobs:
           if (Test-Path (Join-Path $dir 'export_bindings.exe')) { throw '安装包里带了开发工具 export_bindings.exe' }
           "PIERLINK_EXE=$exe" >> $env:GITHUB_ENV
       - name: 升级测试 2：数据搬到新位置；关窗口缩到托盘；退出确认
-        if: ${{ !cancelled() && inputs.old_installer_run != '' }}
+        if: ${{ !cancelled() && inputs.old_release != '' }}
         shell: pwsh
         env:
           E2E_OUT: ${{ runner.temp }}\e2e-out
           E2E_PHASE: upgrade
+          E2E_OLD_VERSION: ${{ inputs.old_release }}
         run: node tests/e2e-windows/stage5.mjs
       - name: 端到端测试（每步截图）
         if: ${{ !cancelled() }}
@@ -582,7 +582,7 @@ jobs:
           # 数据已经搬走，安装目录应当整个删掉
           if (Test-Path $dir) { throw "卸载后安装目录还在：$((Get-ChildItem $dir -Recurse -Force | ForEach-Object FullName) -join ', ')" }
       - name: 重装后服务器和设置都还在
-        if: ${{ !cancelled() && inputs.old_installer_run != '' }}
+        if: ${{ !cancelled() && inputs.old_release != '' }}
         shell: pwsh
         env:
           E2E_OUT: ${{ runner.temp }}\e2e-out
@@ -602,7 +602,8 @@ jobs:
           if (-not (Test-Path "$env:LOCALAPPDATA\Pierlink\uninstall.exe")) { Start-Process $setup.FullName -ArgumentList '/S' -Wait }
           ./tests/e2e-windows/uninstall-delete-data.ps1
       - name: 升级后还没打开过新版就卸载并勾选删除数据：旧位置的数据也删掉
-        if: ${{ !cancelled() && inputs.old_installer_run != '' }}
+        # 只对把数据放在安装目录里的老版本（0.1、0.2）有意义；0.3 起数据已在新位置
+        if: ${{ !cancelled() && (startsWith(inputs.old_release, 'v0.1.') || startsWith(inputs.old_release, 'v0.2.')) }}
         shell: pwsh
         env:
           E2E_OUT: ${{ runner.temp }}\e2e-out\未打开新版

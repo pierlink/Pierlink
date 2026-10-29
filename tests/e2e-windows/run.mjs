@@ -47,6 +47,40 @@ function kill() {
 function setClipboard(text) {
   execFileSync("powershell.exe", ["-NoProfile", "-Command", `Set-Clipboard -Value '${text}'`]);
 }
+/** 读 Windows 剪贴板（经 base64 传出来，中文不受控制台代码页影响） */
+function getClipboard() {
+  const b64 = execFileSync("powershell.exe", ["-NoProfile", "-Command", "$t = Get-Clipboard -Raw; if ($null -eq $t) { $t = '' }; [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($t))"], { encoding: "utf8" }).trim();
+  return Buffer.from(b64, "base64").toString("utf8").replace(/\r?\n$/, "");
+}
+/** 等剪贴板变成 want（程序是异步写的） */
+async function waitClipboard(want, what, timeoutMs = 8000) {
+  const deadline = Date.now() + timeoutMs;
+  let got = "";
+  while (Date.now() < deadline) {
+    got = getClipboard();
+    if (got === want) return got;
+    await sleep(400);
+  }
+  throw new Error(`${what}：剪贴板是 ${JSON.stringify(got.slice(0, 120))}，应该是 ${JSON.stringify(want)}`);
+}
+/** 当前可见的第一个终端里，word 最后一次出现的位置（屏幕坐标） */
+const wordAt = (word) => p.js(`(()=>{const s=[...document.querySelectorAll('.pane-slot')].filter(s=>s.style.display!=='none')[0]; const rows=s?.querySelector('.xterm-rows'); if(!rows) return null; const w=document.createTreeWalker(rows, NodeFilter.SHOW_TEXT); let n, hit=null; while((n=w.nextNode())){ let i=n.textContent.indexOf(${JSON.stringify(word)}); while(i>=0){ hit=[n,i]; i=n.textContent.indexOf(${JSON.stringify(word)}, i+1); } } if(!hit) return null; const r=document.createRange(); r.setStart(hit[0],hit[1]); r.setEnd(hit[0],hit[1]+${JSON.stringify(word)}.length); const b=r.getBoundingClientRect(); return {x:b.x+b.width/2, y:b.y+b.height/2, left:b.x, right:b.x+b.width};})()`);
+/**
+ * 回到干净的提示符：点一下终端，按 Ctrl+C 再按回车。
+ * 前面的步骤粘贴后，控制台可能还停在“正在粘贴”的状态，Esc、Ctrl+C 都会被当成普通文字收进输入行（0.9.1 起就这样），
+ * 回车一定能结束这一行（留下的文字执行一下，报个“不认识的命令”无害）
+ */
+async function freshPrompt() {
+  await u.click(".pane-slot:not([style*='none']) .xterm-screen");
+  await u.key("c", "KeyC", 67, 2);
+  await sleep(300);
+  await u.enter();
+  await sleep(800);
+}
+/** 本机正在运行的 Edge 浏览器进程数（不算 WebView2） */
+function edgeCount() {
+  return Number(execFileSync("powershell.exe", ["-NoProfile", "-Command", "@(Get-Process msedge -ErrorAction SilentlyContinue).Count"], { encoding: "utf8" }).trim() || 0);
+}
 
 /** 当前可见的窗格数、标签数 */
 const counts = (p) => p.js(`({ panes: [...document.querySelectorAll('.pane-slot')].filter(s=>s.style.display!=='none').length, tabs: document.querySelectorAll('.tab').length })`);
@@ -233,6 +267,132 @@ await rec.step(p, "Ctrl+V 也只粘贴一次", async () => {
   const n = ((await u.termText()) ?? "").match(/PLCTRLV/g)?.length ?? 0;
   await u.key("Escape", "Escape", 27);
   if (n !== 1) throw new Error(`粘贴了 ${n} 次`);
+});
+
+// ---------- 4b. 0.9.2：复制、右键菜单、程序写剪贴板、链接 ----------
+await rec.step(p, "选中文字后 Ctrl+C 复制；Ctrl+Shift+C 也能复制", async () => {
+  await freshPrompt();
+  // 加引号：PowerShell 的 echo 会把不带引号的几个词分成几行输出
+  await u.typeLine('echo "PLCOPYA PLCOPYB"');
+  await u.waitFor(`(()=>{const s=[...document.querySelectorAll('.pane-slot')].filter(s=>s.style.display!=='none')[0]?.querySelector('.xterm-rows')?.innerText||''; return /^PLCOPYA PLCOPYB\\s*$/m.test(s);})()`, "echo 的输出", 10000);
+  setClipboard("empty");
+  let at = await wordAt("PLCOPYA");
+  await u.clickXY(at.x, at.y, "left", 2);
+  await u.key("c", "KeyC", 67, 2);
+  await waitClipboard("PLCOPYA", "Ctrl+C 复制");
+  at = await wordAt("PLCOPYB");
+  await u.clickXY(at.x, at.y, "left", 2);
+  await u.key("C", "KeyC", 67, 10);
+  await waitClipboard("PLCOPYB", "Ctrl+Shift+C 复制");
+  return "Ctrl+C、Ctrl+Shift+C 都复制了";
+});
+
+await rec.step(p, "右键菜单：有复制当前目录、在资源管理器中打开、左右和上下分屏，没有全选和清屏", async () => {
+  const term = await u.rect(".pane-slot:not([style*='none']) .xterm-screen");
+  const openMenu = async () => {
+    await u.clickXY(term.x + term.w / 2, term.y + term.h / 2, "right");
+    return u.waitFor(`(()=>{const m=document.querySelector('[role=menu]'); return m ? [...m.querySelectorAll('[role=menuitem]')].map(x=>x.textContent.trim()) : null;})()`, "终端的右键菜单", 5000);
+  };
+  const items = await openMenu();
+  for (const want of ["Copy", "Paste", "Copy current folder", "Open in File Explorer", "Split left and right", "Split top and bottom"]) {
+    if (!items.some((x) => x.startsWith(want))) throw new Error(`菜单里没有“${want}”：${items.join(" / ")}`);
+  }
+  if (items.some((x) => /^(Select all|Clear)/.test(x))) throw new Error(`菜单里还有全选或清屏：${items.join(" / ")}`);
+  setClipboard("empty");
+  await u.clickText("Copy current folder", "[role=menu]");
+  await sleep(800);
+  const dir = getClipboard();
+  if (!/^[A-Za-z]:\\/.test(dir) || !existsSync(dir)) throw new Error(`复制的当前目录不对：${dir}`);
+  const before = (await counts(p)).panes;
+  await openMenu();
+  await u.clickText("Split left and right", "[role=menu]");
+  await u.waitFor(`[...document.querySelectorAll('.pane-slot')].filter(s=>s.style.display!=='none').length === ${before + 1}`, "旁边多了一个窗格", 10000);
+  await u.waitFor(`/PS /.test([...document.querySelectorAll('.pane-slot')].filter(s=>s.style.display!=='none')[1]?.querySelector('.xterm-rows')?.innerText||'')`, "新窗格出现提示符", 30000);
+  await sleep(1500);
+  await u.click(".pane-slot:not([style*='none']) .pane__btn--close", 1);
+  await u.waitFor(`[...document.querySelectorAll('.pane-slot')].filter(s=>s.style.display!=='none').length === ${before}`, "新窗格关掉了", 10000);
+  return `菜单：${items.join(" / ")}｜当前目录 ${dir}`;
+});
+
+await rec.step(p, "程序发来的复制请求（OSC 52）写进 Windows 剪贴板，中文不乱码", async () => {
+  setClipboard("empty");
+  await freshPrompt();
+  await u.typeLine("[Console]::Write([char]27 + ']52;c;' + [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes('PLOSC52 中文')) + [char]7)");
+  await waitClipboard("PLOSC52 中文", "OSC 52 复制");
+  return "剪贴板是 PLOSC52 中文";
+});
+
+await rec.step(p, "链接：拖选链接里的文字不弹确认框；单击弹出确认框，能复制链接、用系统浏览器打开", async () => {
+  const url = "https://example.com/pierlink-e2e-link";
+  await freshPrompt();
+  await u.typeLine(`echo ${url}`);
+  await u.waitFor(`(()=>{const s=[...document.querySelectorAll('.pane-slot')].filter(s=>s.style.display!=='none')[0]?.querySelector('.xterm-rows')?.innerText||''; return s.split(/\\n/).some(l=>l.trim()===${JSON.stringify(url)});})()`, "echo 的输出", 10000);
+  const at = await wordAt(url);
+  await u.drag(at.left + 40, at.y, at.right - 40, at.y);
+  await sleep(1200);
+  const afterDrag = await u.dialogText();
+  if (afterDrag) throw new Error(`拖选链接里的文字弹出了确认框：${afterDrag}`);
+  const openDialog = async () => {
+    // 先移到旁边的格子再移回来：xterm 只在鼠标换到新的格子时才重新识别链接，回到原来那一格不算
+    await u.mouse("mouseMoved", at.x - 20, at.y, "none", 0);
+    await sleep(200);
+    await u.mouse("mouseMoved", at.x, at.y, "none", 0);
+    await sleep(600);
+    await u.clickXY(at.x, at.y);
+    return u.waitFor(`document.querySelector('.pl-dialog')?.innerText || null`, "链接确认框", 5000);
+  };
+  const d = await openDialog();
+  if (!d.includes(url)) throw new Error(`确认框里没有这个链接：${d}`);
+  setClipboard("empty");
+  await u.clickText("Copy link", ".pl-dialog");
+  await waitClipboard(url, "复制链接");
+  await u.waitFor(`!document.querySelector('.pl-dialog')`, "复制后确认框关掉", 5000);
+  const edges = edgeCount();
+  await openDialog();
+  await u.clickText("Open", ".pl-dialog");
+  await u.waitFor(`!document.querySelector('.pl-dialog')`, "打开后确认框关掉（没有报错）", 8000);
+  const deadline = Date.now() + 20000;
+  while (edgeCount() <= edges && Date.now() < deadline) await sleep(1000);
+  const opened = edgeCount() > edges;
+  try { execFileSync("taskkill.exe", ["/IM", "msedge.exe", "/F"], { stdio: "ignore" }); } catch { /* 已经退出 */ }
+  if (!opened) throw new Error("点“打开”后没有启动系统浏览器（Edge 进程没有出现）");
+  return "拖选不弹框；复制链接、用 Edge 打开都正常";
+});
+
+await rec.step(p, "打开“右键复制粘贴”：有选中时右键复制、没选中时右键粘贴，都不弹菜单", async () => {
+  const toggle = async (on) => {
+    await u.clickText("Settings", "nav");
+    await u.clickText("Terminal", ".settings__nav");
+    const sel = `[role=switch][aria-label="Right-click copy and paste"]`;
+    await u.waitFor(`!!document.querySelector(${JSON.stringify(sel)})`, "设置里的“右键复制粘贴”");
+    if ((await p.js(`document.querySelector(${JSON.stringify(sel)}).getAttribute('aria-checked')`)) !== String(on)) await u.click(sel);
+    await u.waitFor(`document.querySelector(${JSON.stringify(sel)})?.getAttribute('aria-checked')===${JSON.stringify(String(on))}`, "开关切换好");
+    await u.clickText("Workspace", "nav");
+    await sleep(600);
+  };
+  await toggle(true);
+  try {
+    await freshPrompt();
+    await u.typeLine("echo PLRIGHTCOPY");
+    await u.waitFor(`/^PLRIGHTCOPY\\s*$/m.test([...document.querySelectorAll('.pane-slot')].filter(s=>s.style.display!=='none')[0]?.querySelector('.xterm-rows')?.innerText||'')`, "echo 的输出", 10000);
+    setClipboard("empty");
+    const at = await wordAt("PLRIGHTCOPY");
+    await u.clickXY(at.x, at.y, "left", 2);
+    await u.clickXY(at.x, at.y, "right");
+    await waitClipboard("PLRIGHTCOPY", "右键复制");
+    if (await p.js(`!!document.querySelector('[role=menu]')`)) throw new Error("右键复制后还弹出了菜单");
+    setClipboard("PLRIGHTPASTE");
+    const term = await u.rect(".pane-slot:not([style*='none']) .xterm-screen");
+    await u.clickXY(term.x + term.w / 2, term.y + term.h - 12, "right");
+    await sleep(1200);
+    if (await p.js(`!!document.querySelector('[role=menu]')`)) throw new Error("没选中时右键弹出了菜单");
+    const n = ((await u.termText()) ?? "").match(/PLRIGHTPASTE/g)?.length ?? 0;
+    await u.key("Escape", "Escape", 27);
+    if (n !== 1) throw new Error(`右键粘贴了 ${n} 次`);
+  } finally {
+    await toggle(false);
+  }
+  return "右键复制、右键粘贴各一次，没有菜单";
 });
 
 // ---------- 5. 分屏与拖动 ----------

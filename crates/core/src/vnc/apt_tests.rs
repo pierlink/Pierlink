@@ -5,6 +5,7 @@ use super::{
 use serde_json::json;
 use std::{
     fs,
+    os::unix::fs::PermissionsExt,
     path::Path,
     sync::{Mutex, atomic::AtomicBool},
 };
@@ -38,11 +39,12 @@ esac
         r#"#!/bin/sh
 printf '%s\n' "$*" >> "$HOME/cache-calls"
 for arg do
-  case "$arg" in openbox|xterm|dbus|dbus-bin|dbus-daemon|fontconfig|fonts-dejavu-core|fonts-wqy-microhei|xauth|x11-xkb-utils|xkb-data|tigervnc-common|libgtk-3-bin|libdbus-glib-1-2|libnss3) printf '%s\n' "$arg";; esac
+  case "$arg" in openbox|xterm|dbus|dbus-bin|dbus-daemon|fontconfig|fonts-dejavu-core|fonts-wqy-microhei|xauth|x11-xkb-utils|xkb-data|tigervnc-common|libgtk-3-bin|libdbus-glib-1-2|libnss3) printf '%s\n  Depends: libmissing:amd64\n' "$arg";; esac
 done
 cat <<'EOF'
 tigervnc-standalone-server
   Depends: <虚包>
+    libc6:amd64
   Depends: libmissing:amd64
   Depends: libc6:amd64
 libmissing:amd64
@@ -389,4 +391,117 @@ fn 仅无可用会话且_apt_齐全时报告轻量桌面能力() {
     assert!(script.contains("desktop_names=OPENBOX"));
     assert!(script.contains("--dbus-daemon="));
     assert!(!script.contains("entry=$xsessions/$desktop_id.desktop"));
+}
+
+#[test]
+fn 候选依赖只选首个可用项且复用已安装或已在闭包中的项() {
+    for (first, installed, roots, expected) in [
+        (true, false, "root", "root\na\na-child"),
+        (false, false, "root", "root\nb\nb-child"),
+        (true, true, "root", "root"),
+        (true, false, "root b", "root\nb\nb-child"),
+    ] {
+        let (root, program, mut cmd) = local();
+        let bin = root.path().join("bin");
+        fs::create_dir(&bin).unwrap();
+        script_file(
+            &bin.join("dpkg-query"),
+            if installed {
+                "#!/bin/sh\nfor arg do p=$arg; done\n[ \"$p\" = b ] && printf 'install ok installed'\n"
+            } else {
+                "#!/bin/sh\nexit 1\n"
+            },
+        );
+        cmd.env
+            .push(("PATH".into(), format!("{}:/usr/bin:/bin", bin.display())));
+        let first_name = if first { "a" } else { "<a>" };
+        let graph = format!(
+            "root\n |Depends: {first_name}\n  Depends: b\na\n  Depends: a-child\na-child\nb\n  Depends: b-child\nb-child\n"
+        );
+        fs::write(root.path().join("depends"), graph).unwrap();
+        let script = format!(
+            "{}\nwork=$HOME\npackages=$(dependency_closure {roots}) || fail download_failed\nprintf '{{\"packages\":'; json \"$packages\"; printf '}}'",
+            include_str!("apt.sh")
+        );
+        let result = desktop::run(&program, &cmd, &script, 10).unwrap();
+        assert_eq!(result["packages"], expected);
+    }
+}
+
+#[test]
+fn 终端资源在会话前生成且拒绝链接路径() {
+    let (root, program, mut cmd) = local();
+    let bin = root.path().join("bin");
+    fs::create_dir(&bin).unwrap();
+    for name in ["xterm", "openbox"] {
+        script_file(
+            &bin.join(name),
+            &format!(
+                "#!/bin/sh\n[ -r \"$XENVIRONMENT\" ] || exit 1\nprintf '%s' \"$XENVIRONMENT\" > \"$HOME/{name}-environment\"\n"
+            ),
+        );
+    }
+    script_file(
+        &bin.join("openbox"),
+        r#"#!/bin/sh
+n=0
+while [ ! -s "$HOME/xterm-environment" ] && [ "$n" -lt 100 ]; do sleep .01; n=$((n+1)); done
+printf '%s' "$XENVIRONMENT" > "$HOME/openbox-environment"
+"#,
+    );
+    cmd.env
+        .push(("PATH".into(), format!("{}:/usr/bin:/bin", bin.display())));
+    let cache = root.path().join("会话 ' 空格");
+    fs::create_dir(&cache).unwrap();
+    script_file(
+        &root.path().join("session"),
+        include_str!("light_session.sh"),
+    );
+    cmd.env
+        .push(("XDG_CACHE_HOME".into(), cache.to_str().unwrap().into()));
+    let body = r#"light_xresources
+saved=$(session_environment)
+unset XENVIRONMENT
+eval "$saved"
+"$HOME/session"
+printf '{"path":'; json "$XENVIRONMENT"; printf '}'"#;
+    let result = desktop::run(&program, &cmd, body, 10).unwrap();
+    let resource = cache.join("Xresources");
+    assert_eq!(result["path"], resource.to_str().unwrap());
+    // 首个终端是异步启动的，等待它完成写入后再核对继承环境。
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while !root.path().join("xterm-environment").exists() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    for name in ["xterm", "openbox"] {
+        assert_eq!(
+            fs::read_to_string(root.path().join(format!("{name}-environment"))).unwrap(),
+            resource.to_str().unwrap()
+        );
+    }
+    assert_eq!(
+        fs::metadata(&resource).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    let text = fs::read_to_string(&resource).unwrap();
+    assert!(text.contains("XTerm*selectToClipboard: true"));
+    assert!(text.contains("Ctrl Shift <Key>C: copy-selection(CLIPBOARD)"));
+    assert!(text.find("Ctrl Shift <Key>V").unwrap() < text.find("Ctrl ~Shift <Key>v").unwrap());
+    assert!(!text.contains("<Key>c:"));
+    let outside = root.path().join("outside");
+    fs::write(&outside, "保持原文").unwrap();
+    // 保留已有资源文件，以另一缓存目录检查符号链接拒绝。
+    let linked = root.path().join("linked");
+    fs::create_dir(&linked).unwrap();
+    std::os::unix::fs::symlink(&outside, linked.join("Xresources")).unwrap();
+    cmd.env.retain(|(key, _)| key != "XDG_CACHE_HOME");
+    cmd.env
+        .push(("XDG_CACHE_HOME".into(), linked.to_str().unwrap().into()));
+    assert_eq!(
+        desktop::run(&program, &cmd, "light_xresources", 10)
+            .unwrap_err()
+            .code,
+        "vnc.unsafe_path"
+    );
+    assert_eq!(fs::read_to_string(outside).unwrap(), "保持原文");
 }

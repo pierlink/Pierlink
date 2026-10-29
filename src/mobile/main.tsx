@@ -1,7 +1,7 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import "../styles/base.css";
-import "../i18n";
+import "./i18n";
 import { applyTheme } from "../theme";
 import { MobileApp } from "./App";
 import "./mobile.css";

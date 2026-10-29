@@ -169,7 +169,7 @@ impl Shared {
                 None
             } else {
                 let cookie = single_header(&parts.headers, header::COOKIE.as_str());
-                let authenticated = self.authenticate(cookie, connection);
+                let authenticated = self.authenticate(cookie, connection, peer);
                 if authenticated.is_ok() {
                     renewal = cookie
                         .and_then(|cookie| {
@@ -203,7 +203,11 @@ impl Shared {
                 {
                     audit.record.device_name = pairing.device_name.trim().into();
                 }
-                let (device, token) = self.pair(pairing, peer).await?;
+                let user_agent = parts
+                    .headers
+                    .get(header::USER_AGENT)
+                    .map(|value| String::from_utf8_lossy(value.as_bytes()));
+                let (device, token) = self.pair(pairing, peer, user_agent.as_deref()).await?;
                 audit.record.device_name = device.name.clone();
                 let mut response = json_response(
                     StatusCode::OK,
@@ -214,16 +218,26 @@ impl Shared {
                     .insert(header::SET_COOKIE, device_cookie(&token)?);
                 return Ok(response);
             }
-            tokio::time::timeout(
-                self.limits.idle,
+            tokio::time::timeout(self.limits.idle, async {
+                if let Route::Static(path) = route {
+                    let accept_encoding = parts
+                        .headers
+                        .get_all(header::ACCEPT_ENCODING)
+                        .iter()
+                        .filter_map(|v| v.to_str().ok())
+                        .collect::<Vec<_>>()
+                        .join(",");
+                    return assets::serve(self.assets.clone(), path, Some(&accept_encoding)).await;
+                }
                 self.dispatch(
                     &route,
                     parts.uri.query(),
                     &body,
                     device.as_ref(),
                     connection,
-                ),
-            )
+                )
+                .await
+            })
             .await
             .map_err(|_| error("mobile.request_timeout", "桌面操作超时"))?
         }
@@ -325,7 +339,6 @@ impl Shared {
                     self.events(device.ok_or_else(|| error("mobile.unauthorized", "设备未配对"))?)
                 );
             }
-            Route::Static(path) => return assets::serve(self.assets.clone(), path).await,
             _ => return Err(error("mobile.not_found", "手机接口不存在")),
         };
         Ok(json_response(StatusCode::OK, value))
@@ -386,7 +399,10 @@ impl Shared {
             .is_some_and(|d| {
                 d.device.active(now())
                     && d.device.permissions.view
-                    && db.touch_mobile_device(id, now()).is_ok()
+                    && (now() - d.device.last_active_at < auth::TOUCH_INTERVAL_SECONDS
+                        || db
+                            .touch_mobile_device(id, now(), d.device.last_ip.as_deref())
+                            .is_ok())
             })
     }
 }

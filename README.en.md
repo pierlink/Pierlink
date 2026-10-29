@@ -31,7 +31,9 @@ English · [简体中文](README.md)
 ### Terminals
 - Server and local terminals with tabs, split panes and drag-to-rearrange; terminals keep running when you switch pages
 - Broadcast input to several panes; command snippets with variables
-- Shift+Enter inserts a new line without running it (in shells, Claude Code and Codex); text Claude Code and similar tools copy lands in your local clipboard; the paste shortcut and right-click copy/paste follow your habit
+- Shift+Enter inserts a new line without running it (in shells, Claude Code and Codex); Ctrl+C copies selected text and Ctrl+V pastes; right-click copy and paste can be turned on
+- Text copied in Claude Code, vim and similar tools lands in your local clipboard (inside tmux too); links in the terminal open in your Windows browser
+- Drag files from File Explorer into a local terminal to insert their paths (written the way PowerShell, Command Prompt or WSL expects)
 - Server overview pinned to the terminal: CPU, memory, swap, GPU, disk per mount point, network speed
 
 ### Connections
@@ -59,14 +61,15 @@ English · [简体中文](README.md)
 - View a server's VNC desktop in a tab, split next to terminals; over SSH, no ports opened
 - Finds existing desktops on the server (TigerVNC and others); enter the password once and remember it
 - No desktop on the server? Create one in a click: only you can connect, and it keeps running after you close the tab; TigerVNC is fetched automatically, no admin rights needed
-- Quality, scaling, match remote resolution to window, paste to remote, full screen
+- Quality, scaling, remote resolution that follows the window or a preset, full screen, separate window
+- Copy and paste between Windows and the desktop with plain Ctrl+C and Ctrl+V; type the clipboard text (Chinese included) into the desktop
 
 ### Phone access
 <img src="assets/readme/phone-en.png" alt="Answering an AI confirmation on a phone" width="240" align="right">
 
 - Away from your PC, answer AI confirmations, check server status and type commands in open terminals from your phone's browser
 - Connects to your PC over Tailscale or your LAN — never exposed to the internet, and no Pierlink relay service involved
-- Pair with a QR code and approve on the PC; permissions per phone, revocable any time
+- Pair with a QR code and approve on the PC; per-phone permissions and names, revocable any time
 - Works on iPhone and Android, no app to install
 
 <br clear="right">

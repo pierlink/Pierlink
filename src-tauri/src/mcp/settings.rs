@@ -144,7 +144,9 @@ pub fn load(app: &AppHandle) -> McpSettingsDto {
 /// :param settings: 界面提交的设置
 /// :return: 保存后的设置；文件夹不是绝对路径、端口不合法或重复时返回 server.invalid_field 类的错误
 pub fn save(app: &AppHandle, settings: McpSettingsDto) -> Result<McpSettingsDto, AppError> {
-    let settings = normalize(settings)?;
+    // 已经保存过的文件夹不再检查是不是网络盘：以前的版本存进去的，不能让以后每次保存都失败
+    let known = saved_folders(&load(app));
+    let settings = normalize(settings, &known)?;
     app.state::<DbState>()
         .with(|db| db.set_setting(SETTINGS_KEY, &settings))?;
     Ok(settings)
@@ -167,7 +169,19 @@ fn invalid(field: &str) -> AppError {
     AppError::new("mcp.invalid_setting").with("field", field)
 }
 
-fn normalize_entry(mut e: EntrySettingsDto) -> Result<EntrySettingsDto, AppError> {
+/// 设置里已经有的所有授权文件夹（Windows 入口和各服务器入口）
+fn saved_folders(settings: &McpSettingsDto) -> Vec<String> {
+    std::iter::once(&settings.windows)
+        .chain(settings.servers.iter().map(|s| &s.entry))
+        .flat_map(|e| e.folders.iter().map(|f| f.trim().to_owned()))
+        .collect()
+}
+
+/// :param known: 已经保存过的文件夹（只对新加的检查是不是网络盘）
+fn normalize_entry(
+    mut e: EntrySettingsDto,
+    known: &[String],
+) -> Result<EntrySettingsDto, AppError> {
     let mut folders = Vec::new();
     for folder in e.folders {
         let folder = folder.trim().to_owned();
@@ -176,6 +190,14 @@ fn normalize_entry(mut e: EntrySettingsDto) -> Result<EntrySettingsDto, AppError
         }
         if !Path::new(&folder).is_absolute() {
             return Err(invalid("folders").with("value", folder));
+        }
+        // 新加的网络盘文件夹不能授权（规范化成 UNC 后会被拒，AI 那边看不到它）：保存时就说清楚。
+        // 只拦这一种：暂时不存在的文件夹（如移动硬盘没插）照常保存，AI 列授权目录时会标出原因
+        if !known.contains(&folder)
+            && let Err(e) = pierlink_core::mcp::tools::files::validate_folder(Path::new(&folder))
+            && e.code == "mcp.network_folder"
+        {
+            return Err(e);
         }
         if !folders.contains(&folder) {
             folders.push(folder);
@@ -187,8 +209,8 @@ fn normalize_entry(mut e: EntrySettingsDto) -> Result<EntrySettingsDto, AppError
     Ok(e)
 }
 
-fn normalize(mut settings: McpSettingsDto) -> Result<McpSettingsDto, AppError> {
-    settings.windows = normalize_entry(settings.windows)?;
+fn normalize(mut settings: McpSettingsDto, known: &[String]) -> Result<McpSettingsDto, AppError> {
+    settings.windows = normalize_entry(settings.windows, known)?;
     let mut servers: Vec<ServerEntrySettingsDto> = Vec::new();
     for mut s in settings.servers {
         if s.port < 1024 {
@@ -198,7 +220,7 @@ fn normalize(mut settings: McpSettingsDto) -> Result<McpSettingsDto, AppError> {
         if servers.iter().any(|x| x.server_id == s.server_id) {
             continue;
         }
-        s.entry = normalize_entry(s.entry)?;
+        s.entry = normalize_entry(s.entry, known)?;
         servers.push(s);
     }
     settings.servers = servers;
@@ -259,7 +281,7 @@ mod tests {
         let mut s = McpSettingsDto::default();
         s.windows.folders = vec![" ".into(), "relative".into()];
         assert_eq!(
-            normalize(s.clone()).unwrap_err().code,
+            normalize(s.clone(), &[]).unwrap_err().code,
             "mcp.invalid_setting"
         );
         let absolute = if cfg!(windows) { r"D:\work" } else { "/work" };
@@ -269,17 +291,45 @@ mod tests {
             server_entry("a", DEFAULT_PORT, true),
             server_entry("a", 50000, true),
         ];
-        let n = normalize(s.clone()).unwrap();
+        let n = normalize(s.clone(), &[]).unwrap();
         assert_eq!(n.windows.folders, vec![absolute.to_owned()]);
         assert_eq!(n.windows.servers, vec!["a".to_owned(), "b".to_owned()]);
         assert_eq!(n.servers.len(), 1);
         s.servers = vec![server_entry("a", 22, true)];
-        assert_eq!(normalize(s).unwrap_err().code, "mcp.invalid_setting");
+        assert_eq!(normalize(s, &[]).unwrap_err().code, "mcp.invalid_setting");
     }
 
     #[test]
     fn 旧数据缺字段时按默认值读() {
         let s: McpSettingsDto = serde_json::from_str(r#"{"enabled":true}"#).unwrap();
         assert!(s.enabled && s.windows.windows_commands && s.servers.is_empty());
+    }
+
+    #[test]
+    fn 新加的网络盘文件夹保存时拒绝_以前存过的照常保存() {
+        let unc = if cfg!(windows) {
+            r"\\nas\share\work"
+        } else {
+            "//nas/share/work"
+        };
+        let mut s = McpSettingsDto::default();
+        s.windows.folders = vec![unc.into()];
+        assert_eq!(
+            normalize(s.clone(), &[]).unwrap_err().code,
+            "mcp.network_folder"
+        );
+        // 以前的版本已经存进去了：再保存别的设置不能因为它失败
+        let n = normalize(s, &[unc.to_owned()]).unwrap();
+        assert_eq!(n.windows.folders, vec![unc.to_owned()]);
+    }
+
+    #[test]
+    fn 已保存的文件夹包括各服务器入口的() {
+        let mut s = McpSettingsDto::default();
+        s.windows.folders = vec![" /a ".into()];
+        let mut server = server_entry("x", DEFAULT_PORT, true);
+        server.entry.folders = vec!["/b".into()];
+        s.servers.push(server);
+        assert_eq!(saved_folders(&s), vec!["/a".to_owned(), "/b".to_owned()]);
     }
 }

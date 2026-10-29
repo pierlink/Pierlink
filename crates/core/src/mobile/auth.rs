@@ -9,7 +9,7 @@ use zeroize::Zeroizing;
 
 const INVITE_LIFETIME: Duration = Duration::from_secs(600);
 const RATE_WINDOW: Duration = Duration::from_secs(60);
-const TOUCH_INTERVAL_SECONDS: i64 = 60;
+pub(super) const TOUCH_INTERVAL_SECONDS: i64 = 60;
 struct TokenDigest;
 impl OutputSizeUser for TokenDigest {
     type OutputSize = U32;
@@ -42,8 +42,11 @@ impl Default for Pairing {
     }
 }
 impl Pairing {
-    pub(super) fn invalidate(&mut self) {
+    pub(super) fn cancel_invites(&mut self) {
         self.invite = None;
+    }
+    pub(super) fn invalidate(&mut self) {
+        self.cancel_invites();
         self.generation.send_modify(|v| *v = v.wrapping_add(1));
     }
     fn consume(&mut self, code: &str, peer: IpAddr) -> Result<watch::Receiver<u64>, AppError> {
@@ -122,14 +125,9 @@ impl Shared {
         &self,
         request: PairRequest,
         peer: IpAddr,
+        user_agent: Option<&str>,
     ) -> Result<(Device, Zeroizing<String>), AppError> {
-        let name = request.device_name.trim();
-        if name.is_empty() || name.chars().count() > 80 || name.chars().any(char::is_control) {
-            return Err(error(
-                "mobile.invalid_request",
-                "设备名必须为一至八十个可显示字符",
-            ));
-        }
+        let name = device_name(&request.device_name)?;
         let consumed = lock(&self.pairing).consume(&request.code, peer);
         let mut generation = match consumed {
             Ok(generation) => generation,
@@ -149,7 +147,7 @@ impl Shared {
         if !approved {
             return Err(error("mobile.pair_denied", "桌面拒绝了配对"));
         }
-        // 和作废邀请、撤销全部串行提交，旧审批不能在撤销之后重新创建凭据。
+        // 和更换邀请码、撤销全部串行提交，旧审批不能在撤销之后重新创建凭据。
         let pairing = lock(&self.pairing);
         if *generation.borrow() != *pairing.generation.borrow()
             || generation.has_changed().unwrap_or(true)
@@ -178,6 +176,10 @@ impl Shared {
         let device = Device {
             id: uuid::Uuid::new_v4().to_string(),
             name: name.into(),
+            user_agent: user_agent
+                .map(clean_user_agent)
+                .filter(|value| !value.is_empty()),
+            last_ip: Some(peer.to_string()),
             permissions: Permissions::default(),
             created_at: now(),
             last_active_at: now(),
@@ -191,6 +193,7 @@ impl Shared {
         &self,
         cookie: Option<&str>,
         connection: u64,
+        peer: IpAddr,
     ) -> Result<Device, AppError> {
         let invalid = || error("mobile.unauthorized", "设备未配对、已撤销或已失效");
         let cookie = cookie.ok_or_else(invalid)?;
@@ -218,12 +221,6 @@ impl Shared {
                     matched = Some(stored.device);
                 }
             }
-            // 终端画面每秒轮询一次，活跃时间最多每分钟写一次库
-            if let Some(device) = &matched
-                && now() - device.last_active_at >= TOUCH_INTERVAL_SECONDS
-            {
-                db.touch_mobile_device(&device.id, now())?;
-            }
         }
         let mut device = matched.ok_or_else(invalid)?;
         let entry = state.connections.get_mut(&connection).ok_or_else(invalid)?;
@@ -231,9 +228,23 @@ impl Shared {
             return Err(invalid());
         }
         entry.device = Some(device.id.clone());
-        device.last_active_at = now();
+        let at = now();
+        let peer = peer.to_string();
+        // 相同来源最多每分钟写一次；切换网络时立即记录，认证失败不刷新设备信息。
+        if at - device.last_active_at >= TOUCH_INTERVAL_SECONDS
+            || device.last_ip.as_deref() != Some(&peer)
+        {
+            lock(&state.db).touch_mobile_device(&device.id, at, Some(&peer))?;
+        }
+        device.last_active_at = device.last_active_at.max(at);
+        device.last_ip = Some(peer);
         Ok(device)
     }
+}
+
+fn clean_user_agent(value: &str) -> String {
+    let cleaned: String = value.chars().filter(|c| !c.is_control()).collect();
+    cleaned.trim().chars().take(256).collect()
 }
 
 #[cfg(test)]
@@ -244,6 +255,16 @@ pub(super) fn expire_invite(shared: &Shared) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn 浏览器标识去控制字符和首尾空白并按字符截断() {
+        assert_eq!(clean_user_agent(" \t浏\0览\n器\u{7f}\u{85} \r"), "浏览器");
+        assert_eq!(
+            clean_user_agent(&format!("  {}尾  ", "机".repeat(256))),
+            "机".repeat(256)
+        );
+        assert_eq!(clean_user_agent(" \t\r\n "), "");
+    }
 
     #[test]
     fn 来源窗口滑动过期并且记录总量有界() {

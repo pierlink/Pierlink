@@ -24,7 +24,17 @@ export interface MobileStatus {
 
 export interface MobileInvite { code: string; expiresAtMs: number; url: string; qrSvg: string }
 export interface MobilePermissions { view: boolean; input: boolean; confirm: boolean }
-export interface MobileDevice { id: string; name: string; createdMs: number; lastSeenMs: number | null; permissions: MobilePermissions }
+export interface MobileDevice {
+  id: string;
+  name: string;
+  createdMs: number;
+  lastSeenMs: number | null;
+  /** 配对时浏览器报告的 User-Agent（显示成“iPhone · Safari”这类说明） */
+  userAgent: string | null;
+  /** 最近一次连过来的 IP */
+  lastIp: string | null;
+  permissions: MobilePermissions;
+}
 export interface PairRequest { id: number; name: string; ip: string }
 
 export interface MobileApi {
@@ -32,8 +42,11 @@ export interface MobileApi {
   /** 打开或关闭手机入口，改监听地址和端口 */
   configure(enabled: boolean, bind: string | null, port: number): Promise<MobileStatus>;
   invite(): Promise<MobileInvite>;
+  /** 作废还没用过的邀请码（关掉二维码时） */
+  cancelInvite(): Promise<void>;
   devices(): Promise<MobileDevice[]>;
   setPermissions(id: string, p: MobilePermissions): Promise<void>;
+  rename(id: string, name: string): Promise<void>;
   revoke(id: string): Promise<void>;
   revokeAll(): Promise<void>;
   /** 回答配对请求 */
@@ -49,7 +62,11 @@ function previewApi(): MobileApi {
     enabled: false, running: false, bind: null, port: 48600, url: null, error: null,
     addresses: [{ ip: "100.101.12.34", kind: "tailscale", name: "Tailscale" }, { ip: "192.168.1.23", kind: "lan", name: "以太网" }, { ip: "127.0.0.1", kind: "loopback", name: "本机" }],
   };
-  let devices: MobileDevice[] = [{ id: "d1", name: "iPhone", createdMs: Date.now() - 86400000 * 3, lastSeenMs: Date.now() - 600000, permissions: { view: true, input: false, confirm: true } }];
+  let devices: MobileDevice[] = [{
+    id: "d1", name: "iPhone", createdMs: Date.now() - 86400000 * 3, lastSeenMs: Date.now() - 600000,
+    userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1",
+    lastIp: "100.101.12.40", permissions: { view: true, input: false, confirm: true },
+  }];
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 29 29"><rect width="29" height="29" fill="#fff"/><path d="M1 1h7v7H1zM21 1h7v7h-7zM1 21h7v7H1z" fill="none" stroke="#000" stroke-width="1"/><rect x="11" y="11" width="7" height="7" fill="#000"/></svg>`;
   return {
     status: async () => status,
@@ -58,8 +75,10 @@ function previewApi(): MobileApi {
       return status;
     },
     invite: async () => ({ code: "K7QX4M2P", expiresAtMs: Date.now() + 600000, url: `${status.url ?? "http://100.101.12.34:48600/"}?code=K7QX4M2P`, qrSvg: svg }),
+    cancelInvite: async () => {},
     devices: async () => devices,
     setPermissions: async (id, p) => { devices = devices.map((d) => (d.id === id ? { ...d, permissions: p } : d)); },
+    rename: async (id, name) => { devices = devices.map((d) => (d.id === id ? { ...d, name } : d)); },
     revoke: async (id) => { devices = devices.filter((d) => d.id !== id); },
     revokeAll: async () => { devices = []; },
     answerPair: async () => true,

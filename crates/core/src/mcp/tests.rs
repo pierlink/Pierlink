@@ -342,6 +342,14 @@ impl Client {
                 .unwrap()
                 .contains("sync_wait")
         );
+        assert!(
+            reply["result"]["instructions"]
+                .as_str()
+                .unwrap()
+                .chars()
+                .count()
+                <= 4096
+        );
         self.send(json!({"jsonrpc":"2.0","method":"notifications/initialized"}))
             .await;
     }
@@ -1267,7 +1275,8 @@ async fn 后台任务不受命令时限限制() {
 #[tokio::test]
 async fn 目标信息同步路径与输出预览不写入审计() {
     let fixture = Fixture::new();
-    lock(&fixture.host.permissions).folders = vec![fixture._dir.path().into()];
+    lock(&fixture.host.permissions).folders =
+        vec![fixture._dir.path().into(), r"\\server\share\project".into()];
     let mut client = fixture.legacy().await;
     let targets = client.call("list_targets", json!({})).await;
     let targets = targets["result"]["structuredContent"].as_array().unwrap();
@@ -1275,6 +1284,14 @@ async fn 目标信息同步路径与输出预览不写入审计() {
     assert_eq!(windows["commands"], true);
     assert_eq!(windows["path_style"], "windows");
     assert_eq!(windows["folders"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        windows["unavailable_folders"][0]["code"],
+        "mcp.network_folder"
+    );
+    assert_eq!(
+        windows["unavailable_folders"][0]["params"]["reason"],
+        "不支持网络盘上的文件夹"
+    );
     assert!(windows["home"].is_string() && windows["shells"].is_array());
     let sync = client.call("sync_status", json!({})).await;
     assert!(sync["result"]["structuredContent"][0]["local_path"].is_string());

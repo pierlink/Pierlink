@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { DesktopPane } from "./DesktopPane";
+import { Tooltips } from "../shell/Tooltips";
 
 /** 独立窗口的地址片段：#desktop-window?server=服务器ID&name=窗口标题 */
 export const DESKTOP_WINDOW_HASH = "#desktop-window";
@@ -26,6 +27,8 @@ export function DesktopWindow() {
   return (
     <div style={{ height: "100vh", display: "flex", flexDirection: "column", background: "var(--surface-term)" }}>
       <DesktopPane serverId={serverId} visible standalone windowTitle={title} title={<span className="pane__title pl-ellipsis"><strong>{title}</strong></span>} />
+      {/* 和主窗口一样的悬停提示（浏览器自带的提示点过以后要移出再移入才显示） */}
+      <Tooltips />
     </div>
   );
 }

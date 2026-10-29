@@ -1,4 +1,4 @@
-//! 按固定缓冲扫描文件两遍：识别编码和整文件散列，再只保留请求的行。
+//! 按固定缓冲扫描一次，同时识别编码、统计行数并只保留请求的行。
 use super::{
     check_cancel, encoding,
     files::{self, Sandbox},
@@ -6,11 +6,7 @@ use super::{
 use crate::error::AppError;
 use encoding_rs::{Decoder, DecoderResult, Encoding, UTF_8, UTF_16BE, UTF_16LE};
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
-use std::{
-    io::{Read, Seek, SeekFrom},
-    sync::atomic::AtomicBool,
-};
+use std::{io::Read, path::Path, sync::atomic::AtomicBool};
 
 pub(super) fn lines(
     sb: &Sandbox,
@@ -19,66 +15,106 @@ pub(super) fn lines(
     limit: u64,
     cancelled: &AtomicBool,
 ) -> Result<Value, AppError> {
+    check_cancel(cancelled)?;
     let resolved = sb.resolve_read(path)?;
     let mut file = files::open_file(&resolved)?;
     let metadata = file.metadata().map_err(|_| io_error())?;
-    let mut digest = Sha256::new();
-    let mut sample = Vec::new();
-    let mut utf8 = true;
-    let mut decoder = UTF_8.new_decoder_without_bom_handling();
-    let mut buffer = [0u8; 32768];
-    loop {
-        check_cancel(cancelled)?;
-        let count = file.read(&mut buffer).map_err(|_| io_error())?;
-        sample.extend_from_slice(&buffer[..count.min(8000usize.saturating_sub(sample.len()))]);
-        digest.update(&buffer[..count]);
-        if utf8 && decode(&mut decoder, &buffer[..count], count == 0, |_| Ok(())).is_err() {
-            utf8 = false;
-        }
+    let mut sample = [0; 8000];
+    let mut len = 0;
+    while len < sample.len() {
+        let count = files::read_chunk(&mut file, &mut sample[len..], &resolved, cancelled)?;
         if count == 0 {
             break;
         }
+        len += count;
     }
-    let sha256 = format!("{:x}", digest.finalize());
-    if encoding::binary(&sample) {
-        return Ok(json!(files::read_file(sb, path, 0, 1024 * 1024)?));
+    let sample = &sample[..len];
+    if encoding::binary(sample) {
+        return Ok(json!(files::read_cancelled(
+            sb,
+            path,
+            0,
+            1024 * 1024,
+            cancelled
+        )?));
     }
+    let mut result = scan(
+        &mut file,
+        &resolved,
+        sample,
+        metadata.len(),
+        offset,
+        limit,
+        cancelled,
+    )?;
+    files::check_metadata(&file, &metadata)?;
+    result["mtime_ms"] = json!(files::mtime(&metadata));
+    Ok(result)
+}
+fn scan(
+    reader: &mut impl Read,
+    path: &Path,
+    sample: &[u8],
+    size: u64,
+    offset: u64,
+    limit: u64,
+    cancelled: &AtomicBool,
+) -> Result<Value, AppError> {
     let (encoding, bom) = if sample.starts_with(&[0xff, 0xfe]) {
         (UTF_16LE, 2)
     } else if sample.starts_with(&[0xfe, 0xff]) {
         (UTF_16BE, 2)
     } else if sample.starts_with(&[0xef, 0xbb, 0xbf]) {
         (UTF_8, 3)
-    } else if utf8 {
-        (UTF_8, 0)
     } else {
-        (encoding::ansi()?, 0)
+        (UTF_8, 0)
     };
-    file.seek(SeekFrom::Start(0)).map_err(|_| io_error())?;
-    let mut decoder = encoding.new_decoder_without_bom_handling();
-    let mut lines = Lines::new(offset, limit.min(5000));
-    let mut digest = Sha256::new();
+    let mut primary = Some(Scan::new(encoding, offset, limit));
+    // 无 BOM 时并行保留系统编码的有限行结果，文件末尾才出现非 UTF-8 也不必回读。
+    let mut fallback = if bom == 0 {
+        encoding::ansi()
+            .ok()
+            .filter(|e| *e != UTF_8)
+            .map(|e| Scan::new(e, offset, limit))
+    } else {
+        None
+    };
+    let mut digest = files::FileDigest::new(size);
+    let mut reader = std::io::Cursor::new(sample).chain(reader);
+    let mut buffer = [0; 32768];
     let mut skip = bom;
     loop {
-        check_cancel(cancelled)?;
-        let count = file.read(&mut buffer).map_err(|_| io_error())?;
+        let count = files::read_chunk(&mut reader, &mut buffer, path, cancelled)?;
         digest.update(&buffer[..count]);
         let start = skip.min(count);
         skip -= start;
-        decode(&mut decoder, &buffer[start..count], count == 0, |text| {
-            check_cancel(cancelled)?;
-            lines.push(text);
-            Ok(())
-        })?;
+        for candidate in [&mut primary, &mut fallback] {
+            if let Some(scan) = candidate
+                && decode(
+                    &mut scan.decoder,
+                    &buffer[start..count],
+                    count == 0,
+                    |text| {
+                        scan.lines.push(text);
+                        Ok(())
+                    },
+                )
+                .is_err()
+            {
+                *candidate = None;
+            }
+        }
+        check_cancel(cancelled)?;
+        if primary.is_none() && fallback.is_none() {
+            return Err(encoding::unsupported());
+        }
         if count == 0 {
             break;
         }
     }
-    if format!("{:x}", digest.finalize()) != sha256 {
-        return Err(AppError::new("mcp.file_changed")
-            .with("reason", "读取期间文件内容发生变化，请重新读取"));
-    }
-    lines.finish();
+    let mut scan = primary.or(fallback).ok_or_else(encoding::unsupported)?;
+    scan.lines.finish();
+    let lines = scan.lines;
     let line_ending = if lines.crlf == 0 {
         "lf"
     } else if lines.crlf == lines.lf {
@@ -86,9 +122,25 @@ pub(super) fn lines(
     } else {
         "mixed"
     };
+    let sha256 = digest.finish();
+    let skipped = sha256.is_none().then_some(files::HASH_SKIPPED);
     Ok(
-        json!({"content":lines.output,"total_lines":lines.total,"encoding":name(encoding),"line_ending":line_ending,"mtime_ms":files::mtime(&metadata),"sha256":sha256,"offset":offset,"truncated":lines.total>offset.saturating_sub(1).saturating_add(limit.min(5000))}),
+        json!({"content":lines.output,"total_lines":lines.total,"encoding":name(scan.encoding),"line_ending":line_ending,"sha256":sha256,"sha256_skipped_reason":skipped,"offset":offset,"truncated":lines.total>offset.saturating_sub(1).saturating_add(limit.min(5000))}),
     )
+}
+struct Scan {
+    encoding: &'static Encoding,
+    decoder: Decoder,
+    lines: Lines,
+}
+impl Scan {
+    fn new(encoding: &'static Encoding, offset: u64, limit: u64) -> Self {
+        Self {
+            encoding,
+            decoder: encoding.new_decoder_without_bom_handling(),
+            lines: Lines::new(offset, limit.min(5000)),
+        }
+    }
 }
 fn io_error() -> AppError {
     AppError::new("mcp.path_invalid").with("reason", "无法读取文件")
@@ -198,6 +250,102 @@ impl Lines {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn 单次扫描支持末尾编码回退与读取中取消() {
+        struct OnceReader<'a> {
+            bytes: std::io::Cursor<Vec<u8>>,
+            read: usize,
+            cancel_after: usize,
+            cancelled: &'a AtomicBool,
+        }
+        impl Read for OnceReader<'_> {
+            fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+                let count = self.bytes.read(buffer)?;
+                self.read += count;
+                if self.read >= self.cancel_after {
+                    self.cancelled
+                        .store(true, std::sync::atomic::Ordering::Release);
+                }
+                Ok(count)
+            }
+        }
+        let cancelled = AtomicBool::new(false);
+        let mut bytes = vec![b'x'; 70000];
+        bytes.extend_from_slice(b"\nlast\n");
+        let mut reader = OnceReader {
+            bytes: std::io::Cursor::new(bytes.clone()),
+            read: 0,
+            cancel_after: usize::MAX,
+            cancelled: &cancelled,
+        };
+        let result = scan(
+            &mut reader,
+            Path::new("file.txt"),
+            &[],
+            bytes.len() as u64,
+            2,
+            1,
+            &cancelled,
+        )
+        .unwrap();
+        assert_eq!(reader.read, bytes.len());
+        assert_eq!(result["content"], "     2\tlast\n");
+        assert_eq!(result["sha256"], files::hash(&bytes));
+        reader.bytes.set_position(0);
+        reader.read = 0;
+        reader.cancel_after = 32768;
+        assert_eq!(
+            scan(
+                &mut reader,
+                Path::new("file.txt"),
+                &[],
+                bytes.len() as u64,
+                1,
+                1,
+                &cancelled
+            )
+            .unwrap_err()
+            .code,
+            "mcp.cancelled"
+        );
+        assert_eq!(reader.read, 32768);
+        cancelled.store(false, std::sync::atomic::Ordering::Release);
+        let encoding = encoding::ansi().unwrap();
+        let (tail, _, errors) = encoding.encode("中文");
+        if !errors && encoding != UTF_8 {
+            bytes.extend_from_slice(&tail);
+            let result = scan(
+                &mut std::io::Cursor::new(&bytes),
+                Path::new("file.txt"),
+                &[],
+                bytes.len() as u64,
+                3,
+                1,
+                &cancelled,
+            )
+            .unwrap();
+            assert_eq!(result["content"], "     3\t中文\n");
+            assert_eq!(result["encoding"], name(encoding));
+        }
+    }
+    #[test]
+    fn 散列阈值含边界且超限行读取说明原因() {
+        assert!(!files::FileDigest::new(files::HASH_LIMIT).skipped());
+        assert!(files::FileDigest::new(files::HASH_LIMIT + 1).skipped());
+        let result = scan(
+            &mut std::io::Cursor::new(b"first\nlast\n"),
+            Path::new("file.txt"),
+            &[],
+            files::HASH_LIMIT + 1,
+            2,
+            1,
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        assert_eq!(result["content"], "     2\tlast\n");
+        assert!(result["sha256"].is_null());
+        assert_eq!(result["sha256_skipped_reason"], files::HASH_SKIPPED);
+    }
     #[test]
     fn 大文件仅保留选中行且散列覆盖全部字节() {
         let root = crate::test_support::tempdir();

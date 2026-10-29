@@ -71,16 +71,12 @@
       "cursorBlink": "Blinking cursor",
       "scrollback": "Scrollback lines",
       "scrollbackHint": "How many lines of history each terminal keeps; more uses more memory",
-      "pasteKey": "Paste shortcut",
-      "pasteKeyHint": "With Ctrl+Shift+V, Ctrl+V goes to the program (e.g. vim block select)",
-      "rightClickCopy": "Right-click copies the selection",
-      "rightClickCopyHint": "The selection is cleared after copying",
-      "rightClickPaste": "Right-click pastes when nothing is selected",
-      "rightClickPasteHint": "When on, right-click no longer opens the menu if nothing is selected",
+      "rightClickCopyPaste": "Right-click copy and paste",
+      "rightClickCopyPasteHint": "Right-click copies the selection, or pastes when nothing is selected; the menu no longer opens",
       "pasteConfirm": "Confirm before pasting several lines",
       "pasteConfirmHint": "Every pasted line may run as a command",
       "shortcuts": "Copy and paste",
-      "shortcutsHint": "Ctrl+C always goes to the program (interrupt); copy with Ctrl+Shift+C; in split panes, Ctrl+Shift+B toggles broadcast input",
+      "shortcutsHint": "Ctrl+C copies when text is selected and interrupts the program otherwise; Ctrl+V pastes; in split panes, Ctrl+Shift+B toggles broadcast input",
       "closeConfirm": "Confirm before closing a terminal tab",
       "closeConfirmHint": "Closing a running tab ends its programs",
       "broadcastDanger": "Confirm dangerous commands when broadcasting",
@@ -157,7 +153,8 @@
     "splitDown": "Split down",
     "importFile": "Import from file…",
     "exportServers": "Export servers…",
-    "importFileFailed": "Import failed"
+    "importFileFailed": "Import failed",
+    "desktopInWindow": "The desktop is open in a separate window; click to switch to it"
   },
   "statusbar": {
     "localSync": "Local sync service running",
@@ -427,7 +424,13 @@
       "job_stop_timeout": "The background task didn't stop in time",
       "path_invalid": "This path can't be used: {{reason}}",
       "process_failed": "The command couldn't run: {{reason}}",
-      "shell_unavailable": "This shell isn't available on this computer"
+      "shell_unavailable": "This shell isn't available on this computer",
+      "file_busy": "The file is in use by another program: {{path}}",
+      "network_folder": "Folders on network drives are not supported: {{path}}",
+      "cancelled": "The operation was cancelled",
+      "file_too_large": "The file is too large (limit {{max_bytes}} bytes)",
+      "not_found": "The file or folder doesn't exist: {{path}}",
+      "path_outside": "Not inside an allowed folder: {{path}}"
     },
     "tunnel": {
       "port_unavailable": "No local port is available",
@@ -501,7 +504,13 @@
     "clipboard": {
       "busy": "The clipboard is in use by another program. Try pasting again",
       "read_failed": "Couldn't read the clipboard",
-      "unsupported": "Reading the clipboard directly isn't supported on this system"
+      "unsupported": "Reading the clipboard directly isn't supported on this system",
+      "too_large": "Too much to copy (limit {{limit}} bytes)",
+      "write_failed": "Couldn't write to the clipboard"
+    },
+    "link": {
+      "invalid_url": "This link can't be opened: {{reason}}",
+      "open_failed": "Couldn't open this link in the browser"
     },
     "network": {
       "watch_failed": "Couldn't watch for network changes"
@@ -550,7 +559,8 @@
       "listen_failed": "Couldn't open on that address and port (port in use?): {{reason}}",
       "stopped": "Phone access isn't on",
       "assets": "The phone page is missing from the installation; reinstall Pierlink",
-      "task_failed": "The operation stopped unexpectedly: {{reason}}"
+      "task_failed": "The operation stopped unexpectedly: {{reason}}",
+      "invalid_request": "The name must be 1 to 80 characters without control characters"
     },
     "vnc": {
       "probe_timeout": "The desktop did not respond",
@@ -587,7 +597,8 @@
       "locked": "Another desktop operation is in progress. Try again shortly",
       "download_limit": "Too much to download, over the limit: {{reason}}",
       "light_unavailable": "Couldn't prepare the light desktop: {{reason}}",
-      "xkb_unavailable": "This server lacks xkbcomp, so the desktop can't start. With admin rights, run on the server: {{install_command}}"
+      "xkb_unavailable": "This server lacks xkbcomp, so the desktop can't start. With admin rights, run on the server: {{install_command}}",
+      "window_failed": "Couldn't open the separate window: {{reason}}"
     },
     "desktop": {
       "task_failed": "The operation stopped unexpectedly: {{reason}}",
@@ -603,7 +614,7 @@
     "pasteConfirmBody": "The text has {{lines}} lines; each may run as a command.",
     "paste": "Paste",
     "openLinkTitle": "Open link?",
-    "openLinkBody": "This link from the terminal will open in your browser:",
+    "openLinkBody": "Open in this computer's default browser:",
     "open": "Open",
     "quickConnect": "Quick connect",
     "quickConnectHint": "user@host, add :port if it isn't 22 — e.g. dev@203.0.113.18 or dev@203.0.113.18:2222",
@@ -611,8 +622,6 @@
     "invalidTarget": "Invalid format. Use user@host or user@host:port",
     "localDefault": "Default local terminal",
     "copy": "Copy",
-    "selectAll": "Select all",
-    "clear": "Clear",
     "find": "Find…",
     "checking": "Checking the server…",
     "connectionLost": "Connection lost (network interrupted or the server closed it)",
@@ -699,7 +708,13 @@
       "chipTitle": "AI can type commands and read output here",
       "takeBack": "Take back",
       "failed": "Couldn't hand to AI: {{reason}}"
-    }
+    },
+    "copyCwd": "Copy current folder",
+    "openInExplorer": "Open in File Explorer",
+    "splitRow": "Split left and right",
+    "splitCol": "Split top and bottom",
+    "copyLink": "Copy link",
+    "fileDrop": "Drop to insert the path"
   },
   "hostKey": {
     "title": "Verify the server's identity",
@@ -1574,6 +1589,7 @@
     "deleteFailed": "Couldn't delete",
     "loadFailed": "Couldn't load port forwards",
     "startFailed": "“{{name}}” couldn't start",
+    "openFailed": "Couldn't open “{{name}}” in the browser",
     "saveFailed": "Couldn't save",
     "usedBy": " (used by {{process}}, process ID {{pid}})",
     "mapLocal": "Local 127.0.0.1:{{local}} → {{host}}:{{port}}",
@@ -1902,17 +1918,23 @@
     "offline": "Disconnected from the PC, reconnecting…",
     "back": "Back",
     "pair": {
-      "intro": "On the PC open Pierlink → Settings → Phone, scan the QR code or enter the 8-character invite code, then click Approve on the PC.",
       "code": "Invite code",
       "name": "Name for this phone",
       "submit": "Pair",
       "waiting": "Waiting for approval on the PC…",
-      "waitingHint": "Click Approve in Pierlink on the PC (within 2 minutes).",
+      "waitingHint": "Click Approve in Pierlink on the PC ({{s}} s left)",
       "denied": "Wrong or expired invite code, or it was denied on the PC.",
       "timeout": "It wasn't approved on the PC within 2 minutes; try again.",
       "tooMany": "Too many attempts; try again in a minute.",
       "failed": "Couldn't pair: can't reach Pierlink on the PC?",
-      "deviceLimit": "Too many phones paired (max 128); revoke some on the PC first."
+      "deviceLimit": "Too many phones paired (max 128); revoke some on the PC first.",
+      "tagline": "Approve AI actions and check terminals from your phone",
+      "step1": "On the PC, open Pierlink → Settings → Phone and click “Pair a phone”",
+      "step2": "Scan the QR code with your phone's camera to fill in the code, or type it",
+      "step3": "Tap Pair, then click Approve on the PC",
+      "codeFromLink": "Filled in from the QR code",
+      "nameHint": "Shown on the PC to tell your phones apart",
+      "success": "Paired"
     },
     "overview": {
       "servers": "Servers",
@@ -1965,7 +1987,7 @@
     "kind": {
       "tailscale": "Tailscale",
       "lan": "LAN",
-      "loopback": "This PC only (for server port forwarding)"
+      "loopback": "This PC only"
     },
     "running": "Running: open {{url}} on the phone",
     "notRunning": "Not running yet: choose a listen address",
@@ -1973,7 +1995,7 @@
     "qr": "Pairing QR code",
     "scan": "Scan with the phone camera, or open the address below in the phone's browser and enter the invite code:",
     "expires": "Expires in {{min}}:{{sec}}, single use",
-    "pairHint": "After the phone enters the code, an approval prompt appears here.",
+    "pairHint": "Click “Pair a phone”, then scan the QR code with your phone's camera.",
     "pair": "Pair a phone",
     "newCode": "New invite code",
     "devices": "Paired phones",
@@ -1996,7 +2018,14 @@
     "pairBody": "\"{{name}}\" ({{ip}}) wants to pair. Once approved it can view and act on Pierlink on this PC with the permissions you give it.",
     "pairHintDialog": "If you're not pairing a phone yourself, deny.",
     "approve": "Approve",
-    "firewallHint": "If the phone can't connect, check that Windows Firewall allows Pierlink on private networks."
+    "firewallHint": "If the phone can't connect, check that Windows Firewall allows Pierlink on private networks.",
+    "rename": "Rename",
+    "copyCode": "Copy code",
+    "copyLink": "Copy link",
+    "copied": "Copied",
+    "closeInvite": "Close",
+    "pairedDone": "Paired: {{name}}",
+    "pairedOn": "Paired {{date}}"
   },
   "serverExport": {
     "title": "Export servers",
@@ -2017,7 +2046,7 @@
     "qualityHigh": "Sharp",
     "fit": "Fit to window",
     "actualSize": "Actual size",
-    "paste": "Paste to remote (works for Chinese text too)",
+    "paste": "Type clipboard text",
     "fullscreen": "Full screen",
     "exitFullscreen": "Exit full screen",
     "disconnect": "Disconnect",
@@ -2088,6 +2117,8 @@
     "resOriginal": "Original",
     "popOut": "Open in separate window",
     "poppedTitle": "Opened in a separate window",
-    "showHere": "Show here"
+    "showHere": "Show here",
+    "typeTooLong": "Too long to type; it is in the remote clipboard, paste it in the remote program",
+    "popOutFailed": "Couldn't open the separate window: {{reason}}"
   }
 }

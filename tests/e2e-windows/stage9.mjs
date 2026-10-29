@@ -114,6 +114,59 @@ await rec.step(p, "换成要密码的 :5：输密码后连上、画面是蓝色�
   return await status();
 });
 
+await rec.step(p, "全屏：和终端分屏时也盖住整个窗口（旁边的窗格、分隔条、侧栏都在下面）；再点一次退出", async () => {
+  if (!vnc) return "跳过";
+  // 先在桌面旁边开一个本机终端
+  await u.click('.desk__bar .pane__btn--split');
+  const item = await u.waitFor(`(()=>{const i=[...document.querySelectorAll('[role=menuitem]')].findIndex(x=>/PowerShell|Command Prompt/.test(x.textContent)); return i>=0 ? String(i) : null;})()`, "分屏菜单里的本机终端", 5000);
+  await u.click("[role=menuitem]", Number(item));
+  await u.waitFor(`[...document.querySelectorAll('.pane-slot')].filter(s=>s.style.display!=='none').length === 2`, "桌面旁边多了一个终端", 15000);
+  await sleep(1500);
+  await u.click('.desk__bar button[aria-label="Full screen"]');
+  await u.waitFor(`document.fullscreenElement === document.documentElement && !!document.querySelector('.desk--full')`, "进入全屏", 8000);
+  // 窗口里各处点下去都应该是全屏的桌面
+  const missed = await p.js(`(()=>{const pts=[]; for (const s of [...document.querySelectorAll('.pane-slot')].filter(s=>s.style.display!=='none')) { const r=s.getBoundingClientRect(); pts.push(['窗格', r.x+r.width/2, r.y+r.height/2]); } pts.push(['左上', 20, 20], ['右下', innerWidth-20, innerHeight-20], ['左边', 60, innerHeight/2]); return pts.filter(([,x,y])=>!document.elementFromPoint(x,y)?.closest('.desk--full')).map(([n])=>n);})()`);
+  if (missed.length) throw new Error(`全屏后这些地方没被桌面盖住：${missed.join("、")}`);
+  await u.click('.desk__bar button[aria-label="Full screen"]');
+  await u.waitFor(`!document.fullscreenElement && !document.querySelector('.desk--full')`, "退出全屏", 8000);
+  // 关掉旁边的终端
+  const close = await p.js(`[...document.querySelectorAll('.pane-slot')].filter(s=>s.style.display!=='none').findIndex(s=>!s.querySelector('.desk'))`);
+  await p.js(`[...document.querySelectorAll('.pane-slot')].filter(s=>s.style.display!=='none')[${close}]?.querySelector('.pane__btn--close')?.click()`);
+  // 终端还在启动时会问一次“仍在运行”，直接确认关闭
+  await sleep(800);
+  await p.js(`document.querySelector('.pl-dialog .pl-btn--danger, .pl-dialog .pl-btn--primary')?.click()`);
+  await u.waitFor(`[...document.querySelectorAll('.pane-slot')].filter(s=>s.style.display!=='none').length === 1`, "关掉旁边的终端", 10000);
+  return "分屏时全屏也盖住整个窗口，能退出";
+});
+
+await rec.step(p, "弹到独立窗口：主窗口的桌面窗格关掉、侧栏出现标识；再打开桌面不新开窗格；关掉独立窗口后标识消失", async () => {
+  if (!vnc) return "跳过";
+  await u.click('.desk__bar button[aria-label="Open in separate window"]');
+  try {
+    await u.waitFor(`!document.querySelector('.desk')`, "主窗口的桌面窗格关掉", 15000);
+  } catch (e) {
+    // 带上定位信息：页面报错、窗格上的提示、现有窗口
+    const note = await p.js(`document.querySelector('.desk__note')?.innerText || ''`).catch(() => "");
+    const wins = await p.js(`window.__TAURI_INTERNALS__.invoke('plugin:window|get_all_windows')`).catch((x) => String(x));
+    throw new Error(`${e.message}｜提示：${note}｜窗口：${JSON.stringify(wins)}｜页面错误：${p.errors.slice(-5).join(" / ")}`);
+  }
+  await u.waitFor(`!!document.querySelector('.srv-row__desk')`, "侧栏里的“桌面在独立窗口里”标识", 8000);
+  const labels = await p.js(`window.__TAURI_INTERNALS__.invoke('plugin:window|get_all_windows')`);
+  const win = (labels ?? []).find((l) => l.startsWith("desktop-"));
+  if (!win) throw new Error(`没有独立桌面窗口：${JSON.stringify(labels)}`);
+  await openDesktop();
+  await sleep(3000);
+  if (await p.js(`!!document.querySelector('.desk')`)) throw new Error("已经弹到独立窗口了，再打开桌面不该在主窗口新开窗格");
+  const again = await p.js(`window.__TAURI_INTERNALS__.invoke('plugin:window|get_all_windows')`);
+  if ((again ?? []).filter((l) => l.startsWith("desktop-")).length !== 1) throw new Error(`独立窗口应该只有一个：${JSON.stringify(again)}`);
+  await p.js(`window.__TAURI_INTERNALS__.invoke('plugin:window|close', { label: ${JSON.stringify(win)} })`);
+  await u.waitFor(`!document.querySelector('.srv-row__desk')`, "关掉独立窗口后标识消失", 15000);
+  // 后面的步骤还要在主窗口里用这个桌面：重新打开
+  await openDesktop();
+  await u.waitFor(`(document.querySelector('.desk__status')?.innerText||'').startsWith('Connected') || document.querySelectorAll('.desk__row').length > 0`, "主窗口里重新打开桌面", 30000);
+  return `独立窗口 ${win}`;
+});
+
 await rec.step(p, "关闭桌面窗格：服务器上的两个桌面照常运行", async () => {
   if (!vnc) return "跳过";
   // 只看终端区的标签（顶部导航也是 role=tab，不能混在一起数）

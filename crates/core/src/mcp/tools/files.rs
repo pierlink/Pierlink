@@ -1,5 +1,8 @@
 //! 仅允许访问授权目录中的普通路径；写入以同目录临时文件原子替换。
-use super::encoding::{Document, binary};
+use super::{
+    check_cancel,
+    encoding::{Document, binary},
+};
 use crate::{error::AppError, fs_local};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -8,27 +11,37 @@ use std::{
     fs,
     io::{Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
+    sync::atomic::AtomicBool,
 };
 
 const READ_LIMIT: u64 = 1024 * 1024;
+pub(super) const HASH_LIMIT: u64 = 64 * 1024 * 1024;
+pub(super) const HASH_SKIPPED: &str = "文件超过 64 MiB，未计算整文件 SHA-256";
 const WRITE_LIMIT: usize = 5 * 1024 * 1024;
 
 /// 已规范化的允许目录；不存在或无效的授权目录不会扩大访问范围。
 pub struct Sandbox {
     pub(super) folders: Vec<PathBuf>,
+    pub(super) unavailable_folders: Vec<AppError>,
 }
 impl Sandbox {
     /// 规范化 folders 中已存在的绝对目录，返回只允许这些目录的沙箱。
     pub fn new(folders: &[PathBuf]) -> Self {
-        Self {
-            folders: folders
-                .iter()
-                .filter(|p| valid_path(p).is_ok())
-                .filter_map(|p| canonical(p).ok())
-                .filter(|p| p.is_dir())
-                .collect(),
+        let mut sandbox = Self {
+            folders: Vec::new(),
+            unavailable_folders: Vec::new(),
+        };
+        for folder in folders {
+            match validate_folder(folder) {
+                Ok(folder) => sandbox.folders.push(folder),
+                Err(error) => sandbox
+                    .unavailable_folders
+                    .push(error.with("path", fs_local::display_path(folder))),
+            }
         }
+        sandbox
     }
+
     fn contains(&self, path: &Path) -> Result<(), AppError> {
         if self.folders.iter().any(|folder| path_within(path, folder)) {
             Ok(())
@@ -45,9 +58,10 @@ impl Sandbox {
             )
         }
     }
-    /// 规范化绝对 path 并检查授权前缀；返回可读路径或 mcp.path_* / mcp.not_found。
+    /// 规范化绝对 path 并检查授权前缀；返回可读路径或带原因的路径、网络盘、占用、缺失错误。
     pub fn resolve_read(&self, path: &str) -> Result<PathBuf, AppError> {
         let path = Path::new(path);
+        reject_network_folder(path)?;
         valid_path(path)?;
         let resolved = canonical(path)?;
         self.contains(&resolved)?;
@@ -56,6 +70,7 @@ impl Sandbox {
     /// 规范化 path 的父目录再拼接文件名；已有目标另查链接及类型，返回可替换的普通文件路径。
     pub fn resolve_write(&self, path: &str) -> Result<PathBuf, AppError> {
         let path = Path::new(path);
+        reject_network_folder(path)?;
         valid_path(path)?;
         let name = path
             .file_name()
@@ -88,12 +103,66 @@ impl Sandbox {
         Ok(target)
     }
 }
+/// 校验待授权的 folder；返回规范化的本机目录，网络盘返回 mcp.network_folder。
+/// 保存授权设置前调用；不存在、不可访问或非目录的路径返回带原因的错误。
+pub fn validate_folder(folder: &Path) -> Result<PathBuf, AppError> {
+    reject_network_folder(folder)?;
+    let resolved = canonical(folder)?;
+    if !resolved.is_dir() {
+        return Err(path_error("mcp.path_invalid", folder, "授权路径必须是目录"));
+    }
+    Ok(resolved)
+}
+fn reject_network_folder(path: &Path) -> Result<(), AppError> {
+    let text = path.to_string_lossy().replace('\\', "/");
+    let lower = text.to_ascii_lowercase();
+    let unc = lower.starts_with("//?/unc/")
+        || (lower.starts_with("//") && !lower.starts_with("//?/") && !lower.starts_with("//./"));
+    #[cfg(windows)]
+    let mapped = mapped_drive(path, |root| {
+        // 根路径以 NUL 结尾，查询不打开远程文件。
+        unsafe { windows_sys::Win32::Storage::FileSystem::GetDriveTypeW(root.as_ptr()) }
+    });
+    #[cfg(not(windows))]
+    let mapped = false;
+    if unc || mapped {
+        return Err(path_error(
+            "mcp.network_folder",
+            path,
+            "不支持网络盘上的文件夹",
+        ));
+    }
+    Ok(())
+}
+#[cfg(windows)]
+fn mapped_drive(path: &Path, drive_type: impl FnOnce(&[u16]) -> u32) -> bool {
+    use std::os::windows::ffi::OsStrExt;
+    use std::path::{Component, Prefix};
+    let drive = match path.components().next() {
+        Some(Component::Prefix(p)) => match p.kind() {
+            Prefix::Disk(d) | Prefix::VerbatimDisk(d) => Some(d),
+            _ => None,
+        },
+        _ => None,
+    };
+    drive.is_some_and(|d| {
+        let root: Vec<u16> = std::ffi::OsStr::new(&format!("{}:\\", char::from(d)))
+            .encode_wide()
+            .chain(Some(0))
+            .collect();
+        drive_type(&root) == 4 // DRIVE_REMOTE：映射网络盘。
+    })
+}
 fn path_error(code: &str, path: &Path, reason: &str) -> AppError {
     AppError::new(code)
         .with("path", fs_local::display_path(path))
         .with("reason", reason)
 }
 fn io_error(error: std::io::Error, path: &Path) -> AppError {
+    #[cfg(windows)]
+    if let Some(code @ (32 | 33)) = error.raw_os_error() {
+        return path_error("mcp.file_busy", path, "文件被别的程序占用").with("os_code", code);
+    }
     let (code, reason) = if error.kind() == std::io::ErrorKind::NotFound {
         ("mcp.not_found", "文件或父目录不存在")
     } else {
@@ -189,6 +258,7 @@ fn valid_path(path: &Path) -> Result<(), AppError> {
 }
 
 /// 一段文件原始字节；encoding 为 utf-8 或 base64，next_offset 可用于继续读取。
+/// 超过 64 MiB 时 sha256 为 None，sha256_skipped_reason 说明跳过原因。
 #[derive(Debug, Serialize)]
 pub struct FileSlice {
     pub content: String,
@@ -197,7 +267,8 @@ pub struct FileSlice {
     pub next_offset: u64,
     pub size: u64,
     pub eof: bool,
-    pub sha256: String,
+    pub sha256: Option<String>,
+    pub sha256_skipped_reason: Option<&'static str>,
     pub mtime_ms: u64,
 }
 /// 原子写入的路径和 UTF-8 字节数。
@@ -236,35 +307,52 @@ pub fn read_file(
     offset: u64,
     max_bytes: u64,
 ) -> Result<FileSlice, AppError> {
+    read_cancelled(sb, path, offset, max_bytes, &AtomicBool::new(false))
+}
+pub(super) fn read_cancelled(
+    sb: &Sandbox,
+    path: &str,
+    offset: u64,
+    max_bytes: u64,
+    cancelled: &AtomicBool,
+) -> Result<FileSlice, AppError> {
+    check_cancel(cancelled)?;
     let path = sb.resolve_read(path)?;
-    if !fs::metadata(&path)
-        .map_err(|e| io_error(e, &path))?
-        .is_file()
-    {
-        return Err(path_error("mcp.path_invalid", &path, "只支持读取普通文件"));
-    }
-    let mut options = fs::OpenOptions::new();
-    options.read(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
-    }
-    let mut file = options.open(&path).map_err(|e| io_error(e, &path))?;
+    let mut file = open_file(&path)?;
     let metadata = file.metadata().map_err(|e| io_error(e, &path))?;
-    if !metadata.is_file() {
-        return Err(path_error("mcp.path_invalid", &path, "只支持读取普通文件"));
-    }
     let size = metadata.len();
-    let mut digest = Sha256::new();
-    std::io::copy(&mut file, &mut digest).map_err(|e| io_error(e, &path))?;
-    let sha256 = format!("{:x}", digest.finalize());
+    let mut digest = FileDigest::new(size);
+    if size <= HASH_LIMIT {
+        let mut buffer = [0; 32768];
+        loop {
+            let count = read_chunk(&mut file, &mut buffer, &path, cancelled)?;
+            digest.update(&buffer[..count]);
+            if count == 0 || digest.skipped() {
+                break;
+            }
+        }
+    }
     file.seek(SeekFrom::Start(offset))
         .map_err(|e| io_error(e, &path))?;
     let mut bytes = Vec::new();
-    file.take(max_bytes.min(READ_LIMIT))
-        .read_to_end(&mut bytes)
-        .map_err(|e| io_error(e, &path))?;
+    let mut buffer = [0; 32768];
+    let limit = max_bytes.min(READ_LIMIT) as usize;
+    while bytes.len() < limit {
+        let count = read_chunk(
+            &mut file,
+            &mut buffer[..(limit - bytes.len()).min(32768)],
+            &path,
+            cancelled,
+        )?;
+        if count == 0 {
+            break;
+        }
+        bytes.extend_from_slice(&buffer[..count]);
+    }
+    check_cancel(cancelled)?;
+    check_metadata(&file, &metadata)?;
+    let sha256 = digest.finish();
+    let sha256_skipped_reason = sha256.is_none().then_some(HASH_SKIPPED);
     let next_offset = offset.saturating_add(bytes.len() as u64);
     let (content, encoding) = if binary(&bytes) {
         (Base64::encode_string(&bytes), "base64")
@@ -282,8 +370,66 @@ pub fn read_file(
         size,
         eof: next_offset >= size,
         sha256,
+        sha256_skipped_reason,
         mtime_ms: mtime(&metadata),
     })
+}
+
+// 每次只读取固定大小的块，取消不必等整个文件读完。
+pub(super) fn read_chunk(
+    reader: &mut impl Read,
+    buffer: &mut [u8],
+    path: &Path,
+    cancelled: &AtomicBool,
+) -> Result<usize, AppError> {
+    loop {
+        check_cancel(cancelled)?;
+        match reader.read(buffer) {
+            Ok(count) => {
+                check_cancel(cancelled)?;
+                return Ok(count);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(io_error(error, path)),
+        }
+    }
+}
+pub(super) fn check_metadata(file: &fs::File, before: &fs::Metadata) -> Result<(), AppError> {
+    let after = file
+        .metadata()
+        .map_err(|_| AppError::new("mcp.path_invalid").with("reason", "无法读取文件属性"))?;
+    if before.len() != after.len() || before.modified().ok() != after.modified().ok() {
+        return Err(AppError::new("mcp.file_changed")
+            .with("reason", "读取期间文件内容发生变化，请重新读取"));
+    }
+    Ok(())
+}
+pub(super) struct FileDigest {
+    digest: Option<Sha256>,
+    bytes: u64,
+}
+impl FileDigest {
+    pub(super) fn new(size: u64) -> Self {
+        Self {
+            digest: (size <= HASH_LIMIT).then(Sha256::new),
+            bytes: 0,
+        }
+    }
+    pub(super) fn skipped(&self) -> bool {
+        self.digest.is_none()
+    }
+    pub(super) fn update(&mut self, bytes: &[u8]) {
+        self.bytes = self.bytes.saturating_add(bytes.len() as u64);
+        if self.bytes > HASH_LIMIT {
+            self.digest = None;
+        }
+        if let Some(digest) = &mut self.digest {
+            digest.update(bytes);
+        }
+    }
+    pub(super) fn finish(self) -> Option<String> {
+        self.digest.map(|d| format!("{:x}", d.finalize()))
+    }
 }
 
 /// 将 UTF-8 content（最多 5 MiB）原子写入 sb 内的 path；临时文件成功或失败均自动清理，返回路径与字节数。
@@ -398,12 +544,37 @@ fn atomic_write(
     }
     temporary
         .persist(target)
-        .map_err(|e| io_error(e.error, target))?;
+        .map_err(|e| persist_error(e.error, target))?;
     Ok(FileWritten {
         path: target.to_owned(),
         bytes: bytes.len(),
         sha256: hash(bytes),
     })
+}
+fn persist_error(error: std::io::Error, target: &Path) -> AppError {
+    let os_code = error.raw_os_error();
+    // Windows 原子替换也会把缺少删除共享报成拒绝访问，探测后才能区分占用与权限不足。
+    #[cfg(windows)]
+    if os_code == Some(5) && target_is_busy(target) {
+        return path_error("mcp.file_busy", target, "文件被别的程序占用").with("os_code", 5);
+    }
+    let mut result = io_error(error, target);
+    if let Some(code) = os_code {
+        result = result.with("os_code", code);
+    }
+    result
+}
+#[cfg(windows)]
+fn target_is_busy(target: &Path) -> bool {
+    use std::os::windows::fs::OpenOptionsExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        DELETE, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    };
+    fs::OpenOptions::new()
+        .access_mode(DELETE)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .open(target)
+        .is_err_and(|error| error.raw_os_error() == Some(32))
 }
 #[derive(Debug, Serialize)]
 pub(super) struct FileEdited {
@@ -427,7 +598,8 @@ pub(super) fn edit_file(
     if old.is_empty() {
         return Err(AppError::new("mcp.edit_not_found").with("reason", "匹配文字不能为空"));
     }
-    let count = doc.text.matches(&old).count();
+    let matches = doc.match_ranges(&old);
+    let count = matches.len();
     if count == 0 {
         return Err(AppError::new("mcp.edit_not_found").with("reason", "文件中没有找到匹配文字"));
     }
@@ -439,18 +611,26 @@ pub(super) fn edit_file(
                 "匹配文字不唯一，请提供更多上下文或使用 replace_all",
             ));
     }
-    let replacement = doc.fragment_replacement(&old, new);
-    // 先计算展开量，防止 replace_all 在检查最终编码大小前分配巨量内存。
-    // 单字节编码转成 UTF-8 最多膨胀三倍，最终写入仍限制为 5 MiB。
-    let expanded = doc
-        .text
-        .len()
-        .saturating_sub(count.saturating_mul(old.len()))
-        .saturating_add(count.saturating_mul(replacement.len()));
-    if expanded > WRITE_LIMIT * 3 {
+    let mut updated = String::new();
+    let mut previous = 0;
+    for range in matches {
+        let replacement = doc.fragment_replacement(&doc.text[range.clone()], new);
+        // 单字节编码转成 UTF-8 最多膨胀三倍，写入前仍检查最终编码大小。
+        let expanded = updated
+            .len()
+            .saturating_add(range.start - previous)
+            .saturating_add(replacement.len());
+        if expanded > WRITE_LIMIT * 3 {
+            return Err(too_large(WRITE_LIMIT));
+        }
+        updated.push_str(&doc.text[previous..range.start]);
+        updated.push_str(&replacement);
+        previous = range.end;
+    }
+    if updated.len().saturating_add(doc.text.len() - previous) > WRITE_LIMIT * 3 {
         return Err(too_large(WRITE_LIMIT));
     }
-    let updated = doc.text.replace(&old, &replacement);
+    updated.push_str(&doc.text[previous..]);
     let encoded = doc.encode(&updated)?;
     let written = atomic_write(sb, path, &target, &encoded, Some(&bytes))?;
     Ok(FileEdited {
@@ -535,6 +715,62 @@ pub fn is_dangerous_path(path: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct Reader<F>(F);
+    impl<F: FnMut(&mut [u8]) -> std::io::Result<usize>> Read for Reader<F> {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            (self.0)(buffer)
+        }
+    }
+
+    #[test]
+    fn 分块读取重试中断且失败带路径并响应取消() {
+        use std::io::{Error, ErrorKind};
+        use std::sync::atomic::Ordering;
+        let path = Path::new("文件.txt");
+        let cancelled = AtomicBool::new(false);
+        let mut buffer = [0; 2];
+        let mut attempts = 0;
+        let mut reader = Reader(|buffer: &mut [u8]| {
+            attempts += 1;
+            if attempts <= 2 {
+                return Err(ErrorKind::Interrupted.into());
+            }
+            buffer.copy_from_slice(b"ok");
+            Ok(2)
+        });
+        assert_eq!(
+            read_chunk(&mut reader, &mut buffer, path, &cancelled).unwrap(),
+            2
+        );
+        assert_eq!(buffer, *b"ok");
+        assert_eq!(attempts, 3);
+
+        let mut reader = Reader(|_: &mut [u8]| Err(Error::from(ErrorKind::PermissionDenied)));
+        let error = read_chunk(&mut reader, &mut buffer, path, &cancelled).unwrap_err();
+        assert_eq!(error.code, "mcp.path_invalid");
+        assert_eq!(error.params["path"], fs_local::display_path(path));
+        assert!(!error.params["reason"].is_empty());
+
+        let mut reader = Reader(|_: &mut [u8]| {
+            cancelled.store(true, Ordering::Release);
+            Err(Error::from(ErrorKind::Interrupted))
+        });
+        assert_eq!(
+            read_chunk(&mut reader, &mut buffer, path, &cancelled)
+                .unwrap_err()
+                .code,
+            "mcp.cancelled"
+        );
+        let mut reader = Reader(|_: &mut [u8]| panic!("取消后不能继续读取"));
+        assert_eq!(
+            read_chunk(&mut reader, &mut buffer, path, &cancelled)
+                .unwrap_err()
+                .code,
+            "mcp.cancelled"
+        );
+    }
+
     #[test]
     fn 沙箱拒绝跳出设备名数据流并原子读写列目录() {
         let root = crate::test_support::tempdir();
@@ -759,6 +995,254 @@ mod tests {
 #[cfg(test)]
 mod editing_tests {
     use super::*;
+    #[test]
+    fn 混合换行按归一化匹配并逐处保留原分隔符() {
+        let root = crate::test_support::tempdir();
+        let sb = Sandbox::new(&[root.path().into()]);
+        let path = root.path().join("mixed.txt");
+        let path = path.to_str().unwrap();
+        for utf16 in [false, true] {
+            let text = "前\r\n甲\r\n乙\n丙\n中\n甲\n乙\r\n丙\n后\r\n";
+            let bytes = if utf16 {
+                [
+                    vec![0xff, 0xfe],
+                    text.encode_utf16().flat_map(u16::to_le_bytes).collect(),
+                ]
+                .concat()
+            } else {
+                text.as_bytes().to_vec()
+            };
+            fs::write(path, &bytes).unwrap();
+            let error =
+                edit_file(&sb, path, "甲\n乙\n丙", "新甲\n新乙\n新丙", false, None).unwrap_err();
+            assert_eq!(error.code, "mcp.edit_not_unique");
+            assert_eq!(error.params["count"], "2");
+            assert_eq!(fs::read(path).unwrap(), bytes);
+            let edited =
+                edit_file(&sb, path, "甲\n乙\n丙", "新甲\n新乙\n新丙", true, None).unwrap();
+            assert_eq!(edited.replacements, 2);
+            let result = Document::decode(&fs::read(path).unwrap()).unwrap();
+            assert_eq!(
+                result.text,
+                "前\r\n新甲\r\n新乙\n新丙\n中\n新甲\n新乙\r\n新丙\n后\r\n"
+            );
+            assert_eq!(result.name(), if utf16 { "utf-16le" } else { "utf-8" });
+        }
+        for old in ["a\nb", "a\r\nb"] {
+            let original = "a\r\nb\nx\na\nb\n";
+            fs::write(path, original).unwrap();
+            let error = edit_file(&sb, path, old, "c\nd", false, None).unwrap_err();
+            assert_eq!(error.code, "mcp.edit_not_unique");
+            assert_eq!(error.params["count"], "2");
+            assert_eq!(fs::read_to_string(path).unwrap(), original);
+            assert_eq!(
+                edit_file(&sb, path, old, "c\nd", true, None)
+                    .unwrap()
+                    .replacements,
+                2
+            );
+            assert_eq!(fs::read_to_string(path).unwrap(), "c\r\nd\nx\nc\nd\n");
+        }
+    }
+    #[test]
+    fn 授权校验保留不可用目录原因且不扩大边界() {
+        let root = crate::test_support::tempdir();
+        assert_eq!(
+            validate_folder(root.path()).unwrap(),
+            fs_local::plain_canonical(root.path()).unwrap()
+        );
+        let missing = root.path().join("missing/child");
+        let file = root.path().join("file");
+        fs::write(&file, "内容").unwrap();
+        assert_eq!(validate_folder(&missing).unwrap_err().code, "mcp.not_found");
+        assert_eq!(validate_folder(&file).unwrap_err().code, "mcp.path_invalid");
+        let sb = Sandbox::new(&[
+            root.path().into(),
+            missing.clone(),
+            r"\\server\share\folder".into(),
+        ]);
+        assert_eq!(sb.folders.len(), 1);
+        assert_eq!(sb.unavailable_folders.len(), 2);
+        assert_eq!(
+            sb.unavailable_folders[0].params["path"],
+            fs_local::display_path(&missing)
+        );
+        assert_eq!(sb.unavailable_folders[1].code, "mcp.network_folder");
+        for path in [
+            r"\\server\share\folder",
+            r"\\?\UNC\server\share\folder",
+            "//server/share/folder",
+        ] {
+            assert_eq!(
+                validate_folder(Path::new(path)).unwrap_err().code,
+                "mcp.network_folder"
+            );
+            assert_eq!(
+                sb.resolve_read(path).unwrap_err().code,
+                "mcp.network_folder"
+            );
+            assert_eq!(
+                sb.resolve_write(path).unwrap_err().code,
+                "mcp.network_folder"
+            );
+        }
+    }
+    #[test]
+    fn 超大文件按字节不计算散列且读写限制明确() {
+        let root = crate::test_support::tempdir();
+        let sb = Sandbox::new(&[root.path().into()]);
+        let path = root.path().join("large");
+        let path = path.to_str().unwrap();
+        let file = fs::File::create(path).unwrap();
+        file.set_len(HASH_LIMIT + 1).unwrap();
+        drop(file);
+        let read = read_file(&sb, path, HASH_LIMIT, 1).unwrap();
+        assert!(read.sha256.is_none());
+        assert_eq!(read.sha256_skipped_reason, Some(HASH_SKIPPED));
+        assert!(read.eof);
+        assert_eq!(
+            write_file(&sb, path, "新内容").unwrap_err().code,
+            "mcp.file_too_large"
+        );
+        assert_eq!(
+            read_cancelled(&sb, path, 0, 1, &AtomicBool::new(true))
+                .unwrap_err()
+                .code,
+            "mcp.cancelled"
+        );
+        fs::write(path, b"a\0b").unwrap();
+        assert_eq!(
+            write_file(&sb, path, "新内容").unwrap_err().code,
+            "mcp.binary_file"
+        );
+        let read = read_file(&sb, path, 0, 1).unwrap();
+        assert_eq!(read.sha256, Some(hash(b"a\0b")));
+        assert!(read.sha256_skipped_reason.is_none());
+        let tools = super::super::definitions();
+        let description = tools
+            .iter()
+            .find(|t| t.name == "write_file")
+            .unwrap()
+            .description
+            .as_deref()
+            .unwrap();
+        assert!(description.contains("不能覆盖已有二进制文件或超过 5 MiB 的已有文件"));
+    }
+    #[cfg(windows)]
+    #[test]
+    fn 文件占用时返回系统码且保留原文并清理临时文件() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let root = crate::test_support::tempdir();
+        let sb = Sandbox::new(&[root.path().into()]);
+        let path = root.path().join("busy.txt");
+        fs::write(&path, "原文").unwrap();
+        let path = fs_local::plain_canonical(&path).unwrap();
+        for share in [1, 3] {
+            // 允许读取原文，禁止删除共享，使最终原子替换失败。
+            let held = fs::OpenOptions::new()
+                .read(true)
+                .share_mode(share)
+                .open(&path)
+                .unwrap();
+            assert!(target_is_busy(&path));
+            let error = persist_error(std::io::Error::from_raw_os_error(5), &path);
+            assert_eq!(error.code, "mcp.file_busy");
+            assert_eq!(error.params["os_code"], "5");
+            for error in [
+                write_file(&sb, path.to_str().unwrap(), "替换").unwrap_err(),
+                edit_file(&sb, path.to_str().unwrap(), "原文", "替换", false, None).unwrap_err(),
+            ] {
+                assert_eq!(error.code, "mcp.file_busy");
+                assert_eq!(error.params["reason"], "文件被别的程序占用");
+                assert_eq!(error.params["path"], fs_local::display_path(&path));
+                assert!(error.params.contains_key("os_code"));
+            }
+            assert_eq!(fs::read_to_string(&path).unwrap(), "原文");
+            assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
+            drop(held);
+        }
+        assert!(!target_is_busy(&path));
+        let denied = persist_error(std::io::Error::from_raw_os_error(5), &path);
+        assert_eq!(denied.code, "mcp.path_invalid");
+        assert_eq!(denied.params["os_code"], "5");
+        for code in [32, 33] {
+            let error = persist_error(std::io::Error::from_raw_os_error(code), &path);
+            assert_eq!(error.code, "mcp.file_busy");
+            assert_eq!(error.params["os_code"], code.to_string());
+        }
+        write_file(&sb, path.to_str().unwrap(), "替换").unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "替换");
+    }
+    #[cfg(windows)]
+    #[test]
+    fn 独占打开使读写编辑均返回占用与系统码() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let root = crate::test_support::tempdir();
+        let sb = Sandbox::new(&[root.path().into()]);
+        let path = root.path().join("busy.txt");
+        fs::write(&path, "原文").unwrap();
+        let path = fs_local::plain_canonical(&path).unwrap();
+        let held = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&path)
+            .unwrap();
+        let text = path.to_str().unwrap();
+        for error in [
+            open_file(&path).unwrap_err(),
+            read_file(&sb, text, 0, 1024).unwrap_err(),
+            read_lines(&sb, text, 1, 1).unwrap_err(),
+            write_file(&sb, text, "替换").unwrap_err(),
+            edit_file(&sb, text, "原文", "替换", false, None).unwrap_err(),
+        ] {
+            assert_eq!(error.code, "mcp.file_busy");
+            assert!(error.params.contains_key("os_code"));
+            assert_eq!(error.params["path"], fs_local::display_path(&path));
+        }
+        drop(held);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "原文");
+        assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
+        for code in [32, 33] {
+            let error = io_error(std::io::Error::from_raw_os_error(code), &path);
+            assert_eq!(error.code, "mcp.file_busy");
+            assert_eq!(error.params["os_code"], code.to_string());
+        }
+    }
+    #[cfg(windows)]
+    #[test]
+    fn 网络路径拒绝且已有映射盘保留不可用原因() {
+        for path in [r"Z:\project", r"\\?\Z:\project"] {
+            assert!(mapped_drive(Path::new(path), |root| {
+                assert_eq!(root, &[b'Z' as u16, b':' as u16, b'\\' as u16, 0]);
+                4
+            }));
+            assert!(!mapped_drive(Path::new(path), |_| 3));
+        }
+
+        for path in [
+            r"\\server\share\folder",
+            r"\\?\UNC\server\share\folder",
+            "//server/share/folder",
+        ] {
+            assert_eq!(
+                validate_folder(Path::new(path)).unwrap_err().code,
+                "mcp.network_folder"
+            );
+        }
+        // CI 无需网络共享；如运行机有映射盘，连同断开的映射盘一起检查。
+        for drive in b'A'..=b'Z' {
+            let path = PathBuf::from(format!("{}:\\", char::from(drive)));
+            if reject_network_folder(&path).is_err() {
+                assert_eq!(
+                    validate_folder(&path).unwrap_err().code,
+                    "mcp.network_folder"
+                );
+                let sb = Sandbox::new(&[path]);
+                assert!(sb.folders.is_empty());
+                assert_eq!(sb.unavailable_folders[0].code, "mcp.network_folder");
+            }
+        }
+    }
     #[test]
     fn 编辑匹配次数散列保护与原子失败() {
         let root = crate::test_support::tempdir();

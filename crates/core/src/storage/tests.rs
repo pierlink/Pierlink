@@ -31,7 +31,7 @@ fn v1逐级到当前版本按来源迁移且重复打开保留用户选择() {
         db.conn
             .query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0))
             .unwrap(),
-        7
+        8
     );
     let mut manual = db.get_server("manual").unwrap().unwrap();
     assert_eq!(manual.connection_engine, Engine::Builtin);
@@ -234,7 +234,7 @@ fn 数据库全部公共接口及异常约束() {
         db.conn
             .query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
             .unwrap(),
-        7
+        8
     );
     let tables: i64 = db
         .conn
@@ -1240,7 +1240,7 @@ fn v1数据库升级保留任务且本机默认收发_设置往返() {
         db.conn
             .query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
             .unwrap(),
-        7
+        8
     );
     db.insert_server(&server("s", "服务器")).unwrap();
     db.set_endpoints("old", &[endpoint("old", "s")]).unwrap();
@@ -1457,7 +1457,7 @@ fn v1_v2升级当前版本保留转发与片段_排序默认零() {
             db.conn
                 .query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0))
                 .unwrap(),
-            7
+            8
         );
         let forwards = db.list_port_forwards(None).unwrap();
         assert_eq!(forwards[0].sort_order, 0);

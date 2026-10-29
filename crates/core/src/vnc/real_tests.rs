@@ -21,6 +21,7 @@ use std::{
     fs,
     io::Read,
     net::{TcpListener, TcpStream},
+    os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     process::Command,
     sync::{Arc, atomic::AtomicBool},
@@ -952,6 +953,32 @@ fn 免_root_轻量桌面出现窗口管理器终端并完整回收() {
     }
     let mut owned = Vec::new();
     descendants(state["pgid"].as_u64().unwrap() as u32, &mut owned);
+    let resources = dir.join(format!("{display}.cache/Xresources"));
+    assert_eq!(
+        fs::metadata(&resources).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    assert!(
+        fs::read_to_string(&resources)
+            .unwrap()
+            .contains("XTerm*selectToClipboard: true")
+    );
+    let expected = format!("XENVIRONMENT={}", resources.display());
+    for name in ["xterm", "openbox"] {
+        let process = owned
+            .iter()
+            .find(|pid| {
+                fs::read_to_string(format!("/proc/{pid}/comm")).is_ok_and(|s| s.trim() == name)
+            })
+            .unwrap_or_else(|| panic!("没有找到桌面进程：{name}"));
+        let environment = fs::read(format!("/proc/{process}/environ")).unwrap();
+        assert!(
+            environment
+                .split(|b| *b == 0)
+                .any(|item| item == expected.as_bytes()),
+            "{name} 未继承终端资源"
+        );
+    }
     stop_desktop(&program, &sshd.command, display).unwrap();
     for child in owned {
         if let Ok(stat) = fs::read_to_string(format!("/proc/{child}/stat")) {

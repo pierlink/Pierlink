@@ -71,16 +71,12 @@
       "cursorBlink": "光标闪烁",
       "scrollback": "回滚行数",
       "scrollbackHint": "每个终端保留多少行历史输出；越大越占内存",
-      "pasteKey": "粘贴快捷键",
-      "pasteKeyHint": "选 Ctrl+Shift+V 时，Ctrl+V 发给程序（如 vim 列选择）",
-      "rightClickCopy": "选中后右键直接复制",
-      "rightClickCopyHint": "复制后取消选中",
-      "rightClickPaste": "没有选中时右键直接粘贴",
-      "rightClickPasteHint": "打开后，没有选中时右键不再弹出菜单",
+      "rightClickCopyPaste": "右键复制粘贴",
+      "rightClickCopyPasteHint": "选中文字时右键复制，没选中时右键粘贴；打开后右键不再弹出菜单",
       "pasteConfirm": "粘贴多行内容前确认",
       "pasteConfirmHint": "多行内容的每一行都可能被当成命令执行",
       "shortcuts": "复制与粘贴",
-      "shortcutsHint": "Ctrl+C 永远发给程序（中断），复制用 Ctrl+Shift+C；分屏时 Ctrl+Shift+B 开关广播输入",
+      "shortcutsHint": "选中文字时 Ctrl+C 复制，没选中时 Ctrl+C 照常中断程序；Ctrl+V 粘贴；分屏时 Ctrl+Shift+B 开关广播输入",
       "closeConfirm": "关闭终端标签前确认",
       "closeConfirmHint": "关闭正在运行的标签会结束里面的程序",
       "broadcastDanger": "广播时确认危险命令",
@@ -156,7 +152,8 @@
     "splitDown": "上下分屏",
     "importFile": "从文件导入…",
     "exportServers": "导出服务器…",
-    "importFileFailed": "导入失败"
+    "importFileFailed": "导入失败",
+    "desktopInWindow": "桌面已在独立窗口打开，点击切到那个窗口"
   },
   "statusbar": {
     "localSync": "本机同步服务运行中",
@@ -426,7 +423,13 @@
       "job_stop_timeout": "后台任务没能按时结束",
       "path_invalid": "路径不能用：{{reason}}",
       "process_failed": "命令没能运行：{{reason}}",
-      "shell_unavailable": "这台电脑上没有这个 shell"
+      "shell_unavailable": "这台电脑上没有这个 shell",
+      "file_busy": "文件被别的程序占用，暂时写不进去：{{path}}",
+      "network_folder": "不支持网络盘上的文件夹：{{path}}",
+      "cancelled": "操作已取消",
+      "file_too_large": "文件太大（上限 {{max_bytes}} 字节）",
+      "not_found": "文件或文件夹不存在：{{path}}",
+      "path_outside": "不在允许的文件夹里：{{path}}"
     },
     "tunnel": {
       "port_unavailable": "本机没有可用的端口",
@@ -500,7 +503,13 @@
     "clipboard": {
       "busy": "剪贴板正被别的程序占用，请稍后再粘贴",
       "read_failed": "读取剪贴板失败",
-      "unsupported": "这个系统上不能直接读取剪贴板"
+      "unsupported": "这个系统上不能直接读取剪贴板",
+      "too_large": "要复制的内容太大（上限 {{limit}} 字节）",
+      "write_failed": "写入剪贴板失败"
+    },
+    "link": {
+      "invalid_url": "这个链接不能打开：{{reason}}",
+      "open_failed": "没能用浏览器打开这个链接"
     },
     "network": {
       "watch_failed": "无法监听网络变化"
@@ -549,7 +558,8 @@
       "listen_failed": "没能在这个地址和端口上开启（端口被占用？）：{{reason}}",
       "stopped": "手机入口没有开着",
       "assets": "安装包里缺少手机页面，请重新安装 Pierlink",
-      "task_failed": "操作意外中断：{{reason}}"
+      "task_failed": "操作意外中断：{{reason}}",
+      "invalid_request": "名字要是 1 到 80 个字符，不能有控制字符"
     },
     "vnc": {
       "probe_timeout": "桌面没有回应",
@@ -586,7 +596,8 @@
       "locked": "另一个桌面操作正在进行，稍后再试",
       "download_limit": "要下载的文件太多，超过了上限：{{reason}}",
       "light_unavailable": "没能准备轻量桌面：{{reason}}",
-      "xkb_unavailable": "这台服务器缺少 xkbcomp，桌面起不来。有管理员权限的话在服务器上运行：{{install_command}}"
+      "xkb_unavailable": "这台服务器缺少 xkbcomp，桌面起不来。有管理员权限的话在服务器上运行：{{install_command}}",
+      "window_failed": "没能打开独立窗口：{{reason}}"
     },
     "desktop": {
       "task_failed": "操作意外中断：{{reason}}",
@@ -602,7 +613,7 @@
     "pasteConfirmBody": "要粘贴的内容有 {{lines}} 行，每一行都可能被当成命令执行。",
     "paste": "粘贴",
     "openLinkTitle": "打开链接？",
-    "openLinkBody": "终端里的链接将用浏览器打开：",
+    "openLinkBody": "用这台电脑的默认浏览器打开：",
     "open": "打开",
     "quickConnect": "快速连接",
     "quickConnectHint": "用户名@主机，端口不是 22 时加 :端口，例如 dev@203.0.113.18 或 dev@203.0.113.18:2222",
@@ -610,8 +621,6 @@
     "invalidTarget": "格式不对，请输入 用户@主机 或 用户@主机:端口",
     "localDefault": "默认本机终端",
     "copy": "复制",
-    "selectAll": "全选",
-    "clear": "清屏",
     "find": "查找…",
     "checking": "正在检查服务器…",
     "connectionLost": "连接已断开（网络中断或服务器关闭了连接）",
@@ -697,7 +706,13 @@
       "chipTitle": "AI 可以在这个终端输入命令、读取输出",
       "takeBack": "收回",
       "failed": "交给 AI 失败：{{reason}}"
-    }
+    },
+    "copyCwd": "复制当前目录",
+    "openInExplorer": "在资源管理器中打开",
+    "splitRow": "左右分屏",
+    "splitCol": "上下分屏",
+    "copyLink": "复制链接",
+    "fileDrop": "松开填入路径"
   },
   "hostKey": {
     "title": "确认服务器身份",
@@ -1538,6 +1553,7 @@
     "deleteFailed": "删除失败",
     "loadFailed": "读取端口转发失败",
     "startFailed": "“{{name}}”没能开启",
+    "openFailed": "没能在浏览器里打开“{{name}}”",
     "saveFailed": "保存失败",
     "usedBy": "（占用的程序：{{process}}，进程号 {{pid}}）",
     "mapLocal": "本机 127.0.0.1:{{local}} → {{host}}:{{port}}",
@@ -1863,17 +1879,23 @@
     "offline": "和电脑断开了，正在重连…",
     "back": "返回",
     "pair": {
-      "intro": "在电脑上打开 Pierlink → 设置 → 手机，扫描二维码或输入 8 位邀请码，然后在电脑上点“批准”。",
       "code": "邀请码",
       "name": "这台手机的名字",
       "submit": "配对",
       "waiting": "等电脑上批准…",
-      "waitingHint": "请在电脑上的 Pierlink 里点“批准”（2 分钟内有效）。",
+      "waitingHint": "请在电脑上的 Pierlink 里点“批准”（还剩 {{s}} 秒）",
       "denied": "邀请码不对或已过期，或电脑上点了拒绝。",
       "timeout": "电脑上没有在 2 分钟内批准，请重新试。",
       "tooMany": "试错太多次了，请过一分钟再试。",
       "failed": "没能配对：连不上电脑上的 Pierlink？",
-      "deviceLimit": "已配对的手机太多了（最多 128 台），请先在电脑上撤销一些。"
+      "deviceLimit": "已配对的手机太多了（最多 128 台），请先在电脑上撤销一些。",
+      "tagline": "在手机上批准 AI 的操作、看终端",
+      "step1": "在电脑上打开 Pierlink → 设置 → 手机，点“配对新手机”",
+      "step2": "用手机相机扫二维码，邀请码会自动填好；也可以手动输入",
+      "step3": "点“配对”，再到电脑上点“批准”",
+      "codeFromLink": "已从二维码填好",
+      "nameHint": "电脑上用这个名字区分不同的手机",
+      "success": "配对成功"
     },
     "overview": {
       "servers": "服务器",
@@ -1926,7 +1948,7 @@
     "kind": {
       "tailscale": "Tailscale",
       "lan": "局域网",
-      "loopback": "仅本机（经服务器端口转发时用）"
+      "loopback": "仅本机"
     },
     "running": "运行中：手机打开 {{url}}",
     "notRunning": "还没开起来：请选择监听地址",
@@ -1934,7 +1956,7 @@
     "qr": "配对二维码",
     "scan": "用手机相机扫码，或在手机浏览器打开下面的地址并输入邀请码：",
     "expires": "{{min}}:{{sec}} 后失效，只能用一次",
-    "pairHint": "手机输入邀请码后，这里会弹出批准框。",
+    "pairHint": "点“配对新手机”，再用手机相机扫出现的二维码。",
     "pair": "配对新手机",
     "newCode": "换一个邀请码",
     "devices": "已配对的手机",
@@ -1957,7 +1979,14 @@
     "pairBody": "“{{name}}”（{{ip}}）请求配对。批准后它可以按你给的权限查看和操作这台电脑上的 Pierlink。",
     "pairHintDialog": "如果不是你自己在配对，点拒绝。",
     "approve": "批准",
-    "firewallHint": "手机连不上时，检查 Windows 防火墙是否允许 Pierlink 在“专用网络”上通信。"
+    "firewallHint": "手机连不上时，检查 Windows 防火墙是否允许 Pierlink 在“专用网络”上通信。",
+    "rename": "改名",
+    "copyCode": "复制邀请码",
+    "copyLink": "复制链接",
+    "copied": "已复制",
+    "closeInvite": "关闭",
+    "pairedDone": "已配对：{{name}}",
+    "pairedOn": "配对于 {{date}}"
   },
   "serverExport": {
     "title": "导出服务器",
@@ -1978,7 +2007,7 @@
     "qualityHigh": "清晰",
     "fit": "适应窗口",
     "actualSize": "原始大小",
-    "paste": "粘贴到远程（可用来输入中文）",
+    "paste": "输入剪贴板里的文字",
     "fullscreen": "全屏",
     "exitFullscreen": "退出全屏",
     "disconnect": "断开",
@@ -2049,6 +2078,8 @@
     "resOriginal": "原始",
     "popOut": "在独立窗口打开",
     "poppedTitle": "已在独立窗口打开",
-    "showHere": "在这里显示"
+    "showHere": "在这里显示",
+    "typeTooLong": "文字太长，已放进远程剪贴板，请在远程程序里粘贴",
+    "popOutFailed": "没能在独立窗口打开：{{reason}}"
   }
 }

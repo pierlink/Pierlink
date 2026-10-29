@@ -676,3 +676,47 @@ pub async fn desktop_forget_password(server_id: String, key: String) -> Result<(
     }
     Ok(())
 }
+
+/// 在独立窗口里打开服务器桌面（每台服务器一个，已经开着就提到前面）。
+/// 由后端创建：窗口的浏览器参数要和主窗口一致（自动化测试时主窗口带了调试端口参数），前端创建会失败
+///
+/// :param server_id: 服务器 ID（窗口名是 desktop-服务器ID）
+/// :param title: 窗口标题
+/// :param url: 页面地址，必须是 index.html#desktop-window?… 这样的独立窗口地址
+#[tauri::command]
+#[specta::specta]
+pub async fn desktop_open_window(
+    app: AppHandle,
+    server_id: String,
+    title: String,
+    url: String,
+) -> Result<(), AppError> {
+    let failed = |reason: &str| AppError::new("vnc.window_failed").with("reason", reason);
+    if server_id.is_empty()
+        || !server_id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err(failed("服务器 ID 不合法"));
+    }
+    if !url.starts_with("index.html#desktop-window?") {
+        return Err(failed("窗口地址不合法"));
+    }
+    let label = format!("desktop-{server_id}");
+    if let Some(win) = app.get_webview_window(&label) {
+        let _ = win.unminimize();
+        let _ = win.set_focus();
+        return Ok(());
+    }
+    let mut builder =
+        tauri::WebviewWindowBuilder::new(&app, &label, tauri::WebviewUrl::App(url.into()))
+            .title(&title)
+            .inner_size(1280.0, 800.0)
+            .min_inner_size(640.0, 480.0);
+    if let Some(args) = crate::e2e_browser_args() {
+        builder = builder.additional_browser_args(&args);
+    }
+    builder.build().map_err(|e| failed(&e.to_string()))?;
+    eprintln!("打开桌面独立窗口: 服务器={server_id}");
+    Ok(())
+}

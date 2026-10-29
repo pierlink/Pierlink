@@ -9,6 +9,7 @@ use tokio::{
 struct MockHost {
     approval: AtomicU8,
     approvals: AtomicUsize,
+    approve_ready: tokio::sync::Notify,
     screen: Mutex<String>,
     calls: Mutex<Vec<Value>>,
     audits: Mutex<Vec<AuditRecord>>,
@@ -19,6 +20,7 @@ impl Default for MockHost {
         Self {
             approval: AtomicU8::new(0),
             approvals: AtomicUsize::new(0),
+            approve_ready: tokio::sync::Notify::new(),
             screen: Mutex::new("$ ".into()),
             calls: Mutex::default(),
             audits: Mutex::default(),
@@ -34,6 +36,10 @@ impl MobileHost for MockHost {
             match self.approval.load(Ordering::SeqCst) {
                 0 => Ok(true),
                 1 => Ok(false),
+                3 => {
+                    self.approve_ready.notified().await;
+                    Ok(true)
+                }
                 _ => std::future::pending().await,
             }
         })
@@ -1349,6 +1355,8 @@ async fn 已配对数量有界且失败配对有延时() {
         let device = Device {
             id: n.to_string(),
             name: "手机".into(),
+            user_agent: None,
+            last_ip: None,
             permissions: Permissions::default(),
             created_at: now(),
             last_active_at: now(),
@@ -1369,3 +1377,6 @@ async fn 已配对数量有界且失败配对有延时() {
     entry.server.revoke_all().unwrap();
     assert_eq!(entry.server.list_devices().unwrap().len(), MAX_DEVICES);
 }
+
+#[path = "device_tests.rs"]
+mod device_tests;

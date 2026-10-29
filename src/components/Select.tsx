@@ -14,6 +14,8 @@ interface SelectProps {
   labelledBy?: string;
   disabled?: boolean;
   className?: string;
+  /** 每次打开列表时调用（选项可能变了，比如重新读取本机地址） */
+  onOpen?: () => void;
 }
 
 /**
@@ -21,7 +23,7 @@ interface SelectProps {
  * 代替原生 select：原生的弹出列表在 Windows 上是系统样式的直角框，与主题不一致。
  * 键盘：Enter / 空格 / 上下方向键打开；打开后上下方向键移动，Enter 选择，Esc 关闭。
  */
-export function Select({ value, onChange, options, label, labelledBy, disabled, className = "" }: SelectProps) {
+export function Select({ value, onChange, options, label, labelledBy, disabled, className = "", onOpen }: SelectProps) {
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
   const [pos, setPos] = useState<{ left: number; top: number; width: number; up: boolean } | null>(null);
@@ -34,6 +36,7 @@ export function Select({ value, onChange, options, label, labelledBy, disabled, 
     if (disabled) return;
     setActive(Math.max(0, options.findIndex((o) => o.value === value)));
     setOpen(true);
+    onOpen?.();
   };
   const close = (focus = true) => {
     setOpen(false);

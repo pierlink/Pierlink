@@ -34,13 +34,27 @@ binary_environment() {
 }
 # 登录 shell 初始化之后逐项恢复，所有值经过相同的单引号转义。
 session_environment() {
-    for variable in PATH LD_LIBRARY_PATH XDG_DATA_DIRS XDG_CONFIG_DIRS FONTCONFIG_FILE FONTCONFIG_PATH XKB_CONFIG_ROOT XDG_CACHE_HOME; do
+    for variable in PATH LD_LIBRARY_PATH XDG_DATA_DIRS XDG_CONFIG_DIRS FONTCONFIG_FILE FONTCONFIG_PATH XKB_CONFIG_ROOT XDG_CACHE_HOME XENVIRONMENT; do
         eval 'present=${'"$variable"'+yes}'
         if [ "$present" = yes ]; then
             eval 'value=${'"$variable"'}'
             printf 'export %s=%s; ' "$variable" "$(shell_quote "$value")"
         fi
     done
+}
+# 在启动会话之前生成固定资源；会话内所有终端共享，随桌面缓存一起清理。
+light_xresources() {
+    XENVIRONMENT=$XDG_CACHE_HOME/Xresources
+    safe_path "$XENVIRONMENT"
+    cat > "$XENVIRONMENT" <<'EOF' || fail permission_denied
+XTerm*selectToClipboard: true
+XTerm*VT100.translations: #override \n\
+    Ctrl Shift <Key>V: insert-selection(CLIPBOARD) \n\
+    Ctrl Shift <Key>C: copy-selection(CLIPBOARD) \n\
+    Ctrl ~Shift <Key>v: insert-selection(CLIPBOARD)
+EOF
+    chmod 600 -- "$XENVIRONMENT" || fail permission_denied
+    export XENVIRONMENT
 }
 xml_escape() { printf %s "$1" | sed 's/\&/\&amp;/g;s/</\&lt;/g;s/>/\&gt;/g;s/"/\&quot;/g;s/'"'"'/\&apos;/g'; }
 # 常见发行版的 xkbcomp 路径编译为 /usr/bin；PATH 无法覆盖这个绝对路径。

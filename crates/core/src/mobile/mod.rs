@@ -47,6 +47,10 @@ impl Default for Permissions {
 pub struct Device {
     pub id: String,
     pub name: String,
+    /// 配对请求的浏览器标识，清理控制字符和首尾空白后最多 256 个字符。
+    pub user_agent: Option<String>,
+    /// 最近一次通过认证的请求的 TCP 来源 IP。
+    pub last_ip: Option<String>,
     pub permissions: Permissions,
     pub created_at: i64,
     pub last_active_at: i64,
@@ -127,6 +131,11 @@ impl MobileServer {
         self.shared.create_invite()
     }
 
+    /// 无参数、无返回值；作废所有未使用的邀请码，不影响已在等待桌面批准的配对。
+    pub fn cancel_invites(&self) {
+        lock(&self.shared.pairing).cancel_invites();
+    }
+
     /// 无参数；返回设备记录，包含最近撤销或失效的设备（最多 128 条）；撤销 30 天或闲置 60 天的记录自动清理。
     pub fn list_devices(&self) -> Result<Vec<Device>, AppError> {
         let state = lock(&self.shared.state);
@@ -141,6 +150,12 @@ impl MobileServer {
         lock(&state.db).set_mobile_permissions(id, permissions)?;
         state.disconnect(Some(id), None);
         Ok(())
+    }
+
+    /// 将未撤销的 id 设备改名为 name；名字非法返回 mobile.invalid_request，不存在或已撤销返回 storage.not_found。
+    pub fn rename_device(&self, id: &str, name: &str) -> Result<(), AppError> {
+        let state = lock(&self.shared.state);
+        rename_in(&lock(&state.db), id, name)
     }
 
     /// 撤销 id 并立即断开其全部连接；重复撤销成功，不存在返回 storage.not_found。
@@ -193,6 +208,23 @@ pub fn set_permissions_in(
     permissions: Permissions,
 ) -> Result<(), AppError> {
     db.set_mobile_permissions(id, permissions)
+}
+
+/// 使用 db 将未撤销的 id 设备改名为 name，入口关闭时也可调用。
+/// 名字去除首尾空白后须为 1–80 个无控制字符的字符；非法返回 mobile.invalid_request，不存在或已撤销返回 storage.not_found。
+pub fn rename_in(db: &crate::storage::Db, id: &str, name: &str) -> Result<(), AppError> {
+    db.rename_mobile_device(id, device_name(name)?)
+}
+
+fn device_name(name: &str) -> Result<&str, AppError> {
+    let name = name.trim();
+    if name.is_empty() || name.chars().count() > 80 || name.chars().any(char::is_control) {
+        return Err(error(
+            "mobile.invalid_request",
+            "设备名必须为一至八十个可显示字符",
+        ));
+    }
+    Ok(name)
 }
 
 /// 校验 bind 的 IP，允许回环、RFC1918、100.64/10 和 fd00::/8；端口 0 合法，其他地址返回 mobile.invalid_bind。

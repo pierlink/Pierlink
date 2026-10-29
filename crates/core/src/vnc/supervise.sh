@@ -107,6 +107,7 @@ if [ -n "${light_prefix:-}" ]; then
     XDG_CACHE_HOME=$state_dir/$display.cache
     private_dir "$XDG_CACHE_HOME"
     export XDG_CACHE_HOME
+    light_xresources
     cat > "$XDG_CACHE_HOME/session.conf" <<EOF
 <!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN" "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
 <busconfig><type>session</type><listen>unix:abstract=pierlink-vnc-$uid-$display-$$</listen><auth>EXTERNAL</auth><policy context="default"><allow send_destination="*" eavesdrop="true"/><allow eavesdrop="true"/><allow own="*"/></policy></busconfig>

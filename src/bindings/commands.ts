@@ -151,6 +151,10 @@ export const commands = {
 	terminalOpenServer: (serverId: string, cols: number, rows: number, onEvent: Channel<TerminalEventDto_Deserialize>) => typedError<string, AppError>(__TAURI_INVOKE("terminal_open_server", { serverId, cols, rows, onEvent })),
 	/**  读取系统剪贴板的文字（不经过网页权限，不会弹出“是否允许读取剪贴板”）。没有文字时返回 null。 */
 	clipboardReadText: () => typedError<string | null, AppError>(__TAURI_INVOKE("clipboard_read_text")),
+	/**  把文字写进系统剪贴板（网页方式要求窗口在前台，程序在窗口不在前台时发来的复制请求会失败） */
+	clipboardWriteText: (text: string) => typedError<null, AppError>(__TAURI_INVOKE("clipboard_write_text", { text })),
+	/**  用系统默认浏览器打开网址（只允许 http 和 https） */
+	openInBrowser: (url: string) => typedError<null, AppError>(__TAURI_INVOKE("open_in_browser", { url })),
 	/**  家目录：本机为用户目录，服务器为登录后的初始目录。 */
 	filesHome: (loc: LocDto_Deserialize) => typedError<string, AppError>(__TAURI_INVOKE("files_home", { loc })),
 	/**  列目录（含隐藏文件），目录项过多时截断。 */
@@ -298,6 +302,10 @@ export const commands = {
 	mobileDevices: () => typedError<MobileDeviceDto_Serialize[], AppError>(__TAURI_INVOKE("mobile_devices")),
 	/**  改一台手机的权限（开着的连接立即断开，按新权限重新连） */
 	mobileSetPermissions: (id: string, permissions: MobilePermissionsDto) => typedError<null, AppError>(__TAURI_INVOKE("mobile_set_permissions", { id, permissions })),
+	/**  给一台手机改名（入口关着时也能改） */
+	mobileRename: (id: string, name: string) => typedError<null, AppError>(__TAURI_INVOKE("mobile_rename", { id, name })),
+	/**  作废还没用过的邀请码（设置页关掉二维码时）；入口没开时什么都不做 */
+	mobileCancelInvite: () => typedError<null, AppError>(__TAURI_INVOKE("mobile_cancel_invite")),
 	/**  撤销一台手机（id）或全部（null）；开着的连接立即断开 */
 	mobileRevoke: (id: string | null) => typedError<null, AppError>(__TAURI_INVOKE("mobile_revoke", { id })),
 	/**  回答配对请求 */
@@ -346,6 +354,15 @@ export const commands = {
 	desktopSavePassword: (serverId: string, key: string, password: string) => typedError<null, AppError>(__TAURI_INVOKE("desktop_save_password", { serverId, key, password })),
 	/**  忘掉 VNC 密码（密码错了时） */
 	desktopForgetPassword: (serverId: string, key: string) => typedError<null, AppError>(__TAURI_INVOKE("desktop_forget_password", { serverId, key })),
+	/**
+	 *  在独立窗口里打开服务器桌面（每台服务器一个，已经开着就提到前面）。
+	 *  由后端创建：窗口的浏览器参数要和主窗口一致（自动化测试时主窗口带了调试端口参数），前端创建会失败
+	 * 
+	 *  :param server_id: 服务器 ID（窗口名是 desktop-服务器ID）
+	 *  :param title: 窗口标题
+	 *  :param url: 页面地址，必须是 index.html#desktop-window?… 这样的独立窗口地址
+	 */
+	desktopOpenWindow: (serverId: string, title: string, url: string) => typedError<null, AppError>(__TAURI_INVOKE("desktop_open_window", { serverId, title, url })),
 	/**
 	 *  导出到文件：弹出“另存为”，写入 JSON
 	 * 
@@ -1783,6 +1800,10 @@ export type MobileDeviceDto_Deserialize = {
 	name: string,
 	createdMs: number | null,
 	lastSeenMs?: number | null,
+	/**  配对时浏览器报告的 User-Agent */
+	userAgent?: string | null,
+	/**  最近一次连过来的 IP */
+	lastIp?: string | null,
 	permissions: MobilePermissionsDto,
 };
 
@@ -1791,6 +1812,10 @@ export type MobileDeviceDto_Serialize = {
 	name: string,
 	createdMs: number | null,
 	lastSeenMs: number | null,
+	/**  配对时浏览器报告的 User-Agent */
+	userAgent: string | null,
+	/**  最近一次连过来的 IP */
+	lastIp: string | null,
 	permissions: MobilePermissionsDto,
 };
 

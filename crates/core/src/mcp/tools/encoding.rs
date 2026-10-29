@@ -145,6 +145,32 @@ impl Document {
         }
         Ok(bytes)
     }
+    // 混合换行统一归一化匹配，避免漏掉仅分隔符不同的重复内容；返回范围仍指向原文。
+    pub(super) fn match_ranges(&self, old: &str) -> Vec<std::ops::Range<usize>> {
+        if self.line_ending() != "mixed" {
+            let direct: Vec<_> = self
+                .text
+                .match_indices(old)
+                .map(|(i, s)| i..i + s.len())
+                .collect();
+            if !direct.is_empty() {
+                return direct;
+            }
+        }
+        let normalized = self.text.replace("\r\n", "\n");
+        let needle = old.replace("\r\n", "\n");
+        let removed: Vec<_> = self
+            .text
+            .match_indices("\r\n")
+            .enumerate()
+            .map(|(n, (i, _))| i - n)
+            .collect();
+        let original = |i| i + removed.partition_point(|p| *p < i);
+        normalized
+            .match_indices(&needle)
+            .map(|(i, s)| original(i)..original(i + s.len()))
+            .collect()
+    }
     // 混合换行的整文件写入按原行序保留各行分隔符；新增行沿用最后一个分隔符。
     pub(super) fn fragment_replacement(&self, old: &str, new: &str) -> String {
         if self.line_ending() == "mixed" && old.contains('\n') {

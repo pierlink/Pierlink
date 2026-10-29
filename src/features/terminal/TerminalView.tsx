@@ -15,7 +15,10 @@ import { endedFromOpenError, type Ended } from "./ended";
 import { getServersApi, notifyServersChanged } from "../servers/api";
 import type { OpenSpec, TerminalBackend } from "./types";
 import { Button } from "../../components";
-import { readClipboardText } from "../shell/clipboard";
+import { readClipboardText, writeClipboardText } from "../shell/clipboard";
+import { commands } from "../../bindings/commands";
+import { inTauri } from "../shell/TitleBar";
+import { explorerFolder } from "./localPaths";
 import { passwordBus } from "../passwords/bus";
 import { KittyKeyboard, localShellFamily, newlineKey, parseOsc52 } from "./kittyKeys";
 
@@ -52,6 +55,14 @@ interface Props {
   onToggleBroadcast?: () => void;
   /** 终端创建后交出操作句柄（命令片段用），销毁时交出 null */
   onHandle?: (h: TermHandle | null) => void;
+  /** 终端当前目录（不知道时为 null）：右键菜单“复制当前目录”“在资源管理器中打开”用 */
+  cwd?: string | null;
+  /** 右键菜单的“左右分屏”“上下分屏”：在旁边开一个同样的终端 */
+  onSplit?: (dir: "row" | "col") => void;
+  /** 窗格太小、拆开后会小于最小尺寸时返回 false，菜单项灰掉 */
+  canSplit?: (dir: "row" | "col") => boolean;
+  /** 正从资源管理器拖着文件经过这个本机终端：显示“松开填入路径” */
+  fileDrop?: boolean;
 }
 
 /** 从外部操作终端：粘贴、输入都走终端自己的输入通道（广播、回车计数照常生效） */
@@ -65,18 +76,18 @@ export interface TermHandle {
 
 /**
  * 一个终端窗格：xterm.js 显示 + 后端会话。
- * 规则：Ctrl+C 永远发给程序；复制用 Ctrl+Shift+C；粘贴用 Ctrl+Shift+V 或右键；
+ * 规则：有选中文字时 Ctrl+C、Ctrl+Shift+C 复制，没有时 Ctrl+C 发给程序（中断）；Ctrl+V、Ctrl+Shift+V 粘贴；
  * 会话结束（断网、退出、登录失败）后，终端区域换成一块提示，提供“重新连接”和“关闭标签”；
  * 不自动重连，也不自动关闭标签（设计 3.9）。
  */
-export function TerminalView({ backend, spec, visible, confirmPaste, openLink, onStatus, onError, onCloseTab, closeLabel, onCwd, onCommand, onSession, broadcasting, onInput, onOutput, onToggleBroadcast, onHandle }: Props) {
+export function TerminalView({ backend, spec, visible, confirmPaste, openLink, onStatus, onError, onCloseTab, closeLabel, onCwd, onCommand, onSession, broadcasting, onInput, onOutput, onToggleBroadcast, onHandle, cwd, onSplit, canSplit, fileDrop }: Props) {
   const { t } = useTranslation();
   const host = useRef<HTMLDivElement>(null);
   // 回调放进 ref，避免它们变化时重建终端
   const { settings } = useSettings();
   const opts = settings.terminal;
-  const cb = useRef({ confirmPaste, openLink, onStatus, onError, onCwd, onCommand, onSession, t, opts, broadcasting, onInput, onOutput, onToggleBroadcast, onHandle });
-  cb.current = { confirmPaste, openLink, onStatus, onError, onCwd, onCommand, onSession, t, opts, broadcasting, onInput, onOutput, onToggleBroadcast, onHandle };
+  const cb = useRef({ confirmPaste, openLink, onStatus, onError, onCwd, onCommand, onSession, t, opts, broadcasting, onInput, onOutput, onToggleBroadcast, onHandle, cwd, onSplit, canSplit });
+  cb.current = { confirmPaste, openLink, onStatus, onError, onCwd, onCommand, onSession, t, opts, broadcasting, onInput, onOutput, onToggleBroadcast, onHandle, cwd, onSplit, canSplit };
   const termRef = useRef<Terminal | null>(null);
   // 粘贴要走多行确认，函数在终端创建时生成，经 ref 给右键菜单用
   const pasteRef = useRef<(text: string) => Promise<void>>(async () => {});
@@ -114,6 +125,10 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
     if (noticeTimer.current) clearTimeout(noticeTimer.current);
     noticeTimer.current = setTimeout(() => setNotice(null), ms);
   });
+  /** 复制到系统剪贴板；失败时在终端顶部提示原因 */
+  const copyText = useRef((text: string) => {
+    if (text) void writeClipboardText(text).catch((e: unknown) => showNotice.current(formatError(e)));
+  });
 
   useEffect(() => {
     const el = host.current;
@@ -128,6 +143,8 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
       allowTransparency: true,
       allowProposedApi: true,
       theme: currentTerminalTheme(),
+      // 程序输出的超链接（OSC 8，如 Claude Code 里的链接）：和普通网址一样先确认再用系统浏览器打开；拖选链接文字时不打开
+      linkHandler: { activate: (_e, uri) => { if (!termRef.current?.hasSelection()) cb.current.openLink(uri); } },
     });
     termRef.current = term;
     const fit = new FitAddon();
@@ -136,7 +153,8 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
     const unicode = new Unicode11Addon();
     term.loadAddon(unicode);
     term.unicode.activeVersion = "11";
-    term.loadAddon(new WebLinksAddon((_e, url) => cb.current.openLink(url)));
+    // 按下和松开都在同一个链接上就会触发，拖选链接里的一段文字时也一样：有选中内容说明是在选文字，不打开
+    term.loadAddon(new WebLinksAddon((_e, url) => { if (!term.hasSelection()) cb.current.openLink(url); }));
     term.open(el);
     fit.fit();
     // 当前目录报告：OSC 7（file://主机/路径）和 OSC 9;9（Windows Terminal 约定，"路径"）
@@ -152,10 +170,12 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
       if (path) cb.current.onCwd?.(path);
       return true;
     });
-    // OSC 52：程序（Claude Code、tmux、vim 等）通过 SSH 写剪贴板；读请求一律忽略
+    // OSC 52：程序（Claude Code、tmux、vim 等）通过 SSH 写剪贴板；读请求一律忽略。
+    // 由后端写系统剪贴板：网页方式要求窗口在前台，窗口不在前台时会写不进去。
+    // 注意：GNU screen 4.x 会丢掉程序直接发的 OSC 52（包在 DCS 里的才透传），tmux 会转出来
     term.parser.registerOscHandler(52, (data) => {
       const text = parseOsc52(data);
-      if (text) void navigator.clipboard.writeText(text).catch(() => undefined);
+      if (text) copyText.current(text);
       return true;
     });
     // kitty 键盘协议（只支持“消除歧义”）：程序开启后 Shift+Enter 等能和 Enter 区分开
@@ -260,8 +280,8 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
     };
     pasteRef.current = doPaste;
 
-    // 复制粘贴快捷键：Ctrl+Shift+C / Ctrl+Shift+V；Ctrl+Shift+B 开关广播输入。
-    // 粘贴快捷键在设置里选：选 Ctrl+V 时 Ctrl+V 粘贴，否则发给程序；Ctrl+Shift+V 一直能粘贴；Ctrl+C 永远发给程序（中断）。
+    // 复制粘贴快捷键：有选中文字时 Ctrl+C、Ctrl+Shift+C 复制（和 Windows Terminal 一样复制后取消选中），
+    // 没有选中时 Ctrl+C 照常发给程序（中断）；Ctrl+V、Ctrl+Shift+V 粘贴；Ctrl+Shift+B 开关广播输入。
     // 拦下的按键要阻止浏览器默认动作：Ctrl+V 在浏览器里本身就是粘贴，不阻止会再粘贴一次（粘贴两份）
     term.attachCustomKeyEventHandler((ev) => {
       // Shift+Enter、Ctrl+Enter 是换行（按所在环境发能换行的按键）；其他带修饰键的回车在程序开启 kitty 协议时按协议发
@@ -276,22 +296,21 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
         if (ev.type === "keydown") term.input(seq, true);
         return false;
       }
-      const ctrlOnly = ev.ctrlKey && !ev.shiftKey && !ev.altKey && !ev.metaKey;
-      if (ctrlOnly && ev.code === "KeyV" && cb.current.opts.pasteKey === "ctrlV") {
-        ev.preventDefault();
-        if (ev.type === "keydown") void readClipboardText().then(doPaste, (e: unknown) => showNotice.current(formatError(e)));
-        return false;
-      }
-      if (!ev.ctrlKey || !ev.shiftKey || ev.altKey || ev.metaKey) return true;
+      if (!ev.ctrlKey || ev.altKey || ev.metaKey) return true;
       if (ev.code !== "KeyC" && ev.code !== "KeyV" && ev.code !== "KeyB") return true;
-      if (ev.code === "KeyB" && !cb.current.onToggleBroadcast) return true;
+      // 只按 Ctrl+C、没有选中文字：交给 xterm 发给程序
+      if (ev.code === "KeyC" && !ev.shiftKey && !term.hasSelection()) return true;
+      if (ev.code === "KeyB" && (!ev.shiftKey || !cb.current.onToggleBroadcast)) return true;
       ev.preventDefault();
       if (ev.type !== "keydown") return false;
       if (ev.code === "KeyB") {
         cb.current.onToggleBroadcast?.();
       } else if (ev.code === "KeyC") {
         const sel = term.getSelection();
-        if (sel) void navigator.clipboard.writeText(sel);
+        if (sel) {
+          copyText.current(sel);
+          term.clearSelection();
+        }
       } else {
         void readClipboardText().then(doPaste, (e: unknown) => showNotice.current(formatError(e)));
       }
@@ -381,27 +400,42 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
       onContextMenu={(e) => {
         const term = termRef.current;
         if (!term) return;
+        // 网页自带的右键菜单一律不要
+        e.preventDefault();
         const selection = term.getSelection();
-        // 设置里开了“选中后右键直接复制”：复制并取消选中，不弹菜单
-        if (selection && cb.current.opts.rightClickCopy) {
-          e.preventDefault();
-          void navigator.clipboard.writeText(selection);
-          term.clearSelection();
-          term.focus();
-          return;
-        }
-        // 设置里开了“没有选中时右键直接粘贴”：粘贴（多行照常确认），不弹菜单
-        if (!selection && cb.current.opts.rightClickPaste) {
-          e.preventDefault();
-          void readClipboardText().then((text) => pasteRef.current(text), (err: unknown) => showNotice.current(formatError(err))).finally(() => term.focus());
-          return;
-        }
+        const program = term.modes.mouseTrackingMode !== "none";
+        const fullScreen = term.buffer.active.type === "alternate";
+        const quick = cb.current.opts.rightClickCopyPaste;
+        const paste = () => { void readClipboardText().then((text) => pasteRef.current(text), (err: unknown) => showNotice.current(formatError(err))).finally(() => term.focus()); };
+        const copy = (text: string) => { copyText.current(text); term.clearSelection(); term.focus(); };
+        // 有 Pierlink 自己的选中（全屏程序里按住 Shift 拖选的也算）：程序里、或开了“右键复制粘贴”时直接复制
+        if (selection && (program || fullScreen || quick)) { copy(selection); return; }
+        // 程序开了鼠标模式（Claude Code、vim 的 mouse=a 等）：右键交给程序。不粘贴：程序里的选中 Pierlink 看不到，
+        // 当成“没选中”去粘贴，会和程序自己的复制（OSC 52）一起触发
+        if (program) return;
+        // 全屏程序里不弹菜单；开了“右键复制粘贴”时没选中就粘贴
+        if (fullScreen || quick) { if (quick) paste(); return; }
+        const dir = cb.current.cwd ?? null;
+        const folder = spec.kind === "local" ? explorerFolder(spec.shellId, dir) : null;
+        const split = cb.current.onSplit;
+        const can = cb.current.canSplit ?? (() => true);
         ctx.open(e, [
-          { id: "copy", label: t("terminal.copy"), shortcut: "Ctrl Shift C", disabled: !selection, onSelect: () => { void navigator.clipboard.writeText(selection); term.focus(); } },
-          { id: "paste", label: t("terminal.paste"), shortcut: cb.current.opts.pasteKey === "ctrlV" ? "Ctrl V" : "Ctrl Shift V", onSelect: () => { void readClipboardText().then((text) => pasteRef.current(text), (e: unknown) => showNotice.current(formatError(e))).finally(() => term.focus()); } },
+          { id: "copy", label: t("terminal.copy"), shortcut: "Ctrl C", disabled: !selection, onSelect: () => copy(selection) },
+          { id: "paste", label: t("terminal.paste"), shortcut: "Ctrl V", onSelect: paste },
           { kind: "separator", id: "s1" },
-          { id: "all", label: t("terminal.selectAll"), onSelect: () => term.selectAll() },
-          { id: "clear", label: t("terminal.clear"), onSelect: () => { term.clear(); term.focus(); } },
+          { id: "cwd", label: t("terminal.copyCwd"), disabled: !dir, onSelect: () => { if (dir) copyText.current(dir); term.focus(); } },
+          ...(spec.kind === "local" && inTauri
+            ? [{ id: "explorer", label: t("terminal.openInExplorer"), disabled: !folder, onSelect: () => {
+                if (folder) void commands.filesOpenDefault(folder).then((r) => { if (r.status === "error") showNotice.current(formatError(r.error)); });
+              } }]
+            : []),
+          ...(split
+            ? [
+                { kind: "separator" as const, id: "s2" },
+                { id: "splitRow", label: t("terminal.splitRow"), disabled: !can("row"), onSelect: () => split("row") },
+                { id: "splitCol", label: t("terminal.splitCol"), disabled: !can("col"), onSelect: () => split("col") },
+              ]
+            : []),
         ]);
       }}
     >
@@ -436,6 +470,7 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
           </div>
         </div>
       )}
+      {fileDrop && <div className="term-filedrop" aria-hidden="true"><span>{t("terminal.fileDrop")}</span></div>}
       {notice && (
         <div className="term-notice" role="status">
           {notice}

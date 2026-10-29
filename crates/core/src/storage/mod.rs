@@ -90,6 +90,7 @@ pub fn open(path: &Path) -> Result<Db, AppError> {
         M::up(include_str!("v5.sql")),
         M::up(include_str!("v6.sql")),
         M::up(include_str!("v7.sql")),
+        M::up(include_str!("v8.sql")),
     ])
     .to_latest(&mut conn)
     .map_err(|_| failure("storage.migration", "数据库结构迁移失败或版本不受支持"))?;

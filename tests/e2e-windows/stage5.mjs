@@ -19,6 +19,13 @@ if (!EXE || !OUT || !["old", "upgrade", "reinstalled"].includes(PHASE)) {
 }
 
 const LOCAL = process.env.LOCALAPPDATA;
+/** 旧版的版本号（如 v0.9.1，CI 传进来）。0.4 以前的版本升级上来才有“内置 SSH”的说明；不知道时按有说明算 */
+const OLD_VERSION = (process.env.E2E_OLD_VERSION ?? "").replace(/^v/, "");
+const fromBeforeBuiltin = (() => {
+  if (!OLD_VERSION) return true;
+  const [major, minor] = OLD_VERSION.split(".").map(Number);
+  return major === 0 && minor < 4;
+})();
 /** 旧版的数据目录（和安装目录相同） */
 const OLD_DATA = join(LOCAL, "Pierlink");
 /** 新版的数据目录 */
@@ -109,7 +116,12 @@ if (PHASE === "upgrade") {
     return `新位置=${NEW_DATA}`;
   });
 
-  await rec.step(p, "升级后：服务器列表顶部说明一次内置 SSH（不是弹窗），点“知道了”后消失", async () => {
+  if (!fromBeforeBuiltin) await rec.step(p, `升级后：从 ${OLD_VERSION} 升级上来不再出现内置 SSH 的说明`, async () => {
+    await new Promise((r) => setTimeout(r, 3000));
+    if (await p.js(`!!document.querySelector('.srv-notice')`)) throw new Error("从 0.4 以后的版本升级不该再出现内置 SSH 的说明");
+    return "没有说明";
+  });
+  if (fromBeforeBuiltin) await rec.step(p, "升级后：服务器列表顶部说明一次内置 SSH（不是弹窗），点“知道了”后消失", async () => {
     const text = await u.waitFor(`document.querySelector('.srv-notice')?.innerText`, "内置 SSH 的升级说明", 15000);
     if (!/Pierlink now has built-in SSH/.test(text) || !/The server you added in Pierlink now uses built-in SSH/.test(text)) throw new Error(`升级说明的文字不对：${text}`);
     if (await p.js(`!!document.querySelector('.pl-dialog')`)) throw new Error("升级说明不该弹窗");

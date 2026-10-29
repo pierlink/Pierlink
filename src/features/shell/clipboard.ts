@@ -12,3 +12,24 @@ export async function readClipboardText(): Promise<string> {
   if (r.status === "error") throw r.error;
   return r.data ?? "";
 }
+
+/**
+ * 把文字写进剪贴板。在应用里由后端直接写系统剪贴板：网页方式要求窗口在前台，程序发来的复制请求
+ * （OSC 52、远程桌面同步）可能在窗口不在前台时到达，那时会失败。浏览器预览里用网页接口。
+ * @param text 要写入的文字
+ */
+export async function writeClipboardText(text: string): Promise<void> {
+  if (!inTauri) return navigator.clipboard.writeText(text);
+  const r = await commands.clipboardWriteText(text);
+  if (r.status === "error") throw r.error;
+}
+
+/**
+ * 用系统默认浏览器打开网址（只允许 http、https，由后端检查）。浏览器预览里开新标签页。
+ * @param url 网址
+ */
+export async function openInBrowser(url: string): Promise<void> {
+  if (!inTauri) { window.open(url, "_blank", "noopener"); return; }
+  const r = await commands.openInBrowser(url);
+  if (r.status === "error") throw r.error;
+}

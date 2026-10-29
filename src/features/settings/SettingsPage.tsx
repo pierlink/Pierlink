@@ -197,19 +197,8 @@ export function SettingsPage({ version }: { version: string | null }) {
             <Row label={t("settings.term.scrollback")} hint={t("settings.term.scrollbackHint")}>
               <NumberInput label={t("settings.term.scrollback")} value={term.scrollback} min={1000} max={100000} onCommit={(v) => setTerm({ scrollback: v })} />
             </Row>
-            <Row label={t("settings.term.pasteKey")} hint={t("settings.term.pasteKeyHint")}>
-              <RowSelect
-                label={t("settings.term.pasteKey")}
-                value={term.pasteKey}
-                onChange={(v) => setTerm({ pasteKey: v as AppSettings["terminal"]["pasteKey"] })}
-                options={[{ value: "ctrlV", label: "Ctrl+V" }, { value: "ctrlShiftV", label: "Ctrl+Shift+V" }]}
-              />
-            </Row>
-            <Row label={t("settings.term.rightClickCopy")} hint={t("settings.term.rightClickCopyHint")}>
-              <Switch label={t("settings.term.rightClickCopy")} checked={term.rightClickCopy} onChange={(v) => setTerm({ rightClickCopy: v })} />
-            </Row>
-            <Row label={t("settings.term.rightClickPaste")} hint={t("settings.term.rightClickPasteHint")}>
-              <Switch label={t("settings.term.rightClickPaste")} checked={term.rightClickPaste} onChange={(v) => setTerm({ rightClickPaste: v })} />
+            <Row label={t("settings.term.rightClickCopyPaste")} hint={t("settings.term.rightClickCopyPasteHint")}>
+              <Switch label={t("settings.term.rightClickCopyPaste")} checked={term.rightClickCopyPaste} onChange={(v) => setTerm({ rightClickCopyPaste: v })} />
             </Row>
             <Row label={t("settings.term.pasteConfirm")} hint={t("settings.term.pasteConfirmHint")}>
               <Switch label={t("settings.term.pasteConfirm")} checked={term.confirmMultilinePaste} onChange={(v) => setTerm({ confirmMultilinePaste: v })} />
@@ -221,7 +210,7 @@ export function SettingsPage({ version }: { version: string | null }) {
               <Switch label={t("settings.term.closeConfirm")} checked={term.confirmClose} onChange={(v) => setTerm({ confirmClose: v })} />
             </Row>
             <Row label={t("settings.term.shortcuts")} hint={t("settings.term.shortcutsHint")}>
-              <span className="set-kbd mono">Ctrl+Shift+C / Ctrl+Shift+V / Ctrl+Shift+B</span>
+              <span className="set-kbd mono">Ctrl+C / Ctrl+V / Ctrl+Shift+B</span>
             </Row>
           </div>
         </section>

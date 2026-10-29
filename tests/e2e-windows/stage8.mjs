@@ -364,9 +364,16 @@ await rec.step(p, "服务器入口：令牌不对时被拒绝", async () => {
 
 // ---------- 手机入口：在 127.0.0.1 上打开，用 Node 当“手机”走真实 HTTP ----------
 let phone = null;
+/** “手机”的浏览器标识：配对后电脑上应该显示成 iPhone · Safari */
+const PHONE_UA = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1";
+/** 读 Windows 剪贴板（经 base64 传出来，中文不受控制台代码页影响） */
+function getClipboard() {
+  const b64 = execFileSync("powershell.exe", ["-NoProfile", "-Command", "$t = Get-Clipboard -Raw; if ($null -eq $t) { $t = '' }; [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($t))"], { encoding: "utf8" }).trim();
+  return Buffer.from(b64, "base64").toString("utf8").replace(/\r?\n$/, "");
+}
 /** 手机发请求：带上设备 Cookie；POST 带 X-Pierlink 头 */
-async function phoneFetch(method, path, body) {
-  const headers = {};
+async function phoneFetch(method, path, body, extra = {}) {
+  const headers = { "User-Agent": PHONE_UA, ...extra };
   if (phone.cookie) headers.Cookie = phone.cookie;
   if (method === "POST") { headers["Content-Type"] = "application/json"; headers["X-Pierlink"] = "1"; }
   const res = await fetch(`${phone.base}${path}`, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
@@ -388,6 +395,10 @@ await rec.step(p, "手机入口：设置里在 127.0.0.1 上打开，生成邀�
   const code = await u.waitFor(`document.querySelector('.mobile-set__code')?.innerText?.trim() || null`, "邀请码", 10000);
   if (!/^[A-Z2-9]{8}$/.test(code)) throw new Error(`邀请码格式不对：${code}`);
   if (!(await p.js(`!!document.querySelector('.mobile-set__qr-img svg')`))) throw new Error("没有二维码");
+  execFileSync("powershell.exe", ["-NoProfile", "-Command", "Set-Clipboard -Value 'empty'"]);
+  await u.click('.mobile-set__code-row button[aria-label="Copy code"]');
+  await sleep(800);
+  if (getClipboard() !== code) throw new Error(`“复制邀请码”没有复制：${getClipboard()}`);
   phone = { base: url.replace(/\/$/, ""), code, cookie: null };
   const page = await phoneFetch("GET", "/");
   if (page.status !== 200 || !page.text.includes('<div id="root">')) throw new Error(`手机页面没出来：${page.status}`);
@@ -404,6 +415,10 @@ await rec.step(p, "手机配对：输入邀请码后电脑上弹出批准框，�
   const cookie = paired.headers.get("set-cookie") || "";
   if (paired.status >= 300 || !/pl_device=/.test(cookie) || !/HttpOnly/i.test(cookie)) throw new Error(`配对失败：${paired.status} ${paired.text.slice(0, 200)} ${cookie.slice(0, 40)}`);
   phone.cookie = cookie.split(";")[0];
+  // 配对成功：电脑上的二维码自动收起，手机那一行显示系统和浏览器、来源 IP
+  await u.waitFor(`!document.querySelector('.mobile-set__qr-img') && /Paired: e2e-phone/.test(document.querySelector('.mobile-set__pair')?.innerText||'')`, "配对成功后二维码收起", 10000);
+  const row = await u.waitFor(`[...document.querySelectorAll('.mobile-dev')].find(x=>x.innerText.includes('e2e-phone'))?.innerText || null`, "已配对的手机", 10000);
+  if (!/iPhone · Safari/.test(row) || !/127\.0\.0\.1/.test(row)) throw new Error(`手机信息不对：${row.replace(/\s+/g, " ")}`);
   const again = await phoneFetch("POST", "/api/pair", { code: phone.code, device_name: "second" });
   if (again.status < 400) throw new Error("邀请码应该只能用一次");
   const me = await phoneFetch("GET", "/api/me");
@@ -419,6 +434,36 @@ await rec.step(p, "手机配对：输入邀请码后电脑上弹出批准框，�
   const foreign = await fetch(`${phone.base}/api/stop-all`, { method: "POST", headers: { Cookie: phone.cookie, "X-Pierlink": "1", Origin: "http://evil.example" } });
   if (foreign.status !== 403) throw new Error(`外来 Origin 应该 403：${foreign.status}`);
   return `设备 ${me.json.name}｜服务器 ${overview.json.servers.length} 台｜终端 ${terms.json.length} 个`;
+});
+
+await rec.step(p, "手机改名；关掉二维码后邀请码作废；手机页面的文件按 gzip 发送", async () => {
+  if (!phone?.cookie) throw new Error("没有配对好的手机");
+  await p.js(`(()=>{const d=[...document.querySelectorAll('.mobile-dev')].find(x=>x.innerText.includes('e2e-phone')); d?.querySelector('button[aria-label="Rename"]')?.click();})()`);
+  await u.waitFor(`!!document.querySelector('.mobile-dev__input')`, "改名输入框", 5000);
+  await p.js(`(()=>{const i=document.querySelector('.mobile-dev__input'); const set=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set; set.call(i,'e2e-phone-2'); i.dispatchEvent(new Event('input',{bubbles:true})); i.focus();})()`);
+  await u.key("Enter", "Enter", 13, 0, "\r");
+  await u.waitFor(`[...document.querySelectorAll('.mobile-dev__name')].some(x=>x.innerText.trim()==='e2e-phone-2')`, "列表里是新名字", 8000);
+  const me = await phoneFetch("GET", "/api/me");
+  if (me.json?.name !== "e2e-phone-2") throw new Error(`手机那边的名字没变：${me.text.slice(0, 200)}`);
+  // 新邀请码：点关闭后作废
+  await u.clickText("Pair a phone", ".mobile-set__pair");
+  const code = await u.waitFor(`document.querySelector('.mobile-set__code')?.innerText?.trim() || null`, "新的邀请码", 10000);
+  await u.click('.mobile-set__pair button[aria-label="Close"]');
+  await u.waitFor(`!document.querySelector('.mobile-set__qr-img')`, "点关闭后二维码收起", 5000);
+  const saved = phone.cookie;
+  phone.cookie = null;
+  const late = await phoneFetch("POST", "/api/pair", { code, device_name: "late" });
+  phone.cookie = saved;
+  if (late.status < 400) throw new Error(`关掉二维码后邀请码还能用：${late.status}`);
+  // 网页文件：浏览器接受 gzip 时发压缩好的，不接受时发原文件
+  const html = (await phoneFetch("GET", "/")).text;
+  const js = html.match(/src="(\/assets\/[^"]+\.js)"/)?.[1];
+  if (!js) throw new Error(`首页里找不到脚本：${html.slice(0, 300)}`);
+  const zipped = await phoneFetch("GET", js, undefined, { "Accept-Encoding": "gzip" });
+  if (zipped.headers.get("content-encoding") !== "gzip" || !/accept-encoding/i.test(zipped.headers.get("vary") || "")) throw new Error(`没有按 gzip 发送：${zipped.headers.get("content-encoding")} / ${zipped.headers.get("vary")}`);
+  const plain = await phoneFetch("GET", js, undefined, { "Accept-Encoding": "identity" });
+  if (plain.headers.get("content-encoding") || plain.text.length !== zipped.text.length) throw new Error("不接受 gzip 时内容不对");
+  return `改名为 e2e-phone-2｜作废的邀请码 ${late.status}｜${js} 按 gzip 发送`;
 });
 
 await rec.step(p, "手机输入：电脑上给权限后能在本机终端执行命令；危险命令要手机二次确认；撤销后手机立即失效", async () => {
