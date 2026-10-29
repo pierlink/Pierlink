@@ -1,0 +1,203 @@
+/* 让终端透出面板背景（xterm 默认给视口铺一层不透明底色） */
+.xterm,
+.xterm .xterm-viewport,
+.xterm .xterm-screen {
+  background-color: transparent !important;
+}
+.xterm .xterm-viewport {
+  scrollbar-width: thin;
+  scrollbar-color: var(--chip) transparent;
+}
+
+/* 终端窗格：宿主元素铺满，提示条浮在顶部 */
+.term-pane {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+}
+.term-host {
+  flex: 1;
+  min-height: 0;
+  padding: var(--sp-2) var(--sp-1) var(--sp-1) var(--sp-3);
+}
+.term-notice {
+  position: absolute;
+  top: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: calc(100% - 32px);
+  padding: 6px 12px;
+  border-radius: var(--r-md);
+  background: var(--menu-bg);
+  color: var(--text);
+  border: 1px solid var(--border-strong);
+  box-shadow: var(--shadow-pop);
+  font-family: var(--font-ui);
+  font-size: var(--fs-sm);
+  pointer-events: none;
+  z-index: 2;
+}
+
+/* 主机指纹确认框 */
+.hk { display: flex; flex-direction: column; gap: var(--sp-3); max-width: 520px; }
+.hk p { margin: 0; }
+.hk__lead { display: flex; gap: var(--sp-2); align-items: flex-start; line-height: 1.55; }
+.hk__lead svg { flex: none; margin-top: 2px; color: var(--warn); }
+.hk__facts {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: var(--sp-2) var(--sp-4);
+  margin: 0;
+  padding: var(--sp-3);
+  border-radius: var(--r-md);
+  background: var(--card);
+  border: 1px solid var(--border);
+  font-size: var(--fs-sm);
+}
+.hk__facts dt { color: var(--text-muted); }
+.hk__facts dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.hk__fp { display: flex; align-items: center; gap: var(--sp-2); }
+.hk__fp code { flex: 1; min-width: 0; overflow-wrap: anywhere; user-select: all; color: var(--text); }
+.hk__hint { color: var(--text-muted); font-size: var(--fs-sm); line-height: 1.55; }
+.hk__cmd {
+  display: block;
+  margin-top: var(--sp-1);
+  padding: var(--sp-1) var(--sp-2);
+  border-radius: var(--r-sm);
+  background: var(--field);
+  color: var(--text);
+  user-select: all;
+  overflow-wrap: anywhere;
+}
+
+/* 列表行（专用密钥列表等） */
+.item-list { display: flex; flex-direction: column; gap: 10px; }
+.item-list__bar { display: flex; align-items: center; gap: 12px; }
+.item-list__hint { flex: 1; color: var(--text-dim); font-size: var(--fs-xs); }
+.item-list__toggle { display: flex; align-items: center; gap: 8px; font-size: var(--fs-sm); white-space: nowrap; }
+.item-list__rows { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; max-height: 360px; overflow: auto; }
+.item-list__row { display: flex; align-items: center; gap: 12px; padding: 8px 12px; border-radius: var(--r-md); background: var(--card); border: 1px solid var(--border); min-height: 48px; }
+.item-list__main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.item-list__name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-sm); }
+.item-list__meta { color: var(--text-dim); font-size: var(--fs-xs); }
+.item-list__tags { display: flex; gap: 4px; flex-wrap: wrap; justify-content: flex-end; }
+.item-list__actions { display: flex; align-items: center; gap: 6px; flex: none; }
+.item-list__confirm { color: var(--danger); font-size: var(--fs-xs); max-width: 220px; }
+
+
+/* 会话结束后盖在终端上的提示块（断开、登录失败、退出、打开失败） */
+.term-pane { position: relative; }
+.term-ended { position: absolute; inset: 0; display: grid; place-items: center; background: var(--bg-solid); z-index: 2; animation: pl-fade-in 160ms ease-out; }
+.term-ended__box { display: flex; flex-direction: column; align-items: center; gap: 10px; max-width: 440px; padding: 24px 28px; text-align: center; border-radius: var(--r-lg); background: var(--card); border: 1px solid var(--border); }
+.term-ended--lost .term-ended__box, .term-ended--authFailed .term-ended__box { border-color: color-mix(in srgb, var(--warn) 45%, var(--border)); }
+.term-ended--failed .term-ended__box { border-color: color-mix(in srgb, var(--danger) 45%, var(--border)); }
+.term-ended__title { font-size: var(--fs-lg); font-weight: 600; color: var(--text); }
+.term-ended__detail { color: var(--text-muted); font-size: var(--fs-sm); overflow-wrap: anywhere; }
+.term-ended__actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-top: 6px; }
+.term-ended__hint { color: var(--text-dim); font-size: var(--fs-xs); }
+@keyframes pl-fade-in { from { opacity: 0; } to { opacity: 1; } }
+
+/* ---------- 分屏 ---------- */
+.pane-grid { position: relative; flex: 1; min-height: 0; }
+/* 每格独立层叠（xterm 内部元素带 z-index，不隔离会盖住分隔条） */
+.pane-slot { position: absolute; min-width: 0; min-height: 0; isolation: isolate; z-index: 0; }
+.pane { position: absolute; inset: 0; display: flex; flex-direction: column; container-type: inline-size; }
+/* 多个窗格时每格留出细边，当前窗格描边高亮 */
+.pane--multi { inset: 3px; border: 1px solid var(--border); border-radius: var(--r-md); overflow: hidden; transition: border-color var(--dur-fast); }
+.pane--active { border-color: color-mix(in srgb, var(--accent) 55%, var(--border)); }
+.pane__body { position: relative; flex: 1; min-height: 0; display: flex; }
+.pane__term { position: relative; flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
+/* 终端宽度跟随窗格，不能被 xterm 画布撑开（否则拆分后旧终端不缩小） */
+.pane__term > .term-pane { min-width: 0; }
+.pane__term .term-host { min-width: 0; overflow: hidden; }
+
+/* 窗格标题栏：左边是标题和当前目录，右边是按钮（文件、分屏、关闭）。独占一行，不盖住终端内容 */
+.pane__bar {
+  flex: none; display: flex; align-items: center; gap: 2px; height: 30px; padding: 0 6px 0 10px;
+  border-bottom: 1px solid var(--border); background: color-mix(in srgb, var(--panel-solid) 55%, transparent);
+  overflow: hidden;
+}
+/* 窗格很窄时：先藏标题文字，再藏分屏按钮；文件和关闭按钮始终可点 */
+@container (max-width: 240px) { .pane__title > * { display: none; } }
+@container (max-width: 160px) { .pane__btn--split { display: none; } }
+/* 窗口缩得很小时只留关闭按钮，保证能关掉多余的窗格 */
+@container (max-width: 90px) { .pane__btn:not(.pane__btn--close) { display: none; } .pane__bar { padding: 0 2px; justify-content: center; } .pane__title { display: none; } }
+.pane__title { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 8px; font-size: var(--fs-xs); color: var(--text-muted); }
+.pane__title strong { font-weight: 600; color: var(--text); flex: none; max-width: 50%; overflow: hidden; text-overflow: ellipsis; }
+.pane__title .mono { overflow: hidden; text-overflow: ellipsis; direction: rtl; text-align: left; unicode-bidi: plaintext; }
+.pane--active .pane__title strong { color: var(--accent); }
+.pane__btn {
+  display: grid; place-items: center; flex: none; width: 24px; height: 22px; padding: 0;
+  border: 0; border-radius: var(--r-sm); background: transparent; color: var(--text-muted); cursor: pointer;
+  transition: background var(--dur-fast), color var(--dur-fast);
+}
+.pane__btn:hover { background: var(--hover); color: var(--text); }
+.pane__btn--on { background: var(--accent-soft); color: var(--accent); }
+.pane__btn--on:hover { background: color-mix(in srgb, var(--accent) 24%, transparent); color: var(--accent); }
+
+/* 分隔条：可点击区域 8 像素，中间显示 1 像素的线 */
+.pane-divider { position: absolute; z-index: 5; touch-action: none; }
+.pane-divider--row { width: 8px; margin-left: -4px; cursor: col-resize; }
+.pane-divider--col { height: 8px; margin-top: -4px; cursor: row-resize; }
+.pane-divider::after { content: ""; position: absolute; background: transparent; transition: background var(--dur-fast); }
+.pane-divider--row::after { left: 3px; width: 2px; top: 6px; bottom: 6px; }
+.pane-divider--col::after { top: 3px; height: 2px; left: 6px; right: 6px; }
+.pane-divider:hover::after { background: var(--accent); }
+/* 拖动时整个区域保持对应的光标，终端不响应鼠标、不选中文字 */
+.pane-grid--dragging-row, .pane-grid--dragging-row * { cursor: col-resize !important; user-select: none; }
+.pane-grid--dragging-col, .pane-grid--dragging-col * { cursor: row-resize !important; user-select: none; }
+.pane-grid[class*="--dragging"] .pane { pointer-events: none; }
+
+/* ---------- 文件面板（窗格右侧） ---------- */
+.pane__files { position: relative; flex: none; min-width: 0; display: flex; flex-direction: column; border-left: 1px solid var(--border); background: var(--panel-solid); }
+.pane__files-handle { position: absolute; left: -4px; top: 0; bottom: 0; width: 8px; z-index: 2; cursor: col-resize; touch-action: none; }
+.pane__files-handle:hover { background: linear-gradient(to right, transparent 3px, var(--accent) 3px, var(--accent) 5px, transparent 5px); }
+/* 窗格太窄：文件面板浮在终端上面 */
+/* 从窗格标题栏下面开始，不盖住标题栏的按钮 */
+.pane__body--overlay .pane__files { position: absolute; top: 31px; right: 0; bottom: 0; z-index: 4; box-shadow: var(--shadow-pop); border-top: 1px solid var(--border); }
+
+.term-placeholder--actions { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; }
+
+/* ---------- 拖动窗格和标签 ---------- */
+.pane__title { cursor: grab; }
+body.pane-dragging, body.pane-dragging * { cursor: grabbing !important; user-select: none !important; }
+/* 拖动时终端不接收鼠标（不触发选中文字、程序的鼠标事件）；窗格格子本身仍可被命中检测 */
+body.pane-dragging .pane-slot > * { pointer-events: none; }
+.pane-drop { position: fixed; z-index: 950; pointer-events: none; border-radius: var(--r-md); border: 2px solid var(--accent); background: color-mix(in srgb, var(--accent) 16%, transparent); transition: left 80ms, top 80ms, width 80ms, height 80ms; }
+.pane-drop--bad { border-color: var(--danger); background: color-mix(in srgb, var(--danger) 12%, transparent); }
+.pane-ghost__bad { color: var(--danger); }
+/* 关闭前查询终端里是否有程序在运行 */
+body.pane-checking, body.pane-checking * { cursor: progress !important; }
+
+/* 广播输入：标签栏右边的小标记、参与广播的窗格黄色边框；提醒浮在终端上方 */
+.broadcast-chip {
+  display: inline-flex; align-items: center; gap: 6px; flex: none; height: 26px; padding: 0 4px 0 8px; margin-right: 6px;
+  border-radius: var(--r-md, 8px); background: var(--warn-soft); color: var(--warn);
+  border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent); font-size: var(--fs-xs); font-weight: 600; white-space: nowrap;
+}
+.broadcast-chip__stop {
+  height: 20px; padding: 0 8px; border-radius: 6px; border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent);
+  background: transparent; color: var(--warn); font: inherit; font-weight: 500; cursor: pointer;
+}
+.broadcast-chip__stop:hover { background: color-mix(in srgb, var(--warn) 18%, transparent); }
+.broadcast-notice {
+  position: absolute; top: 48px; left: 50%; transform: translateX(-50%); z-index: 30; max-width: min(640px, 90%);
+  padding: 6px 12px; border-radius: var(--r-md, 8px); pointer-events: none;
+  background: var(--bg-solid); border: 1px solid var(--border); box-shadow: var(--shadow-md, 0 4px 16px rgba(0,0,0,.25)); font-size: var(--fs-sm);
+}
+.pane--broadcast, .pane--broadcast.pane--active { border-color: var(--warn); box-shadow: 0 0 0 1px var(--warn) inset; }
+.pane__btn--broadcast { color: var(--warn); }
+
+/* 链接确认框：网址可以选中复制 */
+.term-link__url { margin-top: 10px; word-break: break-all; font-size: var(--fs-sm); user-select: text; cursor: text; }
+.term-link__error { margin: 8px 0 0; color: var(--danger); font-size: var(--fs-sm); }
+
+/* 从资源管理器拖文件到本机终端上方 */
+.term-filedrop {
+  position: absolute; inset: 0; z-index: 6; pointer-events: none;
+  display: flex; align-items: center; justify-content: center;
+  border: 2px dashed var(--accent); border-radius: var(--r-sm);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+.term-filedrop span { padding: 6px 12px; border-radius: var(--r-sm); background: var(--surface); color: var(--text); font-size: var(--fs-sm); box-shadow: var(--shadow-sm, 0 1px 3px rgb(0 0 0 / 0.2)); }
