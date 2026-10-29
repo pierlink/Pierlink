@@ -596,7 +596,8 @@
       "locked": "另一个桌面操作正在进行，稍后再试",
       "download_limit": "要下载的文件太多，超过了上限：{{reason}}",
       "light_unavailable": "没能准备轻量桌面：{{reason}}",
-      "xkb_unavailable": "这台服务器缺少 xkbcomp，桌面起不来。有管理员权限的话在服务器上运行：{{install_command}}"
+      "xkb_unavailable": "这台服务器缺少 xkbcomp，桌面起不来。有管理员权限的话在服务器上运行：{{install_command}}",
+      "window_failed": "没能打开独立窗口：{{reason}}"
     },
     "desktop": {
       "task_failed": "操作意外中断：{{reason}}",
@@ -2079,6 +2080,6 @@
     "poppedTitle": "已在独立窗口打开",
     "showHere": "在这里显示",
     "typeTooLong": "文字太长，已放进远程剪贴板，请在远程程序里粘贴",
-    "popOutFailed": "没能在独立窗口打开 {{reason}}"
+    "popOutFailed": "没能在独立窗口打开：{{reason}}"
   }
 }

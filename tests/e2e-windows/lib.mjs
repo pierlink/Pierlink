@@ -111,7 +111,8 @@ export function ui(p) {
   const typeLine = async (text) => {
     await type(text);
     const tail = text.slice(-12);
-    await waitFor(`(()=>{const s=[...document.querySelectorAll('.pane-slot')].filter(s=>s.style.display!=='none'); return s.some(x=>(x.querySelector('.xterm-rows')?.innerText||'').includes(${JSON.stringify(tail)}));})()`, `终端里出现输入的文字：${tail}`, 10000);
+    // 去掉换行再找：窗格窄时一行命令会折到下一行
+    await waitFor(`(()=>{const s=[...document.querySelectorAll('.pane-slot')].filter(s=>s.style.display!=='none'); return s.some(x=>(x.querySelector('.xterm-rows')?.innerText||'').replace(/\\n/g,'').includes(${JSON.stringify(tail)}));})()`, `终端里出现输入的文字：${tail}`, 10000);
     await sleep(150);
     await enter();
   };

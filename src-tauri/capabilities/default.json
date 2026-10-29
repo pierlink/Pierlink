@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "主窗口和桌面独立窗口的最小权限：只开放窗口控制和开桌面窗口，业务命令由 tauri-specta 注册",
+  "description": "主窗口和桌面独立窗口的最小权限：只开放窗口控制，独立窗口由后端创建，业务命令由 tauri-specta 注册",
   "windows": [
     "main",
     "desktop-*"
@@ -14,7 +14,6 @@
     "core:window:allow-destroy",
     "core:window:allow-start-dragging",
     "core:window:allow-set-focus",
-    "core:window:allow-unminimize",
-    "core:webview:allow-create-webview-window"
+    "core:window:allow-unminimize"
   ]
 }

@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from "react";
+import { commands } from "../../bindings/commands";
 import { inTauri } from "../shell/TitleBar";
 
 /**
@@ -59,36 +60,21 @@ export async function focusDesktopWindow(serverId: string): Promise<boolean> {
 
 /**
  * 在独立窗口里打开这台服务器的桌面；已经开着就提到前面。
+ * 窗口由后端创建：它的浏览器参数要和主窗口一致，前端直接创建在自动化测试时会失败。
  * @param serverId 服务器 ID
  * @param title 窗口标题
  * @param url 窗口地址
- * @returns 窗口开出来（或已有）时返回 true；8 秒后还不见窗口返回 false；创建出错时抛出原因
+ * @returns 窗口开出来（或已有）时返回 true；出错时抛出后端的错误
  */
 export async function openDesktopWindow(serverId: string, title: string, url: string): Promise<boolean> {
   if (!inTauri) { window.open(url.replace(/^index\.html/, "/"), "_blank"); return true; }
-  if (await focusDesktopWindow(serverId)) return true;
+  const r = await commands.desktopOpenWindow(serverId, title, url);
+  if (r.status === "error") throw r.error;
+  setPopped(serverId, true);
+  // 窗口关掉时把标识去掉
   const { WebviewWindow } = await import("@tauri-apps/api/webviewWindow");
-  const label = PREFIX + serverId;
-  const win = new WebviewWindow(label, { url, title, width: 1280, height: 800, minWidth: 640, minHeight: 480 });
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    const done = (ok: boolean) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      if (ok) { setPopped(serverId, true); watch(win, serverId); }
-      resolve(ok);
-    };
-    // 迟迟等不到“已创建”的通知时，直接查一下窗口在不在，不让界面一直卡着
-    const timer = setTimeout(() => {
-      void WebviewWindow.getByLabel(label).then((w) => done(!!w), () => done(false));
-    }, 8000);
-    void win.once("tauri://created", () => done(true));
-    void win.once("tauri://error", (e) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      reject(new Error(String(e.payload ?? "创建窗口失败")));
-    });
-  });
+  const win = await WebviewWindow.getByLabel(PREFIX + serverId).catch(() => null);
+  if (win) watch(win, serverId);
+  else setPopped(serverId, false);
+  return true;
 }

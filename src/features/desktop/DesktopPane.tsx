@@ -436,10 +436,10 @@ export function DesktopPane({ serverId, visible, title, controls, windowTitle, s
     try {
       opened = await openDesktopWindow(serverId, windowTitle, desktopWindowUrl(serverId, windowTitle));
     } catch (e) {
-      setNotice(t("desktop.popOutFailed", { reason: e instanceof Error ? e.message : formatError(e) }));
+      setNotice(t("desktop.popOutFailed", { reason: formatError(e) }));
       return;
     }
-    if (!opened) { setNotice(t("desktop.popOutFailed", { reason: "" })); return; }
+    if (!opened) return;
     followingRef.current = false;
     disconnect();
     if (onPoppedOut) onPoppedOut();

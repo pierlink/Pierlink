@@ -355,6 +355,15 @@ export const commands = {
 	/**  忘掉 VNC 密码（密码错了时） */
 	desktopForgetPassword: (serverId: string, key: string) => typedError<null, AppError>(__TAURI_INVOKE("desktop_forget_password", { serverId, key })),
 	/**
+	 *  在独立窗口里打开服务器桌面（每台服务器一个，已经开着就提到前面）。
+	 *  由后端创建：窗口的浏览器参数要和主窗口一致（自动化测试时主窗口带了调试端口参数），前端创建会失败
+	 * 
+	 *  :param server_id: 服务器 ID（窗口名是 desktop-服务器ID）
+	 *  :param title: 窗口标题
+	 *  :param url: 页面地址，必须是 index.html#desktop-window?… 这样的独立窗口地址
+	 */
+	desktopOpenWindow: (serverId: string, title: string, url: string) => typedError<null, AppError>(__TAURI_INVOKE("desktop_open_window", { serverId, title, url })),
+	/**
 	 *  导出到文件：弹出“另存为”，写入 JSON
 	 * 
 	 *  :param app_settings: 界面的设置（JSON 文字）

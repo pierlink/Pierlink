@@ -597,7 +597,8 @@
       "locked": "Another desktop operation is in progress. Try again shortly",
       "download_limit": "Too much to download, over the limit: {{reason}}",
       "light_unavailable": "Couldn't prepare the light desktop: {{reason}}",
-      "xkb_unavailable": "This server lacks xkbcomp, so the desktop can't start. With admin rights, run on the server: {{install_command}}"
+      "xkb_unavailable": "This server lacks xkbcomp, so the desktop can't start. With admin rights, run on the server: {{install_command}}",
+      "window_failed": "Couldn't open the separate window: {{reason}}"
     },
     "desktop": {
       "task_failed": "The operation stopped unexpectedly: {{reason}}",
@@ -2118,6 +2119,6 @@
     "poppedTitle": "Opened in a separate window",
     "showHere": "Show here",
     "typeTooLong": "Too long to type; it is in the remote clipboard, paste it in the remote program",
-    "popOutFailed": "Couldn't open the separate window {{reason}}"
+    "popOutFailed": "Couldn't open the separate window: {{reason}}"
   }
 }

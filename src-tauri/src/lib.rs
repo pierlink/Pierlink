@@ -143,6 +143,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
         desktop::desktop_password,
         desktop::desktop_save_password,
         desktop::desktop_forget_password,
+        desktop::desktop_open_window,
         profile::profile_export,
         profile::profile_import,
         profile::servers_export,
@@ -243,14 +244,18 @@ fn create_main_window(app: &tauri::AppHandle) -> tauri::Result<()> {
         return Err(tauri::Error::WindowNotFound);
     };
     let mut builder = tauri::WebviewWindowBuilder::from_config(app, &config)?;
-    if let Some(port) = e2e_devtools_port() {
-        eprintln!("自动化测试：打开 WebView2 调试端口 {port}");
-        builder = builder.additional_browser_args(&format!(
-            "{DEFAULT_BROWSER_ARGS} --remote-debugging-port={port}"
-        ));
+    if let Some(args) = e2e_browser_args() {
+        eprintln!("自动化测试：打开 WebView2 调试端口: 参数={args}");
+        builder = builder.additional_browser_args(&args);
     }
     builder.build()?;
     Ok(())
+}
+
+/// 自动化测试时所有窗口都要带的浏览器参数（同一个数据目录下的 WebView2 窗口，参数必须完全一样，
+/// 否则后开的窗口会创建失败）；平时为 None，用 wry 的默认参数
+pub(crate) fn e2e_browser_args() -> Option<String> {
+    e2e_devtools_port().map(|port| format!("{DEFAULT_BROWSER_ARGS} --remote-debugging-port={port}"))
 }
 
 /// 恢复本进程对 Ctrl+C 的正常处理（这个设置会被子进程继承）。

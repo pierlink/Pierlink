@@ -65,11 +65,17 @@ async function waitClipboard(want, what, timeoutMs = 8000) {
 }
 /** 当前可见的第一个终端里，word 最后一次出现的位置（屏幕坐标） */
 const wordAt = (word) => p.js(`(()=>{const s=[...document.querySelectorAll('.pane-slot')].filter(s=>s.style.display!=='none')[0]; const rows=s?.querySelector('.xterm-rows'); if(!rows) return null; const w=document.createTreeWalker(rows, NodeFilter.SHOW_TEXT); let n, hit=null; while((n=w.nextNode())){ let i=n.textContent.indexOf(${JSON.stringify(word)}); while(i>=0){ hit=[n,i]; i=n.textContent.indexOf(${JSON.stringify(word)}, i+1); } } if(!hit) return null; const r=document.createRange(); r.setStart(hit[0],hit[1]); r.setEnd(hit[0],hit[1]+${JSON.stringify(word)}.length); const b=r.getBoundingClientRect(); return {x:b.x+b.width/2, y:b.y+b.height/2, left:b.x, right:b.x+b.width};})()`);
-/** 回到干净的提示符：点一下终端再按 Ctrl+C（没有选中时就是中断，清掉前面步骤留在输入行里的文字） */
+/**
+ * 回到干净的提示符：点一下终端，按 Ctrl+C 再按回车。
+ * 前面的步骤粘贴后，控制台可能还停在“正在粘贴”的状态，Esc、Ctrl+C 都会被当成普通文字收进输入行（0.9.1 起就这样），
+ * 回车一定能结束这一行（留下的文字执行一下，报个“不认识的命令”无害）
+ */
 async function freshPrompt() {
   await u.click(".pane-slot:not([style*='none']) .xterm-screen");
   await u.key("c", "KeyC", 67, 2);
-  await sleep(600);
+  await sleep(300);
+  await u.enter();
+  await sleep(800);
 }
 /** 本机正在运行的 Edge 浏览器进程数（不算 WebView2） */
 function edgeCount() {
