@@ -333,6 +333,9 @@ await rec.step(p, "链接：拖选链接里的文字不弹确认框；单击弹�
   const afterDrag = await u.dialogText();
   if (afterDrag) throw new Error(`拖选链接里的文字弹出了确认框：${afterDrag}`);
   const openDialog = async () => {
+    // 先移到旁边的格子再移回来：xterm 只在鼠标换到新的格子时才重新识别链接，回到原来那一格不算
+    await u.mouse("mouseMoved", at.x - 20, at.y, "none", 0);
+    await sleep(200);
     await u.mouse("mouseMoved", at.x, at.y, "none", 0);
     await sleep(600);
     await u.clickXY(at.x, at.y);
