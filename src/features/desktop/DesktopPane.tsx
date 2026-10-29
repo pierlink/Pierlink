@@ -379,14 +379,20 @@ export function DesktopPane({ serverId, visible, title, controls, windowTitle, s
         rfb.sendKey(XK_CONTROL_L, "ControlLeft", false);
       });
     };
-    const onBlur = () => { ctrlHeld = false; };
+    const released = () => { ctrlHeld = false; };
+    // 在画面外松开 Ctrl（焦点还在这个窗口，不会触发 blur）、画面失去焦点时，也要当作松开了
+    const onDocKeyUp = (ev: KeyboardEvent) => { if (ev.key === "Control") ctrlHeld = false; };
     el.addEventListener("keydown", onKey, true);
     el.addEventListener("keyup", onKey, true);
-    window.addEventListener("blur", onBlur);
+    el.addEventListener("focusout", released);
+    document.addEventListener("keyup", onDocKeyUp, true);
+    window.addEventListener("blur", released);
     return () => {
       el.removeEventListener("keydown", onKey, true);
       el.removeEventListener("keyup", onKey, true);
-      window.removeEventListener("blur", onBlur);
+      el.removeEventListener("focusout", released);
+      document.removeEventListener("keyup", onDocKeyUp, true);
+      window.removeEventListener("blur", released);
     };
   }, [pushClipboard]);
 
