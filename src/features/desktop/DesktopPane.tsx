@@ -432,7 +432,14 @@ export function DesktopPane({ serverId, visible, title, controls, windowTitle, s
   const popOut = async () => {
     if (phase.kind !== "connected" || !windowTitle) return;
     const session = phase.session;
-    if (!(await openDesktopWindow(serverId, windowTitle, desktopWindowUrl(serverId, windowTitle)))) return;
+    let opened = false;
+    try {
+      opened = await openDesktopWindow(serverId, windowTitle, desktopWindowUrl(serverId, windowTitle));
+    } catch (e) {
+      setNotice(t("desktop.popOutFailed", { reason: e instanceof Error ? e.message : formatError(e) }));
+      return;
+    }
+    if (!opened) { setNotice(t("desktop.popOutFailed", { reason: "" })); return; }
     followingRef.current = false;
     disconnect();
     if (onPoppedOut) onPoppedOut();

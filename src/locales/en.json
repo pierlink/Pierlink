@@ -2117,6 +2117,7 @@
     "popOut": "Open in separate window",
     "poppedTitle": "Opened in a separate window",
     "showHere": "Show here",
-    "typeTooLong": "Too long to type; it is in the remote clipboard, paste it in the remote program"
+    "typeTooLong": "Too long to type; it is in the remote clipboard, paste it in the remote program",
+    "popOutFailed": "Couldn't open the separate window {{reason}}"
   }
 }

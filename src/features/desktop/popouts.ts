@@ -62,15 +62,33 @@ export async function focusDesktopWindow(serverId: string): Promise<boolean> {
  * @param serverId 服务器 ID
  * @param title 窗口标题
  * @param url 窗口地址
- * @returns 窗口开出来（或已有）时返回 true；开不出来返回 false
+ * @returns 窗口开出来（或已有）时返回 true；8 秒后还不见窗口返回 false；创建出错时抛出原因
  */
 export async function openDesktopWindow(serverId: string, title: string, url: string): Promise<boolean> {
   if (!inTauri) { window.open(url.replace(/^index\.html/, "/"), "_blank"); return true; }
   if (await focusDesktopWindow(serverId)) return true;
   const { WebviewWindow } = await import("@tauri-apps/api/webviewWindow");
-  const win = new WebviewWindow(PREFIX + serverId, { url, title, width: 1280, height: 800, minWidth: 640, minHeight: 480 });
-  return new Promise((resolve) => {
-    void win.once("tauri://created", () => { setPopped(serverId, true); watch(win, serverId); resolve(true); });
-    void win.once("tauri://error", () => resolve(false));
+  const label = PREFIX + serverId;
+  const win = new WebviewWindow(label, { url, title, width: 1280, height: 800, minWidth: 640, minHeight: 480 });
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const done = (ok: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (ok) { setPopped(serverId, true); watch(win, serverId); }
+      resolve(ok);
+    };
+    // 迟迟等不到“已创建”的通知时，直接查一下窗口在不在，不让界面一直卡着
+    const timer = setTimeout(() => {
+      void WebviewWindow.getByLabel(label).then((w) => done(!!w), () => done(false));
+    }, 8000);
+    void win.once("tauri://created", () => done(true));
+    void win.once("tauri://error", (e) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(new Error(String(e.payload ?? "创建窗口失败")));
+    });
   });
 }

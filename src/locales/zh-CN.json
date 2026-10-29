@@ -2078,6 +2078,7 @@
     "popOut": "在独立窗口打开",
     "poppedTitle": "已在独立窗口打开",
     "showHere": "在这里显示",
-    "typeTooLong": "文字太长，已放进远程剪贴板，请在远程程序里粘贴"
+    "typeTooLong": "文字太长，已放进远程剪贴板，请在远程程序里粘贴",
+    "popOutFailed": "没能在独立窗口打开 {{reason}}"
   }
 }

@@ -142,7 +142,14 @@ await rec.step(p, "全屏：和终端分屏时也盖住整个窗口（旁边的�
 await rec.step(p, "弹到独立窗口：主窗口的桌面窗格关掉、侧栏出现标识；再打开桌面不新开窗格；关掉独立窗口后标识消失", async () => {
   if (!vnc) return "跳过";
   await u.click('.desk__bar button[aria-label="Open in separate window"]');
-  await u.waitFor(`!document.querySelector('.desk')`, "主窗口的桌面窗格关掉", 15000);
+  try {
+    await u.waitFor(`!document.querySelector('.desk')`, "主窗口的桌面窗格关掉", 15000);
+  } catch (e) {
+    // 带上定位信息：页面报错、窗格上的提示、现有窗口
+    const note = await p.js(`document.querySelector('.desk__note')?.innerText || ''`).catch(() => "");
+    const wins = await p.js(`window.__TAURI_INTERNALS__.invoke('plugin:window|get_all_windows')`).catch((x) => String(x));
+    throw new Error(`${e.message}｜提示：${note}｜窗口：${JSON.stringify(wins)}｜页面错误：${p.errors.slice(-5).join(" / ")}`);
+  }
   await u.waitFor(`!!document.querySelector('.srv-row__desk')`, "侧栏里的“桌面在独立窗口里”标识", 8000);
   const labels = await p.js(`window.__TAURI_INTERNALS__.invoke('plugin:window|get_all_windows')`);
   const win = (labels ?? []).find((l) => l.startsWith("desktop-"));

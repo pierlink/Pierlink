@@ -65,6 +65,12 @@ async function waitClipboard(want, what, timeoutMs = 8000) {
 }
 /** 当前可见的第一个终端里，word 最后一次出现的位置（屏幕坐标） */
 const wordAt = (word) => p.js(`(()=>{const s=[...document.querySelectorAll('.pane-slot')].filter(s=>s.style.display!=='none')[0]; const rows=s?.querySelector('.xterm-rows'); if(!rows) return null; const w=document.createTreeWalker(rows, NodeFilter.SHOW_TEXT); let n, hit=null; while((n=w.nextNode())){ let i=n.textContent.indexOf(${JSON.stringify(word)}); while(i>=0){ hit=[n,i]; i=n.textContent.indexOf(${JSON.stringify(word)}, i+1); } } if(!hit) return null; const r=document.createRange(); r.setStart(hit[0],hit[1]); r.setEnd(hit[0],hit[1]+${JSON.stringify(word)}.length); const b=r.getBoundingClientRect(); return {x:b.x+b.width/2, y:b.y+b.height/2, left:b.x, right:b.x+b.width};})()`);
+/** 回到干净的提示符：点一下终端再按 Ctrl+C（没有选中时就是中断，清掉前面步骤留在输入行里的文字） */
+async function freshPrompt() {
+  await u.click(".pane-slot:not([style*='none']) .xterm-screen");
+  await u.key("c", "KeyC", 67, 2);
+  await sleep(600);
+}
 /** 本机正在运行的 Edge 浏览器进程数（不算 WebView2） */
 function edgeCount() {
   return Number(execFileSync("powershell.exe", ["-NoProfile", "-Command", "@(Get-Process msedge -ErrorAction SilentlyContinue).Count"], { encoding: "utf8" }).trim() || 0);
@@ -259,8 +265,9 @@ await rec.step(p, "Ctrl+V 也只粘贴一次", async () => {
 
 // ---------- 4b. 0.9.2：复制、右键菜单、程序写剪贴板、链接 ----------
 await rec.step(p, "选中文字后 Ctrl+C 复制；Ctrl+Shift+C 也能复制", async () => {
-  await u.click(".pane-slot:not([style*='none']) .xterm-screen");
-  await u.typeLine("echo PLCOPYA PLCOPYB");
+  await freshPrompt();
+  // 加引号：PowerShell 的 echo 会把不带引号的几个词分成几行输出
+  await u.typeLine('echo "PLCOPYA PLCOPYB"');
   await u.waitFor(`(()=>{const s=[...document.querySelectorAll('.pane-slot')].filter(s=>s.style.display!=='none')[0]?.querySelector('.xterm-rows')?.innerText||''; return /^PLCOPYA PLCOPYB\\s*$/m.test(s);})()`, "echo 的输出", 10000);
   setClipboard("empty");
   let at = await wordAt("PLCOPYA");
@@ -303,7 +310,7 @@ await rec.step(p, "右键菜单：有复制当前目录、在资源管理器中�
 
 await rec.step(p, "程序发来的复制请求（OSC 52）写进 Windows 剪贴板，中文不乱码", async () => {
   setClipboard("empty");
-  await u.click(".pane-slot:not([style*='none']) .xterm-screen");
+  await freshPrompt();
   await u.typeLine("[Console]::Write([char]27 + ']52;c;' + [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes('PLOSC52 中文')) + [char]7)");
   await waitClipboard("PLOSC52 中文", "OSC 52 复制");
   return "剪贴板是 PLOSC52 中文";
@@ -311,7 +318,7 @@ await rec.step(p, "程序发来的复制请求（OSC 52）写进 Windows 剪贴�
 
 await rec.step(p, "链接：拖选链接里的文字不弹确认框；单击弹出确认框，能复制链接、用系统浏览器打开", async () => {
   const url = "https://example.com/pierlink-e2e-link";
-  await u.click(".pane-slot:not([style*='none']) .xterm-screen");
+  await freshPrompt();
   await u.typeLine(`echo ${url}`);
   await u.waitFor(`(()=>{const s=[...document.querySelectorAll('.pane-slot')].filter(s=>s.style.display!=='none')[0]?.querySelector('.xterm-rows')?.innerText||''; return s.split(/\\n/).some(l=>l.trim()===${JSON.stringify(url)});})()`, "echo 的输出", 10000);
   const at = await wordAt(url);
@@ -356,7 +363,7 @@ await rec.step(p, "打开“右键复制粘贴”：有选中时右键复制、�
   };
   await toggle(true);
   try {
-    await u.click(".pane-slot:not([style*='none']) .xterm-screen");
+    await freshPrompt();
     await u.typeLine("echo PLRIGHTCOPY");
     await u.waitFor(`/^PLRIGHTCOPY\\s*$/m.test([...document.querySelectorAll('.pane-slot')].filter(s=>s.style.display!=='none')[0]?.querySelector('.xterm-rows')?.innerText||'')`, "echo 的输出", 10000);
     setClipboard("empty");
