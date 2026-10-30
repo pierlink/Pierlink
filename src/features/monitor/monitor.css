@@ -1,0 +1,44 @@
+/* 用量细条（概况卡片里用） */
+.res__value--warn { color: var(--warn); }
+.res__bar { height: 4px; border-radius: 2px; background: var(--chip); overflow: hidden; }
+.res__fill { display: block; height: 4px; background: var(--accent); transition: width 0.4s ease; }
+.res__fill--warn { background: var(--warn); }
+
+/* 服务器终端右上角的概况：浮在终端上（不挤动终端），宽度固定 */
+.ov {
+  position: absolute; top: 38px; right: 18px; z-index: 3; width: min(312px, calc(100% - 36px)); max-height: calc(100% - 52px);
+  display: flex; flex-direction: column; gap: 8px; padding: 8px 10px 10px; overflow: hidden;
+  background: color-mix(in srgb, var(--panel-solid) 96%, transparent); border: 1px solid var(--border); border-radius: var(--radius);
+  box-shadow: var(--shadow-pop); font-size: var(--fs-xs); color: var(--text);
+}
+.ov__head { display: flex; align-items: center; gap: 6px; min-height: 18px; }
+.ov__summary { flex: 1; min-width: 0; color: var(--text-muted); }
+.ov__auto { flex: none; display: inline-flex; align-items: center; gap: 5px; color: var(--text-muted); white-space: nowrap; }
+.ov__auto .pl-switch { width: 24px; height: 14px; border-radius: 7px; }
+.ov__auto .pl-switch__knob { top: 2px; left: 2px; width: 10px; height: 10px; }
+.ov__auto .pl-switch[aria-checked="true"] .pl-switch__knob { left: 12px; }
+.ov__auto .pl-switch:active:not(:disabled) .pl-switch__knob { width: 12px; }
+.ov__auto .pl-switch[aria-checked="true"]:active:not(:disabled) .pl-switch__knob { left: 10px; }
+.ov__auto .pl-switch:hover:not(:disabled) { box-shadow: 0 0 0 3px var(--hover); }
+.ov-meters { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+.ov-meter { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.ov-meter__head { display: flex; justify-content: space-between; gap: 4px; }
+.ov-meter__label { color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ov-meter__value { color: var(--accent); font-variant-numeric: tabular-nums; }
+.ov-meter__sub { font-size: 10px; color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
+/* 挂载点多时在框里滚动，框的大小不变 */
+.ov-disks { display: flex; flex-direction: column; gap: 3px; max-height: 98px; overflow-y: auto; padding-right: 2px; }
+.ov-disk { display: grid; grid-template-columns: minmax(0, 78px) minmax(30px, 1fr) 34px 52px; align-items: center; gap: 6px; min-height: 16px; }
+.ov-disk__mount { color: var(--text-muted); }
+.ov-disk__pct, .ov-disk__size { text-align: right; font-variant-numeric: tabular-nums; }
+.ov-disk__size { color: var(--text-dim); }
+.ov-net { display: grid; grid-template-columns: auto 96px minmax(0, 1fr); align-items: center; gap: 6px; }
+.ov-net__label { color: var(--text-muted); }
+.ov-net .ov-net__nic { height: 22px; min-height: 22px; font-size: var(--fs-xs); padding: 0 6px; }
+.ov-net__rates { text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
+.ov-muted { margin: 0; color: var(--text-muted); }
+.ov-warn { margin: 0; color: var(--warn); }
+.ov-action { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
+/* 窗格窄时（分屏）概况跟着变窄：四格改成两行；实在太窄才不显示 */
+@container (max-width: 420px) { .ov-meters { grid-template-columns: repeat(2, minmax(0, 1fr)); } .ov-disk { grid-template-columns: minmax(0, 1fr) 34px 52px; } .ov-disk__bar { display: none; } }
+@container (max-width: 260px) { .ov { display: none; } }

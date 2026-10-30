@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security issue / 安全问题
+    url: https://github.com/pierlink/Pierlink/security/advisories/new
+    about: Report vulnerabilities privately / 私下报告安全漏洞
