@@ -1,0 +1,92 @@
+/*
+ * 交互反馈：悬停、按下、键盘聚焦、出现时的过渡。
+ * 只加视觉反馈，不改布局尺寸（悬停不改变元素占位，避免页面跳动）。
+ * 系统开启“减少动画”时全部关闭（见文件末尾）。
+ */
+
+/* ---------- 通用：键盘聚焦一律有清楚的描边 ---------- */
+:where(button, [role="tab"], [role="radio"], [role="switch"], [role="menuitem"], a, summary):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* ---------- 按钮 ---------- */
+.pl-btn {
+  transition: background var(--dur-fast), border-color var(--dur-fast), color var(--dur-fast),
+    box-shadow var(--dur), transform var(--dur-fast);
+}
+.pl-btn:hover:not(:disabled) { box-shadow: 0 2px 10px rgba(0, 0, 0, 0.18); }
+.pl-btn:active:not(:disabled) { transform: translateY(1px) scale(0.98); box-shadow: none; }
+.pl-btn--primary:hover:not(:disabled) { box-shadow: 0 4px 16px color-mix(in srgb, var(--accent) 35%, transparent); }
+.pl-btn--ghost:hover:not(:disabled) { box-shadow: none; }
+.pl-btn--danger:hover:not(:disabled) { filter: brightness(1.06); box-shadow: 0 4px 16px color-mix(in srgb, var(--danger) 30%, transparent); }
+.pl-btn--danger-ghost:hover:not(:disabled) { background: var(--danger-soft); box-shadow: none; }
+.pl-btn--soft:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 22%, transparent); }
+
+.pl-icon-btn { transition: background var(--dur-fast), color var(--dur-fast), transform var(--dur-fast); }
+.pl-icon-btn:active:not(:disabled) { transform: scale(0.92); }
+
+.pl-split { transition: border-color var(--dur-fast), box-shadow var(--dur); }
+.pl-split:hover { border-color: var(--accent); box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 55%, transparent); }
+.pl-split > button { transition: background var(--dur-fast); }
+.pl-split > button:active:not(:disabled) { background: var(--selected); }
+
+/* ---------- 开关 ---------- */
+.pl-switch { transition: background var(--dur), box-shadow var(--dur-fast); }
+.pl-switch:hover:not(:disabled) { box-shadow: 0 0 0 4px var(--hover); }
+.pl-switch:active:not(:disabled) .pl-switch__knob { width: 20px; }
+.pl-switch[aria-checked="true"]:active:not(:disabled) .pl-switch__knob { left: 15px; }
+.pl-switch__knob { transition: left var(--dur), width var(--dur-fast), background var(--dur); }
+
+/* ---------- 分段选择（顶部导航、主题） ---------- */
+.pl-seg__item { transition: background var(--dur), color var(--dur-fast), transform var(--dur-fast); }
+.pl-seg__item:hover:not([aria-selected="true"]):not([aria-current="page"]) { background: var(--hover); }
+.pl-seg__item:active { transform: scale(0.97); }
+
+/* ---------- 输入框 ---------- */
+.pl-input, .pl-select { transition: border-color var(--dur-fast), box-shadow var(--dur), background var(--dur-fast); }
+.pl-input:hover:not(:disabled):not(:focus), .pl-select:hover:not(:disabled):not(:focus) { border-color: color-mix(in srgb, var(--accent) 45%, var(--border-strong)); }
+.pl-input:focus, .pl-select:focus { box-shadow: 0 0 0 3px var(--accent-soft); }
+.srv-search { transition: border-color var(--dur-fast), box-shadow var(--dur); }
+.srv-search:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); }
+.srv-search:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.pl-check input { transition: transform var(--dur-fast); }
+.pl-check:active input { transform: scale(0.9); }
+
+/* ---------- 列表行、标签、卡片 ---------- */
+.srv-row, .tab, .tab__close, .settings__nav-item, .imp__row, .item-list__row, .theme-card {
+  transition: background var(--dur-fast), border-color var(--dur-fast), color var(--dur-fast), transform var(--dur-fast), box-shadow var(--dur);
+}
+.srv-row:active, .tab:active, .settings__nav-item:active { transform: scale(0.985); }
+.srv-row[aria-current="true"] { box-shadow: inset 3px 0 0 var(--accent); }
+.tab[aria-selected="true"] { box-shadow: inset 0 -2px 0 var(--accent); }
+.imp__row:hover:not(.imp__row--off), .item-list__row:hover { background: var(--hover); }
+.item-list__row:hover { border-color: var(--border-strong); }
+.theme-card:hover { transform: translateY(-2px); box-shadow: 0 6px 18px rgba(0, 0, 0, 0.22); }
+.set-row { transition: background var(--dur-fast); }
+.set-row:hover { background: var(--hover); }
+
+/* ---------- 菜单 ---------- */
+.pl-menu { animation: pl-pop-in var(--dur) cubic-bezier(0.2, 0.8, 0.2, 1); transform-origin: top left; }
+.pl-menu__item { transition: background var(--dur-fast); }
+
+/* ---------- 对话框、提示 ---------- */
+.pl-overlay { animation: pl-fade var(--dur) ease-out; }
+.pl-dialog { animation: pl-dialog-in 220ms cubic-bezier(0.2, 0.8, 0.2, 1); }
+.pl-banner { animation: pl-fade var(--dur) ease-out; }
+.ws-toast { animation: pl-toast-in var(--dur) cubic-bezier(0.2, 0.8, 0.2, 1); }
+
+@keyframes pl-fade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes pl-pop-in { from { opacity: 0; transform: scale(0.96) translateY(-4px); } to { opacity: 1; transform: none; } }
+@keyframes pl-dialog-in { from { opacity: 0; transform: translateY(8px) scale(0.98); } to { opacity: 1; transform: none; } }
+@keyframes pl-toast-in { from { opacity: 0; transform: translate(-50%, 6px); } to { opacity: 1; transform: translate(-50%, 0); } }
+
+/* ---------- 系统要求减少动画：关掉所有过渡和动画 ---------- */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 1ms !important;
+    scroll-behavior: auto !important;
+  }
+}

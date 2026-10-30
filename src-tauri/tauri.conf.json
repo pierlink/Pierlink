@@ -1,0 +1,95 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Pierlink",
+  "version": "0.9.4",
+  "identifier": "com.pierlink.desktop",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://127.0.0.1:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Pierlink",
+        "width": 1440,
+        "height": 900,
+        "minWidth": 960,
+        "minHeight": 600,
+        "center": true,
+        "decorations": false,
+        "create": false
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost; worker-src 'self' blob:; object-src 'none'; base-uri 'none'; frame-src 'none'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "nsis"
+    ],
+    "publisher": "Pierlink",
+    "category": "DeveloperTool",
+    "shortDescription": "Multi-server remote development workbench for Windows",
+    "longDescription": "Windows 多服务器远程开发工作台 / A Windows workbench for remote development across many servers",
+    "copyright": "Copyright © 2026 pierlink",
+    "license": "FSL-1.1-ALv2",
+    "licenseFile": "resources/licenses/Pierlink-LICENSE.txt",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.ico"
+    ],
+    "windows": {
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper"
+      },
+      "nsis": {
+        "installMode": "currentUser",
+        "displayLanguageSelector": true,
+        "languages": [
+          "English",
+          "SimpChinese"
+        ],
+        "customLanguageFiles": {
+          "SimpChinese": "nsis/SimpChinese.nsh",
+          "English": "nsis/English.nsh"
+        },
+        "installerHooks": "nsis/hooks.nsh"
+      }
+    },
+    "resources": {
+      "resources/syncthing/syncthing.exe": "syncthing/syncthing.exe",
+      "resources/syncthing/syncthing-linux-amd64.gz": "syncthing/syncthing-linux-amd64.gz",
+      "resources/syncthing/syncthing-linux-arm64.gz": "syncthing/syncthing-linux-arm64.gz",
+      "resources/syncthing/manifest.json": "syncthing/manifest.json",
+      "resources/openssh/ssh.exe": "openssh/ssh.exe",
+      "resources/openssh/ssh-keygen.exe": "openssh/ssh-keygen.exe",
+      "resources/openssh/libcrypto.dll": "openssh/libcrypto.dll",
+      "resources/licenses/Win32-OpenSSH-LICENSE.txt": "licenses/Win32-OpenSSH-LICENSE.txt",
+      "resources/licenses/Win32-OpenSSH-NOTICE.txt": "licenses/Win32-OpenSSH-NOTICE.txt",
+      "resources/licenses/Syncthing-LICENSE.txt": "licenses/Syncthing-LICENSE.txt",
+      "resources/licenses/Syncthing-AUTHORS.txt": "licenses/Syncthing-AUTHORS.txt",
+      "resources/licenses/THIRD-PARTY-NOTICES.txt": "licenses/THIRD-PARTY-NOTICES.txt",
+      "resources/licenses/Pierlink-LICENSE.txt": "licenses/Pierlink-LICENSE.txt",
+      "resources/licenses/LibreSSL-LICENSE.txt": "licenses/LibreSSL-LICENSE.txt",
+      "../dist-mobile/": "mobile/"
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDdGNzQ1OUI4RkUzMEI2MUEKUldRYXRqRCt1RmwwZjAwTTZRUUhGVmN3MW5LMFVaejhaMlFpczJveVpZajRHTERaT1FETG9XRGkK",
+      "endpoints": [
+        "https://github.com/pierlink/Pierlink/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
+  }
+}

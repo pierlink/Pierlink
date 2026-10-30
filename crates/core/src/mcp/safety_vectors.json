@@ -1,0 +1,645 @@
+{
+  "dangerous": [
+    {
+      "line": "rm -rf /tmp/x",
+      "expected": true
+    },
+    {
+      "line": "sudo rm -r build",
+      "expected": true
+    },
+    {
+      "line": "rm -f a.txt",
+      "expected": true
+    },
+    {
+      "line": "rm --recursive x",
+      "expected": true
+    },
+    {
+      "line": "cd /; rm -fr *",
+      "expected": true
+    },
+    {
+      "line": "make && sudo reboot",
+      "expected": true
+    },
+    {
+      "line": "(rm -rf x)",
+      "expected": true
+    },
+    {
+      "line": "reboot",
+      "expected": true
+    },
+    {
+      "line": "sudo shutdown -h now",
+      "expected": true
+    },
+    {
+      "line": "poweroff",
+      "expected": true
+    },
+    {
+      "line": "init 0",
+      "expected": true
+    },
+    {
+      "line": "mkfs.ext4 /dev/sdb1",
+      "expected": true
+    },
+    {
+      "line": "dd if=/dev/zero of=/dev/sda bs=1M",
+      "expected": true
+    },
+    {
+      "line": "chmod -R 777 /",
+      "expected": true
+    },
+    {
+      "line": "echo x > /dev/sda",
+      "expected": true
+    },
+    {
+      "line": ":(){ :|:& };:",
+      "expected": true
+    },
+    {
+      "line": "git push -f origin main",
+      "expected": true
+    },
+    {
+      "line": "git push --force",
+      "expected": true
+    },
+    {
+      "line": "git reset --hard HEAD~1",
+      "expected": true
+    },
+    {
+      "line": "kubectl delete pod x",
+      "expected": true
+    },
+    {
+      "line": "DROP TABLE users;",
+      "expected": true
+    },
+    {
+      "line": "drop database prod",
+      "expected": true
+    },
+    {
+      "line": "truncate table logs",
+      "expected": true
+    },
+    {
+      "line": "",
+      "expected": false
+    },
+    {
+      "line": "ls -la",
+      "expected": false
+    },
+    {
+      "line": "rm a.txt",
+      "expected": false
+    },
+    {
+      "line": "echo rm -rf",
+      "expected": false
+    },
+    {
+      "line": "git push origin main",
+      "expected": false
+    },
+    {
+      "line": "git reset HEAD",
+      "expected": false
+    },
+    {
+      "line": "chmod -R 755 ./dist",
+      "expected": false
+    },
+    {
+      "line": "kubectl get pods",
+      "expected": false
+    },
+    {
+      "line": "grep reboot log.txt",
+      "expected": false
+    },
+    {
+      "line": "cat /dev/sda.txt",
+      "expected": false
+    },
+    {
+      "line": "Remove-Item C:\\work -Recurse -Force",
+      "expected": true
+    },
+    {
+      "line": "remove-item -recurse x",
+      "expected": true
+    },
+    {
+      "line": "rm -r x",
+      "expected": true
+    },
+    {
+      "line": "rmdir /s C:\\work",
+      "expected": true
+    },
+    {
+      "line": "rd /S x",
+      "expected": true
+    },
+    {
+      "line": "del /s *.txt",
+      "expected": true
+    },
+    {
+      "line": "format D:",
+      "expected": true
+    },
+    {
+      "line": "diskpart",
+      "expected": true
+    },
+    {
+      "line": "Stop-Computer",
+      "expected": true
+    },
+    {
+      "line": "Restart-Computer",
+      "expected": true
+    },
+    {
+      "line": "Clear-Disk -Number 1",
+      "expected": true
+    },
+    {
+      "line": "Format-Volume -DriveLetter D",
+      "expected": true
+    },
+    {
+      "line": "reg delete HKCU\\Software\\x",
+      "expected": true
+    },
+    {
+      "line": "bcdedit /delete x",
+      "expected": true
+    },
+    {
+      "line": "vssadmin delete shadows",
+      "expected": true
+    },
+    {
+      "line": "chown -R root /",
+      "expected": true
+    },
+    {
+      "line": "halt",
+      "expected": true
+    },
+    {
+      "line": "init 6",
+      "expected": true
+    },
+    {
+      "line": "DROP SCHEMA public",
+      "expected": true
+    },
+    {
+      "line": "  reboot",
+      "expected": true
+    },
+    {
+      "line": "echo ok\nreboot",
+      "expected": true
+    },
+    {
+      "line": "grep reboot log",
+      "expected": false
+    },
+    {
+      "line": "echo \"rm -rf\"",
+      "expected": false
+    },
+    {
+      "line": "echo \"x; reboot\"",
+      "expected": false
+    },
+    {
+      "line": "echo 'git reset --hard'",
+      "expected": false
+    },
+    {
+      "line": "Get-Item x",
+      "expected": false
+    },
+    {
+      "line": "Remove-Item x",
+      "expected": false
+    },
+    {
+      "line": "rmdir x",
+      "expected": false
+    },
+    {
+      "line": "del x",
+      "expected": false
+    },
+    {
+      "line": "echo diskpart",
+      "expected": false
+    },
+    {
+      "line": "echo format C:",
+      "expected": false
+    },
+    {
+      "line": "reg query HKCU",
+      "expected": false
+    },
+    {
+      "line": "git status",
+      "expected": false
+    },
+    {
+      "line": "echo \"DROP TABLE users\"",
+      "expected": false
+    },
+    {
+      "line": "Remove-Item -Rec C:\\work\\x",
+      "expected": true
+    },
+    {
+      "line": "remove-item C:\\x -recurse -force",
+      "expected": true
+    },
+    {
+      "line": "ri -r C:\\x",
+      "expected": true
+    },
+    {
+      "line": "del -Recurse C:\\x",
+      "expected": true
+    },
+    {
+      "line": "erase /s /q C:\\x",
+      "expected": true
+    },
+    {
+      "line": "cmd /c del /s /q C:\\x",
+      "expected": true
+    },
+    {
+      "line": "cmd.exe /c \"rd /s /q C:\\x\"",
+      "expected": true
+    },
+    {
+      "line": "bash -c \"rm -rf /tmp/x\"",
+      "expected": true
+    },
+    {
+      "line": "sh -c 'reboot'",
+      "expected": true
+    },
+    {
+      "line": "powershell -Command \"Remove-Item -Recurse C:\\x\"",
+      "expected": true
+    },
+    {
+      "line": "pwsh -c 'Stop-Computer'",
+      "expected": true
+    },
+    {
+      "line": "sudo -u root rm -rf /x",
+      "expected": true
+    },
+    {
+      "line": "sudo -E reboot",
+      "expected": true
+    },
+    {
+      "line": "env LANG=C rm -rf /x",
+      "expected": true
+    },
+    {
+      "line": "nohup rm -rf /x &",
+      "expected": true
+    },
+    {
+      "line": "Get-ChildItem C:\\x | Remove-Item -Recurse",
+      "expected": true
+    },
+    {
+      "line": "RM -RF /tmp/x",
+      "expected": true
+    },
+    {
+      "line": "bash -c \"bash -c 'rm -rf /x'\"",
+      "expected": true
+    },
+    {
+      "line": "bash -c \"echo hello\"",
+      "expected": false
+    },
+    {
+      "line": "cmd /c dir",
+      "expected": false
+    },
+    {
+      "line": "del file.txt",
+      "expected": false
+    },
+    {
+      "line": "ri file.txt",
+      "expected": false
+    },
+    {
+      "line": "echo 'bash -c \"rm -rf /\"'",
+      "expected": false
+    },
+    {
+      "line": "Remove-Item C:\\x\\file.txt",
+      "expected": false
+    },
+    {
+      "line": "sudo -u root ls",
+      "expected": false
+    },
+    {
+      "line": "git commit -m 'reboot later'",
+      "expected": false
+    },
+    {
+      "line": "bash -lc 'rm -rf /tmp/x'",
+      "expected": true
+    },
+    {
+      "line": "sh -ec \"rm -rf /tmp/x\"",
+      "expected": true
+    },
+    {
+      "line": "bash -euo pipefail -c 'rm -rf /tmp/x'",
+      "expected": true
+    },
+    {
+      "line": "bash --login -c \"sudo reboot\"",
+      "expected": true
+    },
+    {
+      "line": "sudo -u www-data bash -lc 'rm -rf /srv/x'",
+      "expected": true
+    },
+    {
+      "line": "powershell -NoProfile -Command \"Remove-Item -Recurse C:\\x\"",
+      "expected": true
+    },
+    {
+      "line": "powershell -ExecutionPolicy Bypass -Command \"Stop-Computer\"",
+      "expected": true
+    },
+    {
+      "line": "pwsh -nop -c 'Restart-Computer'",
+      "expected": true
+    },
+    {
+      "line": "cmd /d /c \"rd /s /q D:\\work\\tmp\"",
+      "expected": true
+    },
+    {
+      "line": "cmd /k del /s /q D:\\work\\tmp",
+      "expected": true
+    },
+    {
+      "line": "Remove-Item \"D:\\work\\tmp\\\" -Recurse -Force",
+      "expected": true
+    },
+    {
+      "line": "cmd /c \"rd /s /q D:\\work\\tmp\\\"",
+      "expected": true
+    },
+    {
+      "line": "bash -lc 'npm test'",
+      "expected": false
+    },
+    {
+      "line": "sh -ec \"make build\"",
+      "expected": false
+    },
+    {
+      "line": "bash -euo pipefail -c \"cargo test\"",
+      "expected": false
+    },
+    {
+      "line": "powershell -NoProfile -Command \"Get-ChildItem\"",
+      "expected": false
+    },
+    {
+      "line": "pwsh -nop -c 'Write-Host done'",
+      "expected": false
+    },
+    {
+      "line": "cmd /d /c dir /s",
+      "expected": false
+    },
+    {
+      "line": "Remove-Item \"D:\\work\\tmp\\a.txt\"",
+      "expected": false
+    },
+    {
+      "line": "echo \"C:\\path\\\" done",
+      "expected": false
+    }
+  ],
+  "password_prompt": [
+    {
+      "tail": "[sudo] password for alice: ",
+      "expected": true
+    },
+    {
+      "tail": "Password: ",
+      "expected": true
+    },
+    {
+      "tail": "alice@host's password: ",
+      "expected": true
+    },
+    {
+      "tail": "Enter passphrase for key '/home/a/.ssh/id_ed25519': ",
+      "expected": true
+    },
+    {
+      "tail": "请输入密码：",
+      "expected": true
+    },
+    {
+      "tail": "Verification code: ",
+      "expected": true
+    },
+    {
+      "tail": "\u001b[1mPassword:\u001b[0m ",
+      "expected": true
+    },
+    {
+      "tail": "some output\r\nPassword: ",
+      "expected": true
+    },
+    {
+      "tail": "alice@host:~$ ",
+      "expected": false
+    },
+    {
+      "tail": "PS C:\\Users\\a> ",
+      "expected": false
+    },
+    {
+      "tail": "password updated successfully\r\nalice@host:~$ ",
+      "expected": false
+    },
+    {
+      "tail": "",
+      "expected": false
+    },
+    {
+      "tail": "Changing password for alice.\r\n$ ",
+      "expected": false
+    },
+    {
+      "tail": "alice@host:~$ echo password:",
+      "typed": "echo password:",
+      "expected": false
+    },
+    {
+      "tail": "Password: ",
+      "typed": "",
+      "expected": true
+    },
+    {
+      "tail": "[sudo] password for alice: ",
+      "typed": "ls",
+      "expected": true
+    },
+    {
+      "tail": "请输入口令：",
+      "expected": true
+    },
+    {
+      "tail": "验证码：",
+      "expected": true
+    },
+    {
+      "tail": "Passcode:",
+      "expected": true
+    },
+    {
+      "tail": "Enter passphrase",
+      "expected": true
+    },
+    {
+      "tail": "\u001b]0;title\u0007Password:",
+      "expected": true
+    },
+    {
+      "tail": "日志\rPassword:",
+      "expected": true
+    },
+    {
+      "tail": "Password: \n\n",
+      "expected": true
+    },
+    {
+      "tail": "Password: \n$ ",
+      "expected": false
+    },
+    {
+      "tail": "PS C:\\> echo password:",
+      "expected": false
+    },
+    {
+      "tail": "普通输出",
+      "expected": false
+    },
+    {
+      "tail": "password ",
+      "expected": false
+    },
+    {
+      "tail": "Enter PIN: ",
+      "expected": true
+    },
+    {
+      "tail": "OTP: ",
+      "expected": true
+    },
+    {
+      "tail": "Token: ",
+      "expected": true
+    },
+    {
+      "tail": "Authenticator code: ",
+      "expected": true
+    },
+    {
+      "tail": "One-time code: ",
+      "expected": true
+    },
+    {
+      "tail": "Spinning up:",
+      "expected": false
+    },
+    {
+      "tail": "Pinned:",
+      "expected": false
+    },
+    {
+      "tail": "tokens saved\r\n$ ",
+      "expected": false
+    },
+    {
+      "tail": "Fetching token: ",
+      "expected": false
+    },
+    {
+      "tail": "Using token:",
+      "expected": false
+    },
+    {
+      "tail": "  \"token\":",
+      "expected": false
+    },
+    {
+      "tail": "npm notice token: ",
+      "expected": false
+    },
+    {
+      "tail": "otp.txt:",
+      "expected": false
+    },
+    {
+      "tail": "Enter your 2FA code:",
+      "expected": true
+    },
+    {
+      "tail": "Enter MFA code: ",
+      "expected": true
+    },
+    {
+      "tail": "Enter PIN:",
+      "expected": true
+    },
+    {
+      "tail": "Paste your token here:",
+      "expected": true
+    },
+    {
+      "tail": "请输入令牌：",
+      "expected": true
+    },
+    {
+      "tail": "请输入 PIN 码：",
+      "expected": true
+    }
+  ]
+}
