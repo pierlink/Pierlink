@@ -23,13 +23,13 @@ first=20
 if [ -n "${PIERLINK_VNC_XSESSIONS_DIR:-}" ]; then first=90; fi
 linger_failed=false
 bounded 3 loginctl enable-linger "$uid" >/dev/null 2>&1 || linger_failed=true
-command -v setsid >/dev/null && command -v xauth >/dev/null || fail missing_tool
+command -v setsid >/dev/null && command -v xauth >/dev/null || fail missing_tool vnc.setsid_or_xauth_missing '缺少 setsid 或 xauth'
 if command -v dbus-run-session >/dev/null; then
     dbus=$(shell_quote "$(command -v dbus-run-session)")
     if [ -n "${light_prefix:-}" ]; then dbus="$dbus --dbus-daemon=$(shell_quote "$light_prefix/dbus-daemon")"; fi
     dbus="$dbus --"
 elif command -v dbus-launch >/dev/null; then dbus="$(shell_quote "$(command -v dbus-launch)") --exit-with-session"
-else fail missing_tool; fi
+else fail missing_tool vnc.dbus_launcher_missing '缺少 dbus-run-session 或 dbus-launch'; fi
 export desktop_id desktop_name desktop_names desktop_exec linger_failed dbus
 last=$((first+9))
 display=$first

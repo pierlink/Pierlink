@@ -173,6 +173,11 @@ fn remote_trash(link: &ServerLink, id: &str, clear: bool) -> Result<TrashUsage, 
                 "sync.server_trash_operation_was_interrupted_the_processed_count_is_unknown",
                 "服务器回收站操作中断，已处理数量无法确认",
             )
+            .with_text(
+                "stderr_tail",
+                "sync.server_trash_operation_was_interrupted_the_processed_count_is_unknown",
+                "服务器回收站操作中断，已处理数量无法确认",
+            )
             .with("server_id", &link.server_id)
             .with("counts_known", false)
         })?,

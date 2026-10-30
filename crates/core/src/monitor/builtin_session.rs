@@ -27,7 +27,15 @@ impl BuiltinSession {
             .spawn(move || {
                 let error = run_channel(command, script, shared.clone(), cancel, input)
                     .err()
-                    .unwrap_or_else(|| AppError::new("ssh.unreachable"));
+                    .unwrap_or_else(|| {
+                        AppError::new("ssh.unreachable")
+                            .with_reason("monitor.sampling_connection_closed", "资源采样连接已结束")
+                            .with_text(
+                                "stderr_tail",
+                                "monitor.sampling_connection_closed",
+                                "资源采样连接已结束",
+                            )
+                    });
                 shared.lock().unwrap_or_else(|p| p.into_inner()).done = true;
                 *done.lock().unwrap_or_else(|p| p.into_inner()) = Some(error);
             })

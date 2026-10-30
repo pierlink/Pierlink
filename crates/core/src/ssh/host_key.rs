@@ -571,12 +571,11 @@ fn interact(
         .child
         .process_id()
         .map_or_else(|| "未知".into(), |pid| pid.to_string());
-    state
-        .diagnostic
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .params
-        .insert("pid".into(), pid.clone());
+    {
+        let mut diagnostic = state.diagnostic.lock().unwrap_or_else(|e| e.into_inner());
+        diagnostic.params.insert("pid".into(), pid.clone());
+        diagnostic.params.remove("pid_key");
+    }
     if child.child.process_id().is_none() {
         let mut diagnostic = state.diagnostic.lock().unwrap_or_else(|e| e.into_inner());
         *diagnostic = diagnostic
@@ -622,6 +621,9 @@ fn interact(
                 .with("cursor_queries", queries.cursor)
                 .with("device_queries", queries.attributes)
                 .with_text("phase", phase_key, phase);
+            // pid、exited 已是真实值：去掉初始的“尚未启动”“尚未查询”说明键
+            diagnostic.params.remove("pid_key");
+            diagnostic.params.remove("exited_key");
             if child.child.process_id().is_none() {
                 diagnostic = diagnostic.with_text("pid", "ssh.unknown_pid", "未知");
             }

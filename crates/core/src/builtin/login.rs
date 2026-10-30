@@ -429,6 +429,14 @@ fn safe_host_error(error: &AppError) -> AppError {
         "builtin.host_key_verification_did_not_complete",
         "主机密钥核对未完成",
     );
+    // ssh.failed 的提示用 stderr_tail 占位
+    if code == "ssh.failed" {
+        safe = safe.with_text(
+            "stderr_tail",
+            "builtin.host_key_verification_did_not_complete",
+            "主机密钥核对未完成",
+        );
+    }
     for name in ["fingerprint", "known_fingerprint", "file", "line"] {
         if let Some(value) = error.params.get(name) {
             safe = safe.with(name, value);
@@ -465,5 +473,13 @@ mod tests {
             assert!(!format!("{safe:?}").contains("秘密"));
             assert!(!format!("{safe:?}").contains("回调原文"));
         }
+        // 列表外的错误码归为 ssh.failed：它的提示用 stderr_tail，也要带上可翻译的说明
+        let other = safe_host_error(&AppError::new("ssh.unreachable").with("reason", "原文"));
+        assert_eq!(other.code, "ssh.failed");
+        assert_eq!(
+            other.params["stderr_tail_key"],
+            "builtin.host_key_verification_did_not_complete"
+        );
+        assert!(!format!("{other:?}").contains("原文"));
     }
 }

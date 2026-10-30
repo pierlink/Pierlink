@@ -110,7 +110,7 @@
     "closeToTrayUnavailable": "系统托盘不可用，关闭窗口会退出应用",
     "desktop": {
       "openInWindow": "在独立窗口打开",
-      "openInWindowHint": "打开桌面时直接用单独的窗口。"
+      "openInWindowHint": "打开桌面时直接用单独的窗口"
     }
   },
   "workspace": {
@@ -541,7 +541,7 @@
         "folder_has_control_characters": "目录里不能有换行等控制字符",
         "server_has_no_entry": "这台服务器没有入口",
         "terminal_cannot_be_handed_to_ai": "这个终端不能交给 AI",
-        "terminal_not_open": "终端没有打开",
+        "terminal_not_open": "Pierlink 没有返回终端",
         "ui_did_not_open_the_terminal": "Pierlink 界面没有打开终端（可能还在等你确认指纹或输入密码）",
         "sync_task": "同步任务",
         "home_folder_not_found": "找不到用户目录",
@@ -615,7 +615,8 @@
         "get_resource_reader": "获取资源读取器",
         "get_error_reader": "获取错误读取器",
         "read_sampling_error_output": "读取采样错误输出",
-        "create_sampling_control_thread": "创建采样控制线程"
+        "create_sampling_control_thread": "创建采样控制线程",
+        "sampling_connection_closed": "资源采样连接已结束"
       },
       "process": {
         "create_reader_thread": "创建读取线程",
@@ -928,10 +929,10 @@
         "a_local_receive_only_task_needs_at_least_one_send": "本机只接收任务至少需要保留一个收发服务器端点",
         "new_location_overlaps_the_version_directory": "新位置与旧版本目录重叠",
         "trash_path_is_unsafe_contains_symbolic_links_or_overlaps_a": "回收站路径不安全、包含符号链接或与同步目录重叠",
-        "couldn_t_read_or_clean_up_the_trash": "无法读取或清理回收站",
+        "couldn_t_read_or_clean_up_the_trash": "本机文件操作失败",
         "server_trash_operation_was_interrupted_the_processed_count_is_unknown": "服务器回收站操作中断，已处理数量无法确认",
         "server_has_no_background_command_channel": "服务器缺少后台命令通道",
-        "server_couldn_t_read_or_clean_up_the_trash": "服务器无法读取或清理回收站",
+        "server_couldn_t_read_or_clean_up_the_trash": "服务器上的命令报错",
         "multiple_versions_of_the_same_file_cannot_be_restored_together": "同一文件不能同时恢复多个版本",
         "cleanup_failed": "清理失败",
         "service_busy_check_later": "同步服务正忙，请稍后再查",
@@ -1142,7 +1143,7 @@
         "xkb_data_missing": "没有可用的 XKB 键盘数据",
         "program_missing": "系统和软件包中均缺少必需程序",
         "missing_libraries": "缺少动态库：{{libs}}",
-        "server_download_failed": "服务器下载失败",
+        "server_download_failed": "服务器上的 curl 或 wget 出错",
         "download_tool_missing": "服务器没有 curl 或 wget",
         "package_size_limit": "下载包超过大小限制",
         "apt_tools_missing": "需要 apt-get、apt-cache 和 dpkg",
@@ -1175,7 +1176,9 @@
         "xkb_namespace": "无法创建用户和挂载命名空间；内核或 AppArmor 等安全策略不允许",
         "xkb_permissions": "无法确认命名空间内 X11 文件的属主和私有权限",
         "invalid_server_id": "服务器 ID 不合法",
-        "invalid_window_address": "窗口地址不合法"
+        "invalid_window_address": "窗口地址不合法",
+        "setsid_or_xauth_missing": "setsid 或 xauth",
+        "dbus_launcher_missing": "dbus-run-session 或 dbus-launch"
       }
     },
     "ssh": {

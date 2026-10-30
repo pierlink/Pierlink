@@ -111,7 +111,7 @@
     "closeToTrayUnavailable": "The system tray is unavailable, so closing the window quits the app",
     "desktop": {
       "openInWindow": "Open in a separate window",
-      "openInWindowHint": "Open desktops straight in their own window."
+      "openInWindowHint": "Open desktops straight in their own window"
     }
   },
   "workspace": {
@@ -379,7 +379,7 @@
         "invalid_system_time": "invalid system time",
         "private_key_is_missing_after_generation": "private key is missing after generation",
         "invalid_installation_result": "invalid installation result",
-        "invalid_authorization_path_check_result": "invalid authorization path check result",
+        "invalid_authorization_path_check_result": "invalid result when checking the authorized keys path",
         "invalid_permission_check_result": "invalid permission check result",
         "invalid_list_result": "invalid list result",
         "invalid_list_encoding": "invalid list encoding",
@@ -410,13 +410,13 @@
         "decrypt_failed": "private key cannot be decrypted with the passphrase",
         "not_ed25519": "dedicated key is not ed25519",
         "key_mismatch": "public and private keys do not match",
-        "remote_lock_timeout": "remote authorization file lock timed out after ten seconds",
-        "remote_interrupted": "remote authorization file operation was interrupted by a signal",
-        "dangling_authorized_link": "authorization file is a dangling symbolic link",
-        "authorized_not_file": "authorization file is not a regular file",
+        "remote_lock_timeout": "the authorized keys file stayed locked for more than ten seconds",
+        "remote_interrupted": "changing the authorized keys file was interrupted by a signal",
+        "dangling_authorized_link": "the authorized keys file is a dangling symbolic link",
+        "authorized_not_file": "the authorized keys file is not a regular file",
         "remote_permissions": "couldn't read remote permissions",
-        "rollback_symlink": "remove the key manually from the linked authorization file",
-        "rollback_failed": "rollback failed; check the authorization file manually"
+        "rollback_symlink": "the authorized keys file is a symbolic link; remove the key manually",
+        "rollback_failed": "rollback failed; check the authorized keys file manually"
       },
       "links": {
         "url_exceeds_8192_bytes": "the URL exceeds 8192 bytes",
@@ -542,7 +542,7 @@
         "folder_has_control_characters": "the folder can't contain line breaks or other control characters",
         "server_has_no_entry": "this server has no entry",
         "terminal_cannot_be_handed_to_ai": "this terminal can't be handed to AI",
-        "terminal_not_open": "the terminal isn't open",
+        "terminal_not_open": "Pierlink returned no terminal",
         "ui_did_not_open_the_terminal": "Pierlink didn't open the terminal (it may be waiting for you to confirm the fingerprint or enter a password)",
         "sync_task": "sync task",
         "home_folder_not_found": "couldn't find the user folder",
@@ -598,7 +598,7 @@
         "only_loopback_private_lan_or_tailscale_addresses_are_allowed": "only loopback, private LAN, or Tailscale addresses are allowed",
         "couldn_t_open_the_web_asset_directory": "couldn't open the web asset directory",
         "web_asset_path_must_be_a_directory": "web asset path must be a directory",
-        "couldn_t_start_the_mobile_entry_listener": "couldn't start the mobile entry listener",
+        "couldn_t_start_the_mobile_entry_listener": "couldn't start the phone access listener",
         "phone_page_missing_from_install": "the phone page is missing from the installation"
       },
       "monitor": {
@@ -616,7 +616,8 @@
         "get_resource_reader": "get resource reader",
         "get_error_reader": "get error reader",
         "read_sampling_error_output": "read sampling error output",
-        "create_sampling_control_thread": "create sampling control thread"
+        "create_sampling_control_thread": "create sampling control thread",
+        "sampling_connection_closed": "the sampling connection closed"
       },
       "process": {
         "create_reader_thread": "create reader thread",
@@ -781,7 +782,7 @@
         "invalid_pipe_name": "invalid pipe name",
         "couldn_t_set_the_pipe_timeout": "couldn't set the pipe timeout",
         "couldn_t_connect_to_the_pipe": "couldn't connect to the pipe",
-        "create_listener_thread": "create listener thread",
+        "create_listener_thread": "couldn't create the listener thread",
         "service_has_stopped": "service has stopped",
         "invalid_registered_target": "invalid registered target",
         "too_many_registrations": "too many registrations",
@@ -892,9 +893,9 @@
         "use_a_safe_relative_file_path": "use a safe relative file path",
         "conflict_path_cannot_traverse_symbolic_links": "conflict path cannot traverse symbolic links",
         "conflict_item_must_be_a_regular_file": "conflict item must be a regular file",
-        "ignore_file_includes_are_nested_too_deeply_or_contain_a": "ignore file includes are nested too deeply or contain a cycle",
-        "included_ignore_file_exceeds_1_mib": "included ignore file exceeds 1 MiB",
-        "expanded_ignore_rules_exceed_10_000_entries": "expanded ignore rules exceed 10,000 entries",
+        "ignore_file_includes_are_nested_too_deeply_or_contain_a": "files included by the exclusion rules are nested too deeply or form a cycle",
+        "included_ignore_file_exceeds_1_mib": "a file included by the exclusion rules exceeds 1 MiB",
+        "expanded_ignore_rules_exceed_10_000_entries": "the expanded exclusion rules exceed 10,000 entries",
         "symbolic_link_skipped": "symbolic link skipped",
         "path_is_outside_the_sync_directory": "path is outside the sync directory",
         "filename_is_not_valid_utf_8": "filename is not valid UTF-8",
@@ -904,8 +905,8 @@
         "couldn_t_create_the_estimate_request_thread": "couldn't create the estimate request thread",
         "configuration_still_exists_after_deletion": "configuration still exists after deletion",
         "path_is_not_valid_utf_8": "path is not valid UTF-8",
-        "couldn_t_safely_read_or_restore_the_ignore_file": "couldn't safely read or restore the ignore file",
-        "ignore_file_was_modified_externally_and_has_been_preserved": "ignore file was modified externally and has been preserved",
+        "couldn_t_safely_read_or_restore_the_ignore_file": "couldn't safely read or restore the exclusion rules file",
+        "ignore_file_was_modified_externally_and_has_been_preserved": "the exclusion rules file was changed outside Pierlink and was left as is",
         "stignore_is_a_symbolic_link_and_cannot_be_replaced_safely": ".stignore is a symbolic link and cannot be replaced safely",
         "key_cannot_be_empty_and_listening_ports_must_differ": "key cannot be empty and listening ports must differ",
         "server_record_is_incomplete": "server record is incomplete",
@@ -929,10 +930,10 @@
         "a_local_receive_only_task_needs_at_least_one_send": "a local receive-only task needs at least one send-and-receive server endpoint",
         "new_location_overlaps_the_version_directory": "new location overlaps the version directory",
         "trash_path_is_unsafe_contains_symbolic_links_or_overlaps_a": "trash path is unsafe, contains symbolic links, or overlaps a sync directory",
-        "couldn_t_read_or_clean_up_the_trash": "couldn't read or clean up the trash",
+        "couldn_t_read_or_clean_up_the_trash": "a local file operation failed",
         "server_trash_operation_was_interrupted_the_processed_count_is_unknown": "server trash operation was interrupted; the processed count is unknown",
         "server_has_no_background_command_channel": "server has no background command channel",
-        "server_couldn_t_read_or_clean_up_the_trash": "server couldn't read or clean up the trash",
+        "server_couldn_t_read_or_clean_up_the_trash": "the command on the server reported an error",
         "multiple_versions_of_the_same_file_cannot_be_restored_together": "multiple versions of the same file cannot be restored together",
         "cleanup_failed": "cleanup failed",
         "service_busy_check_later": "the sync service is busy; check again later",
@@ -1115,7 +1116,7 @@
         "downloads_on_this_computer_were_not_permitted": "downloads on this computer were not permitted",
         "no_manually_downloaded_package_was_provided": "no manually downloaded package was provided",
         "computer": "computer",
-        "invalid_desktop_detection_result_format": "invalid desktop detection result format",
+        "invalid_desktop_detection_result_format": "Invalid desktop detection result",
         "server_has_no_socat_python_or_perl_relay": "server has no socat, Python, or Perl relay",
         "refusal_message_is_too_long": "refusal message is too long",
         "server_does_not_support_vencrypt_0_2": "server does not support VeNCrypt 0.2",
@@ -1136,14 +1137,14 @@
         "unknown_source": "unknown",
         "desktop_cleanup": "desktop process cleanup is incomplete",
         "ldd_missing": "ldd is missing; shared libraries cannot be checked",
-        "light_not_ready": "lightweight desktop download is incomplete",
+        "light_not_ready": "the light desktop download is incomplete",
         "prefix_colon": "installation path contains a colon and cannot be used for program or library lookup",
         "xkbcomp_missing": "no usable xkbcomp in the system or installation prefix",
         "xkb_path_invalid": "the XKB data path contains unsupported characters",
         "xkb_data_missing": "no usable XKB keyboard data",
         "program_missing": "required program is missing from the system and package",
         "missing_libraries": "missing shared libraries: {{libs}}",
-        "server_download_failed": "server download failed",
+        "server_download_failed": "curl or wget on the server failed",
         "download_tool_missing": "server has no curl or wget",
         "package_size_limit": "downloaded package exceeds the size limit",
         "apt_tools_missing": "apt-get, apt-cache, and dpkg are required",
@@ -1176,7 +1177,9 @@
         "xkb_namespace": "kernel or security policy prevents user and mount namespaces",
         "xkb_permissions": "couldn't verify X11 file ownership and private permissions inside the namespace",
         "invalid_server_id": "invalid server ID",
-        "invalid_window_address": "invalid window address"
+        "invalid_window_address": "invalid window address",
+        "setsid_or_xauth_missing": "setsid or xauth",
+        "dbus_launcher_missing": "dbus-run-session or dbus-launch"
       }
     },
     "ssh": {
