@@ -18,6 +18,7 @@ use std::{
 
 #[derive(Default)]
 pub(super) struct Peer {
+    pub(super) server_id: Option<String>,
     pub(super) closed_channels: Arc<std::sync::atomic::AtomicUsize>,
     pub(super) terminal_requests: Arc<Mutex<Vec<crate::test_support::TerminalRequest>>>,
     pub(super) round: usize,
@@ -536,6 +537,9 @@ pub(super) fn start_options(
     let key: PrivateKey = Ed25519Keypair::from_seed(&[7; 32]).into();
     let fingerprint = key.public_key().fingerprint(HashAlg::Sha256).to_string();
     let mut config = peer_config(key);
+    if let Some(sshid) = &peer.server_id {
+        config.server_id = russh::SshId::Standard(sshid.clone().into());
+    }
     if peer.stop_replenishing {
         config.window_size = 32 * 1024;
     }
@@ -578,6 +582,9 @@ pub(super) fn connect_peer(
     wire_capacity: usize,
 ) -> Result<Connection> {
     let mut config = peer_config(Ed25519Keypair::from_seed(&[7; 32]).into());
+    if let Some(sshid) = &peer.server_id {
+        config.server_id = russh::SshId::Standard(sshid.clone().into());
+    }
     config.methods = russh::MethodSet::from(&[russh::MethodKind::Password][..]);
     let (client, server) = tokio::io::duplex(wire_capacity);
     engine.executor.handle()?.spawn(async move {

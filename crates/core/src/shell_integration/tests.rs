@@ -27,6 +27,8 @@ impl Session {
             ("SHELL".into(), "/bin/bash".into()),
             ("HISTFILE".into(), "/dev/null".into()),
             ("TERM".into(), "xterm-256color".into()),
+            // Debian/Ubuntu 的 /etc/zsh/zshrc 会跑 compinit，补全目录权限不对时停下来问 y/n（CI 机器上就是这样）
+            ("skip_global_compinit".into(), "1".into()),
         ];
         vars.extend(env);
         Self::from_kind(TerminalKind::Local {

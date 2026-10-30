@@ -1651,7 +1651,7 @@
     "lineDisconnected": "已断开，按 Enter 重新连接",
     "lineExited": "进程已退出（代码 {{code}}），按 Enter 重新连接",
     "lineExitedLocal": "进程已退出（代码 {{code}}），按 Enter 重新打开",
-    "hookHintServer": "连上就退出时，可以在服务器的右键菜单里关闭命令预测后重试",
+    "hookOff": "这台服务器上用不了命令预测，已为它关闭（服务器右键菜单可以重新打开）",
     "hookHintQuick": "连上就退出时，可以在 设置 → 终端 里关闭命令预测后重试",
     "paneCount": "{{count}} 个窗格",
     "splitSame": "再开一个“{{name}}”",

@@ -59,10 +59,14 @@ async function clickVisible(selector) {
   await u.clickXY(r.x, r.y);
 }
 
-/** 服务器列表里 pl-linux 的行号 */
-async function linuxRow() {
-  return Number(await u.waitFor(`(()=>{const i=[...document.querySelectorAll('.srv-row')].findIndex(r=>r.innerText.includes(${JSON.stringify(LX_NAME)})); return i>=0 ? String(i) : null;})()`, "服务器列表里有 pl-linux（stage6 添加的）"));
+/** 服务器列表里某台服务器的行号（按名称或地址找） */
+async function serverRow(name) {
+  return Number(await u.waitFor(`(()=>{const i=[...document.querySelectorAll('.srv-row')].findIndex(r=>r.innerText.includes(${JSON.stringify(name)})); return i>=0 ? String(i) : null;})()`, `服务器列表里有 ${name}`));
 }
+/** 服务器列表里 pl-linux 的行号（stage6 添加的） */
+const linuxRow = () => serverRow(LX_NAME);
+/** 本机 Windows sshd 当服务器（run.mjs 添加的，名称就是地址） */
+const WIN_NAME = "127.0.0.1";
 
 /** 新开一个 pl-linux 的终端标签，等到 bash 提示符并让终端拿到焦点 */
 async function openLinux() {
@@ -74,10 +78,10 @@ async function openLinux() {
   await sleep(300);
 }
 
-/** 把 pl-linux 的连接方式改成 label 对应的一项（同 stage7.mjs） */
-async function setEngine(label) {
+/** 把服务器（默认 pl-linux）的连接方式改成 label 对应的一项（同 stage7.mjs） */
+async function setEngine(label, name = LX_NAME) {
   await u.clickText("Workspace", "header nav");
-  await u.click(".srv-row", await linuxRow(), "right");
+  await u.click(".srv-row", await serverRow(name), "right");
   await u.clickText("Edit", ".pl-menu");
   await u.waitFor(`!!document.querySelector('.pl-dialog [role=tablist][aria-label="Connection"]')`, "编辑服务器对话框里的连接方式");
   await u.clickText(label, ".pl-dialog [role=tablist]");
@@ -157,8 +161,8 @@ await rec.step(conn, "本机 Git Bash（经过 ConPTY）：敲过的命令也有
 });
 
 await rec.step(conn, "系统 OpenSSH 连接（经过 ConPTY）：同一台服务器的记录也能预测；测完改回内置 SSH", async () => {
-  await setEngine("System OpenSSH");
   try {
+    await setEngine("System OpenSSH");
     await openLinux();
     await u.type("echo pl-pre");
     const g = await u.waitFor(GHOST, "系统 OpenSSH 连接里的浅色预测", 10000);
@@ -166,6 +170,29 @@ await rec.step(conn, "系统 OpenSSH 连接（经过 ConPTY）：同一台服务
     return `预测：${g}`;
   } finally {
     await setEngine("Built-in SSH");
+  }
+});
+
+await rec.step(conn, "Windows 服务器改用系统 OpenSSH：带钩子连上就退出，自动为它关掉预测，按 Enter 照常连上；测完改回", async () => {
+  try {
+    await setEngine("System OpenSSH", WIN_NAME);
+    await u.click(".srv-row", await serverRow(WIN_NAME), "left", 2);
+    const text = await u.waitFor(`(()=>{const t=${TERM}; return /Command prediction doesn't work on this server/.test(t) ? t : null;})()`, "终端里说明已为这台服务器关掉预测", 30000);
+    await u.click(".srv-row", await serverRow(WIN_NAME), "right");
+    const items = await p.js(`[...document.querySelectorAll('.pl-menu [role=menuitem]')].map(x=>x.textContent.trim())`);
+    await u.esc();
+    if (!items.includes("Turn on command prediction")) throw new Error(`右键菜单里应该变成“开启命令预测”：${items.join(" / ")}`);
+    await clickVisible(".xterm-screen");
+    await u.enter();
+    await u.waitFor(`/>$/.test(${LAST}) && !/Command prediction doesn't work/.test(${TERM})`, "按 Enter 后不带钩子连上 Windows 服务器", 30000);
+    return text.split("\n").filter(Boolean).slice(-2).join(" / ");
+  } finally {
+    await setEngine("Built-in SSH", WIN_NAME);
+    // 恢复默认：这台服务器的预测重新打开
+    await u.click(".srv-row", await serverRow(WIN_NAME), "right");
+    const items = await p.js(`[...document.querySelectorAll('.pl-menu [role=menuitem]')].map(x=>x.textContent.trim())`);
+    if (items.includes("Turn on command prediction")) await u.clickText("Turn on command prediction", ".pl-menu");
+    else await u.esc();
   }
 });
 

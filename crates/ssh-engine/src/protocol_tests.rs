@@ -18,6 +18,42 @@ use crate::memory_peer::{Peer, password, peer_config, start, start_options};
 mod flow_control_tests;
 
 #[test]
+fn 连接与克隆保留服务器版本字符串且换钥后不变() {
+    let engine = Engine::new().unwrap();
+    for sshid in [
+        "SSH-2.0-OpenSSH_for_Windows_9.5",
+        "SSH-2.0-OpenSSH_9.6p1 Ubuntu-3ubuntu13",
+    ] {
+        let connection = start(
+            &engine,
+            Peer {
+                server_id: Some(sshid.into()),
+                ..Default::default()
+            },
+            password(),
+            None,
+        )
+        .unwrap();
+        assert_eq!(connection.remote_sshid(), Some(sshid));
+        let cloned = connection.clone();
+        assert_eq!(cloned.remote_sshid(), Some(sshid));
+        let before = connection.statistics().key_exchanges;
+        let mut session = connection.shell(&Pty::default(), &[]).unwrap();
+        let data = vec![b'x'; 256 * 1024];
+        let mut received = vec![0; data.len()];
+        std::thread::scope(|scope| {
+            scope.spawn(|| session.stdin.write_all(&data).unwrap());
+            session.stdout.read_exact(&mut received).unwrap();
+        });
+        assert_eq!(received, data);
+        assert!(connection.statistics().key_exchanges > before);
+        assert_eq!(connection.remote_sshid(), Some(sshid));
+        assert_eq!(cloned.remote_sshid(), Some(sshid));
+        session.close().unwrap();
+    }
+}
+
+#[test]
 fn 终端合并输出可拆流并非阻塞查询状态() {
     let engine = Engine::new().unwrap();
     let connection = start(&engine, Peer::default(), password(), None).unwrap();

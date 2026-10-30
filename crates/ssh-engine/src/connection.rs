@@ -13,7 +13,7 @@ use std::{
     collections::{HashMap, HashSet},
     future::Future,
     sync::{
-        Arc, Mutex, Weak,
+        Arc, Mutex, OnceLock, Weak,
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
     time::Duration,
@@ -185,6 +185,7 @@ struct Counters {
 
 pub(crate) struct Client {
     options: ConnectionOptions,
+    remote_sshid: Arc<OnceLock<String>>,
     counters: Arc<Counters>,
     forwarded: mpsc::Sender<Incoming>,
     routed: Arc<Mutex<HashMap<u16, mpsc::Sender<ChannelStream<client::Msg>>>>>,
@@ -239,8 +240,10 @@ impl client::Handler for Client {
         &mut self,
         _: Option<&[u8]>,
         _: &russh::Names,
-        _: &mut client::Session,
+        session: &mut client::Session,
     ) -> Result<()> {
+        self.remote_sshid
+            .get_or_init(|| String::from_utf8_lossy(session.remote_sshid()).into_owned());
         self.counters.kex.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
@@ -404,6 +407,7 @@ impl Engine {
         parent: Option<Connection>,
     ) -> Result<Connection> {
         let counters = Arc::new(Counters::default());
+        let remote_sshid = Arc::new(OnceLock::new());
         let allowed_ports = Arc::new(Mutex::new(HashSet::new()));
         let pending_forward = Arc::new(AtomicUsize::new(0));
         let routed = Arc::new(Mutex::new(HashMap::new()));
@@ -411,6 +415,7 @@ impl Engine {
         let (closed_tx, closed_rx) = tokio::sync::watch::channel(false);
         let disconnect = Arc::new(auth::DisconnectInfo::default());
         let client = Client {
+            remote_sshid: remote_sshid.clone(),
             disconnect: disconnect.clone(),
             closed: closed_tx.clone(),
             options: options.clone(),
@@ -454,6 +459,7 @@ impl Engine {
                 closed: closed_rx,
                 close_signal: closed_tx,
                 counters,
+                remote_sshid,
                 incoming: tokio::sync::Mutex::new(incoming),
                 routed,
                 allowed_ports,
@@ -514,6 +520,7 @@ pub(crate) struct Inner {
     closed: tokio::sync::watch::Receiver<bool>,
     close_signal: tokio::sync::watch::Sender<bool>,
     counters: Arc<Counters>,
+    remote_sshid: Arc<OnceLock<String>>,
     incoming: tokio::sync::Mutex<mpsc::Receiver<Incoming>>,
     pub(crate) allowed_ports: Arc<Mutex<HashSet<u32>>>,
     pending_forward: Arc<AtomicUsize>,
@@ -588,6 +595,12 @@ impl WeakConnection {
 }
 
 impl Connection {
+    /// 无参数；返回首次握手收到的服务器 SSH 版本字符串，尚未收到时返回 None。
+    /// 非 UTF-8 字节替换为替代字符；克隆和池中复用的连接共享此值。
+    pub fn remote_sshid(&self) -> Option<&str> {
+        self.inner.remote_sshid.get().map(String::as_str)
+    }
+
     /// 无参数；返回不持有连接所有权的弱引用。
     pub(crate) fn downgrade(&self) -> WeakConnection {
         WeakConnection(Arc::downgrade(&self.inner))

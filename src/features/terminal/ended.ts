@@ -13,10 +13,10 @@ export type Ended =
   /** 没输密码（取消了密码框，或密码框开着时 ssh 等不及先退出了）：输入密码后自动重新连接 */
   | { kind: "passwordNeeded" }
   /**
-   * 程序自己结束了；hookHint：带着命令预测的提示符钩子连上后很快就退出、一个提示符都没出现，
-   * 可能是钩子和这台服务器的 shell 不兼容，提示可以关掉命令预测再试
+   * 程序自己结束了。hookHint：带着命令预测的提示符钩子连上后很快就退出、一个提示符都没出现，
+   * 多半是钩子和这台服务器不兼容：off 表示已自动为这台服务器关掉预测；quick 表示快速连接，提示到设置里关
    */
-  | { kind: "exited"; code: number | null; hookHint?: "server" | "quick" }
+  | { kind: "exited"; code: number | null; hookHint?: "off" | "quick" }
   /** 用户点了“断开” */
   | { kind: "disconnected" }
   /** 没能打开；builtin：内置 SSH 连不上，可以改用系统 OpenSSH 重试 */

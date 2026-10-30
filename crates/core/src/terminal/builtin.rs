@@ -15,7 +15,7 @@ pub struct BuiltinTerminal {
     vault: Arc<PasswordVault>,
     callbacks: Arc<dyn ConnectionCallbacks>,
     cancelled: Arc<AtomicBool>,
-    command: Option<String>,
+    integration: bool,
     marker: Option<String>,
 }
 
@@ -36,14 +36,15 @@ pub fn remote(
     if let Some(marker) = &cwd_marker {
         crate::cwd::validate_marker(marker)?;
     }
-    let command = crate::ssh::args::terminal_command(&request.server.login_shell, integration)?;
+    // 先校验登录 shell；集成命令在握手后按服务器类型生成。
+    crate::ssh::args::terminal_command(&request.server.login_shell, false)?;
     Ok(TerminalKind::BuiltinRemote(Box::new(BuiltinTerminal {
         manager: manager.clone(),
         server: request.server.clone(),
         vault: request.vault,
         callbacks: request.callbacks,
         cancelled: request.cancelled,
-        command,
+        integration,
         marker: cwd_marker,
     })))
 }
@@ -70,15 +71,33 @@ impl BuiltinTerminal {
                 cancelled: self.cancelled.clone(),
             },
             |connection| {
-                connection.terminal(
-                    &pty(cols, rows),
-                    &env,
-                    self.command.as_deref(),
-                    self.cancelled.clone(),
-                )
+                let integration = self.integration
+                    && !windows_server(connection.remote_sshid().unwrap_or_default());
+                let command =
+                    match crate::ssh::args::terminal_command(&self.server.login_shell, integration)
+                    {
+                        Ok(command) => command,
+                        // 保留参数错误；只让 SSH 通道错误触发连接池重试。
+                        Err(error) => return Ok(Err(error)),
+                    };
+                connection
+                    .terminal(
+                        &pty(cols, rows),
+                        &env,
+                        command.as_deref(),
+                        self.cancelled.clone(),
+                    )
+                    .map(Ok)
             },
-        )
+        )?
     }
+}
+
+fn windows_server(sshid: &str) -> bool {
+    let sshid = sshid.to_ascii_lowercase();
+    ["openssh_for_windows", "winsshd", "windows"]
+        .iter()
+        .any(|name| sshid.contains(name))
 }
 
 fn pty(cols: u16, rows: u16) -> pierlink_ssh_engine::Pty {
@@ -134,5 +153,31 @@ impl Process {
             })?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::windows_server;
+
+    #[test]
+    fn 服务器版本识别不区分大小写且未知版本保持集成() {
+        for sshid in [
+            "SSH-2.0-OpenSSH_for_Windows_9.5",
+            "SSH-2.0-OpenSSH_for_Windows_8.1p1",
+            "SSH-2.0-7.45 FlowSsh: Bitvise SSH Server (WinSSHD) 9.31",
+            "ssh-2.0-openssh_FOR_windows_9.5",
+            "SSH-2.0-WiNsShD",
+            "SSH-2.0-Custom WINDOWS Server",
+        ] {
+            assert!(windows_server(sshid), "{sshid}");
+        }
+        for sshid in [
+            "SSH-2.0-OpenSSH_9.6p1 Ubuntu-3ubuntu13",
+            "SSH-2.0-dropbear_2022.83",
+            "",
+        ] {
+            assert!(!windows_server(sshid), "{sshid}");
+        }
     }
 }

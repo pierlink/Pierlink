@@ -10,7 +10,7 @@ import { currentTerminalTheme } from "./theme";
 import { needsPasteConfirm, parseOsc7, parseOsc99 } from "./util";
 import { useSettings } from "../settings/store";
 import { useContextMenu } from "../../components";
-import { formatError } from "../../errors";
+import { formatError, isAppError } from "../../errors";
 import { endedFromOpenError, endedLine, endsInline, type Ended } from "./ended";
 import { getServersApi, notifyServersChanged } from "../servers/api";
 import type { OpenSpec, TerminalBackend } from "./types";
@@ -230,7 +230,7 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
       let text = e.kind === "lost" ? tr("terminal.lineLost")
         : e.kind === "disconnected" ? tr("terminal.lineDisconnected")
         : tr(spec.kind === "local" ? "terminal.lineExitedLocal" : "terminal.lineExited", { code: e.kind === "exited" ? e.code ?? "-" : "-" });
-      if (e.kind === "exited" && e.hookHint) text += `\r\n${tr(e.hookHint === "server" ? "terminal.hookHintServer" : "terminal.hookHintQuick")}`;
+      if (e.kind === "exited" && e.hookHint) text += `\r\n${tr(e.hookHint === "off" ? "terminal.hookOff" : "terminal.hookHintQuick")}`;
       // 等已收到的输出处理完再看是不是在全屏程序里；这期间重新连接了就不写
       term.write("", () => {
         if (disposed || !exited) return;
@@ -271,15 +271,22 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
             if (e.auth === "ssh.auth_failed") { end({ kind: "authFailed", password: true }); return; }
             if (e.auth === "ssh.two_factor_required") { end({ kind: "authFailed", twoFactor: true }); return; }
             if (e.auth === "ssh.too_many_auth_attempts") { end({ kind: "authFailed", tooManyAuth: true }); return; }
+            // 服务器拒绝了带钩子的命令（系统 OpenSSH 打印 exec request failed on channel 0 后以 255 退出）
+            if (spec.kind !== "local" && e.code === 255 && hooked && !prediction.integrated && /request failed on channel/i.test(tail)) {
+              hookIncompatible();
+              return;
+            }
             // 远程会话里 ssh 以 255 退出：连接断开（网络中断、服务器重启等），或登录失败
             if (spec.kind !== "local" && e.code === 255) {
               end(/Too many authentication failures/i.test(tail) ? { kind: "authFailed", tooManyAuth: true }
                 : /Permission denied/i.test(tail) ? { kind: "authFailed" } : { kind: "lost" });
             } else {
               // 带钩子连上，一个提示符都没出现、没输出多少、也没敲几条命令（输密码最多算两次回车）就退出：
-              // 可能是钩子和这台服务器的 shell 不兼容（Windows 的 OpenSSH 服务器、rbash、ForceCommand 等）
+              // 多半是钩子和这台服务器不兼容（系统 OpenSSH 连的 Windows 服务器、rbash、ForceCommand 等）。
+              // 保存过的服务器自动为它关掉预测（这样的服务器上预测本来也用不了），按 Enter 就按原来的方式连接
               const suspect = hooked && !prediction.integrated && sessionBytes < 8192 && sessionEnters <= 2;
-              end({ kind: "exited", code: e.code ?? null, ...(suspect ? { hookHint: spec.kind === "server" ? "server" as const : "quick" as const } : {}) });
+              if (suspect) hookIncompatible(e.code ?? null);
+              else end({ kind: "exited", code: e.code ?? null });
             }
           }
         }, !!cb.current.prediction);
@@ -299,8 +306,27 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
         cb.current.onStatus?.("exited");
         // 连接过程中点了“断开”，之后连接失败：照样显示“已断开”
         if (manual) { end({ kind: "disconnected" }); return; }
+        // 内置 SSH：服务器拒绝了带钩子的命令请求
+        if (hooked && isAppError(err) && err.code === "ssh.failed" && err.params?.reason_key === "request_rejected") {
+          hookIncompatible();
+          return;
+        }
         cb.current.onError?.(err);
         end(endedFromOpenError(err));
+      }
+    };
+    /** 钩子和这台服务器不兼容：保存过的服务器自动关掉预测，结束行说明；快速连接提示到设置里关 */
+    const hookIncompatible = (code: number | null = null) => {
+      if (spec.kind === "server") void turnOffPrediction(spec.serverId);
+      end({ kind: "exited", code, hookHint: spec.kind === "server" ? "off" : "quick" });
+    };
+    /** 为这台服务器关掉命令预测（钩子和它不兼容时）；失败时在终端顶部提示 */
+    const turnOffPrediction = async (serverId: string) => {
+      try {
+        await (await getServersApi()).setCommandPrediction(serverId, false);
+        notifyServersChanged();
+      } catch (err) {
+        if (!disposed) showNotice.current(formatError(err));
       }
     };
     /** 断开：已经结束时不做什么 */

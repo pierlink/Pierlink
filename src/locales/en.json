@@ -1653,7 +1653,7 @@
     "lineDisconnected": "Disconnected. Press Enter to reconnect.",
     "lineExited": "Process exited (code {{code}}). Press Enter to reconnect.",
     "lineExitedLocal": "Process exited (code {{code}}). Press Enter to reopen.",
-    "hookHintServer": "If it exits right after connecting, turn off command prediction in the server's right-click menu and try again.",
+    "hookOff": "Command prediction doesn't work on this server, so it is now off for this server (turn it back on in the server's right-click menu).",
     "hookHintQuick": "If it exits right after connecting, turn off command prediction in Settings → Terminal and try again.",
     "paneCount": "{{count}} panes",
     "splitSame": "Another “{{name}}”",

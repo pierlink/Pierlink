@@ -80,6 +80,10 @@ jobs:
         run: |
           sudo apt-get update -q
           sudo apt-get install -y -q zsh fish tcsh
+          # Ubuntu 的 /etc/zsh/zshrc 会跑 compinit；CI 机器上有组可写的补全目录，它会停下来问 y/n，测试就卡住。
+          # 普通服务器上用户自己登录也会遇到同样的提问，和 Pierlink 无关：这里只把 CI 机器的目录权限改对
+          zsh -fc 'autoload -U compaudit; compaudit 2>/dev/null' | xargs -r sudo chmod g-w,o-w
+          zsh -fc 'autoload -U compaudit; compaudit' && echo "补全目录权限正常"
       - run: cargo test -p pierlink-core
       - name: 服务器桌面：真起 TigerVNC 读到真实画面；新建、关闭 Pierlink 桌面；免 root 从软件源获取 TigerVNC
         run: |
