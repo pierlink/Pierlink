@@ -82,7 +82,7 @@ export function ConfigReportHost() {
             <ul className="cfg-report__foreign">
               {report.foreign.map((f) => (
                 <li key={`${f.target}-${f.id}`} className="pl-ellipsis" title={f.path ?? f.id}>
-                  {t(`sync.config.target.${f.target}`, { defaultValue: f.target })}：{f.name || f.id}{f.path ? ` · ${f.path}` : ""}
+                  {t("common.labeled", { label: t(`sync.config.target.${f.target}`, { defaultValue: f.target }), text: f.name || f.id })}{f.path ? ` · ${f.path}` : ""}
                 </li>
               ))}
             </ul>

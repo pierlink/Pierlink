@@ -13,7 +13,8 @@ use std::{
 const CAPACITY: usize = 256 * 1024;
 const CHUNK: usize = 64 * 1024;
 pub(super) fn closed() -> AppError {
-    AppError::new("vnc.stream_closed").with("reason", "桌面数据流已关闭")
+    AppError::new("vnc.stream_closed")
+        .with_reason("vnc.desktop_data_stream_is_closed", "桌面数据流已关闭")
 }
 fn timeout() -> AppError {
     AppError::new("vnc.probe_timeout")
@@ -255,7 +256,12 @@ impl VncStream {
                     }
                 }
             })
-            .map_err(|_| closed().with("reason", "无法创建桌面读取线程"))?;
+            .map_err(|_| {
+                closed().with_reason(
+                    "vnc.couldn_t_create_the_desktop_reader_thread",
+                    "无法创建桌面读取线程",
+                )
+            })?;
         control
             .workers
             .lock()
@@ -280,7 +286,12 @@ impl VncStream {
                     outgoing.complete(n);
                 }
             })
-            .map_err(|_| closed().with("reason", "无法创建桌面写入线程"))?;
+            .map_err(|_| {
+                closed().with_reason(
+                    "vnc.couldn_t_create_the_desktop_writer_thread",
+                    "无法创建桌面写入线程",
+                )
+            })?;
         control
             .workers
             .lock()

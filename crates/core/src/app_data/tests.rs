@@ -155,7 +155,10 @@ fn 每一项rename及改写失败都完整回滚() {
             let error = migrate(&old, &new, &mut |stage, i| {
                 if stage == phase && i == fail_at {
                     reached = true;
-                    Err(failure("模拟改名失败"))
+                    Err(failure(
+                        "app_data.file_operation_failed_during_data_migration",
+                        "模拟改名失败",
+                    ))
                 } else {
                     Ok(())
                 }
@@ -279,7 +282,10 @@ fn wal未合并的密钥路径改写及失败后原始字节恢复() {
         .collect();
     let error = migrate(&old, &new, &mut |stage, _| {
         if stage == "commit" {
-            Err(failure("模拟提交前失败"))
+            Err(failure(
+                "app_data.file_operation_failed_during_data_migration",
+                "模拟提交前失败",
+            ))
         } else {
             Ok(())
         }

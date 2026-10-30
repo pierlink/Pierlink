@@ -263,7 +263,10 @@ fn assets_dir(app: &AppHandle) -> Result<std::path::PathBuf, AppError> {
     if dev.join("index.html").is_file() {
         return Ok(dev);
     }
-    Err(AppError::new("mobile.assets").with("reason", "安装包里缺少手机页面"))
+    Err(AppError::new("mobile.assets").with_reason(
+        "mobile.phone_page_missing_from_install",
+        "安装包里缺少手机页面",
+    ))
 }
 
 /// 按设置启动或停止手机入口

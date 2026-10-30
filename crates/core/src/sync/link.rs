@@ -37,7 +37,10 @@ impl LocalSync {
         gui_password: &str,
     ) -> Result<Self, AppError> {
         if api_key.is_empty() || gui_port == listen_port {
-            return Err(error("密钥不能为空，两个监听端口须不同"));
+            return Err(error(
+                "sync.key_cannot_be_empty_and_listening_ports_must_differ",
+                "密钥不能为空，两个监听端口须不同",
+            ));
         }
         Client::new(&format!("http://127.0.0.1:{gui_port}"), api_key)?;
         let spec = HomeSpec {
@@ -392,7 +395,10 @@ fn validate(info: &ServerEndpointInfo) -> Result<(), AppError> {
         || !info.state_dir.starts_with('/')
         || info.state_dir.contains('\0')
     {
-        return Err(error("服务器记录不完整"));
+        return Err(error(
+            "sync.server_record_is_incomplete",
+            "服务器记录不完整",
+        ));
     }
     Ok(())
 }
@@ -425,7 +431,9 @@ fn wait_connected(
             return Ok(status);
         }
         if matches!(status.state, TunnelState::Error | TunnelState::Stopped) {
-            return Err(status.error.unwrap_or_else(|| error("隧道未连接")));
+            return Err(status
+                .error
+                .unwrap_or_else(|| error("sync.tunnel_is_not_connected", "隧道未连接")));
         }
         // 等待凭据时不占着同步操作线程；保留验证码错误，供调用方选择登录入口。
         if status.state == TunnelState::WaitingPassword {

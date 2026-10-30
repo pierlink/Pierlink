@@ -11,7 +11,7 @@ cleanup_launch() {
             remove_fallback_dir "${socket:-}"
             if [ "$owned_xkb" = true ]; then xkb_namespace_remove "$state_dir/$display.xkb"; fi
         fi
-        rm -f -- "$owned_lock/result" "$owned_lock/state" "$owned_lock/xkb-reason"
+        rm -f -- "$owned_lock/result" "$owned_lock/state" "$owned_lock/xkb-reason" "$owned_lock/xkb-reason-key"
         rmdir -- "$owned_lock" 2>/dev/null || :
     fi
 }
@@ -23,13 +23,13 @@ first=20
 if [ -n "${PIERLINK_VNC_XSESSIONS_DIR:-}" ]; then first=90; fi
 linger_failed=false
 bounded 3 loginctl enable-linger "$uid" >/dev/null 2>&1 || linger_failed=true
-command -v setsid >/dev/null && command -v xauth >/dev/null || fail missing_tool
+command -v setsid >/dev/null && command -v xauth >/dev/null || fail missing_tool vnc.setsid_or_xauth_missing '缺少 setsid 或 xauth'
 if command -v dbus-run-session >/dev/null; then
     dbus=$(shell_quote "$(command -v dbus-run-session)")
     if [ -n "${light_prefix:-}" ]; then dbus="$dbus --dbus-daemon=$(shell_quote "$light_prefix/dbus-daemon")"; fi
     dbus="$dbus --"
 elif command -v dbus-launch >/dev/null; then dbus="$(shell_quote "$(command -v dbus-launch)") --exit-with-session"
-else fail missing_tool; fi
+else fail missing_tool vnc.dbus_launcher_missing '缺少 dbus-run-session 或 dbus-launch'; fi
 export desktop_id desktop_name desktop_names desktop_exec linger_failed dbus
 last=$((first+9))
 display=$first
@@ -50,7 +50,7 @@ while [ "$display" -le "$last" ]; do
         owned_xkb=false
         if [ "${xkb_namespace:-false}" = true ]; then
             safe_path "$state_dir/$display.xkb"
-            xkb_namespace_prepare "$state_dir/$display.xkb" || fail xkb_unavailable "$xkb_reason"
+            xkb_namespace_prepare "$state_dir/$display.xkb" || fail xkb_unavailable "$xkb_reason_key" "$xkb_reason"
             owned_xkb=true
         fi
         if [ "${#socket}" -ge 100 ] || [ "$attempt" = 1 ]; then
@@ -82,11 +82,11 @@ while [ "$display" -le "$last" ]; do
         # 等待监督进程清理结束后再尝试回退路径。
         i=0
         while [ -e "$state_dir/$display.xauth" ] && [ "$i" -lt 60 ]; do sleep .1; i=$((i+1)); done
-        [ ! -e "$state_dir/$display.xauth" ] || fail start_timeout '桌面进程尚未完成清理'
+        [ ! -e "$state_dir/$display.xauth" ] || fail start_timeout 'vnc.desktop_cleanup' '桌面进程尚未完成清理'
         handed_off=false
         rm -f -- "$lock/result"
         if [ "$result" = tcp ]; then rmdir -- "$lock"; fail tcp_listen; fi
-        if [ "$result" = xkb ]; then fail xkb_unavailable "$(cat "$lock/xkb-reason")"; fi
+        if [ "$result" = xkb ]; then fail xkb_unavailable "$(cat "$lock/xkb-reason-key")" "$(cat "$lock/xkb-reason")"; fi
         if grep -qi 'already active' "$state_dir/$display.log"; then break; fi
         if [ "$attempt" = 0 ] && grep -Eqi 'bind|unix.*socket|rfbunix' "$state_dir/$display.log"; then attempt=1; continue; fi
         rmdir -- "$lock"

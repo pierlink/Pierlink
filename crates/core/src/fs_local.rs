@@ -31,7 +31,12 @@ pub struct LocalListing {
     pub truncated: bool,
     pub skipped_non_utf8: usize,
 }
-pub(crate) fn error(e: io::Error, operation: &str, path: &Path) -> AppError {
+pub(crate) fn error(
+    e: io::Error,
+    text_key: &'static str,
+    operation: &str,
+    path: &Path,
+) -> AppError {
     let code = match e.kind() {
         io::ErrorKind::NotFound => "fs.not_found",
         io::ErrorKind::PermissionDenied => "fs.permission_denied",
@@ -39,7 +44,7 @@ pub(crate) fn error(e: io::Error, operation: &str, path: &Path) -> AppError {
         _ => "fs.failure",
     };
     AppError::new(code)
-        .with("operation", operation)
+        .with_text("operation", text_key, operation)
         .with("path", display_path(path))
 }
 pub(crate) fn display_path(path: &Path) -> String {
@@ -72,14 +77,22 @@ pub(crate) fn kind(metadata: &fs::Metadata) -> EntryKind {
 }
 /// 读取 path 的目录，最多返回 limit 项（含隐藏文件）；单项失败或非 UTF-8 名字跳过，目录读取失败返回 fs.*。
 pub fn list_dir(path: &Path, limit: usize) -> Result<LocalListing, AppError> {
-    let entries = fs::read_dir(path).map_err(|e| error(e, "读取本机目录", path))?;
+    let entries = fs::read_dir(path)
+        .map_err(|e| error(e, "fs_local.read_local_directory", "读取本机目录", path))?;
     let mut result = LocalListing {
         entries: vec![],
         truncated: false,
         skipped_non_utf8: 0,
     };
     for entry in entries {
-        let entry = entry.map_err(|e| error(e, "读取本机目录项", path))?;
+        let entry = entry.map_err(|e| {
+            error(
+                e,
+                "fs_local.read_local_directory_entry",
+                "读取本机目录项",
+                path,
+            )
+        })?;
         let Ok(metadata) = fs::symlink_metadata(entry.path()) else {
             continue;
         };
@@ -135,6 +148,7 @@ mod tests {
         assert_eq!(
             error(
                 io::Error::from(io::ErrorKind::PermissionDenied),
+                "fs_local.read_local_directory",
                 "读取目录",
                 root.path()
             )

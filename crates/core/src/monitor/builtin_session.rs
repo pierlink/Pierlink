@@ -27,11 +27,24 @@ impl BuiltinSession {
             .spawn(move || {
                 let error = run_channel(command, script, shared.clone(), cancel, input)
                     .err()
-                    .unwrap_or_else(|| AppError::new("ssh.unreachable"));
+                    .unwrap_or_else(|| {
+                        AppError::new("ssh.unreachable")
+                            .with_reason("monitor.sampling_connection_closed", "资源采样连接已结束")
+                            .with_text(
+                                "stderr_tail",
+                                "monitor.sampling_connection_closed",
+                                "资源采样连接已结束",
+                            )
+                    });
                 shared.lock().unwrap_or_else(|p| p.into_inner()).done = true;
                 *done.lock().unwrap_or_else(|p| p.into_inner()) = Some(error);
             })
-            .map_err(|_| io_error("创建内置采样线程"))?;
+            .map_err(|_| {
+                io_error(
+                    "monitor.create_built_in_sampling_thread",
+                    "创建内置采样线程",
+                )
+            })?;
         Ok(Self {
             lines,
             finished,
@@ -44,9 +57,12 @@ impl BuiltinSession {
         self.updates.set(crate::monitor::interval_line(interval));
     }
     pub(super) fn frames(&self) -> Result<Vec<Frame>, AppError> {
-        let mut state = self.lines.lock().map_err(|_| io_error("读取资源帧"))?;
+        let mut state = self
+            .lines
+            .lock()
+            .map_err(|_| io_error("monitor.read_resource_frame", "读取资源帧"))?;
         if state.failed {
-            return Err(io_error("读取资源输出"));
+            return Err(io_error("monitor.read_resource_output", "读取资源输出"));
         }
         Ok(state.pending.drain(..).collect())
     }
@@ -54,7 +70,7 @@ impl BuiltinSession {
         if !self
             .lines
             .lock()
-            .map_err(|_| io_error("读取资源状态"))?
+            .map_err(|_| io_error("monitor.read_resource_status", "读取资源状态"))?
             .pending
             .is_empty()
         {
@@ -63,7 +79,7 @@ impl BuiltinSession {
         match self
             .finished
             .lock()
-            .map_err(|_| io_error("读取资源状态"))?
+            .map_err(|_| io_error("monitor.read_resource_status", "读取资源状态"))?
             .as_ref()
         {
             Some(error) => Err(error.clone()),
@@ -142,10 +158,10 @@ fn run_channel(
             let stderr = resources
                 .error
                 .as_ref()
-                .ok_or_else(|| io_error("读取资源错误"))?
+                .ok_or_else(|| io_error("monitor.read_resource_errors", "读取资源错误"))?
                 .state
                 .lock()
-                .map_err(|_| io_error("读取资源错误"))?;
+                .map_err(|_| io_error("monitor.read_resource_errors", "读取资源错误"))?;
             let text = String::from_utf8_lossy(&stderr.bytes);
             let code = status.code.and_then(|c| i32::try_from(c).ok());
             let mut error = classify_error(code, &text, &[]);

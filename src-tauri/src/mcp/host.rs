@@ -352,8 +352,8 @@ impl McpHost for TauriHost {
             cancelled,
         );
         let id = answer.unwrap_or_else(|| {
-            Err(AppError::new("mcp.ui_timeout").with(
-                "reason",
+            Err(AppError::new("mcp.ui_timeout").with_reason(
+                "mcp.ui_did_not_open_the_terminal",
                 "Pierlink 界面没有打开终端（可能还在等你确认指纹或输入密码）",
             ))
         })?;

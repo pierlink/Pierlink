@@ -86,11 +86,12 @@ const KNOWN_MISSING = new Set([
   "tunnel.test_failure",
 ]);
 
+/** 后端源码（不含测试文件：测试里有专门造的示例错误码） */
 function rustFiles(dir: string): string[] {
   return readdirSync(dir).flatMap((name) => {
     const p = join(dir, name);
     if (name === "target" || name === "node_modules") return [];
-    return statSync(p).isDirectory() ? rustFiles(p) : p.endsWith(".rs") ? [p] : [];
+    return statSync(p).isDirectory() ? rustFiles(p) : p.endsWith(".rs") && !p.endsWith("tests.rs") ? [p] : [];
   });
 }
 

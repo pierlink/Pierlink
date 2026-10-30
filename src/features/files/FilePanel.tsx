@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { ArrowDownToLine, ArrowUpFromLine, ChevronRight, Eye, EyeOff, File, FilePlus, Folder, FolderPlus, FolderSymlink, Link2, LocateFixed, RefreshCw, X } from "lucide-react";
 import { useContextMenu, type MenuEntry } from "../../components";
 import { formatError } from "../../errors";
+import i18n from "../../i18n";
 import type { OpenSpec } from "../terminal/types";
 import { getFilesApi } from "./api";
 import { beginDrag, registerDropTarget, useDragState, type DragPayload } from "./dnd";
@@ -24,7 +25,7 @@ function locOf(spec: OpenSpec): Loc {
 /** 错误文字。浏览文件要另外建立一条 SSH 连接：用密码登录且没保存密码时无法自动登录，附上提示 */
 function describeError(e: unknown, authHint: string): string {
   const code = (e as { code?: string } | null)?.code ?? "";
-  return code === "ssh.auth_failed" || code.startsWith("ssh.askpass") ? `${formatError(e)}。${authHint}` : formatError(e);
+  return code === "ssh.auth_failed" || code.startsWith("ssh.askpass") ? i18n.t("common.twoSentences", { first: formatError(e), second: authHint }) : formatError(e);
 }
 
 /** 目录排在前面，再按名字（不区分大小写）排序 */

@@ -46,13 +46,16 @@ pub(crate) fn validate_alias(alias: &str) -> Result<(), AppError> {
             .chars()
             .any(|c| c.is_whitespace() || c.is_control() || "%*?".contains(c))
     {
-        return Err(AppError::new("ssh.invalid_alias").with("reason", "别名长度或字符不合法"));
+        return Err(AppError::new("ssh.invalid_alias").with_reason(
+            "ssh.invalid_alias_length_or_characters",
+            "别名长度或字符不合法",
+        ));
     }
     Ok(())
 }
 fn too_large() -> AppError {
-    AppError::new("ssh.config_too_large").with(
-        "reason",
+    AppError::new("ssh.config_too_large").with_reason(
+        "ssh.configuration_exceeds_size_file_count_alias_count_or_include_depth",
         "配置超过文件大小、文件数量、别名数量或包含深度限制",
     )
 }
@@ -91,7 +94,10 @@ impl Parser<'_> {
                     "file",
                     crate::security::redact(&path.to_string_lossy(), &[]),
                 )
-                .with("reason", "无法读取配置或检测到循环包含"),
+                .with_reason(
+                    "ssh.couldn_t_read_configuration_or_found_an_include_cycle",
+                    "无法读取配置或检测到循环包含",
+                ),
         );
     }
     fn read(&mut self, path: &Path, depth: usize) -> Result<(), AppError> {

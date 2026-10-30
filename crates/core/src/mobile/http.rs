@@ -163,7 +163,11 @@ impl Shared {
         let result = async {
             validate_origin(&parts.headers, &parts.method)?;
             if parts.uri.scheme().is_some() || parts.uri.authority().is_some() {
-                return Err(error("mobile.invalid_path", "不接受绝对形式的请求地址"));
+                return Err(error(
+                    "mobile.invalid_path",
+                    "mobile.absolute_request_urls_are_not_accepted",
+                    "不接受绝对形式的请求地址",
+                ));
             }
             let device = if matches!(route, Route::Pair | Route::Static(_)) {
                 None
@@ -189,7 +193,11 @@ impl Shared {
                 };
                 audit.record.device_name = device.name.clone();
                 if !route.permission(device.permissions) {
-                    return Err(error("mobile.forbidden", "此设备没有执行该操作的权限"));
+                    return Err(error(
+                        "mobile.forbidden",
+                        "mobile.this_device_is_not_allowed_to_perform_this_operation",
+                        "此设备没有执行该操作的权限",
+                    ));
                 }
                 Some(device)
             };
@@ -239,7 +247,13 @@ impl Shared {
                 .await
             })
             .await
-            .map_err(|_| error("mobile.request_timeout", "桌面操作超时"))?
+            .map_err(|_| {
+                error(
+                    "mobile.request_timeout",
+                    "mobile.desktop_operation_timed_out",
+                    "桌面操作超时",
+                )
+            })?
         }
         .await;
         let mut response = match result {
@@ -303,6 +317,7 @@ impl Shared {
                     _ => {
                         return Err(error(
                             "mobile.invalid_request",
+                            "mobile.confirmation_must_be_allow_or_deny",
                             "确认回答只能是 allow 或 deny",
                         ));
                     }
@@ -320,7 +335,13 @@ impl Shared {
                 }
             },
             Route::Logout => {
-                let device = device.ok_or_else(|| error("mobile.unauthorized", "设备未配对"))?;
+                let device = device.ok_or_else(|| {
+                    error(
+                        "mobile.unauthorized",
+                        "mobile.device_is_not_paired",
+                        "设备未配对",
+                    )
+                })?;
                 self.revoke(Some(&device.id), Some(connection))?;
                 let mut response = json_response(StatusCode::OK, json!({"ok":true}));
                 response.headers_mut().insert(
@@ -335,11 +356,21 @@ impl Shared {
                 return Ok(response);
             }
             Route::Events => {
-                return Ok(
-                    self.events(device.ok_or_else(|| error("mobile.unauthorized", "设备未配对"))?)
-                );
+                return Ok(self.events(device.ok_or_else(|| {
+                    error(
+                        "mobile.unauthorized",
+                        "mobile.device_is_not_paired",
+                        "设备未配对",
+                    )
+                })?));
             }
-            _ => return Err(error("mobile.not_found", "手机接口不存在")),
+            _ => {
+                return Err(error(
+                    "mobile.not_found",
+                    "mobile.mobile_endpoint_does_not_exist",
+                    "手机接口不存在",
+                ));
+            }
         };
         Ok(json_response(StatusCode::OK, value))
     }
@@ -408,9 +439,13 @@ impl Shared {
 }
 
 async fn host(future: HostFuture<'_, Value>) -> Result<Value, AppError> {
-    future
-        .await
-        .map_err(|_| error("mobile.host_failed", "桌面操作失败，请在电脑上查看状态"))
+    future.await.map_err(|_| {
+        error(
+            "mobile.host_failed",
+            "mobile.desktop_operation_failed_check_its_status_on_the_computer",
+            "桌面操作失败，请在电脑上查看状态",
+        )
+    })
 }
 async fn next_event(
     subscription: &mut Option<broadcast::Receiver<String>>,
@@ -443,8 +478,13 @@ impl Drop for EventBody {
 }
 
 fn parse<T: DeserializeOwned>(body: &[u8]) -> Result<T, AppError> {
-    serde_json::from_slice(body)
-        .map_err(|_| error("mobile.invalid_request", "请求 JSON 格式或字段不正确"))
+    serde_json::from_slice(body).map_err(|_| {
+        error(
+            "mobile.invalid_request",
+            "mobile.invalid_request_json_or_fields",
+            "请求 JSON 格式或字段不正确",
+        )
+    })
 }
 async fn read_body(mut body: Incoming, timeout: Duration) -> Result<Zeroizing<Vec<u8>>, AppError> {
     if body
@@ -452,15 +492,29 @@ async fn read_body(mut body: Incoming, timeout: Duration) -> Result<Zeroizing<Ve
         .upper()
         .is_some_and(|length| length > MAX_BODY as u64)
     {
-        return Err(error("mobile.body_too_large", "请求体超过六十四 KiB"));
+        return Err(error(
+            "mobile.body_too_large",
+            "mobile.request_body_exceeds_64_kib",
+            "请求体超过六十四 KiB",
+        ));
     }
     tokio::time::timeout(timeout, async move {
         let mut bytes = Zeroizing::new(Vec::new());
         while let Some(frame) = body.frame().await {
-            let frame = frame.map_err(|_| error("mobile.invalid_request", "请求体未完整接收"))?;
+            let frame = frame.map_err(|_| {
+                error(
+                    "mobile.invalid_request",
+                    "mobile.request_body_was_not_fully_received",
+                    "请求体未完整接收",
+                )
+            })?;
             if let Ok(data) = frame.into_data() {
                 if data.len() > MAX_BODY - bytes.len() {
-                    return Err(error("mobile.body_too_large", "请求体超过六十四 KiB"));
+                    return Err(error(
+                        "mobile.body_too_large",
+                        "mobile.request_body_exceeds_64_kib",
+                        "请求体超过六十四 KiB",
+                    ));
                 }
                 bytes.extend_from_slice(&data);
             }
@@ -468,7 +522,13 @@ async fn read_body(mut body: Incoming, timeout: Duration) -> Result<Zeroizing<Ve
         Ok(bytes)
     })
     .await
-    .map_err(|_| error("mobile.request_timeout", "请求体接收超时"))?
+    .map_err(|_| {
+        error(
+            "mobile.request_timeout",
+            "mobile.request_body_reception_timed_out",
+            "请求体接收超时",
+        )
+    })?
 }
 fn single_header<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
     if headers.get_all(name).iter().count() != 1 {
@@ -480,13 +540,24 @@ fn device_cookie(token: &str) -> Result<HeaderValue, AppError> {
     let cookie = Zeroizing::new(format!(
         "pl_device={token}; HttpOnly; SameSite=Strict; Path=/; Max-Age={INACTIVE_SECONDS}"
     ));
-    let mut value = HeaderValue::from_str(&cookie)
-        .map_err(|_| error("mobile.internal", "无法生成设备 Cookie"))?;
+    let mut value = HeaderValue::from_str(&cookie).map_err(|_| {
+        error(
+            "mobile.internal",
+            "mobile.couldn_t_create_the_device_cookie",
+            "无法生成设备 Cookie",
+        )
+    })?;
     value.set_sensitive(true);
     Ok(value)
 }
 fn validate_origin(headers: &HeaderMap, method: &Method) -> Result<(), AppError> {
-    let denied = || error("mobile.cross_site", "请求来源或防跨站请求头不合法");
+    let denied = || {
+        error(
+            "mobile.cross_site",
+            "mobile.invalid_request_origin_or_cross_site_request_headers",
+            "请求来源或防跨站请求头不合法",
+        )
+    };
     let host = single_header(headers, "host").ok_or_else(denied)?;
     let authority: ::http::uri::Authority = host.parse().map_err(|_| denied())?;
     if host.contains('@')
@@ -537,7 +608,13 @@ fn activity_limit(query: Option<&str>) -> Result<usize, AppError> {
     let Some(query) = query else {
         return Ok(50);
     };
-    let invalid = || error("mobile.invalid_request", "记录数量必须为一至二百之间的整数");
+    let invalid = || {
+        error(
+            "mobile.invalid_request",
+            "mobile.record_count_must_be_an_integer_from_1_to_200",
+            "记录数量必须为一至二百之间的整数",
+        )
+    };
     let limit = query
         .strip_prefix("limit=")
         .ok_or_else(invalid)?

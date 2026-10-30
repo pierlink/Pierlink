@@ -23,6 +23,10 @@ export interface AppSettings {
     /** 广播输入时，回车前确认危险命令（rm -rf、reboot 等） */
     broadcastConfirmDanger: boolean;
   };
+  desktop: {
+    /** 打开服务器桌面时直接用独立窗口（不在主窗口里开窗格） */
+    openInWindow: boolean;
+  };
   updates: {
     /** 启动后自动检查新版本 */
     autoCheck: boolean;
@@ -51,6 +55,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   language: "system",
   closeToTray: true,
   terminal: { fontSize: 13, cursorStyle: "bar", cursorBlink: true, scrollback: 10000, defaultShell: null, confirmMultilinePaste: true, rightClickCopyPaste: false, confirmClose: true, broadcastConfirmDanger: true },
+  desktop: { openInWindow: false },
   updates: { autoCheck: true },
   notices: { builtinSsh: false },
   syncDefaults: { watchDelayS: 10, conflictMode: "ask", keepVersions: true, ignoreRules: DEFAULT_IGNORE_RULES },
@@ -71,6 +76,7 @@ export function normalizeSettings(raw: unknown): AppSettings {
   const t = (r.terminal ?? {}) as Record<string, unknown>;
   const s = (r.syncDefaults ?? {}) as Record<string, unknown>;
   const u = (r.updates ?? {}) as Record<string, unknown>;
+  const dk = (r.desktop ?? {}) as Record<string, unknown>;
   const n = (r.notices ?? {}) as Record<string, unknown>;
   const d = DEFAULT_SETTINGS;
   const rules = Array.isArray(s.ignoreRules) && s.ignoreRules.every((x) => typeof x === "string") && s.ignoreRules.length <= 10000
@@ -92,6 +98,7 @@ export function normalizeSettings(raw: unknown): AppSettings {
       broadcastConfirmDanger: bool(t.broadcastConfirmDanger, d.terminal.broadcastConfirmDanger),
       confirmClose: bool(t.confirmClose, d.terminal.confirmClose),
     },
+    desktop: { openInWindow: bool(dk.openInWindow, d.desktop.openInWindow) },
     updates: { autoCheck: bool(u.autoCheck, d.updates.autoCheck) },
     notices: { builtinSsh: bool(n.builtinSsh, d.notices.builtinSsh) },
     syncDefaults: {

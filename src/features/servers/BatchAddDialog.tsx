@@ -114,7 +114,7 @@ export function BatchAddDialog({ existing, onAdded, onClose }: { existing: Serve
         )}
         {failed.length > 0 && (
           <Banner tone="danger" title={t("batch.failed", { count: failed.length })}>
-            {failed.map((f) => `${f.line}: ${f.reason}`).join("；")}
+            {failed.map((f) => t("common.labeled", { label: f.line, text: f.reason })).join(t("common.itemSep"))}
           </Banner>
         )}
       </div>

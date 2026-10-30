@@ -53,7 +53,10 @@ pub(crate) fn validate_folder_id(id: &str) -> Result<(), AppError> {
             && s.bytes()
                 .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
     }) {
-        return Err(error("文件夹 ID 格式无效"));
+        return Err(error(
+            "syncthing.invalid_folder_id_format",
+            "文件夹 ID 格式无效",
+        ));
     }
     Ok(())
 }
@@ -61,7 +64,10 @@ pub(crate) fn validate_folder_id(id: &str) -> Result<(), AppError> {
 pub(crate) fn validate_task_folder_id(id: &str) -> Result<(), AppError> {
     validate_folder_id(id)?;
     if id.starts_with("pl-est-") {
-        return Err(error("临时文件夹不能作为同步任务"));
+        return Err(error(
+            "syncthing.temporary_folder_cannot_be_used_as_a_sync_task",
+            "临时文件夹不能作为同步任务",
+        ));
     }
     Ok(())
 }
@@ -76,7 +82,10 @@ pub fn validate_device_id(id: &str) -> Result<(), AppError> {
                     .all(|b| b.is_ascii_uppercase() || (b'2'..=b'7').contains(&b))
         })
     {
-        return Err(error("设备 ID 格式无效"));
+        return Err(error(
+            "syncthing.invalid_device_id_format",
+            "设备 ID 格式无效",
+        ));
     }
     Ok(())
 }
@@ -84,7 +93,10 @@ pub fn validate_device_id(id: &str) -> Result<(), AppError> {
 /// 先解析链接再处理 ..，避免词法折叠绕过。
 pub(crate) fn normalized(path: &Path) -> Result<PathBuf, AppError> {
     if !path.is_absolute() {
-        return Err(error("必须使用绝对路径"));
+        return Err(error(
+            "syncthing.an_absolute_path_is_required",
+            "必须使用绝对路径",
+        ));
     }
     let mut out = PathBuf::new();
     for part in path.components() {
@@ -99,11 +111,14 @@ pub(crate) fn normalized(path: &Path) -> Result<PathBuf, AppError> {
                 out.push(v);
                 match std::fs::symlink_metadata(&out) {
                     Ok(_) => {
-                        out = crate::fs_local::plain_canonical(&out)
-                            .map_err(|_| error("无法解析路径"))?
+                        out = crate::fs_local::plain_canonical(&out).map_err(|_| {
+                            error("syncthing.couldn_t_resolve_the_path", "无法解析路径")
+                        })?
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(_) => return Err(error("无法读取路径")),
+                    Err(_) => {
+                        return Err(error("syncthing.couldn_t_read_the_path", "无法读取路径"));
+                    }
                 }
             }
         }
@@ -143,7 +158,10 @@ impl FolderSpec {
     pub fn to_config(&self) -> Result<Value, AppError> {
         validate_task_folder_id(&self.id)?;
         if !(1..=60).contains(&self.watch_delay_s) {
-            return Err(error("同步等待须在 1–60 秒内"));
+            return Err(error(
+                "syncthing.sync_wait_time_must_be_1_60_seconds",
+                "同步等待须在 1–60 秒内",
+            ));
         }
         for id in &self.devices {
             validate_device_id(id)?;
@@ -183,7 +201,10 @@ pub(crate) fn settings_config(
     versions_dir: Option<&Path>,
 ) -> Result<Value, AppError> {
     if !(1..=60).contains(&watch_delay_s) {
-        return Err(error("同步等待须在 1–60 秒内"));
+        return Err(error(
+            "syncthing.sync_wait_time_must_be_1_60_seconds",
+            "同步等待须在 1–60 秒内",
+        ));
     }
     Ok(json!({
         "type": kind,
@@ -225,7 +246,10 @@ pub fn validate_ignores(lines: &[String]) -> Result<(), AppError> {
             .iter()
             .any(|line| line.len() > 4096 || line.contains(['\0', '\n', '\r']))
     {
-        return Err(error("排除规则超过限制或包含非法控制字符"));
+        return Err(error(
+            "syncthing.ignore_rules_exceed_the_limit_or_contain_invalid_control_characters",
+            "排除规则超过限制或包含非法控制字符",
+        ));
     }
     Ok(())
 }

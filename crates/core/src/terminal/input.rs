@@ -1,8 +1,50 @@
 //! 用户输入优先；自动化等待用户空闲两秒，接管后丢弃未发送自动化输入。
 use super::*;
-use std::collections::VecDeque;
+use std::{borrow::Cow, collections::VecDeque};
+
+#[cfg(test)]
+mod write_tests;
 
 const USER_IDLE: Duration = Duration::from_secs(2);
+const ESC_KEY: &[u8] = b"\x1b[27;1;27;1;0;1_\x1b[27;1;27;0;0;1_";
+
+/// 只记解析位置，不保存输入内容；识别被系统短写或分块拆开的按键序列。
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum Win32Input {
+    #[default]
+    Plain,
+    Escape,
+    Parameters,
+    Enabled,
+}
+
+impl Win32Input {
+    fn after(mut self, data: &[u8]) -> Self {
+        for &byte in data {
+            self = match (self, byte) {
+                (Self::Enabled, _) => return Self::Enabled,
+                (_, 0x1b) => Self::Escape,
+                (Self::Escape, b'[') => Self::Parameters,
+                (Self::Parameters, b'0'..=b'9' | b';') => Self::Parameters,
+                (Self::Parameters, b'_') => Self::Enabled,
+                _ => Self::Plain,
+            };
+        }
+        self
+    }
+}
+
+/// 已使用 Windows 按键格式时，只替换整条输入末尾的一个 Esc。
+fn escape_trailing_esc(data: &[u8], win32: bool) -> Cow<'_, [u8]> {
+    if win32 && data.last() == Some(&0x1b) {
+        let mut encoded = Vec::with_capacity(data.len() - 1 + ESC_KEY.len());
+        encoded.extend_from_slice(&data[..data.len() - 1]);
+        encoded.extend_from_slice(ESC_KEY);
+        Cow::Owned(encoded)
+    } else {
+        Cow::Borrowed(data)
+    }
+}
 
 /// 输入的来源；现有 write 入口始终按用户输入处理。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -13,6 +55,7 @@ pub enum InputSource {
 
 #[derive(Default)]
 pub(super) struct Input {
+    conpty: bool,
     user: VecDeque<Vec<u8>>,
     automation: VecDeque<(Vec<u8>, Option<u64>)>,
     bytes: usize,
@@ -22,6 +65,14 @@ pub(super) struct Input {
     generation: u64,
 }
 impl Input {
+    /// 按 conpty 标志创建空队列；只有 Windows 伪终端需要转换末尾 Esc。
+    pub(super) fn new(conpty: bool) -> Self {
+        Self {
+            conpty,
+            ..Default::default()
+        }
+    }
+
     fn ready(&self, now: Instant) -> bool {
         !self.user.is_empty()
             || !self.taken_over && !self.paused(now) && !self.automation.is_empty()
@@ -80,23 +131,40 @@ impl TerminalManager {
         let session = self.get(id)?;
         let flow = lock(&session.flow);
         if flow.stopped {
-            return Err(error("not_found", "会话已结束"));
+            return Err(error(
+                "not_found",
+                "terminal.session_has_ended",
+                "会话已结束",
+            ));
         }
         let mut input = lock(&session.input);
         if input.failed {
-            return Err(error("write_failed", "写入终端失败"));
+            return Err(error(
+                "write_failed",
+                "terminal.couldn_t_write_to_the_terminal",
+                "写入终端失败",
+            ));
         }
         if source == InputSource::Automation && input.taken_over {
-            return Err(error("automation_rejected", "用户已接管终端"));
+            return Err(error(
+                "automation_rejected",
+                "terminal.the_user_has_taken_control_of_the_terminal",
+                "用户已接管终端",
+            ));
         }
         if expected.is_some_and(|generation| generation != input.generation) {
             return Err(error(
                 "input_changed",
+                "terminal.user_input_changed_read_the_terminal_again_and_retry",
                 "用户输入已改变，请重新读取终端并重试",
             ));
         }
         if data.len() > WINDOW - input.bytes {
-            return Err(error("input_overflow", "输入队列超过 1 MiB"));
+            return Err(error(
+                "input_overflow",
+                "terminal.input_queue_exceeds_1_mib",
+                "输入队列超过 1 MiB",
+            ));
         }
         if !data.is_empty() {
             input.bytes += data.len();
@@ -137,25 +205,43 @@ impl TerminalManager {
     }
 }
 
+/// 将 session 的排队输入写入 writer；会话结束或写入失败时清空队列并返回。
 pub(super) fn write_input(mut writer: Box<dyn Write + Send>, session: Arc<Session>) {
+    write_queued_input(&mut writer, &session.flow, &session.input, &session.wake);
+}
+
+fn write_queued_input(
+    writer: &mut dyn Write,
+    flow: &Mutex<Flow>,
+    input: &Mutex<Input>,
+    wake: &Condvar,
+) {
+    let conpty = lock(input).conpty;
+    let mut win32 = Win32Input::default();
     loop {
-        if lock(&session.flow).stopped {
-            lock(&session.input).clear();
+        if lock(flow).stopped {
+            lock(input).clear();
             break;
         }
-        let data = lock(&session.input).next(Instant::now());
+        let data = lock(input).next(Instant::now());
         let Some((source, data, generation)) = data else {
-            let flow = lock(&session.flow);
-            if !flow.stopped && !lock(&session.input).ready(Instant::now()) {
-                let _ = session.wake.wait_timeout(flow, Duration::from_millis(200));
+            let flow = lock(flow);
+            if !flow.stopped && !lock(input).ready(Instant::now()) {
+                let _ = wake.wait_timeout(flow, Duration::from_millis(200));
             }
             continue;
         };
+        // 先按整条输入判断末尾；仅成功写出的字节才推进会话的协议状态。
+        let encoded =
+            escape_trailing_esc(&data, conpty && win32.after(&data) == Win32Input::Enabled);
+        let escaped = encoded.len() != data.len();
+        let mut escape_written = 0;
         let mut remaining = data.as_slice();
         let mut requeued = 0;
-        while !remaining.is_empty() && !lock(&session.flow).stopped {
-            if source == InputSource::Automation {
-                let mut input = lock(&session.input);
+        while !remaining.is_empty() && !lock(flow).stopped {
+            // 一个 Esc 的按下和松开连续发完，避免暂停重排队拆开这一个按键。
+            if source == InputSource::Automation && escape_written == 0 {
+                let mut input = lock(input);
                 if input.taken_over || generation != input.generation {
                     break;
                 }
@@ -168,31 +254,51 @@ pub(super) fn write_input(mut writer: Box<dyn Write + Send>, session: Arc<Sessio
                 }
             }
             // 分块写入使用户活动和接管能够在下一块生效。
+            let escaping = escaped && remaining.len() == 1;
+            let count = remaining.len() - usize::from(escaped);
             let count = if source == InputSource::Automation {
-                remaining.len().min(4096)
+                count.min(4096)
             } else {
-                remaining.len()
+                count
             };
-            match writer.write(&remaining[..count]) {
+            let chunk = if escaping {
+                &encoded[data.len() - 1 + escape_written..]
+            } else {
+                &remaining[..count]
+            };
+            match writer.write(chunk) {
                 Ok(0) => {
-                    lock(&session.input).failed = true;
+                    lock(input).failed = true;
                     break;
                 }
-                Ok(n) => remaining = &remaining[n..],
+                Ok(n) => {
+                    if conpty {
+                        win32 = win32.after(&chunk[..n]);
+                    }
+                    if escaping {
+                        escape_written += n;
+                        if escape_written == ESC_KEY.len() {
+                            remaining = &[];
+                        }
+                    } else {
+                        remaining = &remaining[n..];
+                    }
+                }
                 Err(e) if e.kind() == std::io::ErrorKind::Interrupted => (),
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                    let flow = lock(&session.flow);
+                    let flow = lock(flow);
                     if !flow.stopped {
-                        let _ = session.wake.wait_timeout(flow, Duration::from_millis(100));
+                        let _ = wake.wait_timeout(flow, Duration::from_millis(100));
                     }
                 }
                 Err(_) => {
-                    lock(&session.input).failed = true;
+                    lock(input).failed = true;
                     break;
                 }
             }
         }
-        let mut input = lock(&session.input);
+        let mut input = lock(input);
+        // 容量始终按原始输入计算；重排队仍放回原始末尾 Esc。
         input.bytes -= data.len() - requeued;
         if input.failed {
             input.clear();

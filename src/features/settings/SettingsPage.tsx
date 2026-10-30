@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Monitor, Moon, Sun } from "lucide-react";
 import { Banner, Button, Select, Switch, type SelectOption } from "../../components";
-import { listLocalShells, type LocalShellView } from "../terminal/backend";
+import { listLocalShells, localShellName, type LocalShellView } from "../terminal/backend";
 import { DEFAULT_IGNORE_RULES, type AppSettings } from "./model";
 import { useSettings } from "./store";
 import { inTauri } from "../shell/TitleBar";
@@ -14,8 +14,8 @@ import { BackupSection } from "./BackupSection";
 import { MobileSection } from "../mobile/MobileSection";
 import "./settings.css";
 
-type Section = "appearance" | "terminal" | "sync" | "phone" | "backup" | "about";
-const SECTIONS: Section[] = ["appearance", "terminal", "sync", "phone", "backup", "about"];
+type Section = "appearance" | "terminal" | "desktop" | "sync" | "phone" | "backup" | "about";
+const SECTIONS: Section[] = ["appearance", "terminal", "desktop", "sync", "phone", "backup", "about"];
 
 /** 一行设置：左边说明，右边控件 */
 function Row({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
@@ -79,7 +79,7 @@ export function SettingsPage({ version }: { version: string | null }) {
   const [shells, setShells] = useState<LocalShellView[]>([]);
   const [rulesText, setRulesText] = useState(settings.syncDefaults.ignoreRules.join("\n"));
   const [active, setActive] = useState<Section>("appearance");
-  const refs = useRef<Record<Section, HTMLElement | null>>({ appearance: null, terminal: null, sync: null, phone: null, backup: null, about: null });
+  const refs = useRef<Record<Section, HTMLElement | null>>({ appearance: null, terminal: null, desktop: null, sync: null, phone: null, backup: null, about: null });
   const term = settings.terminal;
   const sync = settings.syncDefaults;
 
@@ -177,7 +177,7 @@ export function SettingsPage({ version }: { version: string | null }) {
                 label={t("settings.term.defaultShell")}
                 value={term.defaultShell ?? ""}
                 onChange={(v) => setTerm({ defaultShell: v || null })}
-                options={[{ value: "", label: t("settings.term.auto") }, ...shells.map((s) => ({ value: s.id, label: s.name }))]}
+                options={[{ value: "", label: t("settings.term.auto") }, ...shells.map((s) => ({ value: s.id, label: localShellName(s) }))]}
               />
             </Row>
             <Row label={t("settings.term.fontSize")}>
@@ -211,6 +211,15 @@ export function SettingsPage({ version }: { version: string | null }) {
             </Row>
             <Row label={t("settings.term.shortcuts")} hint={t("settings.term.shortcutsHint")}>
               <span className="set-kbd mono">Ctrl+C / Ctrl+V / Ctrl+Shift+B</span>
+            </Row>
+          </div>
+        </section>
+
+        <section ref={(el) => { refs.current.desktop = el; }} className="set-section">
+          <h2>{t("settings.section.desktop")}</h2>
+          <div className="set-card">
+            <Row label={t("settings.desktop.openInWindow")} hint={t("settings.desktop.openInWindowHint")}>
+              <Switch label={t("settings.desktop.openInWindow")} checked={settings.desktop.openInWindow} onChange={(v) => update((s) => ({ ...s, desktop: { ...s.desktop, openInWindow: v } }))} />
             </Row>
           </div>
         </section>

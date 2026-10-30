@@ -19,18 +19,21 @@ export function isAppError(v: unknown): v is AppError {
 export function formatError(err: unknown): string {
   if (!isAppError(err)) return i18n.t("errors.unknown", { code: "frontend" });
   const key = `errors.${err.code}`;
-  return i18n.exists(key) ? i18n.t(key, withDetail(err.params)) : i18n.t("errors.unknown", { code: err.code });
+  return i18n.exists(key) ? i18n.t(key, translatedParams(err.params)) : i18n.t("errors.unknown", { code: err.code });
 }
 
 /**
- * 内置 SSH 的错误带 detail（固定说明的键）：按当前语言翻译后填进 stderr_tail、reason 占位符，代替后端的中文兜底。
+ * 后端的固定说明带键：参数 X 旁边有 X_key 时，按当前语言显示 errors.detail.<键> 的译文（译文里可以引用其他参数），
+ * 代替后端写的中文原文。没有对应译文时照旧显示原文。
  * @param params 后端错误的参数
- * @returns 用于翻译的参数；没有 detail 或没有对应翻译时原样返回
+ * @returns 用于翻译的参数
  */
-function withDetail(params: Record<string, string>): Record<string, string> {
-  const detail = params.detail;
-  const key = `errors.detail.${detail}`;
-  if (!detail || !i18n.exists(key)) return params;
-  const text = i18n.t(key);
-  return { ...params, stderr_tail: text, reason: text };
+function translatedParams(params: Record<string, string>): Record<string, string> {
+  const out = { ...params };
+  for (const [name, value] of Object.entries(params)) {
+    if (!name.endsWith("_key") || !value) continue;
+    const key = `errors.detail.${value}`;
+    if (i18n.exists(key)) out[name.slice(0, -"_key".length)] = i18n.t(key, params);
+  }
+  return out;
 }

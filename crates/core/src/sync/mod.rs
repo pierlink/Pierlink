@@ -14,8 +14,8 @@ use crate::error::AppError;
 pub use link::{LocalSync, ServerEndpointInfo, ServerLink};
 pub use paths::*;
 pub use tasks::*;
-fn error(reason: &str) -> AppError {
-    AppError::new("sync.invalid_input").with("reason", reason)
+fn error(text_key: &'static str, reason: &str) -> AppError {
+    AppError::new("sync.invalid_input").with_reason(text_key, reason)
 }
 fn invalid_response() -> AppError {
     AppError::new("sync.invalid_response")

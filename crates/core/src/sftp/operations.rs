@@ -11,7 +11,10 @@ fn validate_path(value: &str) -> Result<(), AppError> {
 }
 fn version(entry: &RemoteEntry) -> Result<FileVersion, AppError> {
     if entry.kind != EntryKind::File {
-        return Err(AppError::new("files.not_text").with("reason", "只支持普通文本文件"));
+        return Err(AppError::new("files.not_text").with_reason(
+            "sftp.only_regular_text_files_are_supported",
+            "只支持普通文本文件",
+        ));
     }
     Ok(FileVersion {
         size: entry.size,
@@ -72,7 +75,8 @@ impl SftpSession {
     ) -> Result<(), AppError> {
         let result = (|| {
             if depth > 128 {
-                return Err(AppError::new("sftp.failure").with("reason", "目录层级超过 128 层"));
+                return Err(AppError::new("sftp.failure")
+                    .with_reason("sftp.too_deep", "目录层级超过 128 层"));
             }
             let entry = self
                 .metadata(value, false)?
@@ -80,8 +84,10 @@ impl SftpSession {
             if entry.kind == EntryKind::Dir {
                 let listing = self.list_dir(value, 100_000)?;
                 if listing.truncated || listing.skipped_non_utf8 > 0 {
-                    return Err(AppError::new("sftp.failure")
-                        .with("reason", "目录项超过限制或包含非 UTF-8 名字，无法完整删除"));
+                    return Err(AppError::new("sftp.failure").with_reason(
+                        "sftp.too_many_entries_or_non_utf_8_names_prevent_complete",
+                        "目录项超过限制或包含非 UTF-8 名字，无法完整删除",
+                    ));
                 }
                 for entry in listing.entries {
                     self.delete_tree(&join_path(value, &entry.name), depth + 1, count)?;
@@ -182,8 +188,10 @@ impl SftpSession {
     ) -> Result<FileVersion, AppError> {
         let result = (|| {
             if !self.posix_rename {
-                return Err(AppError::new("sftp.atomic_rename_unsupported")
-                    .with("reason", "服务器不支持原子替换文本文件"));
+                return Err(AppError::new("sftp.atomic_rename_unsupported").with_reason(
+                    "sftp.server_cannot_replace_text_files_atomically",
+                    "服务器不支持原子替换文本文件",
+                ));
             }
             self.check_text_version(value, expected.as_ref())?;
             let target = self.realpath(value)?;
@@ -220,7 +228,11 @@ impl SftpSession {
                     Ok(()) => Err(e),
                     Err(cleanup) => Err(e
                         .with("temporary_path", &pending)
-                        .with("cleanup_reason", "临时文件清理失败")
+                        .with_text(
+                            "cleanup_reason",
+                            "sftp.couldn_t_clean_up_temporary_files",
+                            "临时文件清理失败",
+                        )
                         .with("cleanup_code", cleanup.code)),
                 },
             }

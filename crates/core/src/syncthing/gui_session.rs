@@ -59,8 +59,10 @@ fn status(code: u16) -> Result<(), AppError> {
     match code {
         200..=299 => Ok(()),
         401 | 403 => Err(AppError::new("syncthing.unauthorized")),
-        404 | 405 => Err(AppError::new("syncthing.gui_auth_unsupported")
-            .with("reason", "此版本不支持管理页会话登录接口")),
+        404 | 405 => Err(AppError::new("syncthing.gui_auth_unsupported").with_reason(
+            "syncthing.this_version_does_not_support_management_page_session_login",
+            "此版本不支持管理页会话登录接口",
+        )),
         _ => Err(AppError::new("syncthing.http_error").with("status", code)),
     }
 }
@@ -122,7 +124,10 @@ fn parse_cookie(base: &str, headers: &ureq::http::HeaderMap) -> Result<GuiCookie
         validate_cookie(&cookie, base)?;
         return Ok(cookie);
     }
-    Err(AppError::new("syncthing.gui_auth_unsupported").with("reason", "登录响应没有会话 cookie"))
+    Err(AppError::new("syncthing.gui_auth_unsupported").with_reason(
+        "syncthing.login_response_has_no_session_cookie",
+        "登录响应没有会话 cookie",
+    ))
 }
 
 /// 使用 base（http://127.0.0.1:端口）、username、password 登录；返回短期会话 cookie。

@@ -77,6 +77,10 @@ pub(super) fn decode_error(value: Value) -> Result<Value, AppError> {
         let cookie = regex::Regex::new(r"(?i)\b[0-9a-f]{32}\b");
         for key in [
             "reason",
+            "reason_key",
+            "log_key",
+            "source_key",
+            "exit_code",
             "log",
             "libs",
             "source",

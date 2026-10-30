@@ -99,7 +99,7 @@ impl Reader {
                     }
                 }
             })
-            .map_err(|_| io_error("创建读取线程"))?;
+            .map_err(|_| io_error("process.create_reader_thread", "创建读取线程"))?;
         Ok(Self {
             state,
             handle: Some(handle),
@@ -120,7 +120,7 @@ pub(crate) fn collect_tree(
             .child
             .stdout
             .take()
-            .ok_or_else(|| io_error("获取标准输出"))?,
+            .ok_or_else(|| io_error("process.get_standard_output", "获取标准输出"))?,
         limits.output_bytes,
         None,
     )?;
@@ -129,7 +129,7 @@ pub(crate) fn collect_tree(
             .child
             .stderr
             .take()
-            .ok_or_else(|| io_error("获取错误输出"))?,
+            .ok_or_else(|| io_error("process.get_error_output", "获取错误输出"))?,
         limits.output_bytes,
         matcher,
     ) {
@@ -148,10 +148,16 @@ pub(crate) fn collect_tree(
                 output.timed_out = true;
                 break;
             }
-            let stdout = out.state.lock().map_err(|_| io_error("读取标准输出"))?;
-            let stderr = err.state.lock().map_err(|_| io_error("读取错误输出"))?;
+            let stdout = out
+                .state
+                .lock()
+                .map_err(|_| io_error("process.read_standard_output", "读取标准输出"))?;
+            let stderr = err
+                .state
+                .lock()
+                .map_err(|_| io_error("process.read_error_output", "读取错误输出"))?;
             if stdout.failed || stderr.failed {
-                return Err(io_error("读取命令管道"));
+                return Err(io_error("process.read_command_pipe", "读取命令管道"));
             }
             if let Some(status) = process.try_wait()? {
                 output.exit_code = status.code();
@@ -181,10 +187,16 @@ pub(crate) fn collect_tree(
     }
     let mut output = result?;
     terminated?;
-    let stdout = out.state.lock().map_err(|_| io_error("读取标准输出"))?;
-    let stderr = err.state.lock().map_err(|_| io_error("读取错误输出"))?;
+    let stdout = out
+        .state
+        .lock()
+        .map_err(|_| io_error("process.read_standard_output", "读取标准输出"))?;
+    let stderr = err
+        .state
+        .lock()
+        .map_err(|_| io_error("process.read_error_output", "读取错误输出"))?;
     if stdout.failed || stderr.failed {
-        return Err(io_error("读取命令管道"));
+        return Err(io_error("process.read_command_pipe", "读取命令管道"));
     }
     output.stdout = stdout.bytes.clone();
     output.stderr = stderr.bytes.clone();

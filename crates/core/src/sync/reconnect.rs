@@ -64,7 +64,11 @@ impl Reconnector {
                 recover_connections(control, &tunnel_id, notices, worker_state, worker_stop);
             })
             .map_err(|_| {
-                AppError::new("syncthing.io_failed").with("operation", "创建同步设备重连线程")
+                AppError::new("syncthing.io_failed").with_text(
+                    "operation",
+                    "sync.create_sync_device_reconnect_thread",
+                    "创建同步设备重连线程",
+                )
             })?;
         Ok(Self {
             state,
@@ -241,8 +245,8 @@ impl ReconnectState {
         }
         result.map_err(|error| {
             AppError::new("sync.cleanup_failed")
-                .with(
-                    "reason",
+                .with_reason(
+                    "sync.device_could_not_resume_after_a_temporary_pause_its_state",
                     "设备临时暂停后恢复失败，将在下次处理时重新核对暂停状态",
                 )
                 .with("cause", error.code)

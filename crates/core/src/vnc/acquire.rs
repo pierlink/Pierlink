@@ -76,7 +76,10 @@ pub fn acquire_xvnc(
             AcquireSource::Installed => detection
                 .tigervnc
                 .as_ref()
-                .ok_or_else(|| error("not_tigervnc").with("reason", "未找到已安装的 TigerVNC"))
+                .ok_or_else(|| {
+                    error("not_tigervnc")
+                        .with_reason("vnc.no_installed_tigervnc_found", "未找到已安装的 TigerVNC")
+                })
                 .and_then(|b| {
                     check_binary(b)?;
                     verify_binary(program, cmd, &b.path)
@@ -86,7 +89,7 @@ pub fn acquire_xvnc(
             }
             AcquireSource::Apt => Err(error("download_failed")
                 .with("source", "Apt")
-                .with("reason", "服务器没有 apt-get")),
+                .with_reason("vnc.server_has_no_apt_get", "服务器没有 apt-get")),
             _ => official_check(detection).and_then(|()| match source {
                 AcquireSource::ServerDownload => {
                     remote_package_progress(program, cmd, false, progress)
@@ -96,14 +99,20 @@ pub fn acquire_xvnc(
                 }
                 AcquireSource::LocalDownload => Err(error("download_failed")
                     .with("source", "LocalDownload")
-                    .with("reason", "未允许电脑下载")),
+                    .with_reason(
+                        "vnc.downloads_on_this_computer_were_not_permitted",
+                        "未允许电脑下载",
+                    )),
                 AcquireSource::ManualPackage => opts
                     .manual_package
                     .as_deref()
                     .ok_or_else(|| {
                         error("download_failed")
                             .with("source", "ManualPackage")
-                            .with("reason", "未提供手动下载包")
+                            .with_reason(
+                                "vnc.no_manually_downloaded_package_was_provided",
+                                "未提供手动下载包",
+                            )
                     })
                     .and_then(|p| local_package(program, cmd, Some(p), source, progress, cancel)),
                 _ => unreachable!(),
@@ -229,10 +238,10 @@ fn download(
     progress: &dyn Fn(AcquireStep),
     cancel: &AtomicBool,
 ) -> Result<(), AppError> {
-    let fail = |reason: &str| {
+    let fail = |text_key: &'static str, reason: &str| {
         error("download_failed")
-            .with("source", "电脑")
-            .with("reason", reason)
+            .with_text("source", "vnc.computer", "电脑")
+            .with_reason(text_key, reason)
     };
     let agent = ureq::Agent::new_with_config(
         ureq::Agent::config_builder()
@@ -241,14 +250,17 @@ fn download(
             .timeout_global(Some(Duration::from_secs(120)))
             .build(),
     );
-    let mut response = agent.get(URL).call().map_err(|_| fail("连不上下载地址"))?;
+    let mut response = agent
+        .get(URL)
+        .call()
+        .map_err(|_| fail("vnc.download_unreachable", "连不上下载地址"))?;
     let total = response
         .headers()
         .get("content-length")
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.parse::<u64>().ok());
     if total.is_some_and(|n| n > MAX_PACKAGE) {
-        return Err(fail("文件太大"));
+        return Err(fail("vnc.download_too_large", "文件太大"));
     }
     let mut file = File::create(path).map_err(|_| error("local_io"))?;
     let mut reader = response.body_mut().as_reader();
@@ -256,13 +268,15 @@ fn download(
     let mut buffer = [0; 65536];
     loop {
         cancelled(cancel)?;
-        let n = reader.read(&mut buffer).map_err(|_| fail("下载中断"))?;
+        let n = reader
+            .read(&mut buffer)
+            .map_err(|_| fail("vnc.download_interrupted", "下载中断"))?;
         if n == 0 {
             break;
         }
         bytes += n as u64;
         if bytes > MAX_PACKAGE {
-            return Err(fail("文件太大"));
+            return Err(fail("vnc.download_too_large", "文件太大"));
         }
         file.write_all(&buffer[..n])
             .map_err(|_| error("local_io"))?;

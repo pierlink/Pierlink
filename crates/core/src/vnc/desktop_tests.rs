@@ -974,3 +974,36 @@ sleep 600
     stop_desktop(&f.program, &f.cmd, created.display).unwrap();
     assert!(!cache.exists());
 }
+
+#[test]
+fn 脚本默认原因及变化参数保留中文并传递翻译键() {
+    let (_root, program, cmd) = local();
+    let error = desktop::run(&program, &cmd, "fail download_failed", 5).unwrap_err();
+    assert_eq!(error.params["reason"], "操作无法完成");
+    assert_eq!(error.params["reason_key"], "vnc.operation_failed");
+    assert_eq!(error.params["source"], "未知");
+    assert_eq!(error.params["source_key"], "vnc.unknown_source");
+    let error = desktop::run(&program, &cmd, "fail start_timeout", 5).unwrap_err();
+    assert_eq!(error.params["log"], "操作无法完成");
+    assert_eq!(error.params["log_key"], "vnc.operation_failed");
+
+    let body = format!(
+        "{}\napt_command() {{ printf '未知错误' >&2; return 23; }}\nwork=$HOME\napt_attempt || fail download_failed \"$apt_reason_key\" \"$apt_reason\"",
+        include_str!("apt.sh")
+    );
+    let error = desktop::run(&program, &cmd, &body, 5).unwrap_err();
+    assert_eq!(error.params["reason"], "软件源操作失败，退出码 23");
+    assert_eq!(error.params["reason_key"], "vnc.apt_failed");
+    assert_eq!(error.params["exit_code"], "23");
+
+    let error = desktop::run(
+        &program,
+        &cmd,
+        "libs=libExample.so; fail missing_libs vnc.missing_libraries \"缺少动态库：$libs\"",
+        5,
+    )
+    .unwrap_err();
+    assert_eq!(error.params["reason"], "缺少动态库：libExample.so");
+    assert_eq!(error.params["reason_key"], "vnc.missing_libraries");
+    assert_eq!(error.params["libs"], "libExample.so");
+}

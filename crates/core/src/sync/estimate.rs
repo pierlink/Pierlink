@@ -135,7 +135,12 @@ impl Scan<'_> {
                     .collect();
                 let _ = tx.send(client.request(&method, &path, &q, body, Duration::from_secs(5)));
             })
-            .map_err(|_| error("无法创建预估请求线程"))?;
+            .map_err(|_| {
+                error(
+                    "sync.couldn_t_create_the_estimate_request_thread",
+                    "无法创建预估请求线程",
+                )
+            })?;
         loop {
             self.check()?;
             match rx.recv_timeout(Duration::from_millis(25)) {
@@ -481,7 +486,10 @@ pub(super) fn delete_confirmed(client: &Client, id: &str) -> Result<(), AppError
             Ok(_) if Instant::now() >= deadline => {
                 return Err(AppError::new("sync.cleanup_failed")
                     .with("folder_id", id)
-                    .with("reason", "删除后配置仍存在"));
+                    .with_reason(
+                        "sync.configuration_still_exists_after_deletion",
+                        "删除后配置仍存在",
+                    ));
             }
             Ok(_) => thread::sleep(Duration::from_millis(50)),
         }
@@ -521,7 +529,9 @@ pub fn estimate(
     let _lock = acquire_lock(&ESTIMATE_LOCK)?;
     validate_ignores(&spec.ignore_rules)?;
     let path = super::paths::local_normalized(&spec.local_path)?;
-    let path = path.to_str().ok_or_else(|| error("路径不是 UTF-8"))?;
+    let path = path
+        .to_str()
+        .ok_or_else(|| error("sync.path_is_not_valid_utf_8", "路径不是 UTF-8"))?;
     let remote_path = super::paths::remote_normalized(&spec.remote_path)?;
     let remote_files = link
         .estimate_files
@@ -644,6 +654,7 @@ pub fn estimate(
         (a.join(), b.join())
     });
     let mut failures = Vec::new();
+    let mut failed_workers = 0;
     let mut failed_paths = Vec::new();
     let mut recovery_paths = Vec::new();
     for c in [ca, cb] {
@@ -662,7 +673,10 @@ pub fn estimate(
                     e.params.get("cause").cloned().unwrap_or(e.code)
                 ));
             }
-            Err(_) => failures.push("清理线程异常".into()),
+            Err(_) => {
+                failed_workers += 1;
+                failures.push("清理线程异常".into());
+            }
         }
     }
     for path in [&a.recovery_path, &b.recovery_path].into_iter().flatten() {
@@ -684,18 +698,27 @@ pub fn estimate(
         }
     }
     if !failures.is_empty() {
-        result = Err(AppError::new("sync.cleanup_failed")
-            .with("folders", failures.join(","))
+        let mut error = AppError::new("sync.cleanup_failed")
             .with("path", failed_paths.join(","))
-            .with("recovery_path", recovery_paths.join(","))
-            .with(
-                "cause",
-                result
-                    .as_ref()
-                    .err()
-                    .map(|e| e.code.as_str())
-                    .unwrap_or("清理失败"),
-            ));
+            .with("recovery_path", recovery_paths.join(","));
+        error = if failed_workers == 0 {
+            error.with("folders", failures.join(","))
+        } else {
+            let failed_folders = failures
+                .iter()
+                .filter(|value| value.as_str() != "清理线程异常")
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(",");
+            error
+                .with_text("folders", "sync.cleanup_workers_failed", failures.join(","))
+                .with("failed_workers", failed_workers)
+                .with("failed_folders", failed_folders)
+        };
+        result = Err(match result.as_ref().err() {
+            Some(cause) => error.with("cause", &cause.code),
+            None => error.with_text("cause", "sync.cleanup_failed", "清理失败"),
+        });
     }
     result.map_err(|e| {
         partial.scanned = scan.counts;

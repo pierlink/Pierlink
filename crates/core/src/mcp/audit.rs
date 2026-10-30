@@ -84,7 +84,8 @@ pub(crate) fn prune_daily(dir: &std::path::Path, retain_days: u32) -> std::io::R
     Ok(removed)
 }
 fn audit_error() -> AppError {
-    AppError::new("mcp.audit_failed").with("reason", "无法清理审计日志")
+    AppError::new("mcp.audit_failed")
+        .with_reason("mcp.couldn_t_clean_up_audit_logs", "无法清理审计日志")
 }
 pub(crate) fn now_ms() -> u64 {
     SystemTime::now()

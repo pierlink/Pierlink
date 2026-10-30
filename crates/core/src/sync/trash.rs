@@ -76,11 +76,16 @@ pub fn query_trash(
     Ok(result)
 }
 fn unsafe_path() -> AppError {
-    AppError::new("sync.trash_unsafe_path")
-        .with("reason", "回收站路径不安全、包含符号链接或与同步目录重叠")
+    AppError::new("sync.trash_unsafe_path").with_reason(
+        "sync.trash_path_is_unsafe_contains_symbolic_links_or_overlaps_a",
+        "回收站路径不安全、包含符号链接或与同步目录重叠",
+    )
 }
 fn io(error: std::io::Error) -> AppError {
-    let mut out = AppError::new("sync.trash_io").with("reason", "无法读取或清理回收站");
+    let mut out = AppError::new("sync.trash_io").with_reason(
+        "sync.couldn_t_read_or_clean_up_the_trash",
+        "无法读取或清理回收站",
+    );
     if let Some(code) = error.raw_os_error() {
         out = out.with("os_code", code);
     }
@@ -164,15 +169,25 @@ fn remote_trash(link: &ServerLink, id: &str, clear: bool) -> Result<TrashUsage, 
         )
         .map_err(|mut e| {
             e.params.remove("stderr_tail");
-            e.with("reason", "服务器回收站操作中断，已处理数量无法确认")
-                .with("server_id", &link.server_id)
-                .with("counts_known", false)
+            e.with_reason(
+                "sync.server_trash_operation_was_interrupted_the_processed_count_is_unknown",
+                "服务器回收站操作中断，已处理数量无法确认",
+            )
+            .with_text(
+                "stderr_tail",
+                "sync.server_trash_operation_was_interrupted_the_processed_count_is_unknown",
+                "服务器回收站操作中断，已处理数量无法确认",
+            )
+            .with("server_id", &link.server_id)
+            .with("counts_known", false)
         })?,
         // 本机双实例测试也必须显式声明文件访问方式。
         Some(EstimateFileAccess::Local) => return local_usage(Path::new(&root), id, &paths, clear),
         None => {
-            return Err(AppError::new("sync.trash_transport_missing")
-                .with("reason", "服务器缺少后台命令通道"));
+            return Err(AppError::new("sync.trash_transport_missing").with_reason(
+                "sync.server_has_no_background_command_channel",
+                "服务器缺少后台命令通道",
+            ));
         }
     };
     let usage: TrashUsage =
@@ -183,7 +198,10 @@ fn remote_trash(link: &ServerLink, id: &str, clear: bool) -> Result<TrashUsage, 
             .with("files", usage.files)
             .with("bytes", usage.bytes)),
         Some(serde_json::Value::String(_)) => Err(AppError::new("sync.trash_io")
-            .with("reason", "服务器无法读取或清理回收站")
+            .with_reason(
+                "sync.server_couldn_t_read_or_clean_up_the_trash",
+                "服务器无法读取或清理回收站",
+            )
             .with("files", usage.files)
             .with("bytes", usage.bytes)),
         Some(_) => Err(invalid_response()),

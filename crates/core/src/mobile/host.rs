@@ -97,5 +97,8 @@ pub trait MobileHost: Send + Sync + 'static {
 }
 
 fn unavailable() -> AppError {
-    AppError::new("mobile.host_unavailable").with("reason", "桌面未提供此项能力")
+    AppError::new("mobile.host_unavailable").with_reason(
+        "mobile.desktop_does_not_provide_this_capability",
+        "桌面未提供此项能力",
+    )
 }

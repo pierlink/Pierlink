@@ -9,10 +9,14 @@ const MAX_IDENTITY_FILES: usize = 128;
 
 pub(super) fn limit(field: &str, actual: usize, maximum: usize) -> Result<(), AppError> {
     if actual > maximum {
-        return Err(error("profile.limit_exceeded", "配置文件超过容量限制")
-            .with("field", field)
-            .with("limit", maximum)
-            .with("actual", actual));
+        return Err(error(
+            "profile.limit_exceeded",
+            "profile.configuration_file_exceeds_the_size_limit",
+            "配置文件超过容量限制",
+        )
+        .with("field", field)
+        .with("limit", maximum)
+        .with("actual", actual));
     }
     Ok(())
 }
@@ -20,6 +24,7 @@ pub(super) fn limit(field: &str, actual: usize, maximum: usize) -> Result<(), Ap
 pub(super) fn version_error(version: u64) -> AppError {
     error(
         "profile.unsupported_version",
+        "profile.unsupported_configuration_version_use_a_compatible_app_version",
         "配置版本不受支持，请使用兼容的应用版本",
     )
     .with("version", version)
@@ -27,12 +32,21 @@ pub(super) fn version_error(version: u64) -> AppError {
 }
 
 fn invalid(field: &str) -> AppError {
-    error("profile.invalid_field", "配置字段缺失或内容不合法").with("field", field)
+    error(
+        "profile.invalid_field",
+        "profile.configuration_field_is_missing_or_invalid",
+        "配置字段缺失或内容不合法",
+    )
+    .with("field", field)
 }
 
 pub(super) fn validate(profile: &Profile) -> Result<(), AppError> {
     if profile.format != PROFILE_FORMAT {
-        return Err(error("profile.invalid_format", "不是 Pierlink 配置文件"));
+        return Err(error(
+            "profile.invalid_format",
+            "profile.not_a_pierlink_configuration_file",
+            "不是 Pierlink 配置文件",
+        ));
     }
     if profile.version != PROFILE_VERSION {
         return Err(version_error(u64::from(profile.version)));
@@ -100,9 +114,13 @@ pub(super) fn validate(profile: &Profile) -> Result<(), AppError> {
     }
     // 使用计数写入器，不为容量检查再分配一份完整 JSON；转义后的字节也计入上限。
     serde_json::to_writer(ByteLimit(0), profile).map_err(|_| {
-        error("profile.limit_exceeded", "配置序列化后超过文件大小限制")
-            .with("field", "file_bytes")
-            .with("limit", MAX_PROFILE_BYTES)
+        error(
+            "profile.limit_exceeded",
+            "profile.serialized_configuration_exceeds_the_file_size_limit",
+            "配置序列化后超过文件大小限制",
+        )
+        .with("field", "file_bytes")
+        .with("limit", MAX_PROFILE_BYTES)
     })?;
     Ok(())
 }
@@ -112,7 +130,12 @@ fn check_id<'a>(id: &'a str, field: &str, ids: &mut HashSet<&'a str>) -> Result<
         return Err(invalid(field));
     }
     if !ids.insert(id) {
-        return Err(error("profile.duplicate_id", "同类条目含有重复 ID").with("field", field));
+        return Err(error(
+            "profile.duplicate_id",
+            "profile.duplicate_ids_within_the_same_entry_type",
+            "同类条目含有重复 ID",
+        )
+        .with("field", field));
     }
     Ok(())
 }
@@ -135,8 +158,13 @@ impl Budget {
     }
 
     fn record(&mut self, record: &impl Serialize) -> Result<(), AppError> {
-        let value = serde_json::to_value(record)
-            .map_err(|_| error("profile.invalid_json", "配置条目无法序列化"))?;
+        let value = serde_json::to_value(record).map_err(|_| {
+            error(
+                "profile.invalid_json",
+                "profile.couldn_t_serialize_the_configuration_entry",
+                "配置条目无法序列化",
+            )
+        })?;
         self.visit(&value, 2)
     }
 

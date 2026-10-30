@@ -26,7 +26,13 @@ impl ExecCommand {
             Self::Escaped(command) if !command.is_empty() && !command.contains('\0') => {
                 command.clone()
             }
-            _ => return Err(AppError::new("ssh.invalid_argument").with("field", "命令")),
+            _ => {
+                return Err(AppError::new("ssh.invalid_argument").with_text(
+                    "field",
+                    "builtin.command",
+                    "命令",
+                ));
+            }
         };
         // 显式使用 POSIX sh 解释目录与已转义命令，避免 fish 等登录 shell 的语法差异。
         let script = match directory {
@@ -301,10 +307,10 @@ fn run_session(
                         retained += count;
                         if count > 0 && failure.is_none() {
                             if callback(kind, &bytes[..count]).is_err() {
-                                failure = Some(
-                                    AppError::new("ssh.task_failed")
-                                        .with("reason", "命令输出回调失败"),
-                                );
+                                failure = Some(AppError::new("ssh.task_failed").with_reason(
+                                    "builtin.command_output_callback_failed",
+                                    "命令输出回调失败",
+                                ));
                                 closer.cancel();
                             }
                             if collect {
@@ -320,7 +326,16 @@ fn run_session(
                         complete += 1;
                         if result.is_err() && failure.is_none() {
                             failure = Some(
-                                AppError::new("ssh.unreachable").with("reason", "命令通道读写中断"),
+                                AppError::new("ssh.unreachable")
+                                    .with_reason(
+                                        "builtin.command_channel_was_interrupted",
+                                        "命令通道读写中断",
+                                    )
+                                    .with_text(
+                                        "stderr_tail",
+                                        "builtin.command_channel_was_interrupted",
+                                        "命令通道读写中断",
+                                    ),
                             );
                             closer.cancel();
                         }

@@ -54,14 +54,20 @@ pub struct RemotePathInfo {
 pub(super) fn local_normalized(path: &Path) -> Result<PathBuf, AppError> {
     let out = crate::syncthing::folder::normalized(path)?;
     if out.to_str().is_none_or(|s| s.contains('\0')) {
-        return Err(error("目录不是有效文本"));
+        return Err(error(
+            "sync.directory_is_not_valid_text",
+            "目录不是有效文本",
+        ));
     }
     Ok(out)
 }
 
 pub(super) fn remote_normalized(path: &str) -> Result<String, AppError> {
     if !path.starts_with('/') || path.contains('\0') {
-        return Err(error("远程目录必须为绝对路径"));
+        return Err(error(
+            "sync.remote_directory_must_be_an_absolute_path",
+            "远程目录必须为绝对路径",
+        ));
     }
     let mut parts = Vec::new();
     for p in path.split('/') {
@@ -306,7 +312,7 @@ pub fn check_remote_path(
     managed_paths: &[String],
 ) -> Result<(RemotePathInfo, Vec<PathIssue>), AppError> {
     if remote_path.is_empty() || remote_path.contains('\0') {
-        return Err(error("远程路径无效"));
+        return Err(error("sync.invalid_remote_path", "远程路径无效"));
     }
     let script = format!(
         "target={}\n{}",
@@ -315,9 +321,10 @@ pub fn check_remote_path(
     );
     let value = run_script(program, cmd, &script, RunLimits::default())?;
     if value.get("error").is_some() {
-        return Err(
-            AppError::new("sync.path_check_failed").with("reason", "无法解析目录或查询文件系统")
-        );
+        return Err(AppError::new("sync.path_check_failed").with_reason(
+            "sync.couldn_t_resolve_the_directory_or_query_its_filesystem",
+            "无法解析目录或查询文件系统",
+        ));
     }
     let info: RemotePathInfo = serde_json::from_value(value).map_err(|_| invalid_response())?;
     let issues = remote_issues(&info, existing, managed_paths)?;

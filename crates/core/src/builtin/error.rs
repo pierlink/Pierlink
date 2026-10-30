@@ -15,9 +15,8 @@ pub enum Operation {
 /// stderr_tail / reason 占位符；reason 是没有翻译时显示的中文兜底。两者都是固定文字，不是服务端原文。
 fn failure(code: &str, detail: &'static str, reason: &'static str) -> AppError {
     AppError::new(code)
-        .with("detail", detail)
-        .with("reason", reason)
-        .with("stderr_tail", reason)
+        .with_text("reason", detail, reason)
+        .with_text("stderr_tail", detail, reason)
 }
 
 /// 登录途中（建连、换钥、认证）连接断了：服务器的登录时限到了或网络断了。
@@ -35,7 +34,11 @@ pub fn login_disconnected() -> AppError {
 /// ConnectFailed 只提示可能的会话限制或转发限制，不能断言服务器的具体配置。
 pub fn map_engine_error(error: &Error, operation: Operation) -> AppError {
     match error {
-        Error::InvalidInput => AppError::new("ssh.invalid_argument").with("field", "连接参数"),
+        Error::InvalidInput => AppError::new("ssh.invalid_argument").with_text(
+            "field",
+            "builtin.connection_parameters",
+            "连接参数",
+        ),
         Error::AsyncContext | Error::Runtime => failure(
             "ssh.task_failed",
             "runtime",
@@ -190,7 +193,9 @@ mod tests {
             }
         }
         for error in errors {
-            let detail = &error.params["detail"];
+            let detail = &error.params["reason_key"];
+            assert_eq!(detail, &error.params["stderr_tail_key"]);
+            assert!(!error.params.contains_key("detail"));
             for locale in &locales {
                 assert!(
                     locale["errors"]["detail"][detail]

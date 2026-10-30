@@ -157,7 +157,7 @@ export function ImportDialog({ onImported, onClose }: { onImported: () => void; 
             <TextField label={t("import.group")} value={group} placeholder={t("servers.groupPlaceholder")} onChange={(e) => setGroup(e.target.value)} />
             {failed.length > 0 && (
               <Banner tone="danger" title={t("import.failed")}>
-                {failed.map((f) => `${f.alias ? `${f.alias}：` : ""}${formatError(f.error)}`).join("；")}
+                {failed.map((f) => (f.alias ? t("common.labeled", { label: f.alias, text: formatError(f.error) }) : formatError(f.error))).join(t("common.itemSep"))}
               </Banner>
             )}
           </>

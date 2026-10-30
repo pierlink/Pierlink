@@ -13,14 +13,22 @@ use windows_sys::Win32::Security::{
     OWNER_SECURITY_INFORMATION, PSID, SE_DACL_PROTECTED,
 };
 
-fn failed(reason: &str) -> AppError {
-    AppError::new("keys.local_failed").with("reason", reason)
+fn failed(text_key: &'static str, reason: &str) -> AppError {
+    AppError::new("keys.local_failed").with_reason(text_key, reason)
 }
 fn system_command(name: &str) -> Result<Command, AppError> {
-    let root = std::env::var_os("SystemRoot").ok_or_else(|| failed("无法获取 Windows 系统目录"))?;
+    let root = std::env::var_os("SystemRoot").ok_or_else(|| {
+        failed(
+            "keys.couldn_t_locate_the_windows_system_directory",
+            "无法获取 Windows 系统目录",
+        )
+    })?;
     let root = Path::new(&root);
     if !root.is_absolute() {
-        return Err(failed("Windows 系统目录不是绝对路径"));
+        return Err(failed(
+            "keys.windows_system_directory_is_not_an_absolute_path",
+            "Windows 系统目录不是绝对路径",
+        ));
     }
     let mut command = Command::new(root.join("System32").join(name));
     command.creation_flags(0x08000000); // CREATE_NO_WINDOW：不闪控制台窗口。
@@ -34,9 +42,17 @@ fn current_sid() -> Result<&'static str, AppError> {
     let output = system_command("whoami.exe")?
         .args(["/user", "/fo", "csv", "/nh"])
         .output()
-        .map_err(|_| failed("无法获取当前用户 SID"))?;
+        .map_err(|_| {
+            failed(
+                "keys.couldn_t_retrieve_the_current_user_sid",
+                "无法获取当前用户 SID",
+            )
+        })?;
     if !output.status.success() {
-        return Err(failed("获取当前用户 SID 失败"));
+        return Err(failed(
+            "keys.retrieving_the_current_user_sid_failed",
+            "获取当前用户 SID 失败",
+        ));
     }
     let output = String::from_utf8_lossy(&output.stdout);
     let sid = output
@@ -46,17 +62,28 @@ fn current_sid() -> Result<&'static str, AppError> {
         .filter(|s| {
             s.starts_with("S-1-") && s.bytes().all(|c| c.is_ascii_digit() || b"S-".contains(&c))
         })
-        .ok_or_else(|| failed("无法解析当前用户 SID"))?;
+        .ok_or_else(|| {
+            failed(
+                "keys.couldn_t_parse_the_current_user_sid",
+                "无法解析当前用户 SID",
+            )
+        })?;
     // 只缓存成功结果，暂时性失败不能阻止后续重试。
     let _ = SID.set(sid.into());
-    SID.get()
-        .map(String::as_str)
-        .ok_or_else(|| failed("无法缓存当前用户 SID"))
+    SID.get().map(String::as_str).ok_or_else(|| {
+        failed(
+            "keys.couldn_t_cache_the_current_user_sid",
+            "无法缓存当前用户 SID",
+        )
+    })
 }
 // 参数只来自 Windows 已验证的安全描述符；复制为文本后不保留内部指针。
 fn sid_string(sid: PSID) -> Result<String, AppError> {
     if sid.is_null() || unsafe { IsValidSid(sid) } == 0 {
-        return Err(failed("ACL 中的用户 SID 无效"));
+        return Err(failed(
+            "keys.invalid_user_sid_in_the_acl",
+            "ACL 中的用户 SID 无效",
+        ));
     }
     let authority = unsafe { &*GetSidIdentifierAuthority(sid) }
         .Value
@@ -74,27 +101,39 @@ fn restricted(path: &Path, directory: bool, sid: &str) -> Result<bool, AppError>
     let mut size = 0;
     unsafe { GetFileSecurityW(path.as_ptr(), info, std::ptr::null_mut(), 0, &mut size) };
     if size == 0 {
-        return Err(failed("无法读取密钥 ACL 大小"));
+        return Err(failed(
+            "keys.couldn_t_read_the_key_acl_size",
+            "无法读取密钥 ACL 大小",
+        ));
     }
     // 安全描述符和 ACE 需要对齐，不能用 Vec<u8> 强转后直接解引用。
     let mut buffer = vec![0u64; (size as usize).div_ceil(8)];
     let descriptor = buffer.as_mut_ptr().cast();
     if unsafe { GetFileSecurityW(path.as_ptr(), info, descriptor, size, &mut size) } == 0 {
-        return Err(failed("无法读取密钥 ACL"));
+        return Err(failed("keys.couldn_t_read_the_key_acl", "无法读取密钥 ACL"));
     }
     let (mut owner, mut defaulted) = (std::ptr::null_mut(), 0);
     if unsafe { GetSecurityDescriptorOwner(descriptor, &mut owner, &mut defaulted) } == 0 {
-        return Err(failed("无法读取密钥属主"));
+        return Err(failed(
+            "keys.couldn_t_read_the_key_owner",
+            "无法读取密钥属主",
+        ));
     }
     // 提权账户新建文件的默认属主可能是 Administrators；OpenSSH 也认可该属主。
     if ![sid, "S-1-5-32-544", "S-1-5-18"].contains(&sid_string(owner)?.as_str()) {
-        return Err(failed("密钥路径不属于当前用户"));
+        return Err(failed(
+            "keys.key_path_does_not_belong_to_the_current_user",
+            "密钥路径不属于当前用户",
+        ));
     }
     let (mut present, mut acl, mut control, mut revision) = (0, std::ptr::null_mut::<ACL>(), 0, 0);
     if unsafe { GetSecurityDescriptorDacl(descriptor, &mut present, &mut acl, &mut defaulted) } == 0
         || unsafe { GetSecurityDescriptorControl(descriptor, &mut control, &mut revision) } == 0
     {
-        return Err(failed("无法检查密钥 ACL"));
+        return Err(failed(
+            "keys.couldn_t_inspect_the_key_acl",
+            "无法检查密钥 ACL",
+        ));
     }
     if present == 0 || acl.is_null() || control & SE_DACL_PROTECTED == 0 {
         return Ok(false);
@@ -105,7 +144,10 @@ fn restricted(path: &Path, directory: bool, sid: &str) -> Result<bool, AppError>
     }
     let mut entry = std::ptr::null_mut();
     if unsafe { GetAce(acl, 0, &mut entry) } == 0 || entry.is_null() {
-        return Err(failed("无法读取密钥 ACL 条目"));
+        return Err(failed(
+            "keys.couldn_t_read_a_key_acl_entry",
+            "无法读取密钥 ACL 条目",
+        ));
     }
     let header = unsafe { &*entry.cast::<ACE_HEADER>() };
     let flags = if directory { 3 } else { 0 }; // 目录允许子文件和子目录继承本人权限。
@@ -133,15 +175,26 @@ pub(super) fn permissions(path: &Path, directory: bool) -> Result<(), AppError> 
             .arg(path)
             .args(args)
             .output()
-            .map_err(|_| failed("无法启动密钥 ACL 修复命令"))?
+            .map_err(|_| {
+                failed(
+                    "keys.couldn_t_start_the_key_acl_repair_command",
+                    "无法启动密钥 ACL 修复命令",
+                )
+            })?
             .status
             .success()
         {
-            return Err(failed("无法限制密钥 ACL"));
+            return Err(failed(
+                "keys.couldn_t_restrict_the_key_acl",
+                "无法限制密钥 ACL",
+            ));
         }
     }
     if !restricted(path, directory, sid)? {
-        return Err(failed("密钥 ACL 修复后仍未限制为本人访问"));
+        return Err(failed(
+            "keys.key_acl_still_allows_other_users_after_repair",
+            "密钥 ACL 修复后仍未限制为本人访问",
+        ));
     }
     Ok(())
 }

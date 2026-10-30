@@ -122,9 +122,10 @@ impl Jobs {
             .count()
             >= 8
         {
-            return Err(AppError::new("mcp.job_limit")
-                .with("max", 8)
-                .with("reason", "这个入口最多同时运行 8 个后台任务"));
+            return Err(AppError::new("mcp.job_limit").with("max", 8).with_reason(
+                "mcp.this_entry_allows_at_most_8_concurrent_background_tasks",
+                "这个入口最多同时运行 8 个后台任务",
+            ));
         }
         let id = uuid::Uuid::new_v4().to_string();
         let job = Arc::new(Job {
@@ -175,7 +176,10 @@ impl Jobs {
             .is_err()
         {
             jobs.remove(&id);
-            return Err(AppError::new("mcp.process_failed").with("reason", "无法创建后台任务线程"));
+            return Err(AppError::new("mcp.process_failed").with_reason(
+                "mcp.couldn_t_create_the_background_task_thread",
+                "无法创建后台任务线程",
+            ));
         }
         Ok(id)
     }
@@ -185,8 +189,10 @@ impl Jobs {
             .filter(|j| &j.entry == entry)
             .cloned()
             .ok_or_else(|| {
-                AppError::new("mcp.job_not_found")
-                    .with("reason", "这个入口没有该后台任务，或记录已过期")
+                AppError::new("mcp.job_not_found").with_reason(
+                    "mcp.background_task_is_missing_from_this_entry_or_its_record",
+                    "这个入口没有该后台任务，或记录已过期",
+                )
             })
     }
     pub(super) fn authorize(
@@ -203,14 +209,18 @@ impl Jobs {
         if allowed {
             Ok(())
         } else {
-            Err(AppError::new("mcp.target_denied").with("reason", "后台任务的目标权限已收回"))
+            Err(AppError::new("mcp.target_denied").with_reason(
+                "mcp.permission_for_the_background_task_target_was_revoked",
+                "后台任务的目标权限已收回",
+            ))
         }
     }
     pub(super) fn output(&self, entry: &Entry, id: &str, since: u64) -> Result<Value, AppError> {
         let job = self.get(entry, id)?;
         let state = lock(&job.state);
         if since > state.cursor {
-            return Err(AppError::new("mcp.invalid_argument").with("reason", "输出游标超出范围"));
+            return Err(AppError::new("mcp.invalid_argument")
+                .with_reason("mcp.output_cursor_is_out_of_range", "输出游标超出范围"));
         }
         let mut value = state.output(since);
         value["job_id"] = json!(id);
@@ -224,8 +234,10 @@ impl Jobs {
         let started = Instant::now();
         while lock(&job.state).finished.is_none() {
             if started.elapsed() > Duration::from_secs(6) {
-                return Err(AppError::new("mcp.job_stop_timeout")
-                    .with("reason", "任务已收到停止请求，仍在清理进程"));
+                return Err(AppError::new("mcp.job_stop_timeout").with_reason(
+                    "mcp.stop_requested_process_cleanup_is_still_in_progress",
+                    "任务已收到停止请求，仍在清理进程",
+                ));
             }
             std::thread::sleep(Duration::from_millis(10));
         }

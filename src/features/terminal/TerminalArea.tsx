@@ -5,12 +5,13 @@ import { Button, Dialog, Menu, TextField, type MenuEntry } from "../../component
 import { formatError } from "../../errors";
 import { TabBar } from "../workspace/TabBar";
 import type { ServerView, TabView } from "../workspace/types";
-import { getTerminalBackend, listLocalShells, type LocalShellView } from "./backend";
+import { getTerminalBackend, listLocalShells, localShellName, type LocalShellView } from "./backend";
 import { HostKeyDialog } from "./HostKeyDialog";
 import { reorder, tabPart, zoneAt, zoneBox, type Box, type DragWhat, type DropAt } from "./paneDrag";
 import { TerminalView, type TermHandle } from "./TerminalView";
 import { DesktopPane } from "../desktop/DesktopPane";
-import { focusDesktopWindow, useDesktopPopouts } from "../desktop/popouts";
+import { focusDesktopWindow, openDesktopWindow, useDesktopPopouts } from "../desktop/popouts";
+import { desktopWindowUrl } from "../desktop/DesktopWindow";
 import type { HostKeyStep, OpenSpec, RemoteSpec } from "./types";
 import { parseQuickTarget } from "./util";
 import { droppedText } from "./localPaths";
@@ -343,7 +344,7 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
   };
   const openShellIn = (shellId: string, target: Target): string | null => {
     const s = shells.find((x) => x.id === shellId);
-    return s ? add({ kind: "local", shellId: s.id }, s.name, t("workspace.local"), target) : null;
+    return s ? add({ kind: "local", shellId: s.id }, localShellName(s), t("workspace.local"), target) : null;
   };
   const openDefault = (target: Target): string | null => {
     if (!shellsLoaded) { pendingDefault.current = { target }; return null; }
@@ -387,10 +388,17 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
     if (step.kind === "trusted") {
       setPending(null);
       if (conn.revive) updatePane(conn.revive, () => ({ restored: false }));
+      else if (conn.desktop && conn.spec.kind === "server" && settings.desktop.openInWindow) openWindowDesktop(conn, conn.spec.serverId);
       else add(conn.spec, conn.title, conn.subtitle, conn.target, conn.files, conn.ai, conn.desktop);
       return;
     }
     setPending({ kind: "hostkey", conn, step, busy: false });
+  };
+  /** 设置里选了“在独立窗口打开”：指纹确认后直接开独立窗口，主窗口不开窗格（窗口里自己检测、连接） */
+  const openWindowDesktop = (conn: Conn, serverId: string) => {
+    openDesktopWindow(serverId, conn.title, desktopWindowUrl(serverId, conn.title)).catch((err: unknown) => {
+      setPending({ kind: "connectError", conn, text: formatError(err) });
+    });
   };
   const onHostKeyError = (my: number, conn: Conn, err: unknown) => {
     if (my !== attempt.current) return;
@@ -465,7 +473,7 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
       }
       const shell = pickPowerShell(shells);
       if (!shell) { reportAiOpen(r.id, null, { code: "terminal.shell_not_found", params: { shell_id: "powershell" } }); return; }
-      add({ kind: "local", shellId: shell.id }, r.title ?? shell.name, t("workspace.local"), null, false, r.id);
+      add({ kind: "local", shellId: shell.id }, r.title ?? localShellName(shell), t("workspace.local"), null, false, r.id);
     })).then((u) => { if (alive) off = u; else u(); });
     return () => { alive = false; off?.(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -849,7 +857,7 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
     for (const id of broadcastRef.current[tabKey] ?? []) {
       const p = panesRef.current[id];
       if (!p?.session || p.status !== "running") continue;
-      backend.write(p.session, data).catch((e: unknown) => showBroadcastNotice(`${p.title}：${formatError(e)}`));
+      backend.write(p.session, data).catch((e: unknown) => showBroadcastNotice(t("common.labeled", { label: p.title, text: formatError(e) })));
       // 来源窗格自己的回车计数在 TerminalView 里已经加过
       if (id !== source && /[\r\n]/.test(data)) updatePane(id, (x) => ({ commands: x.commands + 1 }));
     }
@@ -1006,7 +1014,7 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
     return [
       ...same,
       { kind: "header", id: "h1", label: t("workspace.localShells") },
-      ...shells.map((l) => ({ id: `sh-${l.id}`, label: l.name, onSelect: () => openShellIn(l.id, target) })),
+      ...shells.map((l) => ({ id: `sh-${l.id}`, label: localShellName(l), onSelect: () => openShellIn(l.id, target) })),
       { kind: "separator", id: "s1" },
       { kind: "header", id: "h2", label: t("workspace.serversHeader") },
       ...servers.map((s) => ({ id: `srv-${s.id}`, label: `${s.name}  ·  ${s.address}`, onSelect: () => openServer(s.id, target) })),

@@ -59,11 +59,24 @@ fn recycle_paths(paths: &[PathBuf]) -> Result<Vec<u16>, AppError> {
     let mut values = Vec::new();
     for path in paths {
         // 不解析最后一级链接，回收链接本身。
-        std::fs::symlink_metadata(path).map_err(|e| error(e, "读取待回收项", path))?;
-        let path = std::path::absolute(path).map_err(|e| error(e, "解析待回收路径", path))?;
-        values.extend(
-            wide(Path::new(&display_path(&path))).map_err(|e| error(e, "编码待回收路径", &path))?,
-        );
+        std::fs::symlink_metadata(path)
+            .map_err(|e| error(e, "fs_local.read_item_to_recycle", "读取待回收项", path))?;
+        let path = std::path::absolute(path).map_err(|e| {
+            error(
+                e,
+                "fs_local.resolve_path_to_recycle",
+                "解析待回收路径",
+                path,
+            )
+        })?;
+        values.extend(wide(Path::new(&display_path(&path))).map_err(|e| {
+            error(
+                e,
+                "fs_local.encode_path_to_recycle",
+                "编码待回收路径",
+                &path,
+            )
+        })?);
     }
     values.push(0);
     Ok(values)
@@ -83,7 +96,7 @@ pub(super) fn delete(paths: &[PathBuf]) -> Result<usize, AppError> {
     let result = unsafe { SHFileOperationW(&mut operation) };
     if result != 0 || operation.fAnyOperationsAborted != 0 {
         return Err(AppError::new("fs.failure")
-            .with("operation", "移入回收站")
+            .with_text("operation", "fs_local.move_to_recycle_bin", "移入回收站")
             .with(
                 "path",
                 paths
@@ -92,13 +105,17 @@ pub(super) fn delete(paths: &[PathBuf]) -> Result<usize, AppError> {
                     .collect::<Vec<_>>()
                     .join("\n"),
             )
-            .with("reason", "回收失败或操作被取消")
+            .with_reason(
+                "fs_local.recycling_failed_or_was_cancelled",
+                "回收失败或操作被取消",
+            )
             .with("status", result));
     }
     Ok(paths.len())
 }
 pub(super) fn open(path: &Path) -> Result<(), AppError> {
-    let wide = wide(path).map_err(|e| error(e, "编码打开路径", path))?;
+    let wide =
+        wide(path).map_err(|e| error(e, "fs_local.encode_path_to_open", "编码打开路径", path))?;
     let verb: Vec<_> = "open\0".encode_utf16().collect();
     let result = unsafe {
         ShellExecuteW(
@@ -114,7 +131,11 @@ pub(super) fn open(path: &Path) -> Result<(), AppError> {
         Ok(())
     } else {
         Err(AppError::new("fs.failure")
-            .with("operation", "用默认程序打开")
+            .with_text(
+                "operation",
+                "fs_local.open_with_default_application",
+                "用默认程序打开",
+            )
             .with("path", display_path(path))
             .with("status", result))
     }
@@ -129,20 +150,30 @@ pub(super) fn reveal(path: &Path) -> Result<(), AppError> {
     use std::os::windows::process::CommandExt;
     let executable = std::env::var_os("SystemRoot")
         .map(PathBuf::from)
-        .ok_or_else(|| AppError::new("fs.failure").with("reason", "缺少系统目录"))?
+        .ok_or_else(|| {
+            AppError::new("fs.failure")
+                .with_reason("fs_local.system_directory_is_unavailable", "缺少系统目录")
+        })?
         .join("explorer.exe");
     // Explorer 使用自己的 /select 语法，raw_arg 保留所需引号；不经过 shell。
     let mut child = std::process::Command::new(executable)
         .raw_arg(reveal_argument(path))
         .spawn()
-        .map_err(|e| error(e, "启动资源管理器", path))?;
+        .map_err(|e| error(e, "fs_local.launch_file_explorer", "启动资源管理器", path))?;
     // 在后台等待启动器，避免资源管理器新窗口长时间存活时阻塞调用方。
     std::thread::Builder::new()
         .name("资源管理器启动器回收".into())
         .spawn(move || {
             let _ = child.wait();
         })
-        .map_err(|e| error(e, "创建启动器回收线程", path))?;
+        .map_err(|e| {
+            error(
+                e,
+                "fs_local.create_launcher_cleanup_thread",
+                "创建启动器回收线程",
+                path,
+            )
+        })?;
     Ok(())
 }
 #[cfg(test)]

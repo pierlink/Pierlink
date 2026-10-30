@@ -151,7 +151,10 @@ impl Pool {
                     })
                     .map(|_| ())
                     .map_err(|_| {
-                        AppError::new("ssh.task_failed").with("reason", "无法启动连接回收线程")
+                        AppError::new("ssh.task_failed").with_reason(
+                            "builtin.connection_cleanup_thread",
+                            "无法启动连接回收线程",
+                        )
                     })
             })
             .clone()
@@ -344,7 +347,8 @@ impl ConnectionManager {
         let mut server = target.clone();
         loop {
             if !seen.insert(server.id.clone()) {
-                return Err(AppError::new("ssh.jump_cycle").with("reason", "跳板链存在环路"));
+                return Err(AppError::new("ssh.jump_cycle")
+                    .with_reason("builtin.jump_host_chain_contains_a_cycle", "跳板链存在环路"));
             }
             if chain.len() == 4 {
                 return Err(AppError::new("ssh.jump_too_deep").with("limit", 4));
@@ -355,12 +359,18 @@ impl ConnectionManager {
                 break;
             };
             server = resolver.as_ref().ok_or_else(|| {
-                AppError::new("ssh.jump_not_found").with("reason", "未配置服务器查询入口")
+                AppError::new("ssh.jump_not_found").with_reason(
+                    "builtin.server_lookup_is_unavailable",
+                    "未配置服务器查询入口",
+                )
             })?(&id)
             .map_err(|_| {
                 AppError::new("ssh.jump_lookup_failed")
                     .with("server_id", &id)
-                    .with("reason", "读取跳板服务器记录失败")
+                    .with_reason(
+                        "builtin.couldn_t_read_the_jump_host_record",
+                        "读取跳板服务器记录失败",
+                    )
             })?
             .filter(|server| server.id == id)
             .ok_or_else(|| AppError::new("ssh.jump_not_found").with("server_id", &id))?;
@@ -427,7 +437,15 @@ impl ConnectionManager {
                 })?,
             );
         }
-        parent.ok_or_else(|| AppError::new("ssh.failed").with("reason", "服务器链为空"))
+        parent.ok_or_else(|| {
+            AppError::new("ssh.failed")
+                .with_reason("builtin.server_chain_is_empty", "服务器链为空")
+                .with_text(
+                    "stderr_tail",
+                    "builtin.server_chain_is_empty",
+                    "服务器链为空",
+                )
+        })
     }
 
     fn pooled_one(
@@ -468,8 +486,8 @@ impl ConnectionManager {
                 return Ok(entry.connection.clone());
             }
             if single && rejected.is_some() {
-                return Err(AppError::new("ssh.session_open_failed").with(
-                    "reason",
+                return Err(AppError::new("ssh.session_open_failed").with_reason(
+                    "builtin.this_server_requires_verification_codes_and_one_connection_close_some",
                     "需要验证码的服务器仅使用一条连接，请关闭部分会话后重试",
                 ));
             }
@@ -748,7 +766,10 @@ fn finish_close(slots: Vec<Arc<Slot>>) -> Result<(), AppError> {
             )
             .unwrap_or_else(|p| p.into_inner());
         if state.connecting || !state.requests.is_empty() {
-            return Err(AppError::new("ssh.task_failed").with("reason", "关闭连接等待超时"));
+            return Err(AppError::new("ssh.task_failed").with_reason(
+                "builtin.waiting_for_the_connection_to_close_timed_out",
+                "关闭连接等待超时",
+            ));
         }
     }
     Ok(())
@@ -765,8 +786,10 @@ pub(super) fn error_state(error: &AppError) -> ConnectionState {
 fn connection_options(server: &Server) -> Result<ConnectionOptions, AppError> {
     use crate::storage::ServerSource;
     if server.source != ServerSource::Manual || server.ssh_alias.is_some() {
-        return Err(AppError::new("ssh.builtin_unavailable")
-            .with("reason", "内置连接需要完整的应用内服务器记录"));
+        return Err(AppError::new("ssh.builtin_unavailable").with_reason(
+            "builtin.built_in_connections_require_a_complete_saved_server_record",
+            "内置连接需要完整的应用内服务器记录",
+        ));
     }
     let host = server
         .host

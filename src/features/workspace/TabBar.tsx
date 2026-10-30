@@ -2,6 +2,7 @@ import { useRef, useState, type PointerEvent as ReactPointerEvent } from "react"
 import { useTranslation } from "react-i18next";
 import { ChevronDown, Columns2, PanelRight, Plus, Radio, SquareTerminal, X } from "lucide-react";
 import { IconButton, Menu, StatusDot, type MenuEntry } from "../../components";
+import { localShellName } from "../terminal/backend";
 import type { ServerView, TabView } from "./types";
 
 const dotTone = { online: "ok", connecting: "warn", offline: "neutral" } as const;
@@ -39,7 +40,7 @@ export function TabBar({ tabs, activeId, servers, localShells, onActivate, onClo
     { id: "quick", label: `${t("terminal.quickConnect")}…`, onSelect: onQuickConnect },
     { kind: "separator", id: "s1" },
     { kind: "header", id: "h2", label: t("workspace.localShells") },
-    ...localShells.map((l) => ({ id: `sh-${l.id}`, label: l.name, shortcut: l.isDefault ? "Ctrl Shift T" : undefined, onSelect: () => onPickShell(l.id) })),
+    ...localShells.map((l) => ({ id: `sh-${l.id}`, label: localShellName(l), shortcut: l.isDefault ? "Ctrl Shift T" : undefined, onSelect: () => onPickShell(l.id) })),
   ];
 
   return (

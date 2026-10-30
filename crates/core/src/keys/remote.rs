@@ -37,8 +37,8 @@ pub struct AuthorizedKey {
     pub ours: bool,
     pub pierlink: bool,
 }
-fn failure(reason: &str) -> AppError {
-    AppError::new("keys.remote_failed").with("reason", reason)
+fn failure(text_key: &'static str, reason: &str) -> AppError {
+    AppError::new("keys.remote_failed").with_reason(text_key, reason)
 }
 fn script(action: &str, line: &str) -> Result<String, AppError> {
     let key = if action == "list" {
@@ -67,16 +67,16 @@ fn translate_error(e: AppError) -> AppError {
     if e.code != "remote.script_failed" {
         return e;
     }
-    let reason = match e.params.get("exit_code").map(String::as_str) {
-        Some("71") => "等待远程授权文件锁超过十秒",
-        Some("72") => "远程授权文件操作被信号中断",
-        Some("73") => "授权文件是悬空符号链接",
-        Some("74") => "授权文件不是普通文件",
-        Some("75") => "无法读取远程权限",
+    let (text_key, reason) = match e.params.get("exit_code").map(String::as_str) {
+        Some("71") => ("keys.remote_lock_timeout", "等待远程授权文件锁超过十秒"),
+        Some("72") => ("keys.remote_interrupted", "远程授权文件操作被信号中断"),
+        Some("73") => ("keys.dangling_authorized_link", "授权文件是悬空符号链接"),
+        Some("74") => ("keys.authorized_not_file", "授权文件不是普通文件"),
+        Some("75") => ("keys.remote_permissions", "无法读取远程权限"),
         _ => return e,
     };
     let locked = e.params.get("exit_code").is_some_and(|code| code == "71");
-    let mut error = failure(reason).with("cause", e.code);
+    let mut error = failure(text_key, reason).with("cause", e.code);
     if let Some(code) = e.params.get("exit_code") {
         error = error.with("exit_code", code);
     }
@@ -95,16 +95,21 @@ pub fn install(
     let outcome = match result["status"].as_str() {
         Some("installed") => InstallOutcome::Installed,
         Some("already_present") => InstallOutcome::AlreadyPresent,
-        _ => return Err(failure("安装结果无效")),
+        _ => return Err(failure("keys.invalid_installation_result", "安装结果无效")),
     };
     Ok(InstallReport {
-        non_default_authorized_keys: result["non_default_authorized_keys"]
-            .as_bool()
-            .ok_or_else(|| failure("授权路径检查结果无效"))?,
+        non_default_authorized_keys: result["non_default_authorized_keys"].as_bool().ok_or_else(
+            || {
+                failure(
+                    "keys.invalid_authorization_path_check_result",
+                    "授权路径检查结果无效",
+                )
+            },
+        )?,
         outcome,
         permissions_warning: result["permissions_warning"]
             .as_bool()
-            .ok_or_else(|| failure("权限检查结果无效"))?,
+            .ok_or_else(|| failure("keys.invalid_permission_check_result", "权限检查结果无效"))?,
     })
 }
 /// 用仅公钥认证的后台 key_cmd 实际登录；拒绝可能退回密码或复用连接的参数。
@@ -164,13 +169,16 @@ pub fn list(
     let result = run(program, cmd, "list", "")?;
     let hex = result["hex"]
         .as_str()
-        .ok_or_else(|| failure("列表结果无效"))?;
+        .ok_or_else(|| failure("keys.invalid_list_result", "列表结果无效"))?;
     if hex.len() % 2 != 0 || !hex.is_ascii() {
-        return Err(failure("列表编码无效"));
+        return Err(failure("keys.invalid_list_encoding", "列表编码无效"));
     }
     let bytes = (0..hex.len())
         .step_by(2)
-        .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).map_err(|_| failure("列表编码无效")))
+        .map(|i| {
+            u8::from_str_radix(&hex[i..i + 2], 16)
+                .map_err(|_| failure("keys.invalid_list_encoding", "列表编码无效"))
+        })
         .collect::<Result<Vec<_>, _>>()?;
     Ok(String::from_utf8_lossy(&bytes)
         .lines()
@@ -202,9 +210,9 @@ pub fn remove(
             count: result["count"]
                 .as_u64()
                 .and_then(|n| n.try_into().ok())
-                .ok_or_else(|| failure("删除数量无效"))?,
+                .ok_or_else(|| failure("keys.invalid_deletion_count", "删除数量无效"))?,
         }),
-        _ => Err(failure("删除结果无效")),
+        _ => Err(failure("keys.invalid_deletion_result", "删除结果无效")),
     }
 }
 /// 安装后用 key_cmd 验证；失败仅撤销本次新增内容，不删除安装前已存在的公钥。
@@ -218,29 +226,41 @@ pub fn install_and_verify(
     if let Err(error) = verify(program, key_cmd) {
         // 密码已经验证过（安装成功），这里失败说明“只用密钥登录”被拒：统一报 keys.verify_failed，
         // 不能把验证步骤的 ssh.auth_failed 原样返回，否则界面会误报成“密码不对”
-        let verify_failed = |reason: &str| {
+        let verify_failed = |text_key: &'static str, reason: &str| {
             AppError::new("keys.verify_failed")
-                .with("reason", reason)
+                .with_reason(text_key, reason)
                 .with("cause", &error.code)
         };
         if report.outcome == InstallOutcome::AlreadyPresent {
-            return Err(verify_failed("验证失败；原有密钥未改动"));
+            return Err(verify_failed(
+                "keys.verification_failed_existing_keys_were_preserved",
+                "验证失败；原有密钥未改动",
+            ));
         }
         let rollback = remove(program, password_cmd, public_line);
         if matches!(
             rollback,
             Ok(RemoveOutcome::Removed { .. } | RemoveOutcome::NotFound)
         ) {
-            return Err(verify_failed("验证失败；已撤销"));
+            return Err(verify_failed(
+                "keys.verification_failed_the_added_key_was_removed",
+                "验证失败；已撤销",
+            ));
         }
         let key = parse(public_line).ok_or_else(|| AppError::new("keys.invalid_public_key"))?;
-        let reason = if matches!(rollback, Ok(RemoveOutcome::Symlink)) {
-            "验证失败；授权文件是符号链接，需手动撤销"
+        let (text_key, reason) = if matches!(rollback, Ok(RemoveOutcome::Symlink)) {
+            (
+                "keys.rollback_symlink",
+                "验证失败；授权文件是符号链接，需手动撤销",
+            )
         } else {
-            "验证失败；撤销失败，需手动检查授权文件"
+            (
+                "keys.rollback_failed",
+                "验证失败；撤销失败，需手动检查授权文件",
+            )
         };
         let mut failure = AppError::new("keys.verify_failed")
-            .with("reason", reason)
+            .with_reason(text_key, reason)
             .with("cause", error.code)
             .with("fingerprint", key.fingerprint)
             .with("comment", key.comment);

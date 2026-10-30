@@ -24,8 +24,8 @@ pub fn resolve_alias(
 ) -> Result<ResolvedConfig, AppError> {
     resolve(program, alias, timeout, &AtomicBool::new(false))
 }
-fn failed(reason: &str) -> AppError {
-    AppError::new("ssh.resolve_failed").with("reason", reason)
+fn failed(text_key: &'static str, reason: &str) -> AppError {
+    AppError::new("ssh.resolve_failed").with_reason(text_key, reason)
 }
 fn resolve(
     program: &SshProgram,
@@ -62,14 +62,14 @@ pub(super) fn capture(
             builtin: None,
             askpass: None,
         })
-        .map_err(|_| failed("无法启动 SSH 程序"))?;
+        .map_err(|_| failed("ssh.couldn_t_start_ssh", "无法启动 SSH 程序"))?;
     drop(process.child.stdin.take());
     let mut out = Reader::start(
         process
             .child
             .stdout
             .take()
-            .ok_or_else(|| failed("无法读取标准输出"))?,
+            .ok_or_else(|| failed("ssh.couldn_t_read_standard_output", "无法读取标准输出"))?,
         1024 * 1024,
     )?;
     let mut err = match Reader::start(
@@ -77,7 +77,7 @@ pub(super) fn capture(
             .child
             .stderr
             .take()
-            .ok_or_else(|| failed("无法读取错误输出"))?,
+            .ok_or_else(|| failed("ssh.couldn_t_read_error_output", "无法读取错误输出"))?,
         64 * 1024,
     ) {
         Ok(r) => r,
@@ -94,20 +94,35 @@ pub(super) fn capture(
         if start.elapsed() >= timeout {
             return Err(AppError::new("ssh.resolve_timeout"));
         }
-        let stdout = out.state.lock().map_err(|_| failed("输出读取状态不可用"))?;
-        let stderr = err.state.lock().map_err(|_| failed("错误读取状态不可用"))?;
+        let stdout = out.state.lock().map_err(|_| {
+            failed(
+                "ssh.output_reader_state_is_unavailable",
+                "输出读取状态不可用",
+            )
+        })?;
+        let stderr = err.state.lock().map_err(|_| {
+            failed(
+                "ssh.error_reader_state_is_unavailable",
+                "错误读取状态不可用",
+            )
+        })?;
         if stdout.exceeded || stderr.exceeded || stdout.failed || stderr.failed {
-            return Err(failed("SSH 输出过大或读取失败"));
+            return Err(failed(
+                "ssh.ssh_output_is_too_large_or_could_not_be_read",
+                "SSH 输出过大或读取失败",
+            ));
         }
         if let Some(status) = process.try_wait()? {
             if !status.success() {
                 // stderr 可能包含任意未标记的秘密；仅给出退出码，不回传原文。
-                return Err(failed("SSH 配置解析退出失败").with(
-                    "exit_code",
-                    status
-                        .code()
-                        .map_or_else(|| "信号终止".into(), |c| c.to_string()),
-                ));
+                let error = failed(
+                    "ssh.ssh_configuration_resolution_exited_unsuccessfully",
+                    "SSH 配置解析退出失败",
+                );
+                return Err(match status.code() {
+                    Some(code) => error.with("exit_code", code),
+                    None => error.with_text("exit_code", "ssh.terminated_by_signal", "信号终止"),
+                });
             }
             if stdout.done && stderr.done {
                 return Ok((
@@ -167,7 +182,10 @@ pub fn preview(
             error: Some(if cancel.load(Ordering::Acquire) {
                 AppError::new("ssh.resolve_cancelled")
             } else {
-                failed("无法创建解析工作线程")
+                failed(
+                    "ssh.couldn_t_create_the_resolution_worker_thread",
+                    "无法创建解析工作线程",
+                )
             }),
         })
         .collect();

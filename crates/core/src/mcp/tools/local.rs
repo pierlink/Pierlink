@@ -35,7 +35,12 @@ pub(super) fn home() -> Result<std::path::PathBuf, AppError> {
     std::env::var_os(key)
         .map(std::path::PathBuf::from)
         .filter(|p| p.is_absolute() && p.is_dir())
-        .ok_or_else(|| AppError::new("mcp.cwd_not_found").with("reason", "无法确定用户目录"))
+        .ok_or_else(|| {
+            AppError::new("mcp.cwd_not_found").with_reason(
+                "mcp.couldn_t_determine_the_user_directory",
+                "无法确定用户目录",
+            )
+        })
 }
 pub(super) fn shells() -> Vec<(String, std::path::PathBuf)> {
     crate::detect::shells::available_shells()
@@ -62,20 +67,29 @@ pub(super) fn prepare(
     if command.encode_utf16().count() > COMMAND_MAX {
         return Err(AppError::new("mcp.command_too_long")
             .with("max", COMMAND_MAX)
-            .with("reason", "命令超过长度限制"));
+            .with_reason("mcp.command_exceeds_the_length_limit", "命令超过长度限制"));
     }
     if command.contains('\0') {
-        return Err(AppError::new("mcp.invalid_argument").with("reason", "命令不能包含空字符"));
+        return Err(AppError::new("mcp.invalid_argument").with_reason(
+            "mcp.command_cannot_contain_null_characters",
+            "命令不能包含空字符",
+        ));
     }
     let cwd = match cwd {
         Some(p) => p.to_owned(),
         None => home()?,
     };
     let cwd = crate::fs_local::plain_canonical(&cwd).map_err(|_| {
-        AppError::new("mcp.cwd_not_found").with("reason", "工作目录不存在或无法访问")
+        AppError::new("mcp.cwd_not_found").with_reason(
+            "mcp.working_directory_is_missing_or_inaccessible",
+            "工作目录不存在或无法访问",
+        )
     })?;
     if !cwd.is_dir() {
-        return Err(AppError::new("mcp.cwd_not_found").with("reason", "工作目录不是目录"));
+        return Err(AppError::new("mcp.cwd_not_found").with_reason(
+            "mcp.working_directory_is_not_a_directory",
+            "工作目录不是目录",
+        ));
     }
     #[cfg(windows)]
     {
@@ -85,16 +99,18 @@ pub(super) fn prepare(
             .find(|(name, _)| name == shell)
             .map(|(_, p)| p)
             .ok_or_else(|| {
-                AppError::new("mcp.shell_unavailable")
-                    .with("reason", "所选 shell 不可用，请查看 list_targets")
+                AppError::new("mcp.shell_unavailable").with_reason(
+                    "mcp.selected_shell_is_unavailable_check_list_targets",
+                    "所选 shell 不可用，请查看 list_targets",
+                )
             })?;
         let args = match shell {
             "powershell" | "pwsh" => powershell(command),
             // cmd.exe 不认 `\"` 转义：整条命令用一对引号包起来原样交给 /s /c（/s 只去掉最外层的引号）
             "cmd" => {
                 if command.contains(['\r', '\n']) {
-                    return Err(AppError::new("mcp.process_failed").with(
-                        "reason",
+                    return Err(AppError::new("mcp.process_failed").with_reason(
+                        "mcp.command_prompt_cannot_run_multiline_commands_use_powershell_or_a",
                         "命令提示符不支持多行命令，请改用 PowerShell 或写成批处理文件",
                     ));
                 }
@@ -112,9 +128,8 @@ pub(super) fn prepare(
                 command.into(),
             ],
             _ => {
-                return Err(
-                    AppError::new("mcp.shell_unavailable").with("reason", "所选 shell 不可用")
-                );
+                return Err(AppError::new("mcp.shell_unavailable")
+                    .with_reason("mcp.selected_shell_is_unavailable", "所选 shell 不可用"));
             }
         };
         Ok(Prepared {
@@ -128,8 +143,10 @@ pub(super) fn prepare(
     #[cfg(not(windows))]
     {
         if shell.is_some() {
-            return Err(AppError::new("mcp.shell_unavailable")
-                .with("reason", "此平台没有所选 Windows shell"));
+            return Err(AppError::new("mcp.shell_unavailable").with_reason(
+                "mcp.selected_windows_shell_is_unavailable_on_this_platform",
+                "此平台没有所选 Windows shell",
+            ));
         }
         Ok(Prepared {
             raw: false,
@@ -216,7 +233,8 @@ fn stream(
     let result = (|| {
         for (stderr, input) in [false, true].into_iter().zip(inputs) {
             let mut input = input.ok_or_else(|| {
-                AppError::new("mcp.process_failed").with("reason", "无法读取命令管道")
+                AppError::new("mcp.process_failed")
+                    .with_reason("mcp.couldn_t_read_the_command_pipe", "无法读取命令管道")
             })?;
             let capture = Arc::new(Mutex::new((
                 HeadTail::new(limits.output_bytes),
@@ -250,7 +268,10 @@ fn stream(
                     }
                 })
                 .map_err(|_| {
-                    AppError::new("mcp.process_failed").with("reason", "无法创建输出读取线程")
+                    AppError::new("mcp.process_failed").with_reason(
+                        "mcp.couldn_t_create_the_output_reader_thread",
+                        "无法创建输出读取线程",
+                    )
                 })?;
             readers.push(reader);
             captures.push(capture);
@@ -284,7 +305,8 @@ fn stream(
     for (index, state) in captures.iter().enumerate() {
         let state = lock(state);
         if state.2 {
-            return Err(AppError::new("mcp.process_failed").with("reason", "读取命令输出失败"));
+            return Err(AppError::new("mcp.process_failed")
+                .with_reason("mcp.couldn_t_read_command_output", "读取命令输出失败"));
         }
         let (bytes, truncated) = state.0.snapshot();
         output.truncated |= truncated;

@@ -58,13 +58,22 @@ pub enum EstimateFileAccess {
     },
 }
 fn failed() -> AppError {
-    AppError::new("sync.estimate_file_failed").with("reason", "无法安全读取或恢复排除规则文件")
+    AppError::new("sync.estimate_file_failed").with_reason(
+        "sync.couldn_t_safely_read_or_restore_the_ignore_file",
+        "无法安全读取或恢复排除规则文件",
+    )
 }
 fn changed() -> AppError {
-    AppError::new("sync.estimate_file_changed").with("reason", "排除规则文件已被外部修改，保留现状")
+    AppError::new("sync.estimate_file_changed").with_reason(
+        "sync.ignore_file_was_modified_externally_and_has_been_preserved",
+        "排除规则文件已被外部修改，保留现状",
+    )
 }
 fn symlink() -> AppError {
-    AppError::new("sync.ignore_file_symlink").with("reason", ".stignore 是符号链接，不能安全替换")
+    AppError::new("sync.ignore_file_symlink").with_reason(
+        "sync.stignore_is_a_symbolic_link_and_cannot_be_replaced_safely",
+        ".stignore 是符号链接，不能安全替换",
+    )
 }
 fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), AppError> {
     let temporary = path.with_file_name(format!(".pierlink-ignore-{:016x}", rand::random::<u64>()));

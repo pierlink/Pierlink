@@ -31,7 +31,10 @@ impl GuiListen {
                 }
                 Ok(address.into_owned())
             }
-            _ => Err(error("管理接口地址无效")),
+            _ => Err(error(
+                "syncthing.invalid_management_api_address",
+                "管理接口地址无效",
+            )),
         }
     }
 
@@ -69,7 +72,8 @@ pub struct HomeInfo {
 
 pub(crate) fn private_dir(path: &Path) -> Result<(), AppError> {
     if path.exists() {
-        let meta = fs::symlink_metadata(path).map_err(|_| io_error("读取目录权限"))?;
+        let meta = fs::symlink_metadata(path)
+            .map_err(|_| io_error("syncthing.read_directory_permissions", "读取目录权限"))?;
         if !meta.is_dir() || meta.file_type().is_symlink() {
             return Err(AppError::new("syncthing.socket_dir_insecure"));
         }
@@ -91,7 +95,9 @@ pub(crate) fn private_dir(path: &Path) -> Result<(), AppError> {
         use std::os::unix::fs::DirBuilderExt;
         builder.mode(0o700);
     }
-    builder.create(path).map_err(|_| io_error("创建实例目录"))?;
+    builder
+        .create(path)
+        .map_err(|_| io_error("syncthing.create_instance_directory", "创建实例目录"))?;
     // 再次核验，避免目录恰好被其他创建者抢先建立。
     private_dir(path)?;
 
@@ -115,7 +121,7 @@ pub(crate) fn private_file(path: &Path) -> Result<(), AppError> {
     {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(path, fs::Permissions::from_mode(0o600))
-            .map_err(|_| io_error("设置文件权限"))?;
+            .map_err(|_| io_error("syncthing.set_file_permissions", "设置文件权限"))?;
     }
     #[cfg(not(unix))]
     let _ = path;
@@ -128,7 +134,12 @@ impl Drop for Temporary {
     }
 }
 pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), AppError> {
-    let parent = path.parent().ok_or_else(|| error("文件路径没有父目录"))?;
+    let parent = path.parent().ok_or_else(|| {
+        error(
+            "syncthing.file_path_has_no_parent_directory",
+            "文件路径没有父目录",
+        )
+    })?;
     let temp = Temporary(parent.join(format!(".pierlink-{}.tmp", uuid::Uuid::new_v4())));
     let mut options = OpenOptions::new();
     options.write(true).create_new(true);
@@ -139,13 +150,14 @@ pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), AppError> {
     }
     let mut file = options
         .open(&temp.0)
-        .map_err(|_| io_error("创建原子写入文件"))?;
+        .map_err(|_| io_error("syncthing.create_atomic_write_file", "创建原子写入文件"))?;
     file.write_all(bytes)
         .and_then(|_| file.sync_all())
-        .map_err(|_| io_error("写入配置文件"))?;
+        .map_err(|_| io_error("syncthing.write_configuration_file", "写入配置文件"))?;
     drop(file);
     #[cfg(not(windows))]
-    fs::rename(&temp.0, path).map_err(|_| io_error("替换配置文件"))?;
+    fs::rename(&temp.0, path)
+        .map_err(|_| io_error("syncthing.replace_configuration_file", "替换配置文件"))?;
     #[cfg(windows)]
     {
         use std::os::windows::ffi::OsStrExt;
@@ -162,7 +174,10 @@ pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), AppError> {
             )
         } == 0
         {
-            return Err(io_error("替换配置文件"));
+            return Err(io_error(
+                "syncthing.replace_configuration_file",
+                "替换配置文件",
+            ));
         }
     }
     Ok(())
@@ -185,9 +200,13 @@ pub(crate) fn lock(home: &Path) -> Result<HomeLock, AppError> {
     }
     let file = options
         .open(home.join("pierlink.lock"))
-        .map_err(|_| io_error("打开实例锁"))?;
-    file.try_lock()
-        .map_err(|_| AppError::new("syncthing.busy").with("reason", "实例目录锁正在使用"))?;
+        .map_err(|_| io_error("syncthing.open_instance_lock", "打开实例锁"))?;
+    file.try_lock().map_err(|_| {
+        AppError::new("syncthing.busy").with_reason(
+            "syncthing.instance_directory_lock_is_in_use",
+            "实例目录锁正在使用",
+        )
+    })?;
     Ok(HomeLock(file))
 }
 /// bin 为可信程序，spec 为实例路径与端口；每次经 stdin 更新 GUI 口令并加固配置，返回设备 ID。
@@ -203,30 +222,47 @@ pub fn init_home(
         || gui_password.len() > 4096
         || gui_password.contains(['\0', '\n', '\r'])
     {
-        return Err(error("实例路径、端口、用户名或口令无效"));
+        return Err(error(
+            "syncthing.invalid_instance_path_port_username_or_passphrase",
+            "实例路径、端口、用户名或口令无效",
+        ));
     }
     spec.gui.address()?;
     private_dir(&spec.home)?;
     let _lock = lock(&spec.home)?;
     if super::process::record_is_running(
         bin,
-        &crate::fs_local::plain_canonical(&spec.home).map_err(|_| io_error("解析实例目录"))?,
+        &crate::fs_local::plain_canonical(&spec.home)
+            .map_err(|_| io_error("syncthing.resolve_instance_directory", "解析实例目录"))?,
         &spec.gui,
     )? {
-        return Err(AppError::new("syncthing.busy").with("reason", "匹配的实例进程仍在运行"));
+        return Err(AppError::new("syncthing.busy").with_reason(
+            "syncthing.matching_instance_process_is_still_running",
+            "匹配的实例进程仍在运行",
+        ));
     }
     if let GuiListen::Unix { path } = &spec.gui {
-        socket_dir(path.parent().ok_or_else(|| error("套接字缺少父目录"))?)?;
+        socket_dir(path.parent().ok_or_else(|| {
+            error(
+                "syncthing.socket_has_no_parent_directory",
+                "套接字缺少父目录",
+            )
+        })?)?;
     }
     let config = spec.home.join("config.xml");
-    if config.try_exists().map_err(|_| io_error("检查配置文件"))? {
+    if config
+        .try_exists()
+        .map_err(|_| io_error("syncthing.check_configuration_file", "检查配置文件"))?
+    {
         super::xml::validate_source(&read_config(&config)?)?;
     }
     {
-        let home = spec
-            .home
-            .to_str()
-            .ok_or_else(|| error("实例路径不是有效文本"))?;
+        let home = spec.home.to_str().ok_or_else(|| {
+            error(
+                "syncthing.instance_path_is_not_valid_text",
+                "实例路径不是有效文本",
+            )
+        })?;
         run_short(
             bin,
             vec![
@@ -243,17 +279,24 @@ pub fn init_home(
     let input = read_config(&config)?;
     let output = super::xml::harden(&input, spec)?;
     atomic_write(&config, &output)?;
-    let device_id =
-        read_device_id(bin, &spec.home)?.ok_or_else(|| error("生成配置后没有设备证书"))?;
+    let device_id = read_device_id(bin, &spec.home)?.ok_or_else(|| {
+        error(
+            "syncthing.device_certificate_is_missing_after_configuration_generation",
+            "生成配置后没有设备证书",
+        )
+    })?;
     Ok(HomeInfo { device_id })
 }
 fn read_config(path: &Path) -> Result<Vec<u8>, AppError> {
     let mut input = Vec::new();
     fs::File::open(path)
         .and_then(|f| f.take(16 * 1024 * 1024 + 1).read_to_end(&mut input))
-        .map_err(|_| io_error("读取配置文件"))?;
+        .map_err(|_| io_error("syncthing.read_configuration_file", "读取配置文件"))?;
     if input.len() > 16 * 1024 * 1024 {
-        return Err(error("配置文件过大"));
+        return Err(error(
+            "syncthing.configuration_file_is_too_large",
+            "配置文件过大",
+        ));
     }
     Ok(input)
 }
@@ -263,21 +306,39 @@ pub fn read_device_id(_bin: &SyncthingBin, home: &Path) -> Result<Option<String>
     let file = match fs::File::open(home.join("cert.pem")) {
         Ok(file) => file,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(_) => return Err(io_error("读取设备证书")),
+        Err(_) => {
+            return Err(io_error(
+                "syncthing.read_device_certificate",
+                "读取设备证书",
+            ));
+        }
     };
     let mut bytes = Vec::new();
     file.take(1024 * 1024 + 1)
         .read_to_end(&mut bytes)
-        .map_err(|_| io_error("读取设备证书"))?;
+        .map_err(|_| io_error("syncthing.read_device_certificate", "读取设备证书"))?;
     if bytes.len() > 1024 * 1024 {
-        return Err(error("设备证书过大"));
+        return Err(error(
+            "syncthing.device_certificate_is_too_large",
+            "设备证书过大",
+        ));
     }
-    let text = std::str::from_utf8(&bytes).map_err(|_| error("设备证书格式无效"))?;
+    let text = std::str::from_utf8(&bytes).map_err(|_| {
+        error(
+            "syncthing.invalid_device_certificate_format",
+            "设备证书格式无效",
+        )
+    })?;
     let text = text
         .trim()
         .strip_prefix("-----BEGIN CERTIFICATE-----")
         .and_then(|s| s.strip_suffix("-----END CERTIFICATE-----"))
-        .ok_or_else(|| error("设备证书格式无效"))?;
+        .ok_or_else(|| {
+            error(
+                "syncthing.invalid_device_certificate_format",
+                "设备证书格式无效",
+            )
+        })?;
     let der = decode_certificate(text)?;
     let hash = Sha256::digest(&der);
     const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
@@ -300,10 +361,12 @@ pub fn read_device_id(_bin: &SyncthingBin, home: &Path) -> Result<Option<String>
         checked.extend_from_slice(part);
         let mut sum = 0;
         for (index, b) in part.iter().enumerate() {
-            let value = ALPHABET
-                .iter()
-                .position(|v| v == b)
-                .ok_or_else(|| error("设备 ID 编码失败"))?;
+            let value = ALPHABET.iter().position(|v| v == b).ok_or_else(|| {
+                error(
+                    "syncthing.couldn_t_encode_the_device_id",
+                    "设备 ID 编码失败",
+                )
+            })?;
             let value = value * (1 + index % 2);
             sum += value / 32 + value % 32;
         }
@@ -320,23 +383,37 @@ fn decode_certificate(text: &str) -> Result<Vec<u8>, AppError> {
     const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let bytes: Vec<_> = text.bytes().filter(|b| !b.is_ascii_whitespace()).collect();
     if bytes.is_empty() || bytes.len() % 4 != 0 {
-        return Err(error("设备证书 Base64 无效"));
+        return Err(error(
+            "syncthing.invalid_device_certificate_base64",
+            "设备证书 Base64 无效",
+        ));
     }
     let mut out = Vec::new();
     for (index, group) in bytes.as_chunks::<4>().0.iter().enumerate() {
         let mut values = [0u8; 4];
         let padding = group.iter().rev().take_while(|b| **b == b'=').count();
         if padding > 2 || (padding > 0 && (index + 1) * 4 != bytes.len()) {
-            return Err(error("设备证书 Base64 无效"));
+            return Err(error(
+                "syncthing.invalid_device_certificate_base64",
+                "设备证书 Base64 无效",
+            ));
         }
         for i in 0..4 - padding {
             values[i] = ALPHABET
                 .iter()
                 .position(|v| *v == group[i])
-                .ok_or_else(|| error("设备证书 Base64 无效"))? as u8;
+                .ok_or_else(|| {
+                    error(
+                        "syncthing.invalid_device_certificate_base64",
+                        "设备证书 Base64 无效",
+                    )
+                })? as u8;
         }
         if (padding == 2 && values[1] & 15 != 0) || (padding == 1 && values[2] & 3 != 0) {
-            return Err(error("设备证书 Base64 无效"));
+            return Err(error(
+                "syncthing.invalid_device_certificate_base64",
+                "设备证书 Base64 无效",
+            ));
         }
         out.push(values[0] << 2 | values[1] >> 4);
         if padding < 2 {
@@ -346,7 +423,12 @@ fn decode_certificate(text: &str) -> Result<Vec<u8>, AppError> {
             out.push(values[2] << 6 | values[3]);
         }
     }
-    let invalid = || error("设备证书 DER 无效");
+    let invalid = || {
+        error(
+            "syncthing.invalid_device_certificate_der",
+            "设备证书 DER 无效",
+        )
+    };
     if out.first() != Some(&0x30) {
         return Err(invalid());
     }
@@ -382,14 +464,17 @@ pub fn harden_config_xml(xml: &str, spec: &HardenSpec<'_>) -> Result<String, App
         || spec.api_key.len() > 4096
         || spec.api_key.contains(['\0', '\n', '\r'])
     {
-        return Err(error("远程配置参数无效"));
+        return Err(error(
+            "syncthing.invalid_remote_configuration_parameters",
+            "远程配置参数无效",
+        ));
     }
     String::from_utf8(super::xml::harden_with_key(
         xml.as_bytes(),
         spec.home,
         spec.api_key,
     )?)
-    .map_err(|_| error("配置编码无效"))
+    .map_err(|_| error("syncthing.invalid_configuration_encoding", "配置编码无效"))
 }
 
 #[cfg(test)]

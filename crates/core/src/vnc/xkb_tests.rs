@@ -38,24 +38,26 @@ fn 系统服务端可复用已获取前缀并补充键盘数据() {
 fn 私有目录创建失败和挂载工具缺失有明确原因() {
     let (root, program, cmd) = local();
     let body = format!(
-        "{}\nxkb_namespace_tools || fail xkb_unavailable \"$xkb_reason\"",
+        "{}\nxkb_namespace_tools || fail xkb_unavailable \"$xkb_reason_key\" \"$xkb_reason\"",
         include_str!("xkb.sh")
             .replace("command -v unshare", "command -v true")
             .replace("command -v mount", "command -v 不存在的挂载工具")
     );
     let error = desktop::run(&program, &cmd, &body, 10).unwrap_err();
     assert!(error.params["reason"].contains("mount"));
+    assert_eq!(error.params["reason_key"], "vnc.xkb_mount");
     assert_eq!(error.params["install_command"], INSTALL);
     let existing = root.path().join("已有目录");
     fs::create_dir(&existing).unwrap();
     fs::write(existing.join("保留"), "保留").unwrap();
     let body = format!(
-        "xkb_namespace_prepare {} || fail xkb_unavailable \"$xkb_reason\"",
+        "xkb_namespace_prepare {} || fail xkb_unavailable \"$xkb_reason_key\" \"$xkb_reason\"",
         sh_quote(existing.to_str().unwrap()).unwrap()
     );
     let error = desktop::run(&program, &cmd, &body, 10).unwrap_err();
     assert_eq!(error.code, "vnc.xkb_unavailable");
     assert!(error.params["reason"].contains("私有目录"));
+    assert_eq!(error.params["reason_key"], "vnc.xkb_private_directory");
     assert!(existing.join("保留").exists());
 }
 

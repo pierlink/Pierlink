@@ -31,9 +31,9 @@ rmdir -- "$apt_root/.lock"
 apt_private=false
 prefix_environment "$work/unpack"
 for executable in openbox xterm dbus-run-session dbus-daemon; do
-    executable_path=$(command -v "$executable") || package_error invalid_package "$executable" '系统和软件包中均缺少必需程序'
+    executable_path=$(command -v "$executable") || package_error invalid_package "$executable" 'vnc.program_missing' '系统和软件包中均缺少必需程序'
     libs=$(ldd "$executable_path" 2>&1 | awk '/not found/ {print $1}')
-    [ -z "$libs" ] || package_error missing_libs "$executable" "缺少动态库：$libs"
+    [ -z "$libs" ] || package_error missing_libs "$executable" "vnc.missing_libraries" "缺少动态库：$libs"
 done
 prefix=$binroot/$version
 mkdir -p "$work/unpack/etc/fonts" "$work/unpack/etc/xdg/openbox" || fail permission_denied

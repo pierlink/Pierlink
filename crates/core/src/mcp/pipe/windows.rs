@@ -63,8 +63,8 @@ struct Security(LocalAllocation);
 unsafe impl Send for Security {}
 unsafe impl Sync for Security {}
 
-fn failed(reason: &str) -> AppError {
-    AppError::new("mcp.pipe_failed").with("reason", reason)
+fn failed(text_key: &'static str, reason: &str) -> AppError {
+    AppError::new("mcp.pipe_failed").with_reason(text_key, reason)
 }
 
 fn wide(value: &str) -> Vec<u16> {
@@ -80,13 +80,19 @@ fn process_sid(process: HANDLE) -> Result<String, AppError> {
     unsafe {
         let mut token = null_mut();
         if OpenProcessToken(process, TOKEN_QUERY, &mut token) == 0 {
-            return Err(failed("读取进程用户失败"));
+            return Err(failed(
+                "mcp.couldn_t_read_the_process_owner",
+                "读取进程用户失败",
+            ));
         }
         let token = OwnedHandle(token);
         let mut length = 0;
         GetTokenInformation(token.0, TokenUser, null_mut(), 0, &mut length);
         if length < size_of::<TOKEN_USER>() as u32 {
-            return Err(failed("用户标识长度无效"));
+            return Err(failed(
+                "mcp.invalid_user_identifier_length",
+                "用户标识长度无效",
+            ));
         }
         // usize 向量保证 TOKEN_USER 需要的指针对齐
         let mut buffer = vec![0usize; (length as usize).div_ceil(size_of::<usize>())];
@@ -98,12 +104,18 @@ fn process_sid(process: HANDLE) -> Result<String, AppError> {
             &mut length,
         ) == 0
         {
-            return Err(failed("读取用户标识失败"));
+            return Err(failed(
+                "mcp.couldn_t_read_the_user_identifier",
+                "读取用户标识失败",
+            ));
         }
         let user = &*buffer.as_ptr().cast::<TOKEN_USER>();
         let mut sid = null_mut();
         if ConvertSidToStringSidW(user.User.Sid, &mut sid) == 0 {
-            return Err(failed("转换用户标识失败"));
+            return Err(failed(
+                "mcp.couldn_t_convert_the_user_identifier",
+                "转换用户标识失败",
+            ));
         }
         let _allocation = LocalAllocation(sid.cast());
         let mut count = 0;
@@ -111,7 +123,7 @@ fn process_sid(process: HANDLE) -> Result<String, AppError> {
             count += 1;
         }
         String::from_utf16(std::slice::from_raw_parts(sid, count))
-            .map_err(|_| failed("用户标识编码无效"))
+            .map_err(|_| failed("mcp.invalid_user_identifier_encoding", "用户标识编码无效"))
     }
 }
 
@@ -141,7 +153,7 @@ fn open_process(pid: u32) -> Option<OwnedHandle> {
 fn own_executable() -> Result<PathBuf, AppError> {
     std::env::current_exe()
         .and_then(std::fs::canonicalize)
-        .map_err(|_| failed("读取程序路径失败"))
+        .map_err(|_| failed("mcp.couldn_t_read_the_program_path", "读取程序路径失败"))
 }
 
 /// 当前用户的 MCP 管道名：`\\.\pipe\pierlink-mcp-<SID 的 SHA-256 前 16 位十六进制>`。
@@ -167,7 +179,10 @@ fn security() -> Result<Security, AppError> {
         )
     } == 0
     {
-        return Err(failed("建立管道权限失败"));
+        return Err(failed(
+            "mcp.couldn_t_set_pipe_permissions",
+            "建立管道权限失败",
+        ));
     }
     Ok(Security(LocalAllocation(descriptor)))
 }
@@ -232,7 +247,10 @@ where
     let expected = own_executable()?;
     let mut server = create(&name, &security, true).map_err(|e| {
         eprintln!("建立 MCP 管道失败: 管道={name}, 错误={e}");
-        failed("管道名已被占用或无法建立")
+        failed(
+            "mcp.pipe_name_is_in_use_or_the_pipe_could_not",
+            "管道名已被占用或无法建立",
+        )
     })?;
     loop {
         if let Err(e) = server.connect().await {
@@ -248,7 +266,10 @@ where
                 }
                 Err(e) => {
                     eprintln!("建立 MCP 管道实例失败: 错误={e}");
-                    return Err(failed("无法建立新的管道实例"));
+                    return Err(failed(
+                        "mcp.couldn_t_create_another_pipe_instance",
+                        "无法建立新的管道实例",
+                    ));
                 }
             }
         };
@@ -277,7 +298,10 @@ async fn connect(name: &str) -> Result<NamedPipeClient, AppError> {
             }
             Err(e) => {
                 eprintln!("连接 Pierlink 的 MCP 管道失败: 错误={e}");
-                return Err(failed("连不上 Pierlink"));
+                return Err(failed(
+                    "mcp.couldn_t_connect_to_pierlink",
+                    "连不上 Pierlink",
+                ));
             }
         }
     }

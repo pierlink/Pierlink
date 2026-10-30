@@ -15,7 +15,10 @@ pub(super) struct Document {
     bom: bool,
 }
 pub(super) fn unsupported() -> AppError {
-    AppError::new("mcp.encoding_unsupported").with("reason", "文件编码无效或新内容无法用原编码表示")
+    AppError::new("mcp.encoding_unsupported").with_reason(
+        "mcp.invalid_file_encoding_or_content_cannot_be_represented_in_the",
+        "文件编码无效或新内容无法用原编码表示",
+    )
 }
 pub(super) fn binary(bytes: &[u8]) -> bool {
     !bytes.starts_with(&[0xff, 0xfe])
@@ -55,7 +58,10 @@ impl Document {
     }
     fn decode_with(bytes: &[u8], ansi: &'static Encoding) -> Result<Self, AppError> {
         if binary(bytes) {
-            return Err(AppError::new("mcp.binary_file").with("reason", "二进制文件不能按文字编辑"));
+            return Err(AppError::new("mcp.binary_file").with_reason(
+                "mcp.binary_files_cannot_be_edited_as_text",
+                "二进制文件不能按文字编辑",
+            ));
         }
         let (codec, bom, data) = if bytes.starts_with(&[0xff, 0xfe]) {
             (Codec::Utf16(true), true, &bytes[2..])

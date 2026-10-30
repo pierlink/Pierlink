@@ -188,8 +188,8 @@ impl Registry {
         let mut entries = lock(&self.entries);
         let registered = entries.get(id).ok_or_else(not_found)?;
         if matches!(registered.info.source, TerminalSource::HandedOver { .. }) {
-            return Err(AppError::new("mcp.terminal_close_denied").with(
-                "reason",
+            return Err(AppError::new("mcp.terminal_close_denied").with_reason(
+                "mcp.ai_cannot_close_a_shared_user_terminal_reclaim_it_or",
                 "用户交出的终端不能由 AI 关闭，请用户收回或在终端内退出",
             ));
         }
@@ -207,8 +207,10 @@ impl Registry {
         let mut entries = lock(&self.entries);
         let registered = entries.get(id).ok_or_else(not_found)?;
         if !matches!(registered.info.source, TerminalSource::HandedOver { .. }) {
-            return Err(AppError::new("mcp.terminal_not_handed_over")
-                .with("reason", "这个终端不是用户交出的终端"));
+            return Err(AppError::new("mcp.terminal_not_handed_over").with_reason(
+                "mcp.this_terminal_was_not_shared_by_the_user",
+                "这个终端不是用户交出的终端",
+            ));
         }
         self.revoke(registered)?;
         let info = registered.info.clone();
@@ -292,8 +294,12 @@ fn notify_taken_back(host: &dyn McpHost, info: &AiTerminal) {
     }
 }
 fn not_found() -> AppError {
-    AppError::new("mcp.terminal_not_found").with("reason", "AI 终端不存在")
+    AppError::new("mcp.terminal_not_found")
+        .with_reason("mcp.ai_terminal_does_not_exist", "AI 终端不存在")
 }
 fn already_registered() -> AppError {
-    AppError::new("mcp.terminal_registered").with("reason", "终端已交给 AI，请先收回")
+    AppError::new("mcp.terminal_registered").with_reason(
+        "mcp.terminal_is_shared_with_ai_reclaim_it_first",
+        "终端已交给 AI，请先收回",
+    )
 }

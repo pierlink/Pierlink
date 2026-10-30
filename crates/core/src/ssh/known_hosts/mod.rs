@@ -72,7 +72,12 @@ impl KnownHosts {
         let variable = "HOME";
         let home = std::env::var_os(variable)
             .filter(|home| !home.is_empty())
-            .ok_or_else(|| failure("无法确定用户目录"))?;
+            .ok_or_else(|| {
+                failure(
+                    "ssh.couldn_t_determine_the_user_directory",
+                    "无法确定用户目录",
+                )
+            })?;
         let ssh = PathBuf::from(home).join(".ssh");
         Ok(Self::new(
             ssh.join("known_hosts"),
@@ -151,9 +156,13 @@ impl KnownHosts {
             use std::os::unix::fs::OpenOptionsExt;
             options.mode(0o600);
         }
-        let mut file = options
-            .open(&self.primary)
-            .map_err(|e| io_failure("打开追加文件失败", e))?;
+        let mut file = options.open(&self.primary).map_err(|e| {
+            io_failure(
+                "ssh.couldn_t_open_the_file_for_appending",
+                "打开追加文件失败",
+                e,
+            )
+        })?;
         // 系统文件锁随 File 释放；同进程和跨进程的本模块写入都不会交叉。
         // 用非阻塞锁轮询，使连接取消不被另一个正在写入的进程阻塞。
         loop {
@@ -166,7 +175,11 @@ impl KnownHosts {
                     std::thread::sleep(std::time::Duration::from_millis(10));
                 }
                 Err(std::fs::TryLockError::Error(e)) => {
-                    return Err(io_failure("锁定追加文件失败", e));
+                    return Err(io_failure(
+                        "ssh.couldn_t_lock_the_file_for_appending",
+                        "锁定追加文件失败",
+                        e,
+                    ));
                 }
             }
         }
@@ -176,15 +189,25 @@ impl KnownHosts {
         }
         let length = file
             .metadata()
-            .map_err(|e| io_failure("读取文件长度失败", e))?
+            .map_err(|e| io_failure("ssh.couldn_t_read_the_file_length", "读取文件长度失败", e))?
             .len();
         let mut line = String::new();
         if length > 0 {
-            file.seek(SeekFrom::End(-1))
-                .map_err(|e| io_failure("读取文件末尾失败", e))?;
+            file.seek(SeekFrom::End(-1)).map_err(|e| {
+                io_failure(
+                    "ssh.couldn_t_read_the_end_of_the_file",
+                    "读取文件末尾失败",
+                    e,
+                )
+            })?;
             let mut last = [0];
-            file.read_exact(&mut last)
-                .map_err(|e| io_failure("读取文件末尾失败", e))?;
+            file.read_exact(&mut last).map_err(|e| {
+                io_failure(
+                    "ssh.couldn_t_read_the_end_of_the_file",
+                    "读取文件末尾失败",
+                    e,
+                )
+            })?;
             if last != *b"\n" {
                 line.push('\n');
             }
@@ -193,10 +216,20 @@ impl KnownHosts {
         if cancelled.load(Ordering::Acquire) {
             return Ok(false);
         }
-        file.write_all(line.as_bytes())
-            .map_err(|e| io_failure("追加主机公钥失败", e))?;
-        file.sync_data()
-            .map_err(|e| io_failure("保存主机公钥失败", e))?;
+        file.write_all(line.as_bytes()).map_err(|e| {
+            io_failure(
+                "ssh.couldn_t_append_the_host_public_key",
+                "追加主机公钥失败",
+                e,
+            )
+        })?;
+        file.sync_data().map_err(|e| {
+            io_failure(
+                "ssh.couldn_t_save_the_host_public_key",
+                "保存主机公钥失败",
+                e,
+            )
+        })?;
         Ok(true)
     }
 
@@ -209,9 +242,13 @@ impl KnownHosts {
                 use std::os::unix::fs::DirBuilderExt;
                 builder.mode(0o700);
             }
-            builder
-                .create(parent)
-                .map_err(|e| io_failure("创建主机记录目录失败", e))?;
+            builder.create(parent).map_err(|e| {
+                io_failure(
+                    "ssh.couldn_t_create_the_host_record_directory",
+                    "创建主机记录目录失败",
+                    e,
+                )
+            })?;
         }
         Ok(())
     }
@@ -220,7 +257,7 @@ impl KnownHosts {
         let mut records = Records::default();
         if let Some(file) = primary {
             file.seek(SeekFrom::Start(0))
-                .map_err(|e| io_failure("读取主机记录失败", e))?;
+                .map_err(|e| io_failure("ssh.couldn_t_read_host_records", "读取主机记录失败", e))?;
             records.read(BufReader::new(file), &self.primary)?;
         } else {
             records.read_path(&self.primary)?;
@@ -237,7 +274,11 @@ impl Records {
         match File::open(path) {
             Ok(file) => self.read(BufReader::new(file), path),
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
-            Err(e) => Err(io_failure("读取主机记录失败", e)),
+            Err(e) => Err(io_failure(
+                "ssh.couldn_t_read_host_records",
+                "读取主机记录失败",
+                e,
+            )),
         }
     }
 
@@ -250,16 +291,20 @@ impl Records {
                 .by_ref()
                 .take((MAX_LINE + 1) as u64)
                 .read_until(b'\n', &mut bytes)
-                .map_err(|e| io_failure("读取主机记录失败", e))?;
+                .map_err(|e| io_failure("ssh.couldn_t_read_host_records", "读取主机记录失败", e))?;
             if count == 0 {
                 return Ok(());
             }
             line += 1;
             if bytes.len() > MAX_LINE {
                 if bytes.last() != Some(&b'\n') {
-                    reader
-                        .skip_until(b'\n')
-                        .map_err(|e| io_failure("跳过超长主机记录失败", e))?;
+                    reader.skip_until(b'\n').map_err(|e| {
+                        io_failure(
+                            "ssh.couldn_t_skip_an_oversized_host_record",
+                            "跳过超长主机记录失败",
+                            e,
+                        )
+                    })?;
                 }
                 self.invalid_lines += 1;
                 continue;
@@ -286,6 +331,7 @@ impl Records {
                         name,
                         key,
                         entry,
+                        "ssh.host_key_revoked",
                         "主机公钥已被撤销",
                         self.invalid_lines,
                     ));
@@ -309,6 +355,7 @@ impl Records {
                 name,
                 key,
                 entry,
+                "ssh.host_key_different",
                 "同类型主机公钥发生变化",
                 self.invalid_lines,
             ));
@@ -358,9 +405,10 @@ fn record_name(host: &str, port: u16, alias: Option<&str>) -> Result<String, App
             .chars()
             .any(|c| c.is_whitespace() || c.is_control() || ",!*?|#@".contains(c))
     {
-        return Err(
-            AppError::new("ssh.invalid_host").with("reason", "主机名或别名不能写入主机记录")
-        );
+        return Err(AppError::new("ssh.invalid_host").with_reason(
+            "ssh.hostname_or_alias_cannot_be_saved_in_host_records",
+            "主机名或别名不能写入主机记录",
+        ));
     }
     // OpenSSH 会将 HostKeyAlias 转小写并代替完整查找名称，不能再加端口。
     Ok(if alias.is_some() || port == 22 {
@@ -372,8 +420,12 @@ fn record_name(host: &str, port: u16, alias: Option<&str>) -> Result<String, App
 }
 
 fn validate_key(key: &HostKey) -> Result<PublicKey, AppError> {
-    let invalid =
-        || AppError::new("ssh.invalid_host_key").with("reason", "服务器公钥格式或指纹无效");
+    let invalid = || {
+        AppError::new("ssh.invalid_host_key").with_reason(
+            "ssh.invalid_server_public_key_format_or_fingerprint",
+            "服务器公钥格式或指纹无效",
+        )
+    };
     if key.public_key.len() > MAX_LINE / 2
         || key.algorithm.len() > 128
         || key.public_key.bytes().any(|b| b.is_ascii_whitespace())
@@ -395,12 +447,13 @@ fn key_changed(
     name: &str,
     key: &PublicKey,
     record: &Record,
+    text_key: &'static str,
     reason: &str,
     invalid_lines: usize,
 ) -> AppError {
     AppError::new("ssh.host_key_changed")
         .with("host", name)
-        .with("reason", reason)
+        .with_reason(text_key, reason)
         .with("fingerprint", key.fingerprint(HashAlg::Sha256))
         .with("known_fingerprint", record.key.fingerprint(HashAlg::Sha256))
         .with("file", record.file.display())
@@ -408,11 +461,11 @@ fn key_changed(
         .with("invalid_lines", invalid_lines)
 }
 
-fn failure(reason: &str) -> AppError {
-    AppError::new("ssh.known_hosts_failed").with("reason", reason)
+fn failure(text_key: &'static str, reason: &str) -> AppError {
+    AppError::new("ssh.known_hosts_failed").with_reason(text_key, reason)
 }
 
-fn io_failure(reason: &str, error: io::Error) -> AppError {
+fn io_failure(text_key: &'static str, reason: &str, error: io::Error) -> AppError {
     // 不回传原始底层错误文本，避免不可信内容进入界面或日志。
-    failure(reason).with("io_kind", format!("{:?}", error.kind()))
+    failure(text_key, reason).with("io_kind", format!("{:?}", error.kind()))
 }

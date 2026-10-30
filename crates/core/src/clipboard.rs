@@ -132,7 +132,10 @@ mod windows {
                 )
             };
             if window.is_null() {
-                Err(write_failed("创建剪贴板窗口失败"))
+                Err(write_failed(
+                    "clipboard.couldn_t_create_the_clipboard_window",
+                    "创建剪贴板窗口失败",
+                ))
             } else {
                 Ok(Self(window))
             }
@@ -147,9 +150,9 @@ mod windows {
         }
     }
 
-    fn write_failed(reason: &str) -> AppError {
+    fn write_failed(text_key: &'static str, reason: &str) -> AppError {
         AppError::new("clipboard.write_failed")
-            .with("reason", reason)
+            .with_reason(text_key, reason)
             .with("status", unsafe { GetLastError() })
     }
 
@@ -160,22 +163,34 @@ mod windows {
         let _opened = open(owner.0)?;
         unsafe {
             if EmptyClipboard() == 0 {
-                return Err(write_failed("清空剪贴板失败"));
+                return Err(write_failed(
+                    "clipboard.couldn_t_clear_the_clipboard",
+                    "清空剪贴板失败",
+                ));
             }
             let memory = GlobalAlloc(GMEM_MOVEABLE, wide.len() * size_of::<u16>());
             if memory.is_null() {
-                return Err(write_failed("分配剪贴板内存失败"));
+                return Err(write_failed(
+                    "clipboard.couldn_t_allocate_clipboard_memory",
+                    "分配剪贴板内存失败",
+                ));
             }
             let pointer = GlobalLock(memory) as *mut u16;
             if pointer.is_null() {
-                let error = write_failed("锁定剪贴板内存失败");
+                let error = write_failed(
+                    "clipboard.couldn_t_lock_clipboard_memory",
+                    "锁定剪贴板内存失败",
+                );
                 GlobalFree(memory);
                 return Err(error);
             }
             std::ptr::copy_nonoverlapping(wide.as_ptr(), pointer, wide.len());
             GlobalUnlock(memory);
             if SetClipboardData(CF_UNICODETEXT, memory).is_null() {
-                let error = write_failed("设置剪贴板文字失败");
+                let error = write_failed(
+                    "clipboard.couldn_t_set_clipboard_text",
+                    "设置剪贴板文字失败",
+                );
                 GlobalFree(memory);
                 return Err(error);
             }

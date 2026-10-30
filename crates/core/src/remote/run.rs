@@ -102,7 +102,10 @@ pub fn classify_error(exit_code: Option<i32>, stderr: &str, secrets: &[&str]) ->
             .next()
             .and_then(|p| p.parse::<u16>().ok());
         let mut error = error_with_tail("tunnel.remote_forward_failed", exit_code, stderr, secrets)
-            .with("reason", "服务器监听端口被占用，或服务器禁止远程转发");
+            .with_reason(
+                "remote.server_listening_port_is_in_use_or_remote_forwarding_is",
+                "服务器监听端口被占用，或服务器禁止远程转发",
+            );
         if let Some(port) = port {
             error = error.with("port", port);
         }
@@ -158,7 +161,7 @@ pub fn run_script(
             .child
             .stdout
             .take()
-            .ok_or_else(|| io_error("获取标准输出"))?,
+            .ok_or_else(|| io_error("remote.get_standard_output", "获取标准输出"))?,
         limits.stdout_bytes,
     )?;
     let mut stderr = match Reader::start(
@@ -166,7 +169,7 @@ pub fn run_script(
             .child
             .stderr
             .take()
-            .ok_or_else(|| io_error("获取错误输出"))?,
+            .ok_or_else(|| io_error("remote.get_error_output", "获取错误输出"))?,
         limits.stderr_bytes,
     ) {
         Ok(r) => r,
@@ -180,25 +183,33 @@ pub fn run_script(
         .child
         .stdin
         .take()
-        .ok_or_else(|| io_error("获取标准输入"))?;
+        .ok_or_else(|| io_error("remote.get_standard_input", "获取标准输入"))?;
     let writer = thread::Builder::new()
         .name("ssh写入".into())
         .spawn(move || stdin.write_all(script.as_bytes()));
     let result = (|| {
-        let writer = writer.as_ref().map_err(|_| io_error("创建写入线程"))?;
+        let writer = writer
+            .as_ref()
+            .map_err(|_| io_error("remote.create_writer_thread", "创建写入线程"))?;
         let mut exited = None;
         loop {
             if start.elapsed() >= limits.timeout {
                 return Err(AppError::new("remote.timeout"));
             }
-            let out = stdout.state.lock().map_err(|_| io_error("读取标准输出"))?;
-            let err = stderr.state.lock().map_err(|_| io_error("读取错误输出"))?;
+            let out = stdout
+                .state
+                .lock()
+                .map_err(|_| io_error("remote.read_standard_output", "读取标准输出"))?;
+            let err = stderr
+                .state
+                .lock()
+                .map_err(|_| io_error("remote.read_error_output", "读取错误输出"))?;
             if out.exceeded || err.exceeded {
                 return Err(AppError::new("remote.output_too_large")
                     .with("stream", if out.exceeded { "stdout" } else { "stderr" }));
             }
             if out.failed || err.failed {
-                return Err(io_error("读取管道"));
+                return Err(io_error("remote.read_pipe", "读取管道"));
             }
             if let Some(status) = process.try_wait()?
                 && ((out.done && err.done && writer.is_finished())
@@ -232,7 +243,7 @@ pub fn run_script(
         .and_then(|w| if w.is_finished() { w.join().ok() } else { None })
         .is_some_and(|r| r.is_ok());
     if result.is_ok() && !wrote {
-        return Err(io_error("写入脚本"));
+        return Err(io_error("remote.write_script", "写入脚本"));
     }
     result
 }

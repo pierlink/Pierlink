@@ -70,7 +70,10 @@ pub fn restore_versions(
             .insert(path.clone(), Value::String(format_ms(*time)))
             .is_some()
         {
-            return Err(super::error("同一文件不能同时恢复多个版本"));
+            return Err(super::error(
+                "sync.multiple_versions_of_the_same_file_cannot_be_restored_together",
+                "同一文件不能同时恢复多个版本",
+            ));
         }
     }
     if body.is_empty() {
@@ -88,15 +91,12 @@ pub fn restore_versions(
         if !reason.is_empty() {
             errors.push(RestoreError {
                 path: path.clone(),
-                reason: format!(
-                    "旧版本恢复失败：{}",
-                    local
-                        .client()
-                        .redact_text(reason)
-                        .chars()
-                        .take(512)
-                        .collect::<String>()
-                ),
+                reason: local
+                    .client()
+                    .redact_text(reason)
+                    .chars()
+                    .take(512)
+                    .collect(),
             });
         }
     }
@@ -118,7 +118,7 @@ mod tests {
                 )
             } else {
                 assert_eq!(body.unwrap()["a"], "2026-10-22T00:00:00.000Z");
-                Ok(json!({"a":"失败 secret"}))
+                Ok(json!({"a":"permission denied secret"}))
             }
         }));
         let local = LocalSync {
@@ -132,9 +132,28 @@ mod tests {
         let v = list_versions(&local, id, None).unwrap().remove(0);
         let errors = restore_versions(&local, id, &[(v.path, v.version_time_ms)]).unwrap();
         assert_eq!(errors.len(), 1);
-        assert!(!errors[0].reason.contains("secret"));
+        assert_eq!(errors[0].path, "a");
+        assert_eq!(errors[0].reason, "permission denied ***");
         assert!(restore_versions(&local, id, &[("../x".into(), 0)]).is_err());
         assert!(restore_versions(&local, id, &[]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn 恢复失败原因先脱敏再按字符截断() {
+        let mut client = Client::new("http://127.0.0.1:1", "secret").unwrap();
+        client.test_handler = Some(std::sync::Arc::new(|_, _, _, _| {
+            Ok(json!({"a": format!("secret{}", "错".repeat(600)), "b": ""}))
+        }));
+        let local = LocalSync {
+            address_updates: Default::default(),
+            instance: None,
+            client,
+            id: "test".into(),
+        };
+        let errors = restore_versions(&local, "pl-1234567890123456", &[("a".into(), 0)]).unwrap();
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].reason, format!("***{}", "错".repeat(509)));
+        assert_eq!(errors[0].reason.chars().count(), 512);
     }
 }
 

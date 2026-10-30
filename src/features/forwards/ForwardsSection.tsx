@@ -110,7 +110,7 @@ export function ForwardsSection({ serverId }: { serverId: string }) {
       </div>
       {/* 出错时只占固定的一行（完整内容在悬停提示里），点开关时列表不跳 */}
       <p className={`fwd__error pl-ellipsis${error ? "" : " fwd__error--none"}`} role={error ? "alert" : undefined} title={error ? `${error.title}\n${error.text}` : undefined}>
-        {error ? `${error.title}：${error.text}` : ""}
+        {error ? t("common.labeled", { label: error.title, text: error.text }) : ""}
       </p>
       {loaded && items.length === 0 && !error && <p className="snip__hint">{t("forwards.empty")}</p>}
       {items.map((f) => (

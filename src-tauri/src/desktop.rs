@@ -691,16 +691,18 @@ pub async fn desktop_open_window(
     title: String,
     url: String,
 ) -> Result<(), AppError> {
-    let failed = |reason: &str| AppError::new("vnc.window_failed").with("reason", reason);
+    let failed = |key: &'static str, reason: &str| {
+        AppError::new("vnc.window_failed").with_reason(key, reason)
+    };
     if server_id.is_empty()
         || !server_id
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
     {
-        return Err(failed("服务器 ID 不合法"));
+        return Err(failed("vnc.invalid_server_id", "服务器 ID 不合法"));
     }
     if !url.starts_with("index.html#desktop-window?") {
-        return Err(failed("窗口地址不合法"));
+        return Err(failed("vnc.invalid_window_address", "窗口地址不合法"));
     }
     let label = format!("desktop-{server_id}");
     if let Some(win) = app.get_webview_window(&label) {
@@ -716,7 +718,9 @@ pub async fn desktop_open_window(
     if let Some(args) = crate::e2e_browser_args() {
         builder = builder.additional_browser_args(&args);
     }
-    builder.build().map_err(|e| failed(&e.to_string()))?;
+    builder
+        .build()
+        .map_err(|e| AppError::new("vnc.window_failed").with("reason", e))?;
     eprintln!("打开桌面独立窗口: 服务器={server_id}");
     Ok(())
 }

@@ -39,16 +39,19 @@ fn invalid() -> AppError {
     AppError::new("syncthing.invalid_response")
 }
 pub(crate) fn loopback_port(value: &str, prefix: &str) -> Result<u16, AppError> {
-    let port = value
-        .strip_prefix(prefix)
-        .ok_or_else(|| error("只允许本机 IPv4 回环地址"))?;
+    let port = value.strip_prefix(prefix).ok_or_else(|| {
+        error(
+            "syncthing.only_local_ipv4_loopback_addresses_are_allowed",
+            "只允许本机 IPv4 回环地址",
+        )
+    })?;
     if port.is_empty() || !port.bytes().all(|b| b.is_ascii_digit()) {
-        return Err(error("端口无效"));
+        return Err(error("syncthing.invalid_port", "端口无效"));
     }
     port.parse::<u16>()
         .ok()
         .filter(|p| *p > 0)
-        .ok_or_else(|| error("端口无效"))
+        .ok_or_else(|| error("syncthing.invalid_port", "端口无效"))
 }
 fn encode(value: &str) -> String {
     let mut result = String::new();
@@ -69,7 +72,10 @@ impl Client {
     pub fn new(base: &str, api_key: &str) -> Result<Self, AppError> {
         loopback_port(base, "http://127.0.0.1:")?;
         if api_key.bytes().any(|b| b < 32 || b == 127) {
-            return Err(error("API 密钥含非法控制字符"));
+            return Err(error(
+                "syncthing.api_key_contains_invalid_control_characters",
+                "API 密钥含非法控制字符",
+            ));
         }
         Ok(Self {
             #[cfg(test)]
@@ -132,7 +138,7 @@ impl Client {
         let bytes = body
             .map(|v| serde_json::to_vec(&v))
             .transpose()
-            .map_err(|_| error("无法编码请求"))?
+            .map_err(|_| error("syncthing.couldn_t_encode_the_request", "无法编码请求"))?
             .unwrap_or_default();
         let req = ureq::http::Request::builder()
             .method(method)
@@ -140,7 +146,7 @@ impl Client {
             .header("X-API-Key", &self.api_key)
             .header("Content-Type", "application/json")
             .body(bytes)
-            .map_err(|_| error("无法构造请求"))?;
+            .map_err(|_| error("syncthing.couldn_t_build_the_request", "无法构造请求"))?;
         let mut response = agent
             .run(req)
             .map_err(|_| AppError::new("syncthing.unreachable"))?;
@@ -236,7 +242,10 @@ impl Client {
     pub fn add_device(&self, id: &str, name: &str, addresses: &[String]) -> Result<(), AppError> {
         validate_device_id(id)?;
         if addresses.is_empty() {
-            return Err(error("设备必须有回环地址"));
+            return Err(error(
+                "syncthing.device_must_have_a_loopback_address",
+                "设备必须有回环地址",
+            ));
         }
         for addr in addresses {
             if addr != "dynamic" {
@@ -259,9 +268,12 @@ impl Client {
     /// 用 patch 更新 id 文件夹；返回更新结果。路径与版本策略变更应使用经过校验的 FolderSpec。
     pub fn patch_folder(&self, id: &str, patch: Value) -> Result<(), AppError> {
         validate_task_folder_id(id)?;
-        let object = patch
-            .as_object()
-            .ok_or_else(|| error("文件夹补丁必须是对象"))?;
+        let object = patch.as_object().ok_or_else(|| {
+            error(
+                "syncthing.folder_patch_must_be_an_object",
+                "文件夹补丁必须是对象",
+            )
+        })?;
         if object.keys().any(|key| {
             ![
                 "paused",
@@ -277,17 +289,22 @@ impl Client {
         if let Some(delay) = object.get("fsWatcherDelayS")
             && !delay.as_u64().is_some_and(|v| (1..=60).contains(&v))
         {
-            return Err(error("同步等待须在 1–60 秒内"));
+            return Err(error(
+                "syncthing.sync_wait_time_must_be_1_60_seconds",
+                "同步等待须在 1–60 秒内",
+            ));
         }
         if let Some(devices) = object.get("devices") {
-            for device in devices
-                .as_array()
-                .ok_or_else(|| error("设备列表必须是数组"))?
-            {
+            for device in devices.as_array().ok_or_else(|| {
+                error(
+                    "syncthing.device_list_must_be_an_array",
+                    "设备列表必须是数组",
+                )
+            })? {
                 validate_device_id(
                     device["deviceID"]
                         .as_str()
-                        .ok_or_else(|| error("设备 ID 缺失"))?,
+                        .ok_or_else(|| error("syncthing.device_id_is_missing", "设备 ID 缺失"))?,
                 )?;
             }
         }
@@ -395,9 +412,12 @@ impl Client {
     }
     /// 用 patch 更新实例选项；返回管理接口结果，仅允许重连间隔及收发限速。
     pub fn patch_options(&self, patch: Value) -> Result<(), AppError> {
-        let object = patch
-            .as_object()
-            .ok_or_else(|| error("选项补丁必须是对象"))?;
+        let object = patch.as_object().ok_or_else(|| {
+            error(
+                "syncthing.options_patch_must_be_an_object",
+                "选项补丁必须是对象",
+            )
+        })?;
         if object.keys().any(|key| {
             !["reconnectionIntervalS", "maxSendKbps", "maxRecvKbps"].contains(&key.as_str())
         }) {

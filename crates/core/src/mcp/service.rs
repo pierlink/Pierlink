@@ -67,7 +67,8 @@ impl McpService {
             .enable_all()
             .build()
             .map_err(|_| {
-                AppError::new("mcp.runtime_failed").with("reason", "无法创建 MCP 运行时")
+                AppError::new("mcp.runtime_failed")
+                    .with_reason("mcp.couldn_t_create_the_mcp_runtime", "无法创建 MCP 运行时")
             })?;
         let handle = runtime.handle().clone();
         let audit = Audit::new(audit_dir, 30);
@@ -189,14 +190,18 @@ impl McpService {
         target: Target,
     ) -> Result<(), AppError> {
         let permissions = self.shared.host.permissions(&entry)?.ok_or_else(|| {
-            AppError::new("mcp.entry_disabled").with("reason", "这个 MCP 入口未启用")
+            AppError::new("mcp.entry_disabled")
+                .with_reason("mcp.this_mcp_entry_is_disabled", "这个 MCP 入口未启用")
         })?;
         let targets = self.shared.host.targets(&entry, &permissions)?;
         let target = tools::terminal_targets(&permissions, &targets)
             .into_iter()
             .find(|allowed| allowed.id == target.id && allowed.kind == target.kind)
             .ok_or_else(|| {
-                AppError::new("mcp.target_denied").with("reason", "这个入口没有终端目标的操作权限")
+                AppError::new("mcp.target_denied").with_reason(
+                    "mcp.this_entry_cannot_operate_on_the_terminal_target",
+                    "这个入口没有终端目标的操作权限",
+                )
             })?;
         if !self.shared.host.user_terminals()?.iter().any(|terminal| {
             terminal.terminal_id == terminal_id
@@ -204,8 +209,10 @@ impl McpService {
                 && terminal.kind == target.kind
                 && !terminal.target_id.is_empty()
         }) {
-            return Err(AppError::new("mcp.terminal_not_found")
-                .with("reason", "用户终端不存在或目标不匹配"));
+            return Err(AppError::new("mcp.terminal_not_found").with_reason(
+                "mcp.user_terminal_is_missing_or_its_target_does_not_match",
+                "用户终端不存在或目标不匹配",
+            ));
         }
         let info = self.shared.registry.hand_over(
             terminal_id,
@@ -279,7 +286,7 @@ async fn serve<T: Transport<RoleServer> + 'static>(
             _ = async {
                 while let Some(message) = transport.receive().await {
                     if let ClientJsonRpcMessage::Request(request) = message {
-                        let _ = transport.send(ServerJsonRpcMessage::error(ErrorData::invalid_request("这个入口的会话太多，最多允许 8 个", None),Some(request.id))).await;
+                        let _ = transport.send(ServerJsonRpcMessage::error(ErrorData::invalid_request("这个入口的会话太多，最多允许 8 个", Some(serde_json::json!(AppError::new("mcp.session_failed").with_reason("mcp.session_limit", "这个入口的会话太多，最多允许 8 个")))),Some(request.id))).await;
                         break;
                     }
                 }
@@ -314,7 +321,10 @@ async fn serve<T: Transport<RoleServer> + 'static>(
     }
 }
 fn session_error() -> AppError {
-    AppError::new("mcp.session_failed").with("reason", "MCP 连接已结束或协议消息无效")
+    AppError::new("mcp.session_failed").with_reason(
+        "mcp.mcp_connection_ended_or_the_protocol_message_is_invalid",
+        "MCP 连接已结束或协议消息无效",
+    )
 }
 
 // 在传输 EOF 时立即取消阻塞工作，避免等 SDK 排空响应的五秒期限；不改变协议消息。
@@ -434,7 +444,15 @@ impl ServerHandler for Handler {
             shared.complete(&session, &request.name, &args, (result, approval), started)
         })
         .await
-        .map_err(|_| ErrorData::internal_error("工具工作线程异常结束", None))?
+        .map_err(|_| {
+            ErrorData::internal_error(
+                "工具工作线程异常结束",
+                Some(serde_json::json!(
+                    AppError::new("mcp.session_failed")
+                        .with_reason("mcp.worker_stopped", "工具工作线程异常结束")
+                )),
+            )
+        })?
         .map(Into::into)
     }
 }
@@ -622,22 +640,22 @@ impl Shared {
                 Ok(CallToolResult::structured(value))
             }
             Err(Failure::Params(error)) => Err(error),
-            Err(Failure::Tool(error)) => {
-                let reason = if matches!(
+            Err(Failure::Tool(mut error)) => {
+                if matches!(
                     error.code.as_str(),
                     "ssh.password_needed" | "ssh.two_factor_required"
                 ) {
-                    "需要在 Pierlink 里登录这台服务器".into()
-                } else {
-                    error
-                        .params
-                        .get("reason")
-                        .cloned()
-                        .unwrap_or_else(|| format!("操作失败（{}）", error.code))
-                };
+                    error =
+                        error.with_reason("mcp.login_required", "需要在 Pierlink 里登录这台服务器");
+                } else if !error.params.contains_key("reason") {
+                    let code = error.code.clone();
+                    error = error
+                        .with_reason("mcp.operation_failed", format!("操作失败（{code}）"))
+                        .with("error_code", code);
+                }
+                let reason = error.params.get("reason").cloned().unwrap_or_default();
                 let mut params = error.params;
                 params.remove("action");
-                params.insert("reason".into(), reason.clone());
                 for text in params.values_mut() {
                     *text = crate::security::redact(text, &secret_refs);
                 }

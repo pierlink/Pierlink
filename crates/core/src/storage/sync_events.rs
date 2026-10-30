@@ -38,7 +38,13 @@ fn now_ms() -> Result<i64, AppError> {
         .duration_since(UNIX_EPOCH)
         .ok()
         .and_then(|d| i64::try_from(d.as_millis()).ok())
-        .ok_or_else(|| failure("storage.clock", "系统时间超出可保存范围"))
+        .ok_or_else(|| {
+            failure(
+                "storage.clock",
+                "storage.system_time_is_outside_the_supported_range",
+                "系统时间超出可保存范围",
+            )
+        })
 }
 fn prune_expired(conn: &Connection, now_ms: i64) -> Result<(), AppError> {
     conn.execute(
@@ -88,13 +94,20 @@ impl Db {
             )
             .optional()
             .map_err(sql_error)?
-            .ok_or_else(|| failure("storage.not_found", "同步任务不存在"))?;
+            .ok_or_else(|| {
+                failure(
+                    "storage.not_found",
+                    "storage.sync_task_does_not_exist",
+                    "同步任务不存在",
+                )
+            })?;
         if events
             .iter()
             .any(|e| !e.folder_id.is_empty() && e.folder_id != folder_id)
         {
             return Err(failure(
                 "storage.invalid_events",
+                "storage.event_folder_does_not_belong_to_the_current_sync_task",
                 "事件文件夹不属于当前同步任务",
             ));
         }
@@ -111,8 +124,13 @@ impl Db {
                     | SyncEventKind::DeviceConnected
                     | SyncEventKind::DeviceDisconnected => {}
                 }
-                let kind = serde_json::to_string(&event.kind)
-                    .map_err(|_| failure("storage.json", "事件类型序列化失败"))?;
+                let kind = serde_json::to_string(&event.kind).map_err(|_| {
+                    failure(
+                        "storage.json",
+                        "storage.couldn_t_serialize_the_event_type",
+                        "事件类型序列化失败",
+                    )
+                })?;
                 insert
                     .execute(params![
                         task_id,
@@ -162,8 +180,13 @@ impl Db {
                 id: row.get(0).map_err(sql_error)?,
                 folder_id: row.get(1).map_err(sql_error)?,
                 time_ms: row.get(2).map_err(sql_error)?,
-                kind: serde_json::from_str(&kind)
-                    .map_err(|_| failure("storage.json", "事件类型无法读取"))?,
+                kind: serde_json::from_str(&kind).map_err(|_| {
+                    failure(
+                        "storage.json",
+                        "storage.couldn_t_read_the_event_type",
+                        "事件类型无法读取",
+                    )
+                })?,
                 device: row.get(4).map_err(sql_error)?,
                 by: row.get(7).map_err(sql_error)?,
                 path: row.get(5).map_err(sql_error)?,

@@ -25,7 +25,7 @@ fn absent(path: &Path) -> Result<(), AppError> {
     match fs::symlink_metadata(path) {
         Ok(_) => Err(AppError::new("fs.exists").with("path", super::display_path(path))),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(error(e, "检查目标", path)),
+        Err(e) => Err(error(e, "fs_local.check_destination", "检查目标", path)),
     }
 }
 /// 将 from 改名为 to；验证目标名字，已存在返回 fs.exists，始终不覆盖。
@@ -35,7 +35,7 @@ pub fn rename(from: &Path, to: &Path) -> Result<(), AppError> {
     if !case_only_change(from, to) {
         absent(to)?;
     }
-    rename_no_replace(from, to).map_err(|e| error(e, "重命名", to))
+    rename_no_replace(from, to).map_err(|e| error(e, "fs_local.rename", "重命名", to))
 }
 /// 同一目录下、名字只有大小写不同（只在 Windows 上成立；其他系统大小写不同就是不同的文件）
 fn case_only_change(from: &Path, to: &Path) -> bool {
@@ -83,7 +83,7 @@ fn rename_no_replace(from: &Path, to: &Path) -> std::io::Result<()> {
 /// 在 path 排他创建一个目录；父目录必须存在，返回 fs.* 错误。
 pub fn create_dir(path: &Path) -> Result<(), AppError> {
     validate_path(path)?;
-    fs::create_dir(path).map_err(|e| error(e, "新建目录", path))
+    fs::create_dir(path).map_err(|e| error(e, "fs_local.create_directory", "新建目录", path))
 }
 /// 在 path 排他创建空文件；父目录必须存在，返回 fs.* 错误。
 pub fn create_file(path: &Path) -> Result<(), AppError> {
@@ -93,7 +93,7 @@ pub fn create_file(path: &Path) -> Result<(), AppError> {
         .create_new(true)
         .open(path)
         .map(|_| ())
-        .map_err(|e| error(e, "新建文件", path))
+        .map_err(|e| error(e, "fs_local.create_file", "新建文件", path))
 }
 /// 删除 paths；Windows 放入回收站并返回选中项数，开发用 Unix 递归删除且不跟随链接、返回删除条目数。
 /// 失败带上具体 path；之前成功的删除不会回滚。
@@ -113,15 +113,25 @@ pub fn delete(paths: &[PathBuf]) -> Result<usize, AppError> {
 }
 #[cfg(not(windows))]
 fn delete_one(path: &Path, count: &mut usize) -> Result<(), AppError> {
-    let meta = fs::symlink_metadata(path).map_err(|e| error(e, "读取待删除项", path))?;
+    let meta = fs::symlink_metadata(path)
+        .map_err(|e| error(e, "fs_local.read_item_to_delete", "读取待删除项", path))?;
     if meta.is_dir() && !meta.file_type().is_symlink() {
-        for entry in fs::read_dir(path).map_err(|e| error(e, "读取待删除目录", path))? {
-            let entry = entry.map_err(|e| error(e, "读取待删除项", path))?;
+        for entry in fs::read_dir(path).map_err(|e| {
+            error(
+                e,
+                "fs_local.read_directory_to_delete",
+                "读取待删除目录",
+                path,
+            )
+        })? {
+            let entry = entry
+                .map_err(|e| error(e, "fs_local.read_item_to_delete", "读取待删除项", path))?;
             delete_one(&entry.path(), count)?;
         }
-        fs::remove_dir(path).map_err(|e| error(e, "删除目录", path))?;
+        fs::remove_dir(path)
+            .map_err(|e| error(e, "fs_local.delete_directory", "删除目录", path))?;
     } else {
-        fs::remove_file(path).map_err(|e| error(e, "删除文件", path))?;
+        fs::remove_file(path).map_err(|e| error(e, "fs_local.delete_file", "删除文件", path))?;
     }
     *count += 1;
     Ok(())
@@ -130,14 +140,17 @@ fn version(meta: &fs::Metadata, path: &Path) -> Result<FileVersion, AppError> {
     if !meta.is_file() {
         return Err(AppError::new("files.not_text")
             .with("path", super::display_path(path))
-            .with("reason", "只支持普通文本文件"));
+            .with_reason(
+                "fs_local.only_regular_text_files_are_supported",
+                "只支持普通文本文件",
+            ));
     }
     Ok(FileVersion {
         size: meta.len(),
         hash: None,
         mtime: unix_seconds(
             meta.modified()
-                .map_err(|e| error(e, "读取修改时间", path))?,
+                .map_err(|e| error(e, "fs_local.read_modification_time", "读取修改时间", path))?,
         ),
     })
 }
@@ -145,12 +158,22 @@ fn version(meta: &fs::Metadata, path: &Path) -> Result<FileVersion, AppError> {
 pub fn read_text(path: &Path, max_bytes: u64) -> Result<TextFile, AppError> {
     // 先拒绝目录和管道，避免打开 FIFO 时阻塞；随后仍使用已打开句柄的属性。
     version(
-        &fs::metadata(path).map_err(|e| error(e, "读取文本属性", path))?,
+        &fs::metadata(path).map_err(|e| {
+            error(
+                e,
+                "fs_local.read_text_file_properties",
+                "读取文本属性",
+                path,
+            )
+        })?,
         path,
     )?;
-    let file = File::open(path).map_err(|e| error(e, "打开文本", path))?;
+    let file =
+        File::open(path).map_err(|e| error(e, "fs_local.open_text_file", "打开文本", path))?;
     let current = version(
-        &file.metadata().map_err(|e| error(e, "读取属性", path))?,
+        &file
+            .metadata()
+            .map_err(|e| error(e, "fs_local.read_file_properties", "读取属性", path))?,
         path,
     )?;
     if current.size > max_bytes {
@@ -159,7 +182,7 @@ pub fn read_text(path: &Path, max_bytes: u64) -> Result<TextFile, AppError> {
     let mut bytes = Vec::new();
     file.take(max_bytes.saturating_add(1))
         .read_to_end(&mut bytes)
-        .map_err(|e| error(e, "读取文本", path))?;
+        .map_err(|e| error(e, "fs_local.read_text_file", "读取文本", path))?;
     text::decode(bytes, max_bytes, current).map_err(|e| e.with("path", super::display_path(path)))
 }
 struct Pending(PathBuf);
@@ -179,7 +202,8 @@ pub fn write_text(
     expected: Option<FileVersion>,
 ) -> Result<FileVersion, AppError> {
     let meta = check_text_version(path, expected.as_ref())?;
-    let target = plain_canonical(path).map_err(|e| error(e, "解析文本路径", path))?;
+    let target = plain_canonical(path)
+        .map_err(|e| error(e, "fs_local.resolve_text_file_path", "解析文本路径", path))?;
     let pending =
         target.with_file_name(format!(".pierlink-{}.pierlink-part", uuid::Uuid::new_v4()));
     let mut options = OpenOptions::new();
@@ -189,30 +213,49 @@ pub fn write_text(
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);
     }
-    let file = options
-        .open(&pending)
-        .map_err(|e| error(e, "创建文本临时文件", &target))?;
+    let file = options.open(&pending).map_err(|e| {
+        error(
+            e,
+            "fs_local.create_temporary_text_file",
+            "创建文本临时文件",
+            &target,
+        )
+    })?;
     let pending = Pending(pending);
     // 保证失败返回时先关闭句柄，再删除临时文件。
     let mut file = file;
     if bom {
-        file.write_all(b"\xef\xbb\xbf")
-            .map_err(|e| error(e, "写入文本标记", &target))?;
+        file.write_all(b"\xef\xbb\xbf").map_err(|e| {
+            error(
+                e,
+                "fs_local.write_text_file_marker",
+                "写入文本标记",
+                &target,
+            )
+        })?;
     }
     file.write_all(value.as_bytes())
         .and_then(|()| file.set_permissions(meta.permissions()))
         .and_then(|()| file.sync_all())
-        .map_err(|e| error(e, "写入文本", &target))?;
+        .map_err(|e| error(e, "fs_local.write_text_file", "写入文本", &target))?;
     drop(file);
     check_text_version(&target, expected.as_ref())?;
     #[cfg(windows)]
     super::windows::move_file(&pending.0, &target, true)
-        .map_err(|e| error(e, "替换文本", &target))?;
+        .map_err(|e| error(e, "fs_local.replace_text_file", "替换文本", &target))?;
     #[cfg(not(windows))]
-    fs::rename(&pending.0, &target).map_err(|e| error(e, "替换文本", &target))?;
+    fs::rename(&pending.0, &target)
+        .map_err(|e| error(e, "fs_local.replace_text_file", "替换文本", &target))?;
     // Windows 最后写入时间可能到句柄关闭时才更新，替换后读取实际版本。
     let mut updated = version(
-        &fs::metadata(&target).map_err(|e| error(e, "读取新属性", &target))?,
+        &fs::metadata(&target).map_err(|e| {
+            error(
+                e,
+                "fs_local.read_updated_file_properties",
+                "读取新属性",
+                &target,
+            )
+        })?,
         &target,
     )?;
     updated.hash = Some(text::content_hash(value, bom));
@@ -233,7 +276,7 @@ fn check_text_version(
         let mut bytes = Vec::new();
         File::open(path)
             .and_then(|f| f.take(text::TEXT_LIMIT + 1).read_to_end(&mut bytes))
-            .map_err(|e| error(e, "校验文本内容", path))?;
+            .map_err(|e| error(e, "fs_local.verify_text_content", "校验文本内容", path))?;
         if bytes.len() as u64 > text::TEXT_LIMIT {
             return Err(text::too_large(text::TEXT_LIMIT));
         }
@@ -247,15 +290,24 @@ fn text_metadata(path: &Path, expected: Option<&FileVersion>) -> Result<fs::Meta
         if e.kind() == std::io::ErrorKind::NotFound && expected.is_some() {
             AppError::new("files.changed")
                 .with("path", super::display_path(path))
-                .with("reason", "文件已被删除或移动")
+                .with_reason(
+                    "fs_local.the_file_was_deleted_or_moved",
+                    "文件已被删除或移动",
+                )
         } else {
-            error(e, "读取文本属性", path)
+            error(
+                e,
+                "fs_local.read_text_file_properties",
+                "读取文本属性",
+                path,
+            )
         }
     })
 }
 /// 用默认程序打开已存在的 path；Windows 使用 open 动词，Unix 开发环境调用 xdg-open，返回启动结果。
 pub fn open_with_default(path: &Path) -> Result<(), AppError> {
-    let path = plain_canonical(path).map_err(|e| error(e, "解析打开路径", path))?;
+    let path = plain_canonical(path)
+        .map_err(|e| error(e, "fs_local.resolve_path_to_open", "解析打开路径", path))?;
     #[cfg(windows)]
     {
         super::windows::open(&path)
@@ -267,7 +319,8 @@ pub fn open_with_default(path: &Path) -> Result<(), AppError> {
 }
 /// 在资源管理器选中已存在的 path；Unix 开发环境打开其父目录，返回启动结果。
 pub fn reveal_in_explorer(path: &Path) -> Result<(), AppError> {
-    let path = plain_canonical(path).map_err(|e| error(e, "解析定位路径", path))?;
+    let path = plain_canonical(path)
+        .map_err(|e| error(e, "fs_local.resolve_path_to_reveal", "解析定位路径", path))?;
     #[cfg(windows)]
     {
         super::windows::reveal(&path)
@@ -289,13 +342,24 @@ fn launch(program: &str, args: &[&std::ffi::OsStr], path: &Path) -> Result<(), A
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status()
-        .map_err(|e| error(e, "启动默认程序", path))?;
+        .map_err(|e| {
+            error(
+                e,
+                "fs_local.launch_default_application",
+                "启动默认程序",
+                path,
+            )
+        })?;
     if status.success() {
         Ok(())
     } else {
         Err(AppError::new("fs.failure")
             .with("path", super::display_path(path))
-            .with("operation", "启动默认程序"))
+            .with_text(
+                "operation",
+                "fs_local.launch_default_application",
+                "启动默认程序",
+            ))
     }
 }
 

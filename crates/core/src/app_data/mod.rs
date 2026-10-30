@@ -70,11 +70,14 @@ impl Drop for MigrationLock {
         let _ = self.0.unlock();
     }
 }
-fn failure(reason: &str) -> AppError {
-    AppError::new("app.data_migration_failed").with("reason", reason)
+fn failure(text_key: &'static str, reason: &str) -> AppError {
+    AppError::new("app.data_migration_failed").with_reason(text_key, reason)
 }
 fn io(e: std::io::Error) -> AppError {
-    let mut error = failure("数据迁移的文件操作失败");
+    let mut error = failure(
+        "app_data.file_operation_failed_during_data_migration",
+        "数据迁移的文件操作失败",
+    );
     if let Some(code) = e.raw_os_error() {
         error = error.with("os_code", code);
     }
@@ -93,11 +96,17 @@ fn plain(path: &Path) -> Result<(), AppError> {
     {
         use std::os::windows::fs::MetadataExt;
         if meta.file_attributes() & 0x400 != 0 {
-            return Err(failure("迁移路径不能是重解析点"));
+            return Err(failure(
+                "app_data.migration_paths_cannot_be_reparse_points",
+                "迁移路径不能是重解析点",
+            ));
         }
     }
     if meta.file_type().is_symlink() || (!meta.is_file() && !meta.is_dir()) {
-        return Err(failure("迁移路径不能是链接或特殊文件"));
+        return Err(failure(
+            "app_data.migration_paths_cannot_be_links_or_special_files",
+            "迁移路径不能是链接或特殊文件",
+        ));
     }
     Ok(())
 }
@@ -120,7 +129,11 @@ fn sync_dir(path: &Path) -> Result<(), AppError> {
 }
 fn rename(from: &Path, to: &Path) -> Result<(), AppError> {
     if exists(to)? {
-        return Err(failure("迁移目标已存在，拒绝覆盖").with("path", to.display()));
+        return Err(failure(
+            "app_data.destination_already_exists_and_cannot_be_overwritten",
+            "迁移目标已存在，拒绝覆盖",
+        )
+        .with("path", to.display()));
     }
     plain(from)?;
     #[cfg(windows)]
@@ -137,9 +150,9 @@ fn rename(from: &Path, to: &Path) -> Result<(), AppError> {
     {
         use std::os::unix::ffi::OsStrExt;
         let a = std::ffi::CString::new(from.as_os_str().as_bytes())
-            .map_err(|_| failure("迁移路径无效"))?;
+            .map_err(|_| failure("app_data.invalid_migration_path", "迁移路径无效"))?;
         let b = std::ffi::CString::new(to.as_os_str().as_bytes())
-            .map_err(|_| failure("迁移路径无效"))?;
+            .map_err(|_| failure("app_data.invalid_migration_path", "迁移路径无效"))?;
         if unsafe {
             libc::renameat2(
                 libc::AT_FDCWD,
@@ -183,10 +196,12 @@ fn plan(old: &Path, new: &Path) -> Result<Plan, AppError> {
         plain(&old.join("syncthing"))?;
         for e in fs::read_dir(old.join("syncthing")).map_err(io)? {
             let e = e.map_err(io)?;
-            let name = e
-                .file_name()
-                .into_string()
-                .map_err(|_| failure("实例目录项不是有效文本"))?;
+            let name = e.file_name().into_string().map_err(|_| {
+                failure(
+                    "app_data.instance_entry_name_is_not_valid_text",
+                    "实例目录项不是有效文本",
+                )
+            })?;
             let relative = format!("syncthing/{name}");
             if installed(&name) || name == "pierlink.lock" {
                 plan.skipped.push(relative);
@@ -198,11 +213,12 @@ fn plan(old: &Path, new: &Path) -> Result<Plan, AppError> {
         plan.skipped.push("syncthing".into());
     }
     for entry in fs::read_dir(old).map_err(io)? {
-        let name = entry
-            .map_err(io)?
-            .file_name()
-            .into_string()
-            .map_err(|_| failure("旧目录项不是有效文本"))?;
+        let name = entry.map_err(io)?.file_name().into_string().map_err(|_| {
+            failure(
+                "app_data.old_entry_name_is_not_valid_text",
+                "旧目录项不是有效文本",
+            )
+        })?;
         if name != "syncthing" && !ROOT_ITEMS.contains(&name.as_str()) {
             plan.skipped.push(name);
         }
@@ -212,9 +228,11 @@ fn plan(old: &Path, new: &Path) -> Result<Plan, AppError> {
     for relative in &plan.items {
         plain(&old.join(relative))?;
         if exists(&new.join(relative))? {
-            return Err(
-                failure("新目录含同名数据，拒绝覆盖").with("path", new.join(relative).display())
-            );
+            return Err(failure(
+                "app_data.the_new_directory_contains_data_with_the_same_name",
+                "新目录含同名数据，拒绝覆盖",
+            )
+            .with("path", new.join(relative).display()));
         }
     }
     plan.replacements = rewrite::files(&plan)?;
@@ -222,7 +240,10 @@ fn plan(old: &Path, new: &Path) -> Result<Plan, AppError> {
 }
 fn validate(plan: &Plan, old: &Path, new: &Path) -> Result<(), AppError> {
     if plan.old != old || plan.new != new {
-        return Err(failure("迁移记录与请求目录不一致"));
+        return Err(failure(
+            "app_data.migration_record_does_not_match_the_requested_directory",
+            "迁移记录与请求目录不一致",
+        ));
     }
     let mut unique = std::collections::HashSet::new();
     for name in &plan.items {
@@ -236,7 +257,10 @@ fn validate(plan: &Plan, old: &Path, new: &Path) -> Result<(), AppError> {
                 .components()
                 .any(|c| !matches!(c, Component::Normal(_)))
         {
-            return Err(failure("迁移清单包含无效条目"));
+            return Err(failure(
+                "app_data.migration_manifest_contains_invalid_entries",
+                "迁移清单包含无效条目",
+            ));
         }
     }
     for name in &plan.replacements {
@@ -245,15 +269,28 @@ fn validate(plan: &Plan, old: &Path, new: &Path) -> Result<(), AppError> {
                 .components()
                 .any(|c| !matches!(c, Component::Normal(_)))
         {
-            return Err(failure("迁移改写清单包含无效路径"));
+            return Err(failure(
+                "app_data.migration_rewrite_manifest_contains_invalid_paths",
+                "迁移改写清单包含无效路径",
+            ));
         }
     }
     Ok(())
 }
 fn save(path: &Path, value: &impl Serialize) -> Result<(), AppError> {
-    let bytes = serde_json::to_vec(value).map_err(|_| failure("无法编码迁移记录"))?;
+    let bytes = serde_json::to_vec(value).map_err(|_| {
+        failure(
+            "app_data.couldn_t_encode_the_migration_record",
+            "无法编码迁移记录",
+        )
+    })?;
     home::atomic_write(path, &bytes)?;
-    sync_dir(path.parent().ok_or_else(|| failure("迁移记录没有父目录"))?)
+    sync_dir(path.parent().ok_or_else(|| {
+        failure(
+            "app_data.migration_record_has_no_parent_directory",
+            "迁移记录没有父目录",
+        )
+    })?)
 }
 fn restore_copy(from: &Path, to: &Path, temporary: &Path) -> Result<(), AppError> {
     plain(from)?;
@@ -286,7 +323,12 @@ fn restore_copy(from: &Path, to: &Path, temporary: &Path) -> Result<(), AppError
     }
     #[cfg(not(windows))]
     fs::rename(temporary, to).map_err(io)?;
-    sync_dir(to.parent().ok_or_else(|| failure("恢复目标没有父目录"))?)
+    sync_dir(to.parent().ok_or_else(|| {
+        failure(
+            "app_data.recovery_destination_has_no_parent_directory",
+            "恢复目标没有父目录",
+        )
+    })?)
 }
 fn load<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T, AppError> {
     use std::io::Read;
@@ -296,9 +338,17 @@ fn load<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T, AppError> {
         .and_then(|f| f.take(16 * 1024 * 1024 + 1).read_to_end(&mut bytes))
         .map_err(io)?;
     if bytes.len() > 16 * 1024 * 1024 {
-        return Err(failure("迁移记录过大"));
+        return Err(failure(
+            "app_data.migration_record_is_too_large",
+            "迁移记录过大",
+        ));
     }
-    serde_json::from_slice(&bytes).map_err(|_| failure("迁移记录损坏，保留现场等待恢复"))
+    serde_json::from_slice(&bytes).map_err(|_| {
+        failure(
+            "app_data.migration_record_is_damaged_data_has_been_preserved_for_recovery",
+            "迁移记录损坏，保留现场等待恢复",
+        )
+    })
 }
 // 回滚可能被再次中断：原文件保存在 original-*，恢复副本不消耗该备份；restore-* 证明恢复已完成。
 fn rollback(plan: &Plan, journal: &Path) -> Result<(), AppError> {
@@ -317,7 +367,13 @@ fn rollback(plan: &Plan, journal: &Path) -> Result<(), AppError> {
         match (exists(&from)?, exists(&to)?) {
             (true, false) => rename(&from, &to)?,
             (false, true) => {}
-            _ => return Err(failure("回滚遇到数据缺失或两端同名，保留迁移记录").with("path", name)),
+            _ => {
+                return Err(failure(
+                    "app_data.rollback_found_missing_or_conflicting_data_the_migration_record_has",
+                    "回滚遇到数据缺失或两端同名，保留迁移记录",
+                )
+                .with("path", name));
+            }
         }
     }
     cleanup(journal)
@@ -327,11 +383,12 @@ fn cleanup(journal: &Path) -> Result<(), AppError> {
     let garbage = journal.with_file_name(".pierlink-migration-finished");
     rename(journal, &garbage)?;
     fs::remove_dir_all(&garbage).map_err(io)?;
-    sync_dir(
-        journal
-            .parent()
-            .ok_or_else(|| failure("迁移目录没有父目录"))?,
-    )
+    sync_dir(journal.parent().ok_or_else(|| {
+        failure(
+            "app_data.migration_directory_has_no_parent",
+            "迁移目录没有父目录",
+        )
+    })?)
 }
 fn stop(old: &Path, new: &Path) -> Result<Vec<home::HomeLock>, AppError> {
     let mut locks = vec![];
@@ -368,14 +425,20 @@ fn migrate(
     checkpoint: &mut impl FnMut(&str, usize) -> Result<(), AppError>,
 ) -> Result<Option<MigrationReport>, AppError> {
     if !old.is_absolute() || !new.is_absolute() {
-        return Err(failure("迁移目录必须是绝对路径"));
+        return Err(failure(
+            "app_data.migration_directory_must_be_an_absolute_path",
+            "迁移目录必须是绝对路径",
+        ));
     }
     check_ancestors(old)?;
     check_ancestors(new)?;
     let old = crate::syncthing::folder::normalized(old)?;
     let new = crate::syncthing::folder::normalized(new)?;
     if crate::storage::paths_overlap(&old.to_string_lossy(), &new.to_string_lossy()) {
-        return Err(failure("新旧数据目录不能相同或互相包含"));
+        return Err(failure(
+            "app_data.old_and_new_data_directories_cannot_overlap",
+            "新旧数据目录不能相同或互相包含",
+        ));
     }
     let journal = new.join(JOURNAL);
     if !exists(&journal)?
@@ -392,8 +455,12 @@ fn migrate(
         .truncate(false)
         .open(new.join(".pierlink-migration.lock"))
         .map_err(io)?;
-    lock.try_lock()
-        .map_err(|_| failure("另一项数据迁移正在运行"))?;
+    lock.try_lock().map_err(|_| {
+        failure(
+            "app_data.another_data_migration_is_running",
+            "另一项数据迁移正在运行",
+        )
+    })?;
     let _lock = MigrationLock(lock);
     let garbage = new.join(".pierlink-migration-finished");
     if exists(&garbage)? {
@@ -470,8 +537,8 @@ fn migrate(
 }
 fn recovery_required(error: AppError) -> AppError {
     let mut result = AppError::new("app.data_migration_recovery_required")
-        .with(
-            "reason",
+        .with_reason(
+            "app_data.migration_is_incomplete_preserve_both_directories_and_retry_recovery_on",
             "迁移尚未安全完成，必须停止启动并保留两端数据，下次重试恢复",
         )
         .with("cause_code", error.code);

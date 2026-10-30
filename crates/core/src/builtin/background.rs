@@ -49,7 +49,7 @@ impl BackgroundConnection {
             }
             if state.finished || Instant::now() >= deadline {
                 return Err(state.error.clone().unwrap_or_else(|| {
-                    AppError::new("ssh.unreachable").with("reason", "等待后台连接超时或已取消")
+                    AppError::new("ssh.unreachable").with_reason("builtin.waiting_for_a_background_connection_timed_out_or_was_cancelled", "等待后台连接超时或已取消").with_text("stderr_tail", "builtin.waiting_for_a_background_connection_timed_out_or_was_cancelled", "等待后台连接超时或已取消")
                 }));
             }
             state = self
@@ -210,7 +210,12 @@ impl ConnectionManager {
                 state.finished = true;
                 shared.changed.notify_all();
             })
-            .map_err(|_| AppError::new("ssh.task_failed").with("reason", "无法启动后台重连线程"))?;
+            .map_err(|_| {
+                AppError::new("ssh.task_failed").with_reason(
+                    "builtin.couldn_t_start_the_background_reconnect_thread",
+                    "无法启动后台重连线程",
+                )
+            })?;
         Ok(BackgroundConnection {
             shared,
             cancelled,

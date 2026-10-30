@@ -62,11 +62,19 @@ impl Pairing {
         });
         // 来源记录最多 1024 个，窗口结束自动清理；满额时拒绝新来源而不驱逐已有的限速记录。
         if self.attempts.len() >= 1024 && !self.attempts.contains_key(&peer) {
-            return Err(error("mobile.rate_limited", "配对尝试过多，请稍后再试"));
+            return Err(error(
+                "mobile.rate_limited",
+                "mobile.too_many_pairing_attempts_try_again_later",
+                "配对尝试过多，请稍后再试",
+            ));
         }
         let attempts = self.attempts.entry(peer).or_default();
         if attempts.len() >= 5 {
-            return Err(error("mobile.rate_limited", "每个来源每分钟最多尝试五次"));
+            return Err(error(
+                "mobile.rate_limited",
+                "mobile.at_most_five_attempts_per_source_per_minute",
+                "每个来源每分钟最多尝试五次",
+            ));
         }
         attempts.push_back(time);
         if let Some(invite) = &mut self.invite {
@@ -81,6 +89,7 @@ impl Pairing {
         }
         Err(error(
             "mobile.invalid_invite",
+            "mobile.invitation_code_is_incorrect_used_or_expired",
             "邀请码不正确、已使用或已过期",
         ))
     }
@@ -102,7 +111,11 @@ impl Shared {
     pub(super) fn create_invite(&self) -> Result<Invite, AppError> {
         let mut pairing = lock(&self.pairing);
         if lock(&self.state).stopped {
-            return Err(error("mobile.stopped", "手机入口已停止"));
+            return Err(error(
+                "mobile.stopped",
+                "mobile.mobile_entry_has_stopped",
+                "手机入口已停止",
+            ));
         }
         let alphabet = b"ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
         let mut rng = rand::rng();
@@ -138,25 +151,37 @@ impl Shared {
         };
         let approved = tokio::select! {
             biased;
-            _ = generation.changed() => return Err(error("mobile.invalid_invite", "邀请已作废")),
+            _ = generation.changed() => return Err(error("mobile.invalid_invite", "mobile.invitation_was_revoked", "邀请已作废")),
             result = tokio::time::timeout(self.limits.approval, self.host.approve_pairing(name, peer)) => {
-                result.map_err(|_| error("mobile.pair_timeout", "桌面配对审批已超时"))?
-                    .map_err(|_| error("mobile.host_failed", "桌面配对审批失败"))?
+                result.map_err(|_| error("mobile.pair_timeout", "mobile.desktop_pairing_approval_timed_out", "桌面配对审批已超时"))?
+                    .map_err(|_| error("mobile.host_failed", "mobile.desktop_pairing_approval_failed", "桌面配对审批失败"))?
             }
         };
         if !approved {
-            return Err(error("mobile.pair_denied", "桌面拒绝了配对"));
+            return Err(error(
+                "mobile.pair_denied",
+                "mobile.desktop_denied_pairing",
+                "桌面拒绝了配对",
+            ));
         }
         // 和更换邀请码、撤销全部串行提交，旧审批不能在撤销之后重新创建凭据。
         let pairing = lock(&self.pairing);
         if *generation.borrow() != *pairing.generation.borrow()
             || generation.has_changed().unwrap_or(true)
         {
-            return Err(error("mobile.invalid_invite", "邀请已作废"));
+            return Err(error(
+                "mobile.invalid_invite",
+                "mobile.invitation_was_revoked",
+                "邀请已作废",
+            ));
         }
         let state = lock(&self.state);
         if state.stopped {
-            return Err(error("mobile.stopped", "手机入口已停止"));
+            return Err(error(
+                "mobile.stopped",
+                "mobile.mobile_entry_has_stopped",
+                "手机入口已停止",
+            ));
         }
         let db = lock(&state.db);
         db.prune_mobile_devices(now())?;
@@ -169,6 +194,7 @@ impl Shared {
         {
             return Err(error(
                 "mobile.device_limit",
+                "mobile.limit_of_128_active_devices_reached_revoke_unused_devices_first",
                 "有效设备已达一百二十八台上限，请先撤销不再使用的设备",
             ));
         }
@@ -195,7 +221,13 @@ impl Shared {
         connection: u64,
         peer: IpAddr,
     ) -> Result<Device, AppError> {
-        let invalid = || error("mobile.unauthorized", "设备未配对、已撤销或已失效");
+        let invalid = || {
+            error(
+                "mobile.unauthorized",
+                "mobile.device_is_not_paired_revoked_or_expired",
+                "设备未配对、已撤销或已失效",
+            )
+        };
         let cookie = cookie.ok_or_else(invalid)?;
         let mut tokens = cookie.split(';').filter_map(|part| {
             let (name, value) = part.trim().split_once('=')?;

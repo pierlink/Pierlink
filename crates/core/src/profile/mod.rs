@@ -101,7 +101,13 @@ pub fn export_profile(db: &Db, extras: ProfileExtras) -> Result<Profile, AppErro
         .duration_since(SystemTime::UNIX_EPOCH)
         .ok()
         .and_then(|d| i64::try_from(d.as_millis()).ok())
-        .ok_or_else(|| error("profile.invalid_time", "系统时间无法表示为 Unix 毫秒"))?;
+        .ok_or_else(|| {
+            error(
+                "profile.invalid_time",
+                "profile.system_time_cannot_be_represented_as_unix_milliseconds",
+                "系统时间无法表示为 Unix 毫秒",
+            )
+        })?;
     let mut profile = Profile {
         format: PROFILE_FORMAT.into(),
         version: PROFILE_VERSION,
@@ -133,19 +139,33 @@ pub fn import_profile(db: &mut Db, profile: &Profile) -> Result<ImportReport, Ap
 /// 调用方应先限制文件读取大小至 MAX_PROFILE_BYTES，再调用本函数。
 pub fn parse_profile(json: &[u8]) -> Result<Profile, AppError> {
     validation::limit("file_bytes", json.len(), MAX_PROFILE_BYTES)?;
-    let value: Value = serde_json::from_slice(json)
-        .map_err(|_| error("profile.invalid_json", "配置文件不是有效 JSON"))?;
+    let value: Value = serde_json::from_slice(json).map_err(|_| {
+        error(
+            "profile.invalid_json",
+            "profile.configuration_file_is_not_valid_json",
+            "配置文件不是有效 JSON",
+        )
+    })?;
     validation::validate_json(&value)?;
     if value.get("format").and_then(Value::as_str) != Some(PROFILE_FORMAT) {
-        return Err(error("profile.invalid_format", "不是 Pierlink 配置文件"));
+        return Err(error(
+            "profile.invalid_format",
+            "profile.not_a_pierlink_configuration_file",
+            "不是 Pierlink 配置文件",
+        ));
     }
     if let Some(version) = value.get("version").and_then(Value::as_u64)
         && version != u64::from(PROFILE_VERSION)
     {
         return Err(validation::version_error(version));
     }
-    let profile = serde_json::from_value(value)
-        .map_err(|_| error("profile.invalid_json", "配置文件字段缺失或类型不正确"))?;
+    let profile = serde_json::from_value(value).map_err(|_| {
+        error(
+            "profile.invalid_json",
+            "profile.configuration_fields_are_missing_or_have_incorrect_types",
+            "配置文件字段缺失或类型不正确",
+        )
+    })?;
     validation::validate(&profile)?;
     Ok(profile)
 }
@@ -156,8 +176,8 @@ pub(crate) fn clear_credentials(server: &mut Server) {
     server.remember_password = false;
 }
 
-fn error(code: &str, reason: &str) -> AppError {
-    AppError::new(code).with("reason", reason)
+fn error(code: &str, text_key: &'static str, reason: &str) -> AppError {
+    AppError::new(code).with_reason(text_key, reason)
 }
 
 #[cfg(test)]

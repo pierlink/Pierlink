@@ -151,7 +151,10 @@ pub fn create_task(
     validate_ignores(&spec.ignore_rules)?;
     super::settings::validate_modes(spec.local_mode, spec.endpoints.iter().map(|e| e.mode))?;
     if !(1..=60).contains(&spec.watch_delay_s) || spec.endpoints.is_empty() {
-        return Err(error("等待须为 1–60 秒且至少有一个端点"));
+        return Err(error(
+            "sync.wait_time_must_be_1_60_seconds_and_at_least",
+            "等待须为 1–60 秒且至少有一个端点",
+        ));
     }
     let id = spec.folder_id.clone().unwrap_or_else(new_folder_id);
     validate_task_folder_id(&id)?;
@@ -165,18 +168,24 @@ pub fn create_task(
     let mut joined_rules = None;
     for ep in &spec.endpoints {
         if !used.insert(&ep.server_id) {
-            return Err(error("端点重复"));
+            return Err(error("sync.duplicate_endpoint", "端点重复"));
         }
         let matches: Vec<_> = links
             .iter()
             .filter(|l| l.server_id == ep.server_id)
             .collect();
         if matches.len() != 1 {
-            return Err(error("每个端点须有唯一连接"));
+            return Err(error(
+                "sync.each_endpoint_must_have_a_unique_connection",
+                "每个端点须有唯一连接",
+            ));
         }
         let link = *matches[0];
         if !device_ids.insert(link.device_id.clone()) || link.device_id == local.device_id() {
-            return Err(error("端点设备身份重复"));
+            return Err(error(
+                "sync.duplicate_endpoint_device_identity",
+                "端点设备身份重复",
+            ));
         }
         let join = find_joinable(link, &ep.remote_path)?;
         let previous = link.client().get_folder(&id)?;
@@ -232,7 +241,10 @@ pub fn create_task(
             let versions =
                 super::paths::remote_normalized(&format!("{}/versions/{id}", link.state_dir))?;
             if spec.versioning && crate::storage::paths_overlap(&path, &versions) {
-                return Err(error("旧版本目录与同步目录重叠"));
+                return Err(error(
+                    "sync.version_directory_overlaps_the_sync_directory",
+                    "旧版本目录与同步目录重叠",
+                ));
             }
             let mut config = json!({"id":id,"label":spec.name,"path":path,"devices":[{"deviceID":local.device_id()}],"paused":true,"rescanIntervalS":3600,"maxConflicts":-1,"ignorePerms":false,"markerName":".stfolder"});
             let settings = crate::syncthing::folder::settings_config(
@@ -472,8 +484,10 @@ pub fn remove_endpoint(
         .filter(|d| d["deviceID"] != link.device_id)
         .collect();
     if f["type"] == "receiveonly" && !shared.iter().any(|d| d["deviceID"] != local.device_id()) {
-        return Err(AppError::new("sync.invalid_mode")
-            .with("reason", "本机只接收任务至少需要保留一个收发服务器端点"));
+        return Err(AppError::new("sync.invalid_mode").with_reason(
+            "sync.a_local_receive_only_task_needs_at_least_one_send",
+            "本机只接收任务至少需要保留一个收发服务器端点",
+        ));
     }
     local
         .client()
@@ -515,7 +529,10 @@ pub fn add_endpoint(
     let mut shared = devices(&original)?;
     if link.device_id == local.device_id() || shared.iter().any(|d| d["deviceID"] == link.device_id)
     {
-        return Err(error("端点设备身份重复"));
+        return Err(error(
+            "sync.duplicate_endpoint_device_identity",
+            "端点设备身份重复",
+        ));
     }
     if link.client().get_folder(folder_id)?.is_some() {
         return Err(AppError::new("sync.folder_exists"));
@@ -541,7 +558,10 @@ pub fn add_endpoint(
         let versions =
             super::paths::remote_normalized(&format!("{}/versions/{folder_id}", link.state_dir))?;
         if crate::storage::paths_overlap(&path, &versions) {
-            return Err(error("旧版本目录与同步目录重叠"));
+            return Err(error(
+                "sync.version_directory_overlaps_the_sync_directory",
+                "旧版本目录与同步目录重叠",
+            ));
         }
         config["versioning"]["fsPath"] = json!(versions);
     }
@@ -648,7 +668,10 @@ pub(super) fn relocate(
         .filter(|p| !p.is_empty())
         && crate::storage::paths_overlap(&path.to_string_lossy(), versions)
     {
-        return Err(error("新位置与旧版本目录重叠"));
+        return Err(error(
+            "sync.new_location_overlaps_the_version_directory",
+            "新位置与旧版本目录重叠",
+        ));
     }
     let folders = client.list_folders()?;
     for f in folders.as_array().ok_or_else(invalid_response)? {

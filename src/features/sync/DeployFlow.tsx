@@ -12,8 +12,8 @@ function initialSteps(usesSystemd: boolean, t: (k: string) => string): DeploySte
   const detail: Record<DeployStepKey, string> = {
     inspect: "uname -m · /etc/os-release · systemctl --user",
     upload: "~/.local/share/pierlink/bin/ · SHA-256",
-    configure: "~/.local/state/pierlink/<实例>/ · Unix 套接字（0700）",
-    start: usesSystemd ? "systemd --user · pierlink-<实例>.service" : "nohup · " + t("deploy.detailNohup"),
+    configure: t("deploy.detailConfigure"),
+    start: usesSystemd ? t("deploy.detailSystemd") : "nohup · " + t("deploy.detailNohup"),
     tunnel: t("deploy.detailLater"),
     pair: t("deploy.detailLater"),
   };

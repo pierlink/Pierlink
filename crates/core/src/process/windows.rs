@@ -14,7 +14,7 @@ impl Job {
         unsafe {
             let handle = CreateJobObjectW(std::ptr::null(), std::ptr::null());
             if handle.is_null() {
-                return Err(io_error("创建作业对象"));
+                return Err(io_error("process.create_job_object", "创建作业对象"));
             }
             let job = Self(handle);
             let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
@@ -27,7 +27,7 @@ impl Job {
             ) == 0
                 || AssignProcessToJobObject(handle, process) == 0
             {
-                return Err(io_error("加入作业对象"));
+                return Err(io_error("process.join_job_object", "加入作业对象"));
             }
             Ok(job)
         }
@@ -51,7 +51,7 @@ unsafe extern "system" {
 }
 pub(crate) fn resume(process: RawHandle) -> Result<(), AppError> {
     if unsafe { NtResumeProcess(process) } < 0 {
-        Err(io_error("恢复进程"))
+        Err(io_error("process.resume_process", "恢复进程"))
     } else {
         Ok(())
     }

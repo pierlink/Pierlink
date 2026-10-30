@@ -96,7 +96,10 @@ pub(super) fn watch(f: impl Fn(Connectivity) + Send + Sync + 'static) -> Result<
     };
     if status != 0 {
         return Err(AppError::new("network.watch_failed")
-            .with("reason", "注册网络变化通知失败")
+            .with_reason(
+                "connectivity.couldn_t_register_network_change_notifications",
+                "注册网络变化通知失败",
+            )
             .with("os_code", status));
     }
     let mut watch = Watch {
@@ -122,7 +125,10 @@ pub(super) fn watch(f: impl Fn(Connectivity) + Send + Sync + 'static) -> Result<
                 }
             })
             .map_err(|_| {
-                AppError::new("network.watch_failed").with("reason", "启动网络通知线程失败")
+                AppError::new("network.watch_failed").with_reason(
+                    "connectivity.couldn_t_start_the_network_notification_thread",
+                    "启动网络通知线程失败",
+                )
             })?,
     );
     Ok(watch)

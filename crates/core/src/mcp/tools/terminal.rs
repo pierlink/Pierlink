@@ -56,7 +56,8 @@ pub fn key_bytes(key: &str) -> Result<Vec<u8>, AppError> {
             {
                 return Ok(vec![letter.as_bytes()[0] - b'A' + 1]);
             }
-            return Err(AppError::new("mcp.invalid_argument").with("reason", "未知终端按键"));
+            return Err(AppError::new("mcp.invalid_argument")
+                .with_reason("mcp.unknown_terminal_key", "未知终端按键"));
         }
     };
     Ok(bytes.into())
@@ -186,8 +187,10 @@ pub(super) fn send_at_generation(
         bytes.extend(key_bytes(key)?);
     }
     if text.is_some_and(|v| !v.is_empty()) && looks_like_password_prompt(&m.screen_text(id)?) {
-        return Err(AppError::new("mcp.password_prompt")
-            .with("reason", "终端正在等待密码，请用户在 Pierlink 里输入"));
+        return Err(AppError::new("mcp.password_prompt").with_reason(
+            "mcp.terminal_is_waiting_for_a_password_enter_it_in_pierlink",
+            "终端正在等待密码，请用户在 Pierlink 里输入",
+        ));
     }
     if let Some(generation) = generation {
         m.write_automation_at_generation(id, &bytes, generation)?;
@@ -336,7 +339,9 @@ pub(super) fn wait_cancellable(
     let mut last_output = Instant::now();
     loop {
         if cancelled() {
-            return Err(AppError::new("mcp.cancelled").with("reason", "操作已取消"));
+            return Err(
+                AppError::new("mcp.cancelled").with_reason("mcp.operation_cancelled", "操作已取消")
+            );
         }
         let previous = result.cursor;
         match read_chunk(m, id, Some(previous)) {

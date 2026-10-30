@@ -4,18 +4,22 @@ use crate::error::AppError;
 pub(super) const MAX_PACKET: usize = 1024 * 1024;
 pub(super) const CHUNK: usize = 32 * 1024;
 
-pub(super) fn protocol(reason: &str) -> AppError {
-    AppError::new("sftp.protocol").with("reason", reason)
+pub(super) fn protocol(text_key: &'static str, reason: &str) -> AppError {
+    AppError::new("sftp.protocol").with_reason(text_key, reason)
 }
 pub(super) fn string(out: &mut Vec<u8>, value: &[u8]) -> Result<(), AppError> {
-    let len = u32::try_from(value.len()).map_err(|_| protocol("字段过长"))?;
+    let len =
+        u32::try_from(value.len()).map_err(|_| protocol("sftp.field_is_too_long", "字段过长"))?;
     out.extend(len.to_be_bytes());
     out.extend(value);
     Ok(())
 }
 pub(super) fn path(out: &mut Vec<u8>, value: &str) -> Result<(), AppError> {
     if value.is_empty() || value.contains('\0') || value.len() > MAX_PACKET / 2 {
-        return Err(protocol("路径为空、含空字符或过长"));
+        return Err(protocol(
+            "sftp.path_is_empty_contains_null_characters_or_is_too_long",
+            "路径为空、含空字符或过长",
+        ));
     }
     string(out, value.as_bytes())
 }
@@ -23,7 +27,10 @@ pub(super) struct Decoder<'a>(pub &'a [u8]);
 impl<'a> Decoder<'a> {
     pub fn take(&mut self, n: usize) -> Result<&'a [u8], AppError> {
         if self.0.len() < n {
-            return Err(protocol("响应字段不完整"));
+            return Err(protocol(
+                "sftp.incomplete_response_fields",
+                "响应字段不完整",
+            ));
         }
         let (value, rest) = self.0.split_at(n);
         self.0 = rest;
@@ -50,13 +57,19 @@ impl<'a> Decoder<'a> {
         if self.0.is_empty() {
             Ok(())
         } else {
-            Err(protocol("响应含多余字段"))
+            Err(protocol(
+                "sftp.response_contains_extra_fields",
+                "响应含多余字段",
+            ))
         }
     }
     pub fn attrs(&mut self) -> Result<Attrs, AppError> {
         let flags = self.u32()?;
         if flags & !0x8000_000f != 0 {
-            return Err(protocol("不支持的属性标志"));
+            return Err(protocol(
+                "sftp.unsupported_attribute_flags",
+                "不支持的属性标志",
+            ));
         }
         let size = if flags & 1 != 0 { self.u64()? } else { 0 };
         if flags & 2 != 0 {
@@ -93,14 +106,26 @@ pub(super) fn status(input: &mut Decoder<'_>) -> Result<u32, AppError> {
     Ok(code)
 }
 pub(super) fn status_error(code: u32) -> AppError {
-    let (name, reason) = match code {
-        2 => ("not_found", "远端路径不存在"),
-        3 => ("permission_denied", "远端权限不足"),
-        6 | 7 => ("connection_lost", "远端连接已断开"),
-        5 => ("protocol", "服务器拒绝协议消息"),
-        _ => ("failure", "远端操作失败"),
+    let (name, text_key, reason) = match code {
+        2 => ("not_found", "sftp.remote_not_found", "远端路径不存在"),
+        3 => (
+            "permission_denied",
+            "sftp.remote_permission_denied",
+            "远端权限不足",
+        ),
+        6 | 7 => (
+            "connection_lost",
+            "sftp.remote_disconnected",
+            "远端连接已断开",
+        ),
+        5 => (
+            "protocol",
+            "sftp.remote_protocol_rejected",
+            "服务器拒绝协议消息",
+        ),
+        _ => ("failure", "sftp.remote_operation_failed", "远端操作失败"),
     };
     AppError::new(format!("sftp.{name}"))
-        .with("reason", reason)
+        .with_reason(text_key, reason)
         .with("status", code)
 }

@@ -5,7 +5,7 @@ for marker in "$HOME"/.local/share/pierlink/vnc-light/*/.pierlink-created; do
     safe_path "$candidate"
     if [ -x "$candidate/session" ]; then light_prefix=$candidate; break; fi
 done
-[ -n "$light_prefix" ] || fail light_unavailable '轻量桌面尚未获取完成'
+[ -n "$light_prefix" ] || fail light_unavailable 'vnc.light_not_ready' '轻量桌面尚未获取完成'
 prefix_environment "$light_prefix"
 desktop_name='Openbox'
 desktop_names=OPENBOX

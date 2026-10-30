@@ -103,8 +103,10 @@ fn command(editor: &Editor, directory: &Path) -> Result<Command, AppError> {
         .and_then(|s| s.to_str())
         .unwrap_or("");
     if extension.eq_ignore_ascii_case("cmd") || extension.eq_ignore_ascii_case("bat") {
-        return Err(AppError::new("editor.unsupported_launcher")
-            .with("reason", "请选择编辑器的原生可执行文件"));
+        return Err(AppError::new("editor.unsupported_launcher").with_reason(
+            "detect.select_the_editor_s_native_executable",
+            "请选择编辑器的原生可执行文件",
+        ));
     }
     let path = crate::fs_local::plain_canonical(directory)
         .map_err(|_| AppError::new("editor.invalid_directory"))?;

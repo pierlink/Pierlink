@@ -28,13 +28,17 @@ pub(super) fn insert_servers(conn: &Connection, value: &Server) -> Result<(), Ap
             value.updated_at,
             value.connection_engine,
             value.engine_note,
-            serde_json::to_string(&value.identity_files).map_err(|_| failure("storage.json", "身份文件列表编码失败"))?,
+            serde_json::to_string(&value.identity_files).map_err(|_| failure("storage.json", "storage.couldn_t_encode_the_identity_file_list", "身份文件列表编码失败"))?,
             value.identities_only,
             value.host_key_alias
         ],
     ).map_err(sql_error)?;
     if changed == 0 {
-        return Err(failure("storage.not_found", "记录不存在"));
+        return Err(failure(
+            "storage.not_found",
+            "storage.record_does_not_exist",
+            "记录不存在",
+        ));
     }
     Ok(())
 }
@@ -66,13 +70,17 @@ pub(super) fn update_servers(conn: &Connection, value: &Server) -> Result<(), Ap
             value.updated_at,
             value.connection_engine,
             value.engine_note,
-            serde_json::to_string(&value.identity_files).map_err(|_| failure("storage.json", "身份文件列表编码失败"))?,
+            serde_json::to_string(&value.identity_files).map_err(|_| failure("storage.json", "storage.couldn_t_encode_the_identity_file_list", "身份文件列表编码失败"))?,
             value.identities_only,
             value.host_key_alias
         ],
     ).map_err(sql_error)?;
     if changed == 0 {
-        return Err(failure("storage.not_found", "记录不存在"));
+        return Err(failure(
+            "storage.not_found",
+            "storage.record_does_not_exist",
+            "记录不存在",
+        ));
     }
     Ok(())
 }
@@ -98,7 +106,11 @@ pub(super) fn insert_sync_tasks(conn: &Connection, value: &SyncTask) -> Result<(
         ],
     ).map_err(sql_error)?;
     if changed == 0 {
-        return Err(failure("storage.not_found", "记录不存在"));
+        return Err(failure(
+            "storage.not_found",
+            "storage.record_does_not_exist",
+            "记录不存在",
+        ));
     }
     Ok(())
 }
@@ -124,7 +136,11 @@ pub(super) fn update_sync_tasks(conn: &Connection, value: &SyncTask) -> Result<(
         ],
     ).map_err(sql_error)?;
     if changed == 0 {
-        return Err(failure("storage.not_found", "记录不存在"));
+        return Err(failure(
+            "storage.not_found",
+            "storage.record_does_not_exist",
+            "记录不存在",
+        ));
     }
     Ok(())
 }

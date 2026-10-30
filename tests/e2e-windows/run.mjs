@@ -66,9 +66,7 @@ async function waitClipboard(want, what, timeoutMs = 8000) {
 /** 当前可见的第一个终端里，word 最后一次出现的位置（屏幕坐标） */
 const wordAt = (word) => p.js(`(()=>{const s=[...document.querySelectorAll('.pane-slot')].filter(s=>s.style.display!=='none')[0]; const rows=s?.querySelector('.xterm-rows'); if(!rows) return null; const w=document.createTreeWalker(rows, NodeFilter.SHOW_TEXT); let n, hit=null; while((n=w.nextNode())){ let i=n.textContent.indexOf(${JSON.stringify(word)}); while(i>=0){ hit=[n,i]; i=n.textContent.indexOf(${JSON.stringify(word)}, i+1); } } if(!hit) return null; const r=document.createRange(); r.setStart(hit[0],hit[1]); r.setEnd(hit[0],hit[1]+${JSON.stringify(word)}.length); const b=r.getBoundingClientRect(); return {x:b.x+b.width/2, y:b.y+b.height/2, left:b.x, right:b.x+b.width};})()`);
 /**
- * 回到干净的提示符：点一下终端，按 Ctrl+C 再按回车。
- * 前面的步骤粘贴后，控制台可能还停在“正在粘贴”的状态，Esc、Ctrl+C 都会被当成普通文字收进输入行（0.9.1 起就这样），
- * 回车一定能结束这一行（留下的文字执行一下，报个“不认识的命令”无害）
+ * 回到干净的提示符：点一下终端，按 Ctrl+C 取消输入行里没执行的文字，再按回车。
  */
 async function freshPrompt() {
   await u.click(".pane-slot:not([style*='none']) .xterm-screen");
@@ -267,6 +265,27 @@ await rec.step(p, "Ctrl+V 也只粘贴一次", async () => {
   const n = ((await u.termText()) ?? "").match(/PLCTRLV/g)?.length ?? 0;
   await u.key("Escape", "Escape", 27);
   if (n !== 1) throw new Error(`粘贴了 ${n} 次`);
+});
+
+await rec.step(p, "用过 Shift+Enter 之后，Esc 清掉输入行，Ctrl+C 取消输入行", async () => {
+  // Shift+Enter 发的是 Windows 控制台的按键格式。控制台收到过这种格式后，曾把单独的 Esc 当成没收全的序列扣住，
+  // 接着的按键和它拼在一起（Ctrl+C 变成文字 ^C 收进输入行）
+  const lineAlone = (word) => `(()=>{const s=[...document.querySelectorAll('.pane-slot')].filter(s=>s.style.display!=='none')[0]?.querySelector('.xterm-rows')?.innerText||''; return new RegExp('^${word}\\\\s*$','m').test(s);})()`;
+  await u.click(".pane-slot:not([style*='none']) .xterm-screen");
+  await u.type("PLESCME");
+  await sleep(500);
+  await u.esc();
+  await sleep(500);
+  await u.typeLine('echo "PLAFTERESC"');
+  await u.waitFor(lineAlone("PLAFTERESC"), "Esc 清掉了输入行，下一条命令照常执行", 10000);
+  await u.type("PLCANCELME");
+  await sleep(500);
+  await u.esc();
+  await sleep(300);
+  await u.key("c", "KeyC", 67, 2);
+  await sleep(800);
+  await u.typeLine('echo "PLAFTERCTRLC"');
+  await u.waitFor(lineAlone("PLAFTERCTRLC"), "Esc、Ctrl+C 之后下一条命令照常执行", 10000);
 });
 
 // ---------- 4b. 0.9.2：复制、右键菜单、程序写剪贴板、链接 ----------

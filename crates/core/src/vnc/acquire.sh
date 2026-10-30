@@ -22,11 +22,11 @@ if [ "$source" = apt ]; then
 else
     package=$work/package.tar.gz
     if command -v curl >/dev/null; then
-        bounded 125 curl -fL --connect-timeout 15 --max-time 120 --max-filesize 67108864 --proto '=https' --proto-redir '=https' -o "$package" "$url" >/dev/null 2>&1 || fail download_failed '服务器下载失败'
+        bounded 125 curl -fL --connect-timeout 15 --max-time 120 --max-filesize 67108864 --proto '=https' --proto-redir '=https' -o "$package" "$url" >/dev/null 2>&1 || fail download_failed 'vnc.server_download_failed' '服务器下载失败'
     elif command -v wget >/dev/null; then
-        bounded 120 sh -c 'ulimit -f 131072; exec wget "$@"' sh --https-only --timeout=30 --tries=1 -O "$package" "$url" >/dev/null 2>&1 || fail download_failed '服务器下载失败'
-    else fail download_failed '服务器没有 curl 或 wget'; fi
-    [ "$(wc -c < "$package")" -le 67108864 ] || fail download_failed '下载包超过大小限制'
+        bounded 120 sh -c 'ulimit -f 131072; exec wget "$@"' sh --https-only --timeout=30 --tries=1 -O "$package" "$url" >/dev/null 2>&1 || fail download_failed 'vnc.server_download_failed' '服务器下载失败'
+    else fail download_failed 'vnc.download_tool_missing' '服务器没有 curl 或 wget'; fi
+    [ "$(wc -c < "$package")" -le 67108864 ] || fail download_failed 'vnc.package_size_limit' '下载包超过大小限制'
     downloaded_bytes=$(wc -c < "$package")
     [ "$(sha256_of < "$package")" = "$expected" ] || fail sha_mismatch
     # 只提取固定的两个普通文件，不将包内路径交给 tar 写入文件系统。

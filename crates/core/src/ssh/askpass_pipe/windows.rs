@@ -61,13 +61,19 @@ fn user_sid() -> Result<String, AppError> {
     unsafe {
         let mut token = null_mut();
         if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
-            return Err(failed("读取当前用户失败"));
+            return Err(failed(
+                "ssh.couldn_t_read_the_current_user",
+                "读取当前用户失败",
+            ));
         }
         let token = Handle(token);
         let mut length = 0;
         GetTokenInformation(token.0, TokenUser, null_mut(), 0, &mut length);
         if length < size_of::<TOKEN_USER>() as u32 {
-            return Err(failed("用户标识长度无效"));
+            return Err(failed(
+                "ssh.invalid_user_identifier_length",
+                "用户标识长度无效",
+            ));
         }
         // usize 向量确保 TOKEN_USER 所需的指针对齐。
         let mut buffer = vec![0usize; (length as usize).div_ceil(size_of::<usize>())];
@@ -79,12 +85,18 @@ fn user_sid() -> Result<String, AppError> {
             &mut length,
         ) == 0
         {
-            return Err(failed("读取用户标识失败"));
+            return Err(failed(
+                "ssh.couldn_t_read_the_user_identifier",
+                "读取用户标识失败",
+            ));
         }
         let user = &*buffer.as_ptr().cast::<TOKEN_USER>();
         let mut sid = null_mut();
         if ConvertSidToStringSidW(user.User.Sid, &mut sid) == 0 {
-            return Err(failed("转换用户标识失败"));
+            return Err(failed(
+                "ssh.couldn_t_convert_the_user_identifier",
+                "转换用户标识失败",
+            ));
         }
         let _allocation = LocalAllocation(sid.cast());
         let mut count = 0;
@@ -92,7 +104,7 @@ fn user_sid() -> Result<String, AppError> {
             count += 1;
         }
         String::from_utf16(std::slice::from_raw_parts(sid, count))
-            .map_err(|_| failed("用户标识编码无效"))
+            .map_err(|_| failed("ssh.invalid_user_identifier_encoding", "用户标识编码无效"))
     }
 }
 pub(super) struct Listener {
@@ -117,7 +129,10 @@ impl Listener {
             )
         } == 0
         {
-            return Err(failed("建立管道权限失败"));
+            return Err(failed(
+                "ssh.couldn_t_set_pipe_permissions",
+                "建立管道权限失败",
+            ));
         }
         let security = LocalAllocation(descriptor);
         let pending = create(&endpoint, &security, true)?;
@@ -126,7 +141,7 @@ impl Listener {
             .map(Path::to_path_buf)
             .map_or_else(std::env::current_exe, Ok)
             .and_then(std::fs::canonicalize)
-            .map_err(|_| failed("读取程序路径失败"))?;
+            .map_err(|_| failed("ssh.couldn_t_read_the_program_path", "读取程序路径失败"))?;
         Ok(Self {
             endpoint,
             pending,
@@ -152,7 +167,10 @@ impl Listener {
             return Ok(None);
         }
         if error != ERROR_PIPE_CONNECTED {
-            return Err(failed("接受管道连接失败"));
+            return Err(failed(
+                "ssh.couldn_t_accept_the_pipe_connection",
+                "接受管道连接失败",
+            ));
         }
         // 非阻塞模式首次调用也可能仅表示实例已进入监听；没有客户端时继续保留该实例。
         let mut client_pid = 0;
@@ -199,7 +217,10 @@ fn create(endpoint: &str, security: &LocalAllocation, first: bool) -> Result<Han
         )
     };
     if handle == INVALID_HANDLE_VALUE {
-        Err(failed("建立管道实例失败"))
+        Err(failed(
+            "ssh.couldn_t_create_a_pipe_instance",
+            "建立管道实例失败",
+        ))
     } else {
         Ok(Handle(handle))
     }
@@ -301,7 +322,7 @@ pub(super) fn connect(endpoint: &str) -> Result<Stream, AppError> {
     if !endpoint.starts_with(r"\\.\pipe\pierlink-askpass-")
         || endpoint.len() != r"\\.\pipe\pierlink-askpass-".len() + 32
     {
-        return Err(failed("管道名称无效"));
+        return Err(failed("ssh.invalid_pipe_name", "管道名称无效"));
     }
     let name = wide(endpoint);
     let deadline = Instant::now() + Duration::from_secs(5);
@@ -322,7 +343,10 @@ pub(super) fn connect(endpoint: &str) -> Result<Stream, AppError> {
             let handle = Handle(handle);
             let mode = PIPE_READMODE_BYTE | PIPE_NOWAIT;
             if unsafe { SetNamedPipeHandleState(handle.0, &mode, null(), null()) } == 0 {
-                return Err(failed("设置管道时限失败"));
+                return Err(failed(
+                    "ssh.couldn_t_set_the_pipe_timeout",
+                    "设置管道时限失败",
+                ));
             }
             return Ok(Stream {
                 handle,
@@ -331,7 +355,7 @@ pub(super) fn connect(endpoint: &str) -> Result<Stream, AppError> {
             });
         }
         if unsafe { GetLastError() } != ERROR_PIPE_BUSY || Instant::now() >= deadline {
-            return Err(failed("连接管道失败"));
+            return Err(failed("ssh.couldn_t_connect_to_the_pipe", "连接管道失败"));
         }
         unsafe {
             WaitNamedPipeW(name.as_ptr(), 50);

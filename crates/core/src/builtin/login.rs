@@ -218,7 +218,10 @@ impl Login {
                 let credential = self.callbacks.dedicated_key(&self.server, &self.cancelled);
                 self.check_cancelled()?;
                 let credential = credential.map_err(|_| {
-                    AppError::new("keys.local_failed").with("reason", "读取本机密钥凭据失败")
+                    AppError::new("keys.local_failed").with_reason(
+                        "builtin.couldn_t_read_local_key_credentials",
+                        "读取本机密钥凭据失败",
+                    )
                 })?;
                 let credential = credential.filter(|key| key.path.is_file()).ok_or_else(|| {
                     AppError::new("keys.local_missing").with("server", &server.name)
@@ -273,7 +276,10 @@ impl Login {
                 && server.auth_method == AuthMethod::Key
                 && !self.interactive
             {
-                return Err(AppError::new("ssh.password_needed").with("reason", "私钥需要口令"));
+                return Err(AppError::new("ssh.password_needed").with_reason(
+                    "builtin.the_private_key_requires_a_passphrase",
+                    "私钥需要口令",
+                ));
             }
             if matches!(error, pierlink_ssh_engine::Error::PrivateKey)
                 && let Some(path) = server.identity_file.as_ref()
@@ -419,7 +425,18 @@ fn safe_host_error(error: &AppError) -> AppError {
         "ssh.known_hosts_failed" => "ssh.known_hosts_failed",
         _ => "ssh.failed",
     };
-    let mut safe = AppError::new(code).with("reason", "主机密钥核对未完成");
+    let mut safe = AppError::new(code).with_reason(
+        "builtin.host_key_verification_did_not_complete",
+        "主机密钥核对未完成",
+    );
+    // ssh.failed 的提示用 stderr_tail 占位
+    if code == "ssh.failed" {
+        safe = safe.with_text(
+            "stderr_tail",
+            "builtin.host_key_verification_did_not_complete",
+            "主机密钥核对未完成",
+        );
+    }
     for name in ["fingerprint", "known_fingerprint", "file", "line"] {
         if let Some(value) = error.params.get(name) {
             safe = safe.with(name, value);
@@ -448,9 +465,21 @@ mod tests {
             for name in ["fingerprint", "known_fingerprint", "file", "line"] {
                 assert_eq!(safe.params[name], original.params[name]);
             }
-            assert_eq!(safe.params.len(), 5);
+            assert_eq!(safe.params.len(), 6);
+            assert_eq!(
+                safe.params["reason_key"],
+                "builtin.host_key_verification_did_not_complete"
+            );
             assert!(!format!("{safe:?}").contains("秘密"));
             assert!(!format!("{safe:?}").contains("回调原文"));
         }
+        // 列表外的错误码归为 ssh.failed：它的提示用 stderr_tail，也要带上可翻译的说明
+        let other = safe_host_error(&AppError::new("ssh.unreachable").with("reason", "原文"));
+        assert_eq!(other.code, "ssh.failed");
+        assert_eq!(
+            other.params["stderr_tail_key"],
+            "builtin.host_key_verification_did_not_complete"
+        );
+        assert!(!format!("{other:?}").contains("原文"));
     }
 }

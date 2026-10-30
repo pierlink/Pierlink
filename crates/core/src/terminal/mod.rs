@@ -103,15 +103,19 @@ struct Session {
     output: Mutex<output::Output>,
     child: Mutex<builtin::Process>,
 }
-fn error(code: &str, operation: &str) -> AppError {
-    AppError::new(format!("terminal.{code}")).with("operation", operation)
+fn error(code: &str, text_key: &'static str, operation: &str) -> AppError {
+    AppError::new(format!("terminal.{code}")).with_text("operation", text_key, operation)
 }
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|e| e.into_inner())
 }
 fn size(cols: u16, rows: u16) -> Result<PtySize, AppError> {
     if cols == 0 || rows == 0 {
-        return Err(error("invalid_size", "终端尺寸必须大于零"));
+        return Err(error(
+            "invalid_size",
+            "terminal.terminal_dimensions_must_be_greater_than_zero",
+            "终端尺寸必须大于零",
+        ));
     }
     Ok(PtySize {
         cols,
@@ -154,7 +158,7 @@ impl TerminalManager {
                 flow: Mutex::new(Flow::default()),
                 wake: Condvar::new(),
                 master: Mutex::new((None, spec.cols, spec.rows)),
-                input: Mutex::new(input::Input::default()),
+                input: Mutex::new(input::Input::new(false)),
                 output: Mutex::new(output::Output::new(spec.cols, spec.rows)),
                 child: Mutex::new(builtin::Process::Builtin(Box::new(channel))),
             });
@@ -165,7 +169,13 @@ impl TerminalManager {
         #[cfg(unix)]
         let pair = portable_pty::native_pty_system()
             .openpty(dimensions)
-            .map_err(|_| error("spawn_failed", "创建伪终端"))?;
+            .map_err(|_| {
+                error(
+                    "spawn_failed",
+                    "terminal.create_pseudoterminal",
+                    "创建伪终端",
+                )
+            })?;
         #[cfg(windows)]
         let pair = windows::open(dimensions)?;
         #[cfg(unix)]
@@ -174,18 +184,22 @@ impl TerminalManager {
             unsafe {
                 let flags = libc::fcntl(fd, libc::F_GETFL);
                 if flags == -1 || libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) == -1 {
-                    return Err(error("spawn_failed", "设置伪终端非阻塞模式"));
+                    return Err(error(
+                        "spawn_failed",
+                        "terminal.set_pseudoterminal_nonblocking_mode",
+                        "设置伪终端非阻塞模式",
+                    ));
                 }
             }
         }
         let reader = pair
             .master
             .try_clone_reader()
-            .map_err(|_| error("spawn_failed", "打开输出"))?;
+            .map_err(|_| error("spawn_failed", "terminal.open_output", "打开输出"))?;
         let writer = pair
             .master
             .take_writer()
-            .map_err(|_| error("spawn_failed", "打开输入"))?;
+            .map_err(|_| error("spawn_failed", "terminal.open_input", "打开输入"))?;
         let process = child::spawn(spec.kind, &pair)?;
         let registration = process.askpass.clone();
         #[cfg(unix)]
@@ -194,7 +208,7 @@ impl TerminalManager {
             flow: Mutex::new(Flow::default()),
             wake: Condvar::new(),
             master: Mutex::new((Some(pair.master), spec.cols, spec.rows)),
-            input: Mutex::new(input::Input::default()),
+            input: Mutex::new(input::Input::new(cfg!(windows))),
             output: Mutex::new(output::Output::new(spec.cols, spec.rows)),
             child: Mutex::new(builtin::Process::Local(process)),
         });
@@ -215,7 +229,11 @@ impl TerminalManager {
             .is_err()
         {
             session.stop();
-            return Err(error("spawn_failed", "创建输入线程"));
+            return Err(error(
+                "spawn_failed",
+                "terminal.create_input_thread",
+                "创建输入线程",
+            ));
         }
         let id = uuid::Uuid::new_v4().to_string();
         // 有界管道中的字节也计入 pending；没有额外无界输出队列。
@@ -226,7 +244,11 @@ impl TerminalManager {
             .spawn(move || read_output(reader, reading, tx))
             .map_err(|_| {
                 session.stop();
-                error("spawn_failed", "创建读取线程")
+                error(
+                    "spawn_failed",
+                    "terminal.create_reader_thread",
+                    "创建读取线程",
+                )
             })?;
         let active = session.clone();
         let sessions = Arc::downgrade(&self.sessions);
@@ -247,18 +269,26 @@ impl TerminalManager {
         {
             lock(&self.sessions).remove(&id);
             session.stop();
-            return Err(error("spawn_failed", "创建事件线程"));
+            return Err(error(
+                "spawn_failed",
+                "terminal.create_event_thread",
+                "创建事件线程",
+            ));
         }
         Ok(id)
     }
     fn get(&self, id: &str) -> Result<Arc<Session>, AppError> {
-        lock(&self.sessions)
-            .get(id)
-            .cloned()
-            .ok_or_else(|| error("not_found", "会话不存在或已结束"))
+        lock(&self.sessions).get(id).cloned().ok_or_else(|| {
+            error(
+                "not_found",
+                "terminal.session_is_missing_or_has_ended",
+                "会话不存在或已结束",
+            )
+        })
     }
     /// 将 data 原样加入 id 的输入队列并立即返回；含正在写入的数据最多 1 MiB，超额返回 input_overflow。
     /// 成功表示已入队；后台写入失败后后续调用返回 write_failed，不记录输入内容。
+    /// ConPTY 使用过 Windows 按键格式后，写入时将末尾 Esc 转为对应按键事件；容量按原始字节计算。
     pub fn write(&self, id: &str, data: &[u8]) -> Result<(), AppError> {
         self.write_from(id, data, InputSource::User)
     }
@@ -269,8 +299,9 @@ impl TerminalManager {
         let mut master = lock(&session.master);
         if (master.1, master.2) != (cols, rows) {
             if let Some(pty) = &master.0 {
-                pty.resize(dimensions)
-                    .map_err(|_| error("resize_failed", "调整终端尺寸"))?;
+                pty.resize(dimensions).map_err(|_| {
+                    error("resize_failed", "terminal.resize_terminal", "调整终端尺寸")
+                })?;
             } else {
                 lock(&session.child).resize(cols, rows)?;
             }
@@ -295,7 +326,11 @@ impl TerminalManager {
         };
         let mut flow = lock(&session.flow);
         if bytes > flow.pending {
-            return Err(error("invalid_ack", "确认字节数超过未确认数"));
+            return Err(error(
+                "invalid_ack",
+                "terminal.acknowledged_byte_count_exceeds_pending_bytes",
+                "确认字节数超过未确认数",
+            ));
         }
         flow.pending -= bytes;
         flow.last_ack = Instant::now();
@@ -477,22 +512,45 @@ pub fn cleanup_stale_configs(config_dir: &std::path::Path) -> Result<usize, AppE
     let entries = match std::fs::read_dir(config_dir) {
         Ok(entries) => entries,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
-        Err(_) => return Err(error("config_failed", "读取临时配置目录")),
+        Err(_) => {
+            return Err(error(
+                "config_failed",
+                "terminal.read_temporary_configuration_directory",
+                "读取临时配置目录",
+            ));
+        }
     };
     let mut count = 0;
     for entry in entries {
-        let entry = entry.map_err(|_| error("config_failed", "读取临时配置项"))?;
+        let entry = entry.map_err(|_| {
+            error(
+                "config_failed",
+                "terminal.read_temporary_configuration_entry",
+                "读取临时配置项",
+            )
+        })?;
         let name = entry.file_name();
         let name = name.to_string_lossy();
         if name.starts_with("terminal-")
             && name.ends_with(".conf")
             && entry
                 .file_type()
-                .map_err(|_| error("config_failed", "读取配置类型"))?
+                .map_err(|_| {
+                    error(
+                        "config_failed",
+                        "terminal.read_configuration_type",
+                        "读取配置类型",
+                    )
+                })?
                 .is_file()
         {
-            std::fs::remove_file(entry.path())
-                .map_err(|_| error("config_failed", "删除残留配置"))?;
+            std::fs::remove_file(entry.path()).map_err(|_| {
+                error(
+                    "config_failed",
+                    "terminal.remove_leftover_configuration",
+                    "删除残留配置",
+                )
+            })?;
             count += 1;
         }
     }

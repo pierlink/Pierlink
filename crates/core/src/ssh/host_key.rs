@@ -120,9 +120,11 @@ fn probe_with_limits(
     let program = program.clone();
     let (answers_tx, answers_rx) = mpsc::channel();
     let (updates_tx, updates_rx) = mpsc::channel();
-    let diagnostic = Arc::new(Mutex::new(
-        timeout_diagnostic(&[], &cmd).with("phase", "启动指纹探测"),
-    ));
+    let diagnostic = Arc::new(Mutex::new(timeout_diagnostic(&[], &cmd).with_text(
+        "phase",
+        "ssh.start_fingerprint_probe",
+        "启动指纹探测",
+    )));
     let worker_diagnostic = diagnostic.clone();
     let worker = thread::Builder::new()
         .name("ssh指纹确认".into())
@@ -155,7 +157,7 @@ fn probe_with_limits(
             }
             let _ = updates_tx.send(result.map(|()| None));
         })
-        .map_err(|_| io_error("创建指纹线程"))?;
+        .map_err(|_| io_error("ssh.create_fingerprint_thread", "创建指纹线程"))?;
     Session {
         answers: answers_tx,
         updates: updates_rx,
@@ -331,8 +333,8 @@ fn timeout_diagnostic(bytes: &[u8], cmd: &SshCommand) -> AppError {
         .collect();
     AppError::new("ssh.host_key_timeout")
         .with("received_bytes", bytes.len())
-        .with("pid", "尚未启动")
-        .with("exited", "尚未查询")
+        .with_text("pid", "ssh.not_started_yet", "尚未启动")
+        .with_text("exited", "ssh.not_queried_yet", "尚未查询")
         .with("tail", tail)
 }
 
@@ -392,7 +394,7 @@ impl PtyChild {
             let pid = self
                 .child
                 .process_id()
-                .ok_or_else(|| io_error("获取指纹进程编号"))?;
+                .ok_or_else(|| io_error("ssh.get_fingerprint_process_id", "获取指纹进程编号"))?;
             crate::process::exit_status_unreaped(pid).map(|s| s.map(portable_pty::ExitStatus::from))
         }
         #[cfg(windows)]
@@ -400,14 +402,14 @@ impl PtyChild {
             // 探测结束后还要清理跳板等后代；不能采用交互终端保留 GUI 程序的策略。
             self.child
                 .try_wait_preserving_job()
-                .map_err(|_| io_error("查询指纹进程"))
+                .map_err(|_| io_error("ssh.query_fingerprint_process", "查询指纹进程"))
         }
         #[cfg(all(unix, not(target_os = "linux")))]
         {
             let status = self
                 .child
                 .try_wait()
-                .map_err(|_| io_error("查询指纹进程"))?;
+                .map_err(|_| io_error("ssh.query_fingerprint_process", "查询指纹进程"))?;
             self.reaped |= status.is_some();
             Ok(status)
         }
@@ -417,16 +419,21 @@ impl PtyChild {
             return Ok(());
         }
         #[cfg(windows)]
-        self.child
-            .terminate_and_wait()
-            .map_err(|_| io_error("结束并回收指纹进程树"))?;
+        self.child.terminate_and_wait().map_err(|_| {
+            io_error(
+                "ssh.terminate_and_reap_fingerprint_process_tree",
+                "结束并回收指纹进程树",
+            )
+        })?;
         #[cfg(unix)]
         if !self.reaped {
             if let Some(pid) = self.child.process_id() {
                 crate::process::kill_group(pid);
             }
             let _ = self.child.kill();
-            self.child.wait().map_err(|_| io_error("回收指纹进程"))?;
+            self.child
+                .wait()
+                .map_err(|_| io_error("ssh.reap_fingerprint_process", "回收指纹进程"))?;
             self.reaped = true;
         }
         self.cleaned = true;
@@ -450,19 +457,27 @@ fn spawn_pty(
         let path = pair
             .master
             .tty_name()
-            .ok_or_else(|| io_error("获取伪终端路径"))?;
+            .ok_or_else(|| io_error("ssh.get_pseudoterminal_path", "获取伪终端路径"))?;
         let slave = OpenOptions::new()
             .read(true)
             .write(true)
             .open(path)
-            .map_err(|_| io_error("打开伪终端从端"))?;
+            .map_err(|_| io_error("ssh.open_pseudoterminal_slave", "打开伪终端从端"))?;
         let mut command = Command::new(&program.path);
         command
             .args(&cmd.args)
             .env_clear()
             .envs(environment(cmd))
-            .stdin(slave.try_clone().map_err(|_| io_error("复制伪终端"))?)
-            .stdout(slave.try_clone().map_err(|_| io_error("复制伪终端"))?)
+            .stdin(
+                slave
+                    .try_clone()
+                    .map_err(|_| io_error("ssh.clone_pseudoterminal", "复制伪终端"))?,
+            )
+            .stdout(
+                slave
+                    .try_clone()
+                    .map_err(|_| io_error("ssh.clone_pseudoterminal", "复制伪终端"))?,
+            )
             .stderr(slave);
         // portable-pty 负责分配终端；自行启动避免其 Unix 启动器额外注入 SHELL，
         // 同时保留标准库的 exec 错误管道，使启动失败能正常返回错误。
@@ -474,7 +489,11 @@ fn spawn_pty(
                 Ok(())
             });
         }
-        Box::new(command.spawn().map_err(|_| io_error("启动指纹探测"))?)
+        Box::new(
+            command
+                .spawn()
+                .map_err(|_| io_error("ssh.start_fingerprint_probe", "启动指纹探测"))?,
+        )
     };
     Ok(PtyChild {
         child,
@@ -490,7 +509,7 @@ fn spawn_pty(
 ) -> Result<PtyChild, AppError> {
     let child = master
         .spawn_clean(&program.path, &cmd.args, &environment(cmd))
-        .map_err(|_| io_error("启动指纹探测"))?;
+        .map_err(|_| io_error("ssh.start_fingerprint_probe", "启动指纹探测"))?;
     Ok(PtyChild {
         child,
         cleaned: false,
@@ -519,17 +538,18 @@ fn interact(
     #[cfg(unix)]
     let pair = native_pty_system()
         .openpty(size)
-        .map_err(|_| io_error("创建伪终端"))?;
+        .map_err(|_| io_error("ssh.create_pseudoterminal", "创建伪终端"))?;
     #[cfg(windows)]
-    let pair = crate::terminal::windows::open(size).map_err(|_| io_error("创建伪终端"))?;
+    let pair = crate::terminal::windows::open(size)
+        .map_err(|_| io_error("ssh.create_pseudoterminal", "创建伪终端"))?;
     let mut writer = pair
         .master
         .take_writer()
-        .map_err(|_| io_error("获取伪终端输入"))?;
+        .map_err(|_| io_error("ssh.get_pseudoterminal_input", "获取伪终端输入"))?;
     let input = pair
         .master
         .try_clone_reader()
-        .map_err(|_| io_error("获取伪终端输出"))?;
+        .map_err(|_| io_error("ssh.get_pseudoterminal_output", "获取伪终端输出"))?;
     // 子进程附着时即可输出终端查询；先启动读取，避免启动阶段被输出管道反压。
     let mut reader = Reader::start(input, OUTPUT_LIMIT)?;
     #[cfg(unix)]
@@ -551,12 +571,17 @@ fn interact(
         .child
         .process_id()
         .map_or_else(|| "未知".into(), |pid| pid.to_string());
-    state
-        .diagnostic
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .params
-        .insert("pid".into(), pid.clone());
+    {
+        let mut diagnostic = state.diagnostic.lock().unwrap_or_else(|e| e.into_inner());
+        diagnostic.params.insert("pid".into(), pid.clone());
+        diagnostic.params.remove("pid_key");
+    }
+    if child.child.process_id().is_none() {
+        let mut diagnostic = state.diagnostic.lock().unwrap_or_else(|e| e.into_inner());
+        *diagnostic = diagnostic
+            .clone()
+            .with_text("pid", "ssh.unknown_pid", "未知");
+    }
     #[cfg(unix)]
     drop(pair.slave);
     let result = (|| {
@@ -572,18 +597,21 @@ fn interact(
         loop {
             // 只在复制快照时持有读锁；任何管道写入和进程查询都不能阻塞读取线程。
             let (bytes, done, failed, exceeded) = {
-                let data = reader.state.lock().map_err(|_| io_error("读取指纹"))?;
+                let data = reader
+                    .state
+                    .lock()
+                    .map_err(|_| io_error("ssh.read_fingerprint", "读取指纹"))?;
                 (data.bytes.clone(), data.done, data.failed, data.exceeded)
             };
             let status = child.status()?;
             let replies = queries.replies(&bytes[scanned..]);
             scanned = bytes.len();
-            let phase = if awaiting {
-                "等待用户回答"
+            let (phase_key, phase) = if awaiting {
+                ("ssh.waiting_for_answer", "等待用户回答")
             } else if answered {
-                "等待回答后校验标记"
+                ("ssh.waiting_for_verification", "等待回答后校验标记")
             } else {
-                "等待指纹提问或已信任结果"
+                ("ssh.waiting_for_fingerprint", "等待指纹提问或已信任结果")
             };
             let mut diagnostic = timeout_diagnostic(&bytes, cmd)
                 .with("pid", &pid)
@@ -592,7 +620,13 @@ fn interact(
                 .with("reader_failed", failed)
                 .with("cursor_queries", queries.cursor)
                 .with("device_queries", queries.attributes)
-                .with("phase", phase);
+                .with_text("phase", phase_key, phase);
+            // pid、exited 已是真实值：去掉初始的“尚未启动”“尚未查询”说明键
+            diagnostic.params.remove("pid_key");
+            diagnostic.params.remove("exited_key");
+            if child.child.process_id().is_none() {
+                diagnostic = diagnostic.with_text("pid", "ssh.unknown_pid", "未知");
+            }
             if let Some(status) = &status {
                 diagnostic = diagnostic.with("exit_code", status.exit_code());
             }
@@ -601,40 +635,54 @@ fn interact(
                 return Err(AppError::new("remote.output_too_large"));
             }
             if failed {
-                return Err(io_error("读取指纹"));
+                return Err(io_error("ssh.read_fingerprint", "读取指纹"));
             }
             // 隐藏探测没有 xterm.js；在首次提问、等用户操作及确认后都要回答查询。
             // 仅回复光标位置和最小终端属性，不代替用户确认任何指纹。
             if !replies.is_empty() {
-                state
-                    .diagnostic
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .params
-                    .insert("phase".into(), "回答终端查询".into());
+                {
+                    let mut diagnostic = state.diagnostic.lock().unwrap_or_else(|e| e.into_inner());
+                    *diagnostic = diagnostic.clone().with_text(
+                        "phase",
+                        "ssh.answer_terminal_query",
+                        "回答终端查询",
+                    );
+                }
                 writer
                     .write_all(&replies)
-                    .map_err(|_| io_error("回答终端查询"))?;
-                writer.flush().map_err(|_| io_error("发送终端查询回答"))?;
+                    .map_err(|_| io_error("ssh.answer_terminal_query", "回答终端查询"))?;
+                writer.flush().map_err(|_| {
+                    io_error("ssh.send_terminal_query_response", "发送终端查询回答")
+                })?;
             }
             match answers.try_recv() {
                 Ok(Answer::Confirm(yes)) if awaiting => {
-                    state
-                        .diagnostic
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .params
-                        .insert("phase".into(), "发送主机密钥回答".into());
+                    {
+                        let mut diagnostic =
+                            state.diagnostic.lock().unwrap_or_else(|e| e.into_inner());
+                        *diagnostic = diagnostic.clone().with_text(
+                            "phase",
+                            "ssh.send_host_key_response",
+                            "发送主机密钥回答",
+                        );
+                    }
                     writer
                         .write_all(&answer_bytes(
                             &pending
                                 .pop_front()
-                                .ok_or_else(|| io_error("读取待确认指纹"))?
+                                .ok_or_else(|| {
+                                    io_error(
+                                        "ssh.read_fingerprint_awaiting_confirmation",
+                                        "读取待确认指纹",
+                                    )
+                                })?
                                 .fingerprint,
                             yes,
                         ))
-                        .map_err(|_| io_error("回答主机密钥"))?;
-                    writer.flush().map_err(|_| io_error("发送主机密钥回答"))?;
+                        .map_err(|_| io_error("ssh.answer_host_key_prompt", "回答主机密钥"))?;
+                    writer
+                        .flush()
+                        .map_err(|_| io_error("ssh.send_host_key_response", "发送主机密钥回答"))?;
                     rejected = !yes;
                     answered = true;
                     state.accepted |= yes;
@@ -657,7 +705,7 @@ fn interact(
                 let level = state.level;
                 if level > 64 {
                     return Err(AppError::new("ssh.host_key_prompt_invalid")
-                        .with("reason", "确认次数超过上限"));
+                        .with_reason("ssh.confirmation_limit_exceeded", "确认次数超过上限"));
                 }
                 info.level = level;
                 if level > 1 {
@@ -678,7 +726,7 @@ fn interact(
                 pending.push_back(info.clone());
                 updates
                     .send(Ok(Some(info)))
-                    .map_err(|_| io_error("返回指纹"))?;
+                    .map_err(|_| io_error("ssh.return_fingerprint", "返回指纹"))?;
                 // 保留完整原始字节供查询匹配、总量限制和超时诊断，只推进提示解析位置。
                 consumed += prompt_end.unwrap_or(text.len());
                 awaiting = true;
@@ -703,7 +751,10 @@ fn interact(
                 let secrets: Vec<_> = cmd.env.iter().map(|(_, v)| v.as_str()).collect();
                 let error = classify_error(Some(status.exit_code() as i32), text, &secrets);
                 return Err(if status.success() {
-                    error.with("reason", "未收到远端指纹校验标记")
+                    error.with_reason(
+                        "ssh.remote_fingerprint_verification_marker_was_not_received",
+                        "未收到远端指纹校验标记",
+                    )
                 } else {
                     error
                 });
@@ -716,11 +767,13 @@ fn interact(
     drop(child);
     drop(writer);
     #[cfg(windows)]
-    let cleanup = cleanup.and(
-        pair.master
-            .shutdown_and_wait()
-            .map_err(|_| io_error("等待指纹 ConPTY 关闭").with("pid", &pid)),
-    );
+    let cleanup = cleanup.and(pair.master.shutdown_and_wait().map_err(|_| {
+        io_error(
+            "ssh.wait_for_fingerprint_conpty_to_close",
+            "等待指纹 ConPTY 关闭",
+        )
+        .with("pid", &pid)
+    }));
     drop(pair.master);
     reader.join();
     finish_probe(result, cleanup, &pid)
@@ -777,7 +830,17 @@ mod tests {
     fn 清理失败不掩盖指纹校验成功() {
         assert!(finish_probe(Ok(()), Ok(()), "123").is_ok());
         for operation in ["结束并回收指纹进程树", "等待指纹 ConPTY 关闭"] {
-            assert!(finish_probe(Ok(()), Err(io_error(operation)), "123").is_ok());
+            assert!(
+                finish_probe(
+                    Ok(()),
+                    Err(io_error(
+                        "ssh.terminate_and_reap_fingerprint_process_tree",
+                        operation
+                    )),
+                    "123"
+                )
+                .is_ok()
+            );
         }
     }
 
@@ -790,7 +853,13 @@ mod tests {
             "ssh.unreachable",
         ] {
             let original = AppError::new(code).with("phase", "等待回答后校验和退出");
-            for cleanup in [Ok(()), Err(io_error("结束并回收指纹进程树"))] {
+            for cleanup in [
+                Ok(()),
+                Err(io_error(
+                    "ssh.terminate_and_reap_fingerprint_process_tree",
+                    "结束并回收指纹进程树",
+                )),
+            ] {
                 let error = finish_probe(Err(original.clone()), cleanup, "123").unwrap_err();
                 assert_eq!(error.code, original.code);
                 assert_eq!(error.params, original.params);
@@ -803,7 +872,11 @@ mod tests {
         const MARKER: &str = "PIERLINK_TEST_CLEANUP_LOG";
         const SECRET: &str = "不可写入清理日志的秘密";
         if std::env::var_os(MARKER).is_some() {
-            let cleanup = io_error("结束并回收指纹进程树").with("tail", SECRET);
+            let cleanup = io_error(
+                "ssh.terminate_and_reap_fingerprint_process_tree",
+                "结束并回收指纹进程树",
+            )
+            .with("tail", SECRET);
             assert!(finish_probe(Ok(()), Err(cleanup), "123").is_ok());
             return;
         }

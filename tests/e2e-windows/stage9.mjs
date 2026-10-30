@@ -114,6 +114,44 @@ await rec.step(p, "换成要密码的 :5：输密码后连上、画面是蓝色�
   return await status();
 });
 
+/** :5 桌面的 X 剪贴板（CLIPBOARD）里的文字；读不到时为空 */
+const remoteClipboard = () => {
+  try {
+    return execFileSync("wsl.exe", ["-d", LX.wsl, "-u", "pl", "--", "sh", "-c", 'DISPLAY=:5 XAUTHORITY="$HOME/.vnc-e2e/x5.auth" timeout 5 xclip -o -selection clipboard 2>/dev/null'], { encoding: "utf8" });
+  } catch {
+    return "";
+  }
+};
+
+await rec.step(p, "在桌面画面里按 Ctrl+V：远程剪贴板收到 Windows 剪贴板的文字；断开重连后同样的文字也能再发过去", async () => {
+  if (!vnc) return "跳过";
+  execFileSync("powershell.exe", ["-NoProfile", "-Command", "Set-Clipboard -Value 'PLDESKPASTE'"]);
+  const paste = async () => {
+    await u.click(".desk__screen canvas");
+    await sleep(300);
+    await u.key("v", "KeyV", 86, 2);
+  };
+  const waitRemote = async (what) => {
+    const deadline = Date.now() + 10000;
+    let got = "";
+    while (Date.now() < deadline) {
+      got = remoteClipboard();
+      if (got === "PLDESKPASTE") return;
+      await sleep(500);
+    }
+    throw new Error(`${what}：远程剪贴板是 ${JSON.stringify(got.slice(0, 80))}，应该是 "PLDESKPASTE"`);
+  };
+  await paste();
+  await waitRemote("按 Ctrl+V 后");
+  await u.click('[aria-label="Disconnect"]');
+  await u.clickText("Reconnect", ".desk__card");
+  await u.waitFor(`(document.querySelector('.desk__status')?.innerText||'').startsWith('Connected')`, "重新连上", 30000);
+  await sleep(1000);
+  await paste();
+  await waitRemote("重连后再按 Ctrl+V");
+  return "两次远程剪贴板都收到了";
+});
+
 await rec.step(p, "全屏：和终端分屏时也盖住整个窗口（旁边的窗格、分隔条、侧栏都在下面）；再点一次退出", async () => {
   if (!vnc) return "跳过";
   // 先在桌面旁边开一个本机终端
@@ -176,6 +214,37 @@ await rec.step(p, "关闭桌面窗格：服务器上的两个桌面照常运行"
   const ps = execFileSync("wsl.exe", ["-d", LX.wsl, "-u", "pl", "--", "pgrep", "-c", "-x", "Xtigervnc"]).toString().trim();
   if (Number(ps) < 2) throw new Error(`服务器上的桌面少了：${ps}`);
   return `服务器上 Xtigervnc 进程数：${ps}`;
+});
+
+await rec.step(p, "设置里打开“在独立窗口打开”：从菜单打开桌面直接开独立窗口，主窗口不开窗格；关掉设置后恢复", async () => {
+  if (!vnc) return "跳过";
+  const toggle = async (on) => {
+    await u.clickText("Settings", "nav");
+    await u.clickText("Server desktop", ".settings__nav");
+    const sel = `[role=switch][aria-label="Open in a separate window"]`;
+    await u.waitFor(`!!document.querySelector(${JSON.stringify(sel)})`, "设置里的“在独立窗口打开”");
+    if ((await p.js(`document.querySelector(${JSON.stringify(sel)}).getAttribute('aria-checked')`)) !== String(on)) await u.click(sel);
+    await u.waitFor(`document.querySelector(${JSON.stringify(sel)})?.getAttribute('aria-checked')===${JSON.stringify(String(on))}`, "开关切换好");
+    await u.clickText("Workspace", "nav");
+    await sleep(600);
+  };
+  const desktopWindow = async () => ((await p.js(`window.__TAURI_INTERNALS__.invoke('plugin:window|get_all_windows')`)) ?? []).find((l) => l.startsWith("desktop-")) ?? null;
+  await toggle(true);
+  let win = null;
+  try {
+    await openDesktop();
+    const deadline = Date.now() + 20000;
+    while (!(win = await desktopWindow()) && Date.now() < deadline) await sleep(500);
+    if (!win) throw new Error("没有开出独立桌面窗口");
+    await sleep(2000);
+    if (await p.js(`!!document.querySelector('.desk')`)) throw new Error("开了“在独立窗口打开”，主窗口不该再开桌面窗格");
+    await u.waitFor(`!!document.querySelector('.srv-row__desk')`, "侧栏里的“桌面在独立窗口里”标识", 8000);
+    await p.js(`window.__TAURI_INTERNALS__.invoke('plugin:window|close', { label: ${JSON.stringify(win)} })`);
+    await u.waitFor(`!document.querySelector('.srv-row__desk')`, "关掉独立窗口后标识消失", 15000);
+  } finally {
+    await toggle(false);
+  }
+  return `直接开了独立窗口 ${win}`;
 });
 
 /** WSL 里用户 pl 的 Xtigervnc 进程数 */

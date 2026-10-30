@@ -39,7 +39,10 @@ pub fn remote_shell_status(
         return Ok(None);
     }
     serde_json::from_value(value).map(Some).map_err(|_| {
-        AppError::new("cwd.invalid_response").with("reason", "终端状态响应不是有效对象或空值")
+        AppError::new("cwd.invalid_response").with_reason(
+            "cwd.terminal_status_response_must_be_an_object_or_null",
+            "终端状态响应不是有效对象或空值",
+        )
     })
 }
 /// 通过 program 和后台用途 cmd 查询 marker 对应 shell 的目录；找不到或无 procfs 返回 None。

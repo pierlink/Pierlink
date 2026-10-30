@@ -29,9 +29,10 @@ pub(crate) fn validate_name(name: &str, windows: bool) -> Result<(), AppError> {
         || name.contains(['/', '\0'])
         || (windows && crate::sftp::transfer::windows_filename(name) != name)
     {
-        return Err(
-            AppError::new("files.invalid_name").with("reason", "名字为空、含非法字符或为保留名")
-        );
+        return Err(AppError::new("files.invalid_name").with_reason(
+            "fs_local.name_is_empty_contains_invalid_characters_or_is_reserved",
+            "名字为空、含非法字符或为保留名",
+        ));
     }
     Ok(())
 }
@@ -43,7 +44,10 @@ pub(crate) fn check_version(
     if let Some(expected) = expected
         && !current.is_some_and(|v| v.size == expected.size && v.mtime == expected.mtime)
     {
-        return Err(AppError::new("files.changed").with("reason", "文件大小或修改时间已改变"));
+        return Err(AppError::new("files.changed").with_reason(
+            "fs_local.file_size_or_modification_time_has_changed",
+            "文件大小或修改时间已改变",
+        ));
     }
     Ok(())
 }
@@ -67,7 +71,8 @@ pub(crate) fn content_hash(content: &str, bom: bool) -> String {
 
 pub(crate) fn check_hash(expected: &FileVersion, hash: &str) -> Result<(), AppError> {
     if expected.hash.as_deref().is_some_and(|h| h != hash) {
-        return Err(AppError::new("files.changed").with("reason", "文件内容已改变"));
+        return Err(AppError::new("files.changed")
+            .with_reason("fs_local.file_content_has_changed", "文件内容已改变"));
     }
     Ok(())
 }
@@ -112,7 +117,10 @@ pub(crate) fn sniff(bytes: &[u8]) -> Result<(), AppError> {
     }
 }
 pub(crate) fn not_text() -> AppError {
-    AppError::new("files.not_text").with("reason", "文件包含空字符或不是有效的 UTF-8 文本")
+    AppError::new("files.not_text").with_reason(
+        "fs_local.file_contains_null_bytes_or_is_not_valid_utf_8",
+        "文件包含空字符或不是有效的 UTF-8 文本",
+    )
 }
 
 #[cfg(test)]

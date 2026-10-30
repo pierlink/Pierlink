@@ -23,30 +23,44 @@ pub struct LocalKey {
     pub fingerprint: String,
     pub regenerated: bool,
 }
-fn failed(reason: &str) -> AppError {
-    AppError::new("keys.local_failed").with("reason", reason)
+fn failed(text_key: &'static str, reason: &str) -> AppError {
+    AppError::new("keys.local_failed").with_reason(text_key, reason)
 }
 fn io<T>(result: std::io::Result<T>) -> Result<T, AppError> {
-    result.map_err(|_| failed("本机密钥文件操作失败"))
+    result.map_err(|_| {
+        failed(
+            "keys.local_key_file_operation_failed",
+            "本机密钥文件操作失败",
+        )
+    })
 }
 fn path_exists(path: &Path) -> Result<bool, AppError> {
     match fs::symlink_metadata(path) {
         Ok(_) => Ok(true),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
-        Err(_) => Err(failed("无法检查密钥文件").with("path", path.display())),
+        Err(_) => Err(
+            failed("keys.couldn_t_inspect_the_key_file", "无法检查密钥文件")
+                .with("path", path.display()),
+        ),
     }
 }
 
 fn permissions(path: &Path, directory: bool) -> Result<(), AppError> {
     if io(fs::symlink_metadata(path))?.file_type().is_symlink() {
-        return Err(failed("密钥路径不能是符号链接"));
+        return Err(failed(
+            "keys.key_paths_cannot_be_symbolic_links",
+            "密钥路径不能是符号链接",
+        ));
     }
     #[cfg(unix)]
     {
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
         let metadata = io(fs::metadata(path))?;
         if metadata.uid() != unsafe { libc::geteuid() } {
-            return Err(failed("密钥路径不属于当前用户"));
+            return Err(failed(
+                "keys.key_path_does_not_belong_to_the_current_user",
+                "密钥路径不属于当前用户",
+            ));
         }
         let mode = if directory { 0o700 } else { 0o600 };
         if metadata.permissions().mode() & 0o7777 != mode {
@@ -90,26 +104,37 @@ fn lock_with_timeout(dir: &Path, timeout: Duration) -> Result<Lock, AppError> {
                                 Ok(()) => continue,
                                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
                                 Err(_) => {
-                                    return Err(
-                                        failed("无法清理陈旧密钥锁").with("path", path.display())
-                                    );
+                                    return Err(failed(
+                                        "keys.couldn_t_remove_the_stale_key_lock",
+                                        "无法清理陈旧密钥锁",
+                                    )
+                                    .with("path", path.display()));
                                 }
                             }
                         }
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
                     Err(e) if delete_pending(&e) => {}
-                    Err(_) => return Err(failed("无法读取密钥锁").with("path", path.display())),
+                    Err(_) => {
+                        return Err(failed("keys.couldn_t_read_the_key_lock", "无法读取密钥锁")
+                            .with("path", path.display()));
+                    }
                 }
             }
             Err(_) => {
-                return Err(
-                    failed("无法取得本机密钥锁；请检查未完成操作").with("path", path.display())
-                );
+                return Err(failed(
+                    "keys.couldn_t_acquire_the_local_key_lock_check_unfinished_operations",
+                    "无法取得本机密钥锁；请检查未完成操作",
+                )
+                .with("path", path.display()));
             }
         }
         if start.elapsed() >= timeout {
-            return Err(failed("无法取得本机密钥锁；请检查未完成操作").with("path", path.display()));
+            return Err(failed(
+                "keys.couldn_t_acquire_the_local_key_lock_check_unfinished_operations",
+                "无法取得本机密钥锁；请检查未完成操作",
+            )
+            .with("path", path.display()));
         }
         thread::sleep(Duration::from_millis(50));
     }
@@ -126,57 +151,79 @@ impl Drop for Temporary {
 }
 enum Inspection {
     Missing,
-    Damaged(&'static str),
+    Damaged(&'static str, &'static str),
     Ready(LocalKey),
 }
 fn inspect(dir: &Path, store: &dyn CredentialStore) -> Result<Inspection, AppError> {
     let private_path = dir.join("pierlink_ed25519");
     if !private_path
         .try_exists()
-        .map_err(|_| failed("无法检查私钥"))?
+        .map_err(|_| failed("keys.couldn_t_inspect_the_private_key", "无法检查私钥"))?
     {
         return Ok(Inspection::Missing);
     }
     permissions(&private_path, false)?;
     let public_path = dir.join("pierlink_ed25519.pub");
     if !io(public_path.try_exists())? {
-        return Ok(Inspection::Damaged("公钥文件缺失"));
+        return Ok(Inspection::Damaged("keys.public_missing", "公钥文件缺失"));
     }
     permissions(&public_path, false)?;
     let Some(secret) = store
         .get(CREDENTIAL_ID)
-        .map_err(|_| failed("无法读取密钥凭据"))?
+        .map_err(|_| failed("keys.couldn_t_read_key_credentials", "无法读取密钥凭据"))?
     else {
-        return Ok(Inspection::Damaged("密钥口令缺失"));
+        return Ok(Inspection::Damaged(
+            "keys.passphrase_missing",
+            "密钥口令缺失",
+        ));
     };
     let secret = Zeroizing::new(secret);
     if secret.len() != 64 || !secret.bytes().all(|c| c.is_ascii_hexdigit()) {
-        return Err(failed("密钥口令格式无效"));
+        return Err(failed(
+            "keys.invalid_key_passphrase_format",
+            "密钥口令格式无效",
+        ));
     }
     let public_line = io(fs::read_to_string(&public_path))?.trim().to_owned();
     let Some(public) = parse(&public_line) else {
-        return Ok(Inspection::Damaged("公钥文件无效"));
+        return Ok(Inspection::Damaged("keys.public_invalid", "公钥文件无效"));
     };
     let encoded = Zeroizing::new(io(fs::read_to_string(&private_path))?);
     let Ok(encrypted) = PrivateKey::from_openssh(encoded.as_bytes()) else {
-        return Ok(Inspection::Damaged("私钥格式无效"));
+        return Ok(Inspection::Damaged("keys.private_invalid", "私钥格式无效"));
     };
     if !encrypted.is_encrypted() {
-        return Ok(Inspection::Damaged("私钥未加密"));
+        return Ok(Inspection::Damaged(
+            "keys.private_unencrypted",
+            "私钥未加密",
+        ));
     }
     let Ok(private) = encrypted.decrypt(secret.as_bytes()) else {
-        return Ok(Inspection::Damaged("私钥无法用口令解开"));
+        return Ok(Inspection::Damaged(
+            "keys.decrypt_failed",
+            "私钥无法用口令解开",
+        ));
     };
     if private.algorithm() != Algorithm::Ed25519 {
-        return Ok(Inspection::Damaged("专用密钥不是 ed25519"));
+        return Ok(Inspection::Damaged(
+            "keys.not_ed25519",
+            "专用密钥不是 ed25519",
+        ));
     }
-    let derived_line = private
-        .public_key()
-        .to_openssh()
-        .map_err(|_| failed("无法从私钥读取公钥"))?;
-    let derived = parse(&derived_line).ok_or_else(|| failed("无法从私钥读取公钥"))?;
+    let derived_line = private.public_key().to_openssh().map_err(|_| {
+        failed(
+            "keys.couldn_t_derive_the_public_key_from_the_private_key",
+            "无法从私钥读取公钥",
+        )
+    })?;
+    let derived = parse(&derived_line).ok_or_else(|| {
+        failed(
+            "keys.couldn_t_derive_the_public_key_from_the_private_key",
+            "无法从私钥读取公钥",
+        )
+    })?;
     if public.kind != derived.kind || public.data != derived.data {
-        return Ok(Inspection::Damaged("公钥与私钥不一致"));
+        return Ok(Inspection::Damaged("keys.key_mismatch", "公钥与私钥不一致"));
     }
     Ok(Inspection::Ready(LocalKey {
         private_path,
@@ -190,14 +237,19 @@ pub fn load_local_key(
     dir: &Path,
     store: &dyn CredentialStore,
 ) -> Result<Option<LocalKey>, AppError> {
-    if !dir.try_exists().map_err(|_| failed("无法检查密钥目录"))? {
+    if !dir.try_exists().map_err(|_| {
+        failed(
+            "keys.couldn_t_inspect_the_key_directory",
+            "无法检查密钥目录",
+        )
+    })? {
         return Ok(None);
     }
     permissions(dir, true)?;
     let _lock = lock(dir)?;
     match inspect(dir, store)? {
         Inspection::Missing => Ok(None),
-        Inspection::Damaged(reason) => Err(failed(reason)),
+        Inspection::Damaged(text_key, reason) => Err(failed(text_key, reason)),
         Inspection::Ready(key) => Ok(Some(key)),
     }
 }
@@ -208,7 +260,7 @@ pub fn key_comment(computer_name: &str, short_id: &str) -> Result<String, AppErr
             .bytes()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
     {
-        return Err(failed("电脑短 ID 无效"));
+        return Err(failed("keys.invalid_computer_short_id", "电脑短 ID 无效"));
     }
     let name: String = computer_name
         .chars()
@@ -234,7 +286,7 @@ pub fn ensure_local_key(
             .bytes()
             .all(|c| c.is_ascii_alphanumeric() || b"_-".contains(&c))
     {
-        return Err(failed("密钥注释无效"));
+        return Err(failed("keys.invalid_key_comment", "密钥注释无效"));
     }
     let mut builder = fs::DirBuilder::new();
     builder.recursive(true);
@@ -257,13 +309,13 @@ pub fn ensure_local_key(
     let path = temporary.0.join("pierlink_ed25519");
     let secret = Zeroizing::new(random_secret(32));
     let mut rng = rand::rng();
-    let mut private =
-        PrivateKey::random(&mut rng, Algorithm::Ed25519).map_err(|_| failed("密钥生成失败"))?;
+    let mut private = PrivateKey::random(&mut rng, Algorithm::Ed25519)
+        .map_err(|_| failed("keys.key_generation_failed", "密钥生成失败"))?;
     private.set_comment(comment);
     let public = private
         .public_key()
         .to_openssh()
-        .map_err(|_| failed("公钥编码失败"))?;
+        .map_err(|_| failed("keys.couldn_t_encode_the_public_key", "公钥编码失败"))?;
     let encrypted = private
         .encrypt_with(
             Cipher::Aes256Ctr,
@@ -274,10 +326,10 @@ pub fn ensure_local_key(
             rng.random(),
             secret.as_bytes(),
         )
-        .map_err(|_| failed("私钥加密失败"))?;
+        .map_err(|_| failed("keys.couldn_t_encrypt_the_private_key", "私钥加密失败"))?;
     let encoded = encrypted
         .to_openssh(LineEnding::LF)
-        .map_err(|_| failed("私钥编码失败"))?;
+        .map_err(|_| failed("keys.couldn_t_encode_the_private_key", "私钥编码失败"))?;
     write_key_file(&path, encoded.as_bytes())?;
     write_key_file(
         &path.with_extension("pub"),
@@ -288,11 +340,11 @@ pub fn ensure_local_key(
     // 新密钥生成、权限检查和凭据写入完成后才归档现有文件。
     store
         .set(CREDENTIAL_ID, &secret)
-        .map_err(|_| failed("无法保存密钥口令"))?;
+        .map_err(|_| failed("keys.couldn_t_save_the_key_passphrase", "无法保存密钥口令"))?;
     if regenerated {
         let time = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .map_err(|_| failed("系统时间无效"))?
+            .map_err(|_| failed("keys.invalid_system_time", "系统时间无效"))?
             .as_millis();
         let archive = dir.join(format!("old-{time}-{}", random_secret(4)));
         io(fs::create_dir(&archive))?;
@@ -329,8 +381,13 @@ pub fn ensure_local_key(
     ))?;
     let mut key = match inspect(dir, store)? {
         Inspection::Ready(key) => key,
-        Inspection::Missing => return Err(failed("生成后私钥缺失")),
-        Inspection::Damaged(reason) => return Err(failed(reason)),
+        Inspection::Missing => {
+            return Err(failed(
+                "keys.private_key_is_missing_after_generation",
+                "生成后私钥缺失",
+            ));
+        }
+        Inspection::Damaged(text_key, reason) => return Err(failed(text_key, reason)),
     };
     key.regenerated = regenerated;
     Ok(key)

@@ -9,10 +9,21 @@ json() {
     printf '%s' "$1" | od -An -v -tu1 | awk 'BEGIN {printf "\""} {for(i=1;i<=NF;i++){n=$i;if(n==34 || n==92) printf "\\%c",n;else if(n<32) printf "\\u%04x",n;else printf "%c",n}} END {printf "\""}'
 }
 fail() {
-    printf '{"error":"vnc.%s","reason":' "$1"; json "${2:-操作无法完成}"
-    if [ "$1" = download_failed ]; then printf ',"source":'; json "${source:-未知}"; fi
+    printf '{"error":"vnc.%s","reason":' "$1"; json "${3:-操作无法完成}"
+    printf ',"reason_key":'; json "${2:-vnc.operation_failed}"
+    error_params
+    if [ "$1" = start_timeout ]; then
+        printf ',"log":'; json "${3:-操作无法完成}"
+        printf ',"log_key":'; json "${2:-vnc.operation_failed}"
+    fi
+    if [ "$1" = download_failed ]; then printf ',"source":'; json "${source:-未知}"; if [ -z "${source:-}" ]; then printf ',"source_key":"vnc.unknown_source"'; fi; fi
     if [ "$1" = xkb_unavailable ]; then printf ',"install_command":'; json "$(xkb_install_command)"; fi
     printf '}'; exit 0
+}
+# 变化的数值与库名独立返回，供原因译文插值。
+error_params() {
+    if [ -n "${apt_status:-}" ]; then printf ',"exit_code":'; json "$apt_status"; fi
+    if [ -n "${libs:-}" ]; then printf ',"libs":'; json "$libs"; fi
 }
 safe_path() {
     case "$1" in "$HOME"/*) rest=${1#"$HOME"/}; current=$HOME;; *) fail unsafe_path;; esac

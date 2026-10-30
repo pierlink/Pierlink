@@ -46,16 +46,20 @@ impl Sandbox {
         if self.folders.iter().any(|folder| path_within(path, folder)) {
             Ok(())
         } else {
-            Err(
-                path_error("mcp.path_outside", path, "路径不在允许的文件夹中").with(
-                    "allowed",
-                    self.folders
-                        .iter()
-                        .map(|p| fs_local::display_path(p))
-                        .collect::<Vec<_>>()
-                        .join("\n"),
-                ),
+            Err(path_error(
+                "mcp.path_outside",
+                path,
+                "mcp.path_is_outside_the_allowed_folders",
+                "路径不在允许的文件夹中",
             )
+            .with(
+                "allowed",
+                self.folders
+                    .iter()
+                    .map(|p| fs_local::display_path(p))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            ))
         }
     }
     /// 规范化绝对 path 并检查授权前缀；返回可读路径或带原因的路径、网络盘、占用、缺失错误。
@@ -72,12 +76,22 @@ impl Sandbox {
         let path = Path::new(path);
         reject_network_folder(path)?;
         valid_path(path)?;
-        let name = path
-            .file_name()
-            .ok_or_else(|| path_error("mcp.path_invalid", path, "缺少文件名"))?;
-        let parent = path
-            .parent()
-            .ok_or_else(|| path_error("mcp.path_invalid", path, "缺少父目录"))?;
+        let name = path.file_name().ok_or_else(|| {
+            path_error(
+                "mcp.path_invalid",
+                path,
+                "mcp.filename_is_missing",
+                "缺少文件名",
+            )
+        })?;
+        let parent = path.parent().ok_or_else(|| {
+            path_error(
+                "mcp.path_invalid",
+                path,
+                "mcp.parent_directory_is_missing",
+                "缺少父目录",
+            )
+        })?;
         let parent = canonical(parent)?;
         self.contains(&parent)?;
         let target = parent.join(name);
@@ -92,6 +106,7 @@ impl Sandbox {
                     return Err(path_error(
                         "mcp.path_invalid",
                         path,
+                        "mcp.only_regular_files_can_be_replaced",
                         "只能替换普通文件，不能覆盖目录或设备",
                     ));
                 }
@@ -109,7 +124,12 @@ pub fn validate_folder(folder: &Path) -> Result<PathBuf, AppError> {
     reject_network_folder(folder)?;
     let resolved = canonical(folder)?;
     if !resolved.is_dir() {
-        return Err(path_error("mcp.path_invalid", folder, "授权路径必须是目录"));
+        return Err(path_error(
+            "mcp.path_invalid",
+            folder,
+            "mcp.allowed_path_must_be_a_directory",
+            "授权路径必须是目录",
+        ));
     }
     Ok(resolved)
 }
@@ -129,6 +149,7 @@ fn reject_network_folder(path: &Path) -> Result<(), AppError> {
         return Err(path_error(
             "mcp.network_folder",
             path,
+            "mcp.folders_on_network_drives_are_not_supported",
             "不支持网络盘上的文件夹",
         ));
     }
@@ -153,22 +174,32 @@ fn mapped_drive(path: &Path, drive_type: impl FnOnce(&[u16]) -> u32) -> bool {
         drive_type(&root) == 4 // DRIVE_REMOTE：映射网络盘。
     })
 }
-fn path_error(code: &str, path: &Path, reason: &str) -> AppError {
+fn path_error(code: &str, path: &Path, text_key: &'static str, reason: &str) -> AppError {
     AppError::new(code)
         .with("path", fs_local::display_path(path))
-        .with("reason", reason)
+        .with_reason(text_key, reason)
 }
 fn io_error(error: std::io::Error, path: &Path) -> AppError {
     #[cfg(windows)]
     if let Some(code @ (32 | 33)) = error.raw_os_error() {
-        return path_error("mcp.file_busy", path, "文件被别的程序占用").with("os_code", code);
+        return path_error(
+            "mcp.file_busy",
+            path,
+            "mcp.file_is_in_use_by_another_program",
+            "文件被别的程序占用",
+        )
+        .with("os_code", code);
     }
-    let (code, reason) = if error.kind() == std::io::ErrorKind::NotFound {
-        ("mcp.not_found", "文件或父目录不存在")
+    let (code, text_key, reason) = if error.kind() == std::io::ErrorKind::NotFound {
+        ("mcp.not_found", "mcp.path_missing", "文件或父目录不存在")
     } else {
-        ("mcp.path_invalid", "无法访问路径或完成文件操作")
+        (
+            "mcp.path_invalid",
+            "mcp.file_operation",
+            "无法访问路径或完成文件操作",
+        )
     };
-    path_error(code, path, reason)
+    path_error(code, path, text_key, reason)
 }
 fn canonical(path: &Path) -> Result<PathBuf, AppError> {
     check_links(path, 0)?;
@@ -179,7 +210,12 @@ fn canonical(path: &Path) -> Result<PathBuf, AppError> {
 fn check_links(path: &Path, depth: usize) -> Result<(), AppError> {
     valid_path(path)?;
     if depth > 40 {
-        return Err(path_error("mcp.path_invalid", path, "路径链接层级过多"));
+        return Err(path_error(
+            "mcp.path_invalid",
+            path,
+            "mcp.too_many_levels_of_symbolic_links",
+            "路径链接层级过多",
+        ));
     }
     let mut current = PathBuf::new();
     for part in path.components() {
@@ -217,6 +253,7 @@ fn valid_path(path: &Path) -> Result<(), AppError> {
         path_error(
             "mcp.path_invalid",
             path,
+            "mcp.use_a_local_absolute_path_without_network_paths_devices_reserved",
             "只允许本机绝对路径，不能含网络路径、设备、保留名、数据流或上级目录",
         )
     };
@@ -395,12 +432,15 @@ pub(super) fn read_chunk(
     }
 }
 pub(super) fn check_metadata(file: &fs::File, before: &fs::Metadata) -> Result<(), AppError> {
-    let after = file
-        .metadata()
-        .map_err(|_| AppError::new("mcp.path_invalid").with("reason", "无法读取文件属性"))?;
+    let after = file.metadata().map_err(|_| {
+        AppError::new("mcp.path_invalid")
+            .with_reason("mcp.couldn_t_read_file_properties", "无法读取文件属性")
+    })?;
     if before.len() != after.len() || before.modified().ok() != after.modified().ok() {
-        return Err(AppError::new("mcp.file_changed")
-            .with("reason", "读取期间文件内容发生变化，请重新读取"));
+        return Err(AppError::new("mcp.file_changed").with_reason(
+            "mcp.file_changed_while_reading_read_it_again",
+            "读取期间文件内容发生变化，请重新读取",
+        ));
     }
     Ok(())
 }
@@ -460,7 +500,7 @@ pub(super) fn write_checked(
 fn too_large(max: usize) -> AppError {
     AppError::new("mcp.file_too_large")
         .with("max_bytes", max)
-        .with("reason", "文件超过大小限制")
+        .with_reason("mcp.file_exceeds_the_size_limit", "文件超过大小限制")
 }
 fn existing(path: &Path) -> Result<Option<Vec<u8>>, AppError> {
     match fs::symlink_metadata(path) {
@@ -479,7 +519,12 @@ pub(super) fn open_file(path: &Path) -> Result<fs::File, AppError> {
     }
     let file = options.open(path).map_err(|e| io_error(e, path))?;
     if !file.metadata().map_err(|e| io_error(e, path))?.is_file() {
-        return Err(path_error("mcp.path_invalid", path, "只支持普通文件"));
+        return Err(path_error(
+            "mcp.path_invalid",
+            path,
+            "mcp.only_regular_files_are_supported",
+            "只支持普通文件",
+        ));
     }
     Ok(file)
 }
@@ -496,9 +541,10 @@ pub(super) fn read_bounded(path: &Path, limit: usize) -> Result<Vec<u8>, AppErro
 }
 fn check_hash(bytes: Option<&[u8]>, expected: Option<&str>) -> Result<(), AppError> {
     if expected.is_some_and(|expected| bytes.is_none_or(|b| hash(b) != expected)) {
-        return Err(
-            AppError::new("mcp.file_changed").with("reason", "文件在读取后已改变，请重新读取")
-        );
+        return Err(AppError::new("mcp.file_changed").with_reason(
+            "mcp.file_changed_since_it_was_read_read_it_again",
+            "文件在读取后已改变，请重新读取",
+        ));
     }
     Ok(())
 }
@@ -516,11 +562,21 @@ fn atomic_write(
         return Err(too_large(WRITE_LIMIT));
     }
     if fs::metadata(target).is_ok_and(|m| m.permissions().readonly()) {
-        return Err(path_error("mcp.path_invalid", target, "文件是只读的"));
+        return Err(path_error(
+            "mcp.path_invalid",
+            target,
+            "mcp.file_is_read_only",
+            "文件是只读的",
+        ));
     }
-    let parent = target
-        .parent()
-        .ok_or_else(|| path_error("mcp.path_invalid", target, "缺少父目录"))?;
+    let parent = target.parent().ok_or_else(|| {
+        path_error(
+            "mcp.path_invalid",
+            target,
+            "mcp.parent_directory_is_missing",
+            "缺少父目录",
+        )
+    })?;
     let mut temporary = tempfile::Builder::new()
         .prefix(".pierlink-")
         .suffix(".pierlink-part")
@@ -540,7 +596,10 @@ fn atomic_write(
         .sync_all()
         .map_err(|e| io_error(e, target))?;
     if sb.resolve_write(path)? != target || existing(target)?.as_deref() != original {
-        return Err(AppError::new("mcp.file_changed").with("reason", "写入期间路径或内容发生变化"));
+        return Err(AppError::new("mcp.file_changed").with_reason(
+            "mcp.path_or_content_changed_while_writing",
+            "写入期间路径或内容发生变化",
+        ));
     }
     temporary
         .persist(target)
@@ -556,7 +615,13 @@ fn persist_error(error: std::io::Error, target: &Path) -> AppError {
     // Windows 原子替换也会把缺少删除共享报成拒绝访问，探测后才能区分占用与权限不足。
     #[cfg(windows)]
     if os_code == Some(5) && target_is_busy(target) {
-        return path_error("mcp.file_busy", target, "文件被别的程序占用").with("os_code", 5);
+        return path_error(
+            "mcp.file_busy",
+            target,
+            "mcp.file_is_in_use_by_another_program",
+            "文件被别的程序占用",
+        )
+        .with("os_code", 5);
     }
     let mut result = io_error(error, target);
     if let Some(code) = os_code {
@@ -596,18 +661,22 @@ pub(super) fn edit_file(
     let doc = Document::decode(&bytes)?;
     let old = doc.normalize(old);
     if old.is_empty() {
-        return Err(AppError::new("mcp.edit_not_found").with("reason", "匹配文字不能为空"));
+        return Err(AppError::new("mcp.edit_not_found")
+            .with_reason("mcp.matching_text_cannot_be_empty", "匹配文字不能为空"));
     }
     let matches = doc.match_ranges(&old);
     let count = matches.len();
     if count == 0 {
-        return Err(AppError::new("mcp.edit_not_found").with("reason", "文件中没有找到匹配文字"));
+        return Err(AppError::new("mcp.edit_not_found").with_reason(
+            "mcp.matching_text_was_not_found_in_the_file",
+            "文件中没有找到匹配文字",
+        ));
     }
     if count > 1 && !all {
         return Err(AppError::new("mcp.edit_not_unique")
             .with("count", count)
-            .with(
-                "reason",
+            .with_reason(
+                "mcp.multiple_matches_found_provide_more_context_or_use_replace_all",
                 "匹配文字不唯一，请提供更多上下文或使用 replace_all",
             ));
     }

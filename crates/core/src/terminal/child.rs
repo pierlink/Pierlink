@@ -118,7 +118,11 @@ pub(super) fn spawn(kind: TerminalKind, pair: &super::Pair) -> Result<Process, A
     let mut askpass = None;
     let (program, args, cwd, mut env) = match kind {
         TerminalKind::BuiltinRemote(_) => {
-            return Err(error("spawn_failed", "内置终端不能启动本机进程"));
+            return Err(error(
+                "spawn_failed",
+                "terminal.built_in_terminals_cannot_start_local_processes",
+                "内置终端不能启动本机进程",
+            ));
         }
         TerminalKind::Local {
             program,
@@ -134,8 +138,13 @@ pub(super) fn spawn(kind: TerminalKind, pair: &super::Pair) -> Result<Process, A
             command = command.prepare()?;
             askpass = command.askpass.clone();
             if let Some(text) = command.config_text.take().filter(|s| !s.is_empty()) {
-                fs::create_dir_all(&config_dir)
-                    .map_err(|_| error("config_failed", "创建配置目录"))?;
+                fs::create_dir_all(&config_dir).map_err(|_| {
+                    error(
+                        "config_failed",
+                        "terminal.create_configuration_directory",
+                        "创建配置目录",
+                    )
+                })?;
                 let path = config_dir.join(format!("terminal-{}.conf", uuid::Uuid::new_v4()));
                 let mut options = OpenOptions::new();
                 options.write(true).create_new(true);
@@ -144,21 +153,39 @@ pub(super) fn spawn(kind: TerminalKind, pair: &super::Pair) -> Result<Process, A
                     use std::os::unix::fs::OpenOptionsExt;
                     options.mode(0o600);
                 }
-                let mut file = options
-                    .open(&path)
-                    .map_err(|_| error("config_failed", "创建临时 SSH 配置"))?;
+                let mut file = options.open(&path).map_err(|_| {
+                    error(
+                        "config_failed",
+                        "terminal.create_temporary_ssh_configuration",
+                        "创建临时 SSH 配置",
+                    )
+                })?;
                 config = Some(Config(path.clone()));
-                file.write_all(text.as_bytes())
-                    .map_err(|_| error("config_failed", "写入临时 SSH 配置"))?;
+                file.write_all(text.as_bytes()).map_err(|_| {
+                    error(
+                        "config_failed",
+                        "terminal.write_temporary_ssh_configuration",
+                        "写入临时 SSH 配置",
+                    )
+                })?;
                 let path = path
                     .to_str()
-                    .ok_or_else(|| error("config_failed", "配置路径编码无效"))?
+                    .ok_or_else(|| {
+                        error(
+                            "config_failed",
+                            "terminal.invalid_configuration_path_encoding",
+                            "配置路径编码无效",
+                        )
+                    })?
                     .to_owned();
                 if let Some(index) = command.args.iter().position(|s| s == "-F") {
-                    let value = command
-                        .args
-                        .get_mut(index + 1)
-                        .ok_or_else(|| error("config_failed", "缺少 SSH 配置参数"))?;
+                    let value = command.args.get_mut(index + 1).ok_or_else(|| {
+                        error(
+                            "config_failed",
+                            "terminal.ssh_configuration_argument_is_missing",
+                            "缺少 SSH 配置参数",
+                        )
+                    })?;
                     *value = path;
                 } else {
                     command.args.splice(0..0, ["-F".into(), path]);
@@ -168,7 +195,11 @@ pub(super) fn spawn(kind: TerminalKind, pair: &super::Pair) -> Result<Process, A
         }
     };
     if cwd.as_ref().is_some_and(|path| !path.is_dir()) {
-        return Err(error("cwd_not_found", "工作目录不存在或不是目录"));
+        return Err(error(
+            "cwd_not_found",
+            "terminal.working_directory_is_missing_or_is_not_a_directory",
+            "工作目录不存在或不是目录",
+        ));
     }
     env.retain(|(key, _)| !key.eq_ignore_ascii_case("TERM"));
     env.push(("TERM".into(), "xterm-256color".into()));
@@ -178,28 +209,32 @@ pub(super) fn spawn(kind: TerminalKind, pair: &super::Pair) -> Result<Process, A
         let path = pair
             .master
             .tty_name()
-            .ok_or_else(|| error("spawn_failed", "获取伪终端"))?;
+            .ok_or_else(|| error("spawn_failed", "terminal.get_pseudoterminal", "获取伪终端"))?;
         let slave = OpenOptions::new()
             .read(true)
             .write(true)
             .custom_flags(libc::O_NOCTTY)
             .open(path)
-            .map_err(|_| error("spawn_failed", "打开伪终端"))?;
+            .map_err(|_| error("spawn_failed", "terminal.open_pseudoterminal", "打开伪终端"))?;
         let mut command = std::process::Command::new(program);
         command
             .args(args)
             .env("TERM", "xterm-256color")
             .envs(env)
-            .stdin(
-                slave
-                    .try_clone()
-                    .map_err(|_| error("spawn_failed", "复制输入句柄"))?,
-            )
-            .stdout(
-                slave
-                    .try_clone()
-                    .map_err(|_| error("spawn_failed", "复制输出句柄"))?,
-            )
+            .stdin(slave.try_clone().map_err(|_| {
+                error(
+                    "spawn_failed",
+                    "terminal.clone_input_handle",
+                    "复制输入句柄",
+                )
+            })?)
+            .stdout(slave.try_clone().map_err(|_| {
+                error(
+                    "spawn_failed",
+                    "terminal.clone_output_handle",
+                    "复制输出句柄",
+                )
+            })?)
             .stderr(slave);
         if let Some(cwd) = cwd {
             command.current_dir(cwd);
@@ -219,6 +254,7 @@ pub(super) fn spawn(kind: TerminalKind, pair: &super::Pair) -> Result<Process, A
                 } else {
                     "spawn_failed"
                 },
+                "terminal.start_terminal_program",
                 "启动终端程序",
             )
         })?)

@@ -37,8 +37,10 @@ pub(super) fn validate_modes(
     if local == FolderKind::ReceiveOnly {
         let modes: Vec<_> = modes.into_iter().collect();
         if modes.is_empty() || modes.contains(&FolderKind::ReceiveOnly) {
-            return Err(AppError::new("sync.invalid_mode")
-                .with("reason", "本机只接收时，所有服务器端点都必须为收发方式"));
+            return Err(AppError::new("sync.invalid_mode").with_reason(
+                "sync.all_server_endpoints_must_send_and_receive_when_the_local",
+                "本机只接收时，所有服务器端点都必须为收发方式",
+            ));
         }
     }
     Ok(())
@@ -93,7 +95,10 @@ fn server_change<'a>(
     let versions =
         super::paths::remote_normalized(&format!("{}/versions/{folder_id}", link.state_dir))?;
     if settings.versioning && crate::storage::paths_overlap(&path, &versions) {
-        return Err(error("旧版本目录与同步目录重叠"));
+        return Err(error(
+            "sync.version_directory_overlaps_the_sync_directory",
+            "旧版本目录与同步目录重叠",
+        ));
     }
     let patch = settings_config(
         ep.mode,
@@ -155,7 +160,10 @@ fn plan_settings<'a>(
         settings.endpoints.iter().map(|e| e.mode),
     )?;
     if !(1..=60).contains(&settings.watch_delay_s) || settings.endpoints.is_empty() {
-        return Err(error("等待须为 1–60 秒且至少有一个端点"));
+        return Err(error(
+            "sync.wait_time_must_be_1_60_seconds_and_at_least",
+            "等待须为 1–60 秒且至少有一个端点",
+        ));
     }
     let previous = read_folder(local.client(), folder_id)?;
     let mut seen = HashSet::new();
@@ -163,17 +171,23 @@ fn plan_settings<'a>(
     let mut changes = Vec::new();
     for ep in &settings.endpoints {
         if !seen.insert(&ep.server_id) {
-            return Err(error("端点重复"));
+            return Err(error("sync.duplicate_endpoint", "端点重复"));
         }
         let mut matches = links.iter().filter(|l| l.server_id == ep.server_id);
         let link = matches
             .next()
             .ok_or_else(|| AppError::new("sync.server_offline").with("server_id", &ep.server_id))?;
         if matches.next().is_some() {
-            return Err(error("每个端点须有唯一连接"));
+            return Err(error(
+                "sync.each_endpoint_must_have_a_unique_connection",
+                "每个端点须有唯一连接",
+            ));
         }
         if link.device_id == local.device_id() || !devices.insert(link.device_id.as_str()) {
-            return Err(error("端点设备身份重复"));
+            return Err(error(
+                "sync.duplicate_endpoint_device_identity",
+                "端点设备身份重复",
+            ));
         }
         changes.push(server_change(link, ep, folder_id, settings)?);
     }
@@ -188,7 +202,10 @@ fn plan_settings<'a>(
         .filter(|id| *id != local.device_id())
         .collect();
     if shared != devices || links.len() != settings.endpoints.len() {
-        return Err(error("设置和连接须覆盖当前任务的全部服务器端点"));
+        return Err(error(
+            "sync.settings_and_connections_must_cover_all_server_endpoints_in_the",
+            "设置和连接须覆盖当前任务的全部服务器端点",
+        ));
     }
     changes.insert(0, local_change(local, folder_id, settings, previous)?);
     Ok(changes)
@@ -239,9 +256,10 @@ pub fn update_task_settings(
 pub fn revert_local_changes(local: &LocalSync, folder_id: &str) -> Result<(), AppError> {
     validate_task_folder_id(folder_id)?;
     if read_folder(local.client(), folder_id)?["type"] != "receiveonly" {
-        return Err(
-            AppError::new("sync.invalid_mode").with("reason", "只有只接收文件夹能还原本地改动")
-        );
+        return Err(AppError::new("sync.invalid_mode").with_reason(
+            "sync.only_receive_only_folders_can_revert_local_changes",
+            "只有只接收文件夹能还原本地改动",
+        ));
     }
     local
         .client()

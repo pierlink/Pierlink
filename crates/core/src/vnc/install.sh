@@ -1,6 +1,6 @@
 prefix_environment "$work/unpack"
 [ -x "$binary" ] && [ ! -L "$binary" ] || fail invalid_package
-command -v ldd >/dev/null || fail missing_tool '缺少 ldd，无法检查动态库'
+command -v ldd >/dev/null || fail missing_tool 'vnc.ldd_missing' '缺少 ldd，无法检查动态库'
 libs=$(ldd "$binary" 2>&1 | awk '/not found/ {print $1}')
 if [ -n "$libs" ]; then printf '{"error":"vnc.missing_libs","libs":'; json "$libs"; printf '}'; exit 0; fi
 output=$(bounded 5 "$binary" -version 2>&1) || fail not_tigervnc

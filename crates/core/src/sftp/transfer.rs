@@ -65,13 +65,13 @@ struct PlannedEntry {
 }
 const MAX_ENTRIES: usize = 100_000;
 const MAX_DEPTH: usize = 128;
-fn failure(reason: &str) -> AppError {
-    AppError::new("transfer.failure").with("reason", reason)
+fn failure(text_key: &'static str, reason: &str) -> AppError {
+    AppError::new("transfer.failure").with_reason(text_key, reason)
 }
-fn issue(path: impl ToString, reason: &str) -> TransferIssue {
+fn issue(path: impl ToString, text_key: &'static str, reason: &str) -> TransferIssue {
     TransferIssue {
         path: path.to_string(),
-        reason: AppError::new("transfer.skipped").with("reason", reason),
+        reason: AppError::new("transfer.skipped").with_reason(text_key, reason),
     }
 }
 fn empty_plan() -> TransferPlan {
@@ -86,7 +86,10 @@ fn empty_plan() -> TransferPlan {
 }
 fn component(value: &str) -> Result<(), AppError> {
     if value.is_empty() || value == "." || value == ".." || value.contains(['/', '\0']) {
-        return Err(failure("来源名字为空或包含非法路径分隔符"));
+        return Err(failure(
+            "sftp.source_name_is_empty_or_contains_invalid_path_separators",
+            "来源名字为空或包含非法路径分隔符",
+        ));
     }
     Ok(())
 }
@@ -134,14 +137,17 @@ pub fn windows_filename(name: &str) -> String {
 impl TransferPlan {
     fn push(&mut self, item: PlannedEntry) -> Result<(), AppError> {
         if self.entries.len() >= MAX_ENTRIES {
-            return Err(failure("传输项超过十万，请分批选择"));
+            return Err(failure(
+                "sftp.more_than_100_000_transfer_items_select_smaller_batches",
+                "传输项超过十万，请分批选择",
+            ));
         }
         if item.kind == EntryKind::File {
             self.files_total += 1;
             self.total_bytes = self
                 .total_bytes
                 .checked_add(item.size)
-                .ok_or_else(|| failure("总字节数溢出"))?;
+                .ok_or_else(|| failure("sftp.total_byte_count_overflow", "总字节数溢出"))?;
         }
         self.entries.push(item);
         Ok(())
@@ -161,7 +167,7 @@ impl TransferPlan {
             };
             if !seen.insert(key) {
                 return Err(AppError::new("transfer.exists")
-                    .with("reason", "多个来源映射到同一目标，请分别传输")
+                    .with_reason("sftp.multiple_sources_map_to_the_same_destination_transfer_them_separately", "多个来源映射到同一目标，请分别传输")
                     .with("items", name));
             }
         }
@@ -172,13 +178,22 @@ fn local_metadata(path: &Path) -> Result<Option<fs::Metadata>, AppError> {
     match fs::symlink_metadata(path) {
         Ok(metadata) => Ok(Some(metadata)),
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(fs_local::error(e, "读取本机属性", path)),
+        Err(e) => Err(fs_local::error(
+            e,
+            "sftp.read_local_file_properties",
+            "读取本机属性",
+            path,
+        )),
     }
 }
 fn ensure_local_dir(path: &Path) -> Result<(), AppError> {
     match local_metadata(path)? {
         Some(m) if m.is_dir() && !m.file_type().is_symlink() => Ok(()),
-        _ => Err(failure("本机目标目录不存在、不是目录或是符号链接").with("path", path.display())),
+        _ => Err(failure(
+            "sftp.local_destination_is_missing_not_a_directory_or_a_symbolic",
+            "本机目标目录不存在、不是目录或是符号链接",
+        )
+        .with("path", path.display())),
     }
 }
 fn ensure_remote_dir(session: &mut SftpSession, path: &str) -> Result<(), AppError> {
@@ -188,12 +203,19 @@ fn ensure_remote_dir(session: &mut SftpSession, path: &str) -> Result<(), AppErr
     {
         Ok(())
     } else {
-        Err(failure("远端目标目录不存在、不是目录或是符号链接").with("path", path))
+        Err(failure(
+            "sftp.remote_destination_is_missing_not_a_directory_or_a_symbolic",
+            "远端目标目录不存在、不是目录或是符号链接",
+        )
+        .with("path", path))
     }
 }
 fn depth(depth: usize) -> Result<(), AppError> {
     if depth > MAX_DEPTH {
-        Err(failure("目录层级超过 128 层，请分批选择"))
+        Err(failure(
+            "sftp.directory_depth_exceeds_128_levels_select_smaller_batches",
+            "目录层级超过 128 层，请分批选择",
+        ))
     } else {
         Ok(())
     }
@@ -206,12 +228,15 @@ fn scan_upload(
     level: usize,
 ) -> Result<(), AppError> {
     depth(level)?;
-    let meta =
-        fs::symlink_metadata(local).map_err(|e| fs_local::error(e, "扫描上传来源", local))?;
+    let meta = fs::symlink_metadata(local)
+        .map_err(|e| fs_local::error(e, "sftp.scan_upload_source", "扫描上传来源", local))?;
     let kind = fs_local::kind(&meta);
     if !matches!(kind, EntryKind::File | EntryKind::Dir) {
-        plan.skipped
-            .push(issue(local.display(), "不跟随符号链接，也不传输特殊文件"));
+        plan.skipped.push(issue(
+            local.display(),
+            "sftp.skip_special",
+            "不跟随符号链接，也不传输特殊文件",
+        ));
         return Ok(());
     }
     // 冲突预检只列顶层；子项执行前再检查，避免重复远端查询或穿过类型冲突的父项。
@@ -225,10 +250,14 @@ fn scan_upload(
     };
     #[cfg(not(unix))]
     let mode = if kind == EntryKind::Dir { 0o755 } else { 0o644 };
-    let mtime = fs_local::unix_seconds(
-        meta.modified()
-            .map_err(|e| fs_local::error(e, "读取上传修改时间", local))?,
-    );
+    let mtime = fs_local::unix_seconds(meta.modified().map_err(|e| {
+        fs_local::error(
+            e,
+            "sftp.read_upload_modification_time",
+            "读取上传修改时间",
+            local,
+        )
+    })?);
     plan.push(PlannedEntry {
         local: local.into(),
         remote: remote.into(),
@@ -238,13 +267,18 @@ fn scan_upload(
         mode,
     })?;
     if kind == EntryKind::Dir {
-        for item in fs::read_dir(local).map_err(|e| fs_local::error(e, "扫描上传目录", local))?
+        for item in fs::read_dir(local)
+            .map_err(|e| fs_local::error(e, "sftp.scan_upload_directory", "扫描上传目录", local))?
         {
-            let item = item.map_err(|e| fs_local::error(e, "扫描上传条目", local))?;
+            let item = item
+                .map_err(|e| fs_local::error(e, "sftp.scan_upload_entry", "扫描上传条目", local))?;
             let name = item.file_name();
             let Some(name) = name.to_str() else {
-                plan.skipped
-                    .push(issue(item.path().display(), "文件名不是 UTF-8"));
+                plan.skipped.push(issue(
+                    item.path().display(),
+                    "sftp.filename_not_utf8",
+                    "文件名不是 UTF-8",
+                ));
                 continue;
             };
             component(name)?;
@@ -270,10 +304,12 @@ pub fn plan_upload(
     ensure_remote_dir(session, &remote_dir)?;
     let mut plan = empty_plan();
     for source in sources {
-        let name = source
-            .file_name()
-            .and_then(|s| s.to_str())
-            .ok_or_else(|| failure("上传来源必须有 UTF-8 文件名"))?;
+        let name = source.file_name().and_then(|s| s.to_str()).ok_or_else(|| {
+            failure(
+                "sftp.upload_source_must_have_a_utf_8_filename",
+                "上传来源必须有 UTF-8 文件名",
+            )
+        })?;
         component(name)?;
         // 来源根目录的链接仍由扫描器跳过，只解析父目录以保留此语义。
         let parent = source
@@ -281,7 +317,14 @@ pub fn plan_upload(
             .filter(|p| !p.as_os_str().is_empty())
             .unwrap_or_else(|| Path::new("."));
         let source = fs_local::plain_canonical(parent)
-            .map_err(|e| fs_local::error(e, "解析上传来源目录", parent))?
+            .map_err(|e| {
+                fs_local::error(
+                    e,
+                    "sftp.resolve_upload_source_directory",
+                    "解析上传来源目录",
+                    parent,
+                )
+            })?
             .join(name);
         scan_upload(
             session,
@@ -304,8 +347,11 @@ fn scan_download(
 ) -> Result<(), AppError> {
     depth(level)?;
     if !matches!(metadata.kind, EntryKind::File | EntryKind::Dir) {
-        plan.skipped
-            .push(issue(remote, "不跟随符号链接，也不传输特殊文件"));
+        plan.skipped.push(issue(
+            remote,
+            "sftp.skip_special",
+            "不跟随符号链接，也不传输特殊文件",
+        ));
         return Ok(());
     }
     if level == 0
@@ -326,13 +372,19 @@ fn scan_download(
     if kind == EntryKind::Dir {
         let listing = session.list_dir(remote, MAX_ENTRIES)?;
         if listing.truncated {
-            return Err(failure("远端目录超过十万项，请分批选择"));
+            return Err(failure(
+                "sftp.remote_directory_exceeds_100_000_entries_select_smaller_batches",
+                "远端目录超过十万项，请分批选择",
+            ));
         }
         if listing.skipped_non_utf8 > 0 {
-            plan.skipped.push(issue(
+            let mut skipped = issue(
                 remote,
+                "sftp.skip_non_utf8",
                 &format!("跳过 {} 个非 UTF-8 名字", listing.skipped_non_utf8),
-            ));
+            );
+            skipped.reason = skipped.reason.with("count", listing.skipped_non_utf8);
+            plan.skipped.push(skipped);
         }
         for entry in listing.entries {
             let target = local
@@ -372,8 +424,14 @@ pub fn plan_download(
     sources: &[String],
     local_dir: &Path,
 ) -> Result<TransferPlan, AppError> {
-    let local_dir = fs_local::plain_canonical(local_dir)
-        .map_err(|e| fs_local::error(e, "解析下载目标目录", local_dir))?;
+    let local_dir = fs_local::plain_canonical(local_dir).map_err(|e| {
+        fs_local::error(
+            e,
+            "sftp.resolve_download_destination_directory",
+            "解析下载目标目录",
+            local_dir,
+        )
+    })?;
     ensure_local_dir(&local_dir)?;
     let mut plan = empty_plan();
     for source in sources {
@@ -381,7 +439,7 @@ pub fn plan_download(
         let name = source
             .rsplit('/')
             .next()
-            .ok_or_else(|| failure("下载来源没有文件名"))?;
+            .ok_or_else(|| failure("sftp.download_source_has_no_filename", "下载来源没有文件名"))?;
         let target = download_name(name, &local_dir, &mut plan)?;
         let metadata = session
             .stat(source)?
@@ -411,12 +469,14 @@ pub fn plan_remote(
 }
 fn preflight(plan: &TransferPlan, conflict: Conflict) -> Result<(), AppError> {
     if conflict == Conflict::Error && !plan.existing.is_empty() {
+        let items = serde_json::to_string(&plan.existing)
+            .map_err(|_| failure("sftp.couldn_t_encode_the_conflict_list", "冲突列表编码失败"))?;
         return Err(AppError::new("transfer.exists")
-            .with("reason", "目标已存在，请选择冲突策略")
-            .with(
-                "items",
-                serde_json::to_string(&plan.existing).map_err(|_| failure("冲突列表编码失败"))?,
-            ));
+            .with_reason(
+                "sftp.destination_exists_choose_a_conflict_policy",
+                "目标已存在，请选择冲突策略",
+            )
+            .with("items", items));
     }
     Ok(())
 }
@@ -427,18 +487,35 @@ fn remote_part(
     progress: &mut dyn FnMut(u64),
     cancel: &AtomicBool,
 ) -> Result<(u64, bool), AppError> {
-    let mut file =
-        File::open(&item.local).map_err(|e| fs_local::error(e, "读取上传文件", &item.local))?;
+    let mut file = File::open(&item.local)
+        .map_err(|e| fs_local::error(e, "sftp.read_upload_file", "读取上传文件", &item.local))?;
     if !file
         .metadata()
-        .map_err(|e| fs_local::error(e, "读取上传属性", &item.local))?
+        .map_err(|e| {
+            fs_local::error(
+                e,
+                "sftp.read_upload_properties",
+                "读取上传属性",
+                &item.local,
+            )
+        })?
         .is_file()
         || fs::symlink_metadata(&item.local)
-            .map_err(|e| fs_local::error(e, "读取上传属性", &item.local))?
+            .map_err(|e| {
+                fs_local::error(
+                    e,
+                    "sftp.read_upload_properties",
+                    "读取上传属性",
+                    &item.local,
+                )
+            })?
             .file_type()
             .is_symlink()
     {
-        return Err(failure("上传来源已变成符号链接或特殊文件"));
+        return Err(failure(
+            "sftp.upload_source_became_a_symbolic_link_or_special_file",
+            "上传来源已变成符号链接或特殊文件",
+        ));
     }
     let part = format!("{}.pierlink-part", item.remote);
     // 固定后缀的残留文件在排他创建失败且确认存在时删除，只重试一次。
@@ -517,34 +594,61 @@ fn local_part(
                 && local_metadata(&path)?
                     .is_some_and(|m| m.is_file() || m.file_type().is_symlink()) =>
         {
-            fs::remove_file(&path)
-                .map_err(|e| fs_local::error(e, "删除残留下载临时文件", &path))?;
+            fs::remove_file(&path).map_err(|e| {
+                fs_local::error(
+                    e,
+                    "sftp.remove_leftover_temporary_download_file",
+                    "删除残留下载临时文件",
+                    &path,
+                )
+            })?;
             create()
         }
         result => result,
     }
-    .map_err(|e| fs_local::error(e, "创建下载临时文件", &path))?;
+    .map_err(|e| {
+        fs_local::error(
+            e,
+            "sftp.create_temporary_download_file",
+            "创建下载临时文件",
+            &path,
+        )
+    })?;
     let mut part = LocalPart {
         path,
         file: Some(file),
         committed: false,
     };
     let result = (|| {
-        let file = part
-            .file
-            .as_mut()
-            .ok_or_else(|| failure("下载临时文件已关闭"))?;
+        let file = part.file.as_mut().ok_or_else(|| {
+            failure(
+                "sftp.temporary_download_file_is_closed",
+                "下载临时文件已关闭",
+            )
+        })?;
         let bytes = session.read_to(&item.remote, file, progress, cancel)?;
         cancelled(cancel)?;
         set_mtime(file, item.mtime)
             .and_then(|_| file.sync_all())
-            .map_err(|e| fs_local::error(e, "保存下载临时文件", &part.path))?;
+            .map_err(|e| {
+                fs_local::error(
+                    e,
+                    "sftp.save_temporary_download_file",
+                    "保存下载临时文件",
+                    &part.path,
+                )
+            })?;
         part.file.take();
         complete_local(&part.path, &item.local, overwrite).map_err(|e| {
             if e.kind() == io::ErrorKind::AlreadyExists {
                 AppError::new("transfer.exists").with("path", item.local.display())
             } else {
-                fs_local::error(e, "完成下载改名", &item.local)
+                fs_local::error(
+                    e,
+                    "sftp.rename_completed_download",
+                    "完成下载改名",
+                    &item.local,
+                )
             }
         })?;
         part.committed = true;
@@ -556,7 +660,12 @@ fn local_part(
             Ok(()) => part.committed = true,
             Err(e) if e.kind() == io::ErrorKind::NotFound => part.committed = true,
             Err(e) => {
-                let cleanup = fs_local::error(e, "清理下载临时文件", &part.path);
+                let cleanup = fs_local::error(
+                    e,
+                    "sftp.clean_up_temporary_download_file",
+                    "清理下载临时文件",
+                    &part.path,
+                );
                 return result.map_err(|e: AppError| {
                     e.with("cleanup_path", part.path.display())
                         .with("cleanup_error", cleanup.code)
@@ -673,7 +782,10 @@ fn transfer(
                     return Ok(false);
                 }
                 if target != Some(item.kind) {
-                    return Err(failure("来源与目标类型冲突，保留目标不作替换"));
+                    return Err(failure(
+                        "sftp.source_and_destination_types_conflict_destination_was_preserved",
+                        "来源与目标类型冲突，保留目标不作替换",
+                    ));
                 }
             }
             if item.kind == EntryKind::Dir {
@@ -686,17 +798,24 @@ fn transfer(
                 } else if upload {
                     session.mkdir(&item.remote)?;
                 } else {
-                    fs::create_dir(&item.local)
-                        .map_err(|e| fs_local::error(e, "创建下载目录", &item.local))?;
+                    fs::create_dir(&item.local).map_err(|e| {
+                        fs_local::error(
+                            e,
+                            "sftp.create_download_directory",
+                            "创建下载目录",
+                            &item.local,
+                        )
+                    })?;
                 }
                 return Ok(true);
             }
             if !upload {
-                ensure_local_dir(
-                    item.local
-                        .parent()
-                        .ok_or_else(|| failure("下载文件没有父目录"))?,
-                )?;
+                ensure_local_dir(item.local.parent().ok_or_else(|| {
+                    failure(
+                        "sftp.download_file_has_no_parent_directory",
+                        "下载文件没有父目录",
+                    )
+                })?)?;
             }
             let before = progress.done_bytes;
             let mut on_bytes = |bytes| {
@@ -714,10 +833,7 @@ fn transfer(
                 if non_atomic {
                     report.warnings.push(TransferIssue {
                         path: item.remote.clone(),
-                        reason: AppError::new("transfer.non_atomic_overwrite").with(
-                            "reason",
-                            "服务器不支持原子覆盖；先删除旧目标再改名，存在短暂空窗",
-                        ),
+                        reason: AppError::new("transfer.non_atomic_overwrite").with_reason("sftp.server_lacks_atomic_overwrite_removing_before_renaming_briefly_leaves_no", "服务器不支持原子覆盖；先删除旧目标再改名，存在短暂空窗"),
                     });
                 }
             } else {
@@ -736,6 +852,7 @@ fn transfer(
             Ok(false) => {
                 report.skipped.push(issue(
                     &progress.current,
+                    "sftp.skip_existing",
                     "同名目标按策略跳过，或父目录已跳过",
                 ));
                 if item.kind == EntryKind::Dir {

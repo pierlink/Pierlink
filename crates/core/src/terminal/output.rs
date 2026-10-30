@@ -154,16 +154,25 @@ impl Output {
     }
     fn subscribe(&mut self, capacity: usize) -> Result<OutputSubscription, AppError> {
         if self.ended {
-            return Err(error("not_found", "会话已结束"));
+            return Err(error(
+                "not_found",
+                "terminal.session_has_ended",
+                "会话已结束",
+            ));
         }
         if capacity == 0 || capacity > WINDOW {
-            return Err(error("invalid_buffer", "订阅缓冲必须为 1 字节到 1 MiB"));
+            return Err(error(
+                "invalid_buffer",
+                "terminal.subscription_buffer_must_be_between_1_byte_and_1_mib",
+                "订阅缓冲必须为 1 字节到 1 MiB",
+            ));
         }
         self.subscribers
             .retain(|s| s.upgrade().is_some_and(|s| !lock(&s.queue).closed));
         if self.subscribers.len() >= MAX_SUBSCRIBERS {
             return Err(error(
                 "subscriber_limit",
+                "terminal.each_terminal_allows_at_most_32_additional_subscribers",
                 "每个终端最多允许 32 个附加订阅者",
             ));
         }
@@ -177,9 +186,13 @@ impl Output {
     }
     fn since(&self, position: u64) -> Result<OutputRead, AppError> {
         if position > self.position {
-            return Err(error("invalid_position", "输出位置超过当前末尾")
-                .with("position", position)
-                .with("end", self.position));
+            return Err(error(
+                "invalid_position",
+                "terminal.output_position_is_beyond_the_current_end",
+                "输出位置超过当前末尾",
+            )
+            .with("position", position)
+            .with("end", self.position));
         }
         let oldest = self.position - self.history.len() as u64;
         let start = position.max(oldest);

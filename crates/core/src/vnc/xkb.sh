@@ -5,15 +5,15 @@ xkb_install_command() {
     else printf 'sudo apt-get install -y x11-xkb-utils'; fi
 }
 xkb_namespace_tools() {
-    xkb_unshare=$(command -v unshare) || { xkb_reason='没有 unshare，无法创建用户命名空间'; return 1; }
-    command -v mount >/dev/null || { xkb_reason='没有 mount，无法挂载键盘工具目录'; return 1; }
+    xkb_unshare=$(command -v unshare) || { xkb_reason='没有 unshare，无法创建用户命名空间'; xkb_reason_key=vnc.xkb_unshare; return 1; }
+    command -v mount >/dev/null || { xkb_reason='没有 mount，无法挂载键盘工具目录'; xkb_reason_key=vnc.xkb_mount; return 1; }
     export xkb_unshare
 }
 xkb_namespace_reason() {
     case "$(cat "$1/stage" 2>/dev/null)" in
-        mount) printf '无法挂载 overlay；内核或安全策略不允许，或私有目录所在文件系统不支持 overlay upper';;
-        ready) printf '命名空间挂载完成，但探测进程未能正常退出';;
-        *) printf '无法创建用户和挂载命名空间；内核或 AppArmor 等安全策略不允许';;
+        mount) xkb_reason_key=vnc.xkb_overlay; printf '无法挂载 overlay；内核或安全策略不允许，或私有目录所在文件系统不支持 overlay upper';;
+        ready) xkb_reason_key=vnc.xkb_probe_exit; printf '命名空间挂载完成，但探测进程未能正常退出';;
+        *) xkb_reason_key=vnc.xkb_namespace; printf '无法创建用户和挂载命名空间；内核或 AppArmor 等安全策略不允许';;
     esac
 }
 xkb_namespace_remove() {
@@ -24,7 +24,7 @@ xkb_namespace_remove() {
     rm -rf -- "$1"
 }
 xkb_namespace_prepare() {
-    xkb_reason='无法创建键盘工具的私有目录'
+    xkb_reason='无法创建键盘工具的私有目录'; xkb_reason_key=vnc.xkb_private_directory
     mkdir -m 700 -- "$1" || return 1
     if mkdir -m 700 -- "$1/upper" "$1/work" &&
         ln -s -- "$xkb_prefix_compiler" "$1/upper/xkbcomp" &&

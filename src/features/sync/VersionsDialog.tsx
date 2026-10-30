@@ -150,7 +150,7 @@ export function VersionsDialog({ taskId, taskName, onClose }: { taskId: string; 
         {error && <Banner tone="danger" title={t("versions.loadFailed")}>{error}</Banner>}
         {result && (
           <Banner tone={result.failed.length ? "warn" : "ok"} title={t("versions.restored", { count: result.ok })}>
-            {result.failed.map((f) => `${f.path}：${f.reason}`).join("；")}
+            {result.failed.map((f) => t("common.labeled", { label: f.path, text: f.reason })).join(t("common.itemSep"))}
           </Banner>
         )}
         {list === null && !error && <span role="status" className="sync-muted">{t("common.loading")}</span>}

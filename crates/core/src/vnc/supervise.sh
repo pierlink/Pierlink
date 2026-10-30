@@ -43,6 +43,7 @@ xpid=$!
 startup_failed() {
     if [ "${xkb_namespace:-false}" = true ] && [ "$(cat "$state_dir/$display.xkb/stage")" != ready ]; then
         xkb_namespace_reason "$state_dir/$display.xkb" > "$lock/xkb-reason"
+        printf %s "$xkb_reason_key" > "$lock/xkb-reason-key"
         printf xkb > "$lock/result"
     else printf failed > "$lock/result"; fi
 }
@@ -67,6 +68,7 @@ if [ "${xkb_namespace:-false}" = true ]; then
         ! chmod 600 -- "$xlock" "$xsocket"
     }; then
         printf '无法确认命名空间内 X11 文件的属主和私有权限' > "$lock/xkb-reason"
+        printf %s vnc.xkb_permissions > "$lock/xkb-reason-key"
         printf xkb > "$lock/result"; exit
     fi
 fi

@@ -63,7 +63,8 @@ pub struct SftpSession {
 }
 pub(crate) fn cancelled(cancel: &AtomicBool) -> Result<(), AppError> {
     if cancel.load(Ordering::Relaxed) {
-        Err(AppError::new("sftp.cancelled").with("reason", "用户已取消传输"))
+        Err(AppError::new("sftp.cancelled")
+            .with_reason("sftp.transfer_cancelled_by_the_user", "用户已取消传输"))
     } else {
         Ok(())
     }
@@ -93,7 +94,10 @@ fn parse_metadata(
             2 => Ok(None),
             code => Err(status_error(code)),
         },
-        _ => Err(protocol("预期文件属性响应")),
+        _ => Err(protocol(
+            "sftp.expected_a_file_attributes_response",
+            "预期文件属性响应",
+        )),
     }
 }
 
@@ -178,7 +182,7 @@ impl SftpSession {
         let packet = self.request(kind, body)?;
         self.reply(&packet, |kind, input| {
             if kind != 101 {
-                return Err(protocol("预期状态响应"));
+                return Err(protocol("sftp.expected_a_status_response", "预期状态响应"));
             }
             match status(input)? {
                 0 => Ok(()),
@@ -195,7 +199,10 @@ impl SftpSession {
                 Ok(handle)
             }
             101 => Err(status_error(status(input)?)),
-            _ => Err(protocol("预期文件句柄响应")),
+            _ => Err(protocol(
+                "sftp.expected_a_file_handle_response",
+                "预期文件句柄响应",
+            )),
         })
     }
     fn with_handle<T>(
@@ -229,16 +236,22 @@ impl SftpSession {
                 return Err(status_error(status(input)?));
             }
             if kind != 104 || input.u32()? != 1 {
-                return Err(protocol("路径解析响应无效"));
+                return Err(protocol(
+                    "sftp.invalid_path_resolution_response",
+                    "路径解析响应无效",
+                ));
             }
             let value = std::str::from_utf8(input.string()?)
-                .map_err(|_| protocol("路径不是 UTF-8"))?
+                .map_err(|_| protocol("sftp.path_is_not_valid_utf_8", "路径不是 UTF-8"))?
                 .to_owned();
             input.string()?;
             input.attrs()?;
             input.end()?;
             if value.contains('\0') {
-                return Err(protocol("路径含空字符"));
+                return Err(protocol(
+                    "sftp.path_contains_null_characters",
+                    "路径含空字符",
+                ));
             }
             Ok(value)
         })
@@ -268,7 +281,12 @@ impl SftpSession {
                 let packet = self.transport.receive(id)?;
                 let result = self.reply(&packet, |kind, input| parse_metadata(value, kind, input));
                 if result.as_ref().is_err_and(|e| e.code == "sftp.protocol") {
-                    return Err(result.err().unwrap_or_else(|| protocol("预期文件属性响应")));
+                    return Err(result.err().unwrap_or_else(|| {
+                        protocol(
+                            "sftp.expected_a_file_attributes_response",
+                            "预期文件属性响应",
+                        )
+                    }));
                 }
                 out.push(result);
             }
@@ -313,11 +331,11 @@ impl SftpSession {
                         };
                     }
                     if kind != 104 {
-                        return Err(protocol("预期目录条目响应"));
+                        return Err(protocol("sftp.expected_a_directory_entries_response", "预期目录条目响应"));
                     }
                     let count = input.u32()?;
                     if count == 0 {
-                        return Err(protocol("服务器返回空目录批次而未结束"));
+                        return Err(protocol("sftp.server_returned_an_empty_directory_batch_without_ending_the_listing", "服务器返回空目录批次而未结束"));
                     }
                     let mut entries = Vec::new();
                     for _ in 0..count {
@@ -341,7 +359,7 @@ impl SftpSession {
                         continue;
                     };
                     if name.is_empty() || name.contains(['/', '\0']) {
-                        return Err(protocol("目录响应含非法名字"));
+                        return Err(protocol("sftp.directory_response_contains_an_invalid_name", "目录响应含非法名字"));
                     }
                     items.push(entry(name, attrs));
                 }
@@ -414,9 +432,10 @@ impl SftpSession {
             && let Some(target) = self.stat(to)?
         {
             if target.kind == EntryKind::Dir {
-                return Err(
-                    AppError::new("sftp.failure").with("reason", "覆盖目标是目录，不能删除")
-                );
+                return Err(AppError::new("sftp.failure").with_reason(
+                    "sftp.destination_is_a_directory_and_cannot_be_removed",
+                    "覆盖目标是目录，不能删除",
+                ));
             }
             self.remove_file(to)?;
             removed = true;
@@ -425,8 +444,9 @@ impl SftpSession {
             .map(|()| removed)
             .map_err(|error| {
                 if removed {
-                    error.with(
+                    error.with_text(
                         "overwrite_note",
+                        "sftp.server_lacks_atomic_overwrite_the_old_destination_was_removed_but",
                         "服务器不支持原子覆盖；已删除旧目标，但改名失败",
                     )
                 } else {
@@ -456,7 +476,12 @@ impl SftpSession {
     }
     /// 设置远端 path 的 Unix 秒修改时间 mtime；超出 SFTP v3 范围时返回错误，访问时间设为同值。
     pub fn set_mtime(&mut self, value: &str, mtime: i64) -> Result<(), AppError> {
-        let mtime = u32::try_from(mtime).map_err(|_| protocol("修改时间超出 SFTP 第三版范围"))?;
+        let mtime = u32::try_from(mtime).map_err(|_| {
+            protocol(
+                "sftp.modification_time_exceeds_the_sftp_v3_range",
+                "修改时间超出 SFTP 第三版范围",
+            )
+        })?;
         let mut body = Vec::new();
         path(&mut body, value)?;
         body.extend(8u32.to_be_bytes());
@@ -489,11 +514,11 @@ impl SftpSession {
                     pending.push_back((session.send_read(handle, next, CHUNK)?, CHUNK));
                     next = next
                         .checked_add(CHUNK as u64)
-                        .ok_or_else(|| protocol("文件偏移溢出"))?;
+                        .ok_or_else(|| protocol("sftp.file_offset_overflow", "文件偏移溢出"))?;
                 }
-                let (id, requested) = pending
-                    .pop_front()
-                    .ok_or_else(|| protocol("读取窗口意外为空"))?;
+                let (id, requested) = pending.pop_front().ok_or_else(|| {
+                    protocol("sftp.read_window_is_unexpectedly_empty", "读取窗口意外为空")
+                })?;
                 let data = session.read_data(id, requested)?;
                 cancelled(cancel)?;
                 let Some(data) = data else {
@@ -505,11 +530,12 @@ impl SftpSession {
                     return Ok(written);
                 };
                 out.write_all(&data).map_err(|_| {
-                    AppError::new("sftp.failure").with("reason", "写入本机输出失败")
+                    AppError::new("sftp.failure")
+                        .with_reason("sftp.couldn_t_write_to_local_output", "写入本机输出失败")
                 })?;
                 written = written
                     .checked_add(data.len() as u64)
-                    .ok_or_else(|| protocol("文件偏移溢出"))?;
+                    .ok_or_else(|| protocol("sftp.file_offset_overflow", "文件偏移溢出"))?;
                 progress(written);
                 cancelled(cancel)?;
                 // 短块未必是文件末尾：补读缺口，再输出后续偏移，防止丢失中间数据。
@@ -530,12 +556,18 @@ impl SftpSession {
                 };
             }
             if kind != 103 {
-                return Err(protocol("预期文件数据响应"));
+                return Err(protocol(
+                    "sftp.expected_a_file_data_response",
+                    "预期文件数据响应",
+                ));
             }
             let data = input.string()?.to_vec();
             input.end()?;
             if data.is_empty() || data.len() > requested {
-                return Err(protocol("文件数据块大小无效"));
+                return Err(protocol(
+                    "sftp.invalid_file_data_block_size",
+                    "文件数据块大小无效",
+                ));
             }
             Ok(Some(data))
         })
@@ -608,7 +640,10 @@ impl SftpSession {
                         Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
                         result => {
                             break result.map_err(|_| {
-                                AppError::new("sftp.failure").with("reason", "读取本机输入失败")
+                                AppError::new("sftp.failure").with_reason(
+                                    "sftp.couldn_t_read_local_input",
+                                    "读取本机输入失败",
+                                )
                             })?;
                         }
                     }
@@ -625,7 +660,7 @@ impl SftpSession {
                 let id = self.send(6, body)?;
                 next = next
                     .checked_add(n as u64)
-                    .ok_or_else(|| protocol("文件偏移溢出"))?;
+                    .ok_or_else(|| protocol("sftp.file_offset_overflow", "文件偏移溢出"))?;
                 pending.push_back((id, next));
             }
             let Some((id, offset)) = pending.pop_front() else {
@@ -634,7 +669,7 @@ impl SftpSession {
             let packet = self.transport.receive(id)?;
             self.reply(&packet, |kind, input| {
                 if kind != 101 {
-                    return Err(protocol("预期状态响应"));
+                    return Err(protocol("sftp.expected_a_status_response", "预期状态响应"));
                 }
                 match status(input)? {
                     0 => Ok(()),

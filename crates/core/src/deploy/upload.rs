@@ -18,7 +18,15 @@ pub(crate) fn upload_command(cmd: &SshCommand) -> Result<Cow<'_, SshCommand>, Ap
     };
     if engine_for_feature(&context.server, Feature::DeployUpload).engine != Engine::Builtin {
         return Err(AppError::new("ssh.invalid_argument")
-            .with("reason", "部署上传需要与所选引擎匹配的后台命令"));
+            .with_reason(
+                "deploy.deployment_upload_requires_a_background_command_for_the_selected_engine",
+                "部署上传需要与所选引擎匹配的后台命令",
+            )
+            .with_text(
+                "field",
+                "deploy.deployment_upload_requires_a_background_command_for_the_selected_engine",
+                "部署上传需要与所选引擎匹配的后台命令",
+            ));
     }
     let mut command = cmd.clone();
     let mut context = (**context).clone();

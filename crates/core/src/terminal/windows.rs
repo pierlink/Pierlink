@@ -17,12 +17,20 @@ use windows_sys::Win32::{
     System::{Console::*, JobObjects::*, Pipes::CreatePipe, Threading::*},
 };
 fn failed() -> AppError {
-    error("spawn_failed", "创建 Windows 终端资源")
+    error(
+        "spawn_failed",
+        "terminal.create_windows_terminal_resources",
+        "创建 Windows 终端资源",
+    )
 }
 fn wide(value: &OsStr) -> Result<Vec<u16>, AppError> {
     let mut result: Vec<_> = value.encode_wide().collect();
     if result.contains(&0) {
-        return Err(error("invalid_argument", "参数含空字符"));
+        return Err(error(
+            "invalid_argument",
+            "terminal.argument_contains_null_characters",
+            "参数含空字符",
+        ));
     }
     result.push(0);
     Ok(result)
@@ -117,14 +125,20 @@ pub(crate) fn open(size: PtySize) -> Result<Pair, AppError> {
 }
 fn dimensions(size: PtySize) -> Result<COORD, AppError> {
     Ok(COORD {
-        X: size
-            .cols
-            .try_into()
-            .map_err(|_| error("invalid_size", "列数超过 ConPTY 上限"))?,
-        Y: size
-            .rows
-            .try_into()
-            .map_err(|_| error("invalid_size", "行数超过 ConPTY 上限"))?,
+        X: size.cols.try_into().map_err(|_| {
+            error(
+                "invalid_size",
+                "terminal.column_count_exceeds_the_conpty_limit",
+                "列数超过 ConPTY 上限",
+            )
+        })?,
+        Y: size.rows.try_into().map_err(|_| {
+            error(
+                "invalid_size",
+                "terminal.row_count_exceeds_the_conpty_limit",
+                "行数超过 ConPTY 上限",
+            )
+        })?,
     })
 }
 impl Master {
@@ -148,10 +162,18 @@ impl Master {
     pub(crate) fn resize(&self, size: PtySize) -> Result<(), AppError> {
         let closer = super::lock(&self.closer);
         if closer.is_none() {
-            return Err(error("not_found", "终端已结束"));
+            return Err(error(
+                "not_found",
+                "terminal.terminal_has_ended",
+                "终端已结束",
+            ));
         }
         if unsafe { ResizePseudoConsole(self.console, dimensions(size)?) } < 0 {
-            return Err(error("resize_failed", "调整 ConPTY 尺寸"));
+            return Err(error(
+                "resize_failed",
+                "terminal.resize_conpty",
+                "调整 ConPTY 尺寸",
+            ));
         }
         Ok(())
     }
@@ -183,7 +205,11 @@ impl Master {
         for (key, value) in env {
             let key_text = key.to_string_lossy();
             if key_text.is_empty() || key_text.contains(['=', '\0']) {
-                return Err(error("invalid_argument", "环境变量名称无效"));
+                return Err(error(
+                    "invalid_argument",
+                    "terminal.invalid_environment_variable_name",
+                    "环境变量名称无效",
+                ));
             }
             let mut entry = key.clone();
             entry.push("=");
@@ -552,7 +578,11 @@ fn environment(overrides: &[(String, String)]) -> Result<Vec<u16>, AppError> {
     }
     for (key, value) in overrides {
         if key.is_empty() || key.contains(['=', '\0']) {
-            return Err(error("invalid_argument", "环境变量名称无效"));
+            return Err(error(
+                "invalid_argument",
+                "terminal.invalid_environment_variable_name",
+                "环境变量名称无效",
+            ));
         }
         entries.insert(key.to_uppercase(), (key.into(), value.into()));
     }

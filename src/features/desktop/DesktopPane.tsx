@@ -147,8 +147,6 @@ export function DesktopPane({ serverId, visible, title, controls, windowTitle, s
   /** 一行提示（如“断开后服务器可能结束这个桌面”），点 × 关掉 */
   const [notice, setNotice] = useState<string | null>(null);
   const [confirmStop, setConfirmStop] = useState(false);
-  /** 最近一次在 Windows 和远程之间同步过的剪贴板文字：同样的内容不来回发 */
-  const lastClip = useRef<string | null>(null);
   /** 全屏是这个窗格要的（页面全屏时只有它铺满窗口） */
   const wantFull = useRef(false);
 
@@ -227,7 +225,6 @@ export function DesktopPane({ serverId, visible, title, controls, windowTitle, s
     rfb.addEventListener("clipboard", (e) => {
       const text = (e as CustomEvent<{ text: string }>).detail?.text;
       if (!text) return;
-      lastClip.current = text;
       void writeClipboardText(text).catch(() => {});
     });
   }, [disconnect, serverId, t]);
@@ -345,12 +342,14 @@ export function DesktopPane({ serverId, visible, title, controls, windowTitle, s
     void document.documentElement.requestFullscreen().catch(() => { wantFull.current = false; });
   };
 
-  /** 把 Windows 剪贴板的文字发到远程剪贴板（和上次同步的一样就不发） */
+  /**
+   * 把 Windows 剪贴板的文字发到远程剪贴板。每次都发：重新连接后远程剪贴板是空的，
+   * 远程复制过别的东西后也已经变了，不能按“上次发过同样的”跳过
+   */
   const pushClipboard = useCallback(async () => {
     const text = await readClipboardText().catch(() => "");
     const rfb = rfbRef.current;
-    if (!rfb || !text || text === lastClip.current) return;
-    lastClip.current = text;
+    if (!rfb || !text) return;
     rfb.clipboardPasteFrom(text);
   }, []);
 
@@ -466,7 +465,7 @@ export function DesktopPane({ serverId, visible, title, controls, windowTitle, s
     if (!rfb) return;
     rfb.focus();
     if (!text) return;
-    if (text !== lastClip.current) { lastClip.current = text; rfb.clipboardPasteFrom(text); }
+    rfb.clipboardPasteFrom(text);
     const keys = typingKeysyms(text);
     if (!keys) { setNotice(t("desktop.typeTooLong")); return; }
     for (const k of keys) rfb.sendKey(k, null);

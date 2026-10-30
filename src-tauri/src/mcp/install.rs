@@ -45,6 +45,13 @@ fn failed(client: &str, reason: impl Into<String>) -> AppError {
         .with("reason", reason.into())
 }
 
+/// 固定原因的安装失败：界面按 errors.detail.<key> 显示当前语言，text 是中文原文。
+fn failed_text(client: &str, key: &'static str, text: &str) -> AppError {
+    AppError::new("mcp.install_failed")
+        .with("client", display(client))
+        .with_reason(key, text)
+}
+
 /// 在目录列表里找第一个存在的程序
 fn find_in(dirs: &[PathBuf], names: &[&str]) -> Option<PathBuf> {
     dirs.iter()
@@ -201,7 +208,8 @@ fn merge_cursor(existing: Option<&str>, exe: &str) -> Result<String, AppError> {
 }
 
 fn install_cursor(exe: &str) -> Result<McpInstallDto, AppError> {
-    let home = home_dir().ok_or_else(|| failed("cursor", "找不到用户目录"))?;
+    let home = home_dir()
+        .ok_or_else(|| failed_text("cursor", "mcp.home_folder_not_found", "找不到用户目录"))?;
     let dir = home.join(".cursor");
     let path = dir.join("mcp.json");
     let existing = match std::fs::read_to_string(&path) {
@@ -315,7 +323,11 @@ pub(crate) fn server_codex_script(url: &str, token: &str) -> Result<String, AppE
             .all(|c| c.is_ascii_alphanumeric() || "-_.:/".contains(c))
     };
     if !safe(url) || !safe(token) {
-        return Err(failed("codex", "地址或令牌含有不支持的字符"));
+        return Err(failed_text(
+            "codex",
+            "mcp.address_or_token_has_unsupported_characters",
+            "地址或令牌含有不支持的字符",
+        ));
     }
     let url = pierlink_core::ssh::quote::sh_quote(url)?;
     let token = pierlink_core::ssh::quote::sh_quote(token)?;
@@ -400,7 +412,10 @@ fn install_on_server(
         .iter()
         .find(|s| s.server_id == server_id)
         .map(|s| s.port)
-        .ok_or_else(|| AppError::new("mcp.entry_disabled").with("reason", "这台服务器没有入口"))?;
+        .ok_or_else(|| {
+            AppError::new("mcp.entry_disabled")
+                .with_reason("mcp.server_has_no_entry", "这台服务器没有入口")
+        })?;
     let token = super::entries::token(server_id)?;
     let url = super::entries::url(port);
     let script = match client {
@@ -441,7 +456,11 @@ fn install_on_server(
                 Some("3") => Err(AppError::new("mcp.server_client_not_found")
                     .with("server", &name)
                     .with("client", display(client))),
-                Some("4") => Err(failed(client, "在服务器上写配置没有成功")),
+                Some("4") => Err(failed_text(
+                    client,
+                    "mcp.couldn_t_write_the_config_on_the_server",
+                    "在服务器上写配置没有成功",
+                )),
                 // 脚本正文里有令牌：错误尾部不给界面，免得万一带出来
                 _ => {
                     let mut e = e;

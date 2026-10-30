@@ -470,7 +470,10 @@ pub fn adopt_configuration_change(
         {
             return Err(AppError::new("sync.configuration_not_adoptable")
                 .with("field", "versioning")
-                .with("reason", "旧版本目录必须使用项目外的本机目录"));
+                .with_reason(
+                    "sync.version_directory_must_be_a_local_directory_outside_the_project",
+                    "旧版本目录必须使用项目外的本机目录",
+                ));
         }
     }
     Ok(AdoptedConfiguration {

@@ -539,7 +539,7 @@ fn 认证途中连接断开报连不上且不作废记住的密码() {
         .unwrap();
     assert_eq!(error.code, "ssh.unreachable");
     // 界面提示“登录过程中连接断开”，不是“检查地址和网络”
-    assert_eq!(error.params["detail"], "disconnected_login");
+    assert_eq!(error.params["reason_key"], "disconnected_login");
     assert!(!error.params.contains_key("password_generation"));
     assert!(f.vault.has("s"));
     assert!(peer.attempts().contains(&"password"));

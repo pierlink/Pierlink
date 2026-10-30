@@ -34,6 +34,7 @@ impl Shared {
         {
             return Err(error(
                 "mobile.invalid_request",
+                "mobile.provide_either_nonempty_text_or_a_key_array",
                 "输入必须包含非空文字或按键数组，且不能同时包含两者",
             ));
         }
@@ -51,17 +52,21 @@ impl Shared {
             {
                 return Err(error(
                     "mobile.invalid_request",
+                    "mobile.text_contains_unsupported_control_characters",
                     "文字中含有不支持的控制字符",
                 ));
             }
-            let screen = self
-                .host
-                .terminal_text(id)
-                .await
-                .map_err(|_| error("mobile.host_failed", "无法读取终端当前状态"))?;
+            let screen = self.host.terminal_text(id).await.map_err(|_| {
+                error(
+                    "mobile.host_failed",
+                    "mobile.couldn_t_read_the_current_terminal_state",
+                    "无法读取终端当前状态",
+                )
+            })?;
             if looks_like_password_prompt(&screen) {
                 return Err(error(
                     "mobile.password_prompt",
+                    "mobile.terminal_is_waiting_for_a_password_or_verification_code_enter",
                     "终端正在等待密码或验证码，请在电脑上输入",
                 ));
             }
@@ -87,7 +92,13 @@ impl Shared {
                     "Tab" | "ArrowUp" | "ArrowDown" | "ArrowLeft" | "ArrowRight" | "Home"
                     | "End" => pending.edited = true,
                     "Escape" | "Ctrl+D" => {}
-                    _ => return Err(error("mobile.invalid_request", "按键不在手机输入白名单中")),
+                    _ => {
+                        return Err(error(
+                            "mobile.invalid_request",
+                            "mobile.key_is_not_allowed_for_mobile_input",
+                            "按键不在手机输入白名单中",
+                        ));
+                    }
                 }
             }
         }
@@ -97,13 +108,18 @@ impl Shared {
         if pending.text.len() > 64 * 1024 {
             return Err(error(
                 "mobile.invalid_request",
+                "mobile.pending_terminal_input_exceeds_64_kib",
                 "尚未提交的终端输入超过六十四 KiB",
             ));
         }
         {
             let lines = lock(&self.pending_lines);
             if lines.len() >= 128 && !lines.contains_key(id) {
-                return Err(error("mobile.input_limit", "尚未提交输入的终端数量过多"));
+                return Err(error(
+                    "mobile.input_limit",
+                    "mobile.too_many_terminals_have_pending_input",
+                    "尚未提交输入的终端数量过多",
+                ));
             }
         }
         // 宿主可能已经写入一部分后才报错或被取消，先标记不确定，下一次提交必须核对。
@@ -112,11 +128,13 @@ impl Shared {
             let mut lines = lock(&self.pending_lines);
             lines.entry(id.into()).or_default().edited = true;
         }
-        let output = self
-            .host
-            .terminal_input(id, input)
-            .await
-            .map_err(|_| error("mobile.host_failed", "桌面终端输入失败"))?;
+        let output = self.host.terminal_input(id, input).await.map_err(|_| {
+            error(
+                "mobile.host_failed",
+                "mobile.desktop_terminal_input_failed",
+                "桌面终端输入失败",
+            )
+        })?;
         let mut lines = lock(&self.pending_lines);
         if pending.text.is_empty() && !pending.edited {
             lines.remove(id);

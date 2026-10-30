@@ -72,7 +72,10 @@ struct RawDesktop {
 
 pub(super) fn parse_detection(value: serde_json::Value) -> Result<VncDetection, AppError> {
     let raw: RawDetection = serde_json::from_value(value).map_err(|_| {
-        AppError::new("vnc.invalid_detection").with("reason", "桌面检测结果格式不正确")
+        AppError::new("vnc.invalid_detection").with_reason(
+            "vnc.invalid_desktop_detection_result_format",
+            "桌面检测结果格式不正确",
+        )
     })?;
     let glibc = (!raw.glibc.is_empty()).then_some(raw.glibc);
     let official_pkg = parse::official(&raw.arch, glibc.as_deref(), &raw.libraries, &raw.tools);

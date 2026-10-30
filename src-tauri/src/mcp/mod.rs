@@ -376,7 +376,10 @@ pub(crate) fn change_directory(
 ) -> Result<(), AppError> {
     // 给终端的输入等于打字：路径里的换行会提前回车，把后半截当命令执行
     if cwd.chars().any(char::is_control) {
-        return Err(AppError::new("mcp.invalid_cwd").with("reason", "目录里不能有换行等控制字符"));
+        return Err(AppError::new("mcp.invalid_cwd").with_reason(
+            "mcp.folder_has_control_characters",
+            "目录里不能有换行等控制字符",
+        ));
     }
     let line = match kind {
         TargetKind::Windows => format!("Set-Location -LiteralPath '{}'\r", cwd.replace('\'', "''")),
@@ -392,8 +395,9 @@ pub(crate) fn change_directory(
 // ---------- 命令 ----------
 
 fn state(app: &AppHandle) -> Result<tauri::State<'_, McpState>, AppError> {
-    app.try_state::<McpState>()
-        .ok_or_else(|| AppError::new("mcp.unavailable").with("reason", "AI 接入没有启动"))
+    app.try_state::<McpState>().ok_or_else(|| {
+        AppError::new("mcp.unavailable").with_reason("mcp.ai_access_not_started", "AI 接入没有启动")
+    })
 }
 
 /// 读 AI 接入设置
@@ -547,7 +551,8 @@ pub async fn mcp_terminal_opened(
             Ok(terminal)
         }
         (None, Some(error)) => Err(error.into()),
-        (None, None) => Err(AppError::new("mcp.terminal_failed").with("reason", "终端没有打开")),
+        (None, None) => Err(AppError::new("mcp.terminal_failed")
+            .with_reason("mcp.terminal_not_open", "终端没有打开")),
     };
     Ok(state(&app)?.host.terminals.answer(id as u64, result))
 }
@@ -639,12 +644,14 @@ pub async fn mcp_hand_over(
 ) -> Result<(), AppError> {
     tauri::async_runtime::spawn_blocking(move || {
         let (kind, id) = terminal_target(&app, &terminal_id).ok_or_else(|| {
-            AppError::new("mcp.terminal_not_found").with("reason", "这个终端不能交给 AI")
+            AppError::new("mcp.terminal_not_found")
+                .with_reason("mcp.terminal_cannot_be_handed_to_ai", "这个终端不能交给 AI")
         })?;
         let entry = entry_from_text(&entry);
         let state = state(&app)?;
         let permissions = settings::load(&app).permissions(&entry).ok_or_else(|| {
-            AppError::new("mcp.entry_disabled").with("reason", "这个 MCP 入口未启用")
+            AppError::new("mcp.entry_disabled")
+                .with_reason("mcp.this_mcp_entry_is_disabled", "这个 MCP 入口未启用")
         })?;
         let target = state
             .host
@@ -652,7 +659,10 @@ pub async fn mcp_hand_over(
             .into_iter()
             .find(|t| t.kind == kind && t.id == id)
             .ok_or_else(|| {
-                AppError::new("mcp.target_denied").with("reason", "这个入口没有这个终端目标的权限")
+                AppError::new("mcp.target_denied").with_reason(
+                    "mcp.this_entry_cannot_operate_on_the_terminal_target",
+                    "这个入口没有终端目标的操作权限",
+                )
             })?;
         state.service.hand_over(&terminal_id, entry, target)?;
         eprintln!("AI 接入：终端交给 AI，终端={terminal_id}");

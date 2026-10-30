@@ -86,7 +86,8 @@ impl McpService {
         let mut entries = lock(&self.http_entries);
         entries.remove(server_id);
         if token.is_empty() {
-            return Err(AppError::new("mcp.invalid_token").with("reason", "入口令牌不能为空"));
+            return Err(AppError::new("mcp.invalid_token")
+                .with_reason("mcp.entry_token_cannot_be_empty", "入口令牌不能为空"));
         }
         self.add_secret(token.clone());
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).map_err(http_error)?;
@@ -180,7 +181,10 @@ impl McpService {
 
 fn http_error(error: io::Error) -> AppError {
     AppError::new("mcp.http_failed")
-        .with("reason", "无法启动本机 MCP HTTP 监听")
+        .with_reason(
+            "mcp.couldn_t_start_the_local_mcp_http_listener",
+            "无法启动本机 MCP HTTP 监听",
+        )
         .with("io_kind", format!("{:?}", error.kind()))
 }
 
@@ -410,9 +414,15 @@ impl HttpHandler {
             .handler
             .get_or_init(|| {
                 let mut group = lock(&self.group.sessions);
-                let group = group
-                    .as_mut()
-                    .ok_or_else(|| ErrorData::invalid_request("入口已停止", None))?;
+                let group = group.as_mut().ok_or_else(|| {
+                    ErrorData::invalid_request(
+                        "入口已停止",
+                        Some(serde_json::json!(
+                            AppError::new("mcp.session_failed")
+                                .with_reason("mcp.entry_stopped", "入口已停止")
+                        )),
+                    )
+                })?;
                 let mut all = lock(&self.group.shared.sessions);
                 if all
                     .values()
@@ -422,7 +432,12 @@ impl HttpHandler {
                 {
                     return Err(ErrorData::invalid_request(
                         "这个入口的会话太多，最多允许 8 个",
-                        None,
+                        Some(serde_json::json!(
+                            AppError::new("mcp.session_failed").with_reason(
+                                "mcp.session_limit",
+                                "这个入口的会话太多，最多允许 8 个"
+                            )
+                        )),
                     ));
                 }
                 let session = Arc::new(Session::with_confirmation(
@@ -451,7 +466,13 @@ impl HttpHandler {
             .stopped
             .load(std::sync::atomic::Ordering::Acquire)
         {
-            return Err(ErrorData::invalid_request("会话已停止", None));
+            return Err(ErrorData::invalid_request(
+                "会话已停止",
+                Some(serde_json::json!(
+                    AppError::new("mcp.session_failed")
+                        .with_reason("mcp.session_stopped", "会话已停止")
+                )),
+            ));
         }
         Ok(handler)
     }

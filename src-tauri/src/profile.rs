@@ -333,7 +333,8 @@ fn import_file(app: &AppHandle, servers_only: bool) -> Result<Option<ImportResul
         let path = source.into_path().map_err(failed)?;
         let size = std::fs::metadata(&path).map_err(failed)?.len();
         if size > MAX_FILE {
-            return Err(AppError::new("profile.limit_exceeded").with("reason", "文件太大"));
+            return Err(AppError::new("profile.limit_exceeded")
+                .with_reason("profile.file_too_large", "文件太大"));
         }
         let bytes = std::fs::read(&path).map_err(failed)?;
         let mut parsed = profile::parse_profile(&bytes)?;

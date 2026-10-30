@@ -153,6 +153,7 @@ fn 下载总量超限时不下载任何包并清理临时目录() {
     assert_eq!(e.code, "vnc.download_limit");
     assert_eq!(e.params["limit_bytes"], "314572800");
     assert_eq!(e.params["total_bytes"], "400000000");
+    assert_eq!(e.params["reason_key"], "vnc.apt_total_limit");
     let calls = fs::read_to_string(root.path().join("apt-calls")).unwrap();
     assert!(
         calls
@@ -186,6 +187,7 @@ fn 依赖包下载失败保留包名和原因且不破坏已有版本() {
     assert_eq!(e.code, "vnc.download_failed");
     assert_eq!(e.params["package"], "libmissing:amd64");
     assert_eq!(e.params["reason"], "无法解析软件源域名");
+    assert_eq!(e.params["reason_key"], "vnc.apt_dns");
     assert!(!format!("{e:?}").contains("绝不回显"));
     assert!(old.exists());
     assert_eq!(fs::read_dir(old.parent().unwrap()).unwrap().count(), 1);

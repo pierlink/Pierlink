@@ -30,7 +30,10 @@ fn read<const N: usize>(stream: &mut VncStream, deadline: Instant) -> Result<[u8
 fn refused(stream: &mut VncStream, deadline: Instant) -> Result<RfbProbe, AppError> {
     let length = u32::from_be_bytes(read(stream, deadline)?) as usize;
     if length > 4096 {
-        return Err(AppError::new("vnc.server_refused").with("reason", "服务器拒绝连接，说明过长"));
+        return Err(AppError::new("vnc.server_refused").with_reason(
+            "vnc.refusal_message_is_too_long",
+            "服务器拒绝连接，说明过长",
+        ));
     }
     let mut bytes = vec![0; length];
     let mut offset = 0;
@@ -87,22 +90,25 @@ fn probe(stream: &mut VncStream, deadline: Instant) -> Result<RfbProbe, AppError
         stream.writer.flush_until(deadline)?;
         let version = read::<2>(stream, deadline)?;
         if version != [0, 2] {
-            return Err(
-                AppError::new("vnc.server_refused").with("reason", "服务器不支持 VeNCrypt 0.2")
-            );
+            return Err(AppError::new("vnc.server_refused").with_reason(
+                "vnc.server_does_not_support_vencrypt_0_2",
+                "服务器不支持 VeNCrypt 0.2",
+            ));
         }
         stream.writer.write_until(&[0, 2], Some(deadline))?;
         stream.writer.flush_until(deadline)?;
         if read::<1>(stream, deadline)? != [0] {
-            return Err(
-                AppError::new("vnc.server_refused").with("reason", "服务器拒绝 VeNCrypt 版本")
-            );
+            return Err(AppError::new("vnc.server_refused").with_reason(
+                "vnc.server_rejected_the_vencrypt_version",
+                "服务器拒绝 VeNCrypt 版本",
+            ));
         }
         let count = read::<1>(stream, deadline)?[0];
         if count == 0 {
-            return Err(
-                AppError::new("vnc.server_refused").with("reason", "服务器未提供 VeNCrypt 子类型")
-            );
+            return Err(AppError::new("vnc.server_refused").with_reason(
+                "vnc.server_offered_no_vencrypt_subtypes",
+                "服务器未提供 VeNCrypt 子类型",
+            ));
         }
         for _ in 0..count {
             subtypes.push(u32::from_be_bytes(read(stream, deadline)?));

@@ -21,8 +21,8 @@ const FILE_LIMIT: usize = 10 * 1024 * 1024;
 const OUTPUT_LIMIT: usize = 256 * 1024;
 const SCAN_TIME: Duration = Duration::from_secs(10);
 
-fn invalid(reason: &str) -> AppError {
-    AppError::new("mcp.invalid_argument").with("reason", reason)
+fn invalid(text_key: &'static str, reason: &str) -> AppError {
+    AppError::new("mcp.invalid_argument").with_reason(text_key, reason)
 }
 fn glob(pattern: &str) -> Result<GlobMatcher, AppError> {
     GlobBuilder::new(pattern)
@@ -31,7 +31,7 @@ fn glob(pattern: &str) -> Result<GlobMatcher, AppError> {
         .case_insensitive(cfg!(windows))
         .build()
         .map(|g| g.compile_matcher())
-        .map_err(|_| invalid("glob 模式无效"))
+        .map_err(|_| invalid("mcp.invalid_glob_pattern", "glob 模式无效"))
 }
 /// 符号链接和目录联接（Windows 上 is_symlink 两种都算）。OneDrive 占位文件等其他重解析点不算链接：
 /// 它们是普通文件和文件夹，越界与否由 resolve_read 的规范化路径判断。
@@ -73,7 +73,10 @@ fn collect(
     for root in roots {
         check_cancel(cancelled)?;
         if !safe_entry(sb, &root) {
-            return Err(invalid("检索根目录不能是链接或越界路径"));
+            return Err(invalid(
+                "mcp.search_root_cannot_be_a_link_or_outside_the_allowed",
+                "检索根目录不能是链接或越界路径",
+            ));
         }
         if root.is_file() {
             if seen.insert(root.clone()) {
@@ -99,7 +102,9 @@ fn collect(
             if !ignored && let Some(rule) = read_ignore(sb, &directory)? {
                 rules.push(std::sync::Arc::new(rule));
             }
-            let entries = fs::read_dir(&directory).map_err(|_| invalid("无法读取检索目录"))?;
+            let entries = fs::read_dir(&directory).map_err(|_| {
+                invalid("mcp.couldn_t_read_the_search_directory", "无法读取检索目录")
+            })?;
             for entry in entries {
                 check_cancel(cancelled)?;
                 scanned += 1;
@@ -107,14 +112,17 @@ fn collect(
                     result.truncated = true;
                     break;
                 }
-                let entry = entry.map_err(|_| invalid("无法读取目录项"))?;
+                let entry = entry.map_err(|_| {
+                    invalid("mcp.couldn_t_read_a_directory_entry", "无法读取目录项")
+                })?;
                 let path = entry.path();
                 // 包括被忽略的项也计入扫描限额，逐项检查取消，避免忽略大量文件时卡在迭代器里。
                 if !safe_entry(sb, &path) {
                     continue;
                 }
-                let metadata =
-                    fs::symlink_metadata(&path).map_err(|_| invalid("无法读取文件属性"))?;
+                let metadata = fs::symlink_metadata(&path).map_err(|_| {
+                    invalid("mcp.couldn_t_read_file_properties", "无法读取文件属性")
+                })?;
                 if link(&metadata) {
                     continue;
                 }
@@ -185,26 +193,43 @@ fn read_ignore(
     let path = directory.join(".gitignore");
     match fs::symlink_metadata(&path) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(_) => return Err(invalid("无法读取忽略规则属性")),
-        Ok(metadata) if link(&metadata) => return Err(invalid("忽略规则不能是链接")),
+        Err(_) => {
+            return Err(invalid(
+                "mcp.couldn_t_read_ignore_rule_properties",
+                "无法读取忽略规则属性",
+            ));
+        }
+        Ok(metadata) if link(&metadata) => {
+            return Err(invalid(
+                "mcp.ignore_rules_cannot_be_a_link",
+                "忽略规则不能是链接",
+            ));
+        }
         Ok(_) => {}
     }
-    let path = sb.resolve_read(
-        path.to_str()
-            .ok_or_else(|| invalid("忽略规则路径不是有效文字"))?,
-    )?;
+    let path = sb.resolve_read(path.to_str().ok_or_else(|| {
+        invalid(
+            "mcp.ignore_rule_path_is_not_valid_text",
+            "忽略规则路径不是有效文字",
+        )
+    })?)?;
     let bytes = files::read_bounded(&path, 64 * 1024)?;
-    let text = std::str::from_utf8(&bytes).map_err(|_| invalid("忽略规则不是有效的 UTF-8"))?;
+    let text = std::str::from_utf8(&bytes).map_err(|_| {
+        invalid(
+            "mcp.ignore_rules_are_not_valid_utf_8",
+            "忽略规则不是有效的 UTF-8",
+        )
+    })?;
     let mut builder = ignore::gitignore::GitignoreBuilder::new(directory);
     for line in text.trim_start_matches('\u{feff}').lines() {
         builder
             .add_line(Some(path.clone()), line)
-            .map_err(|_| invalid("忽略规则无效"))?;
+            .map_err(|_| invalid("mcp.invalid_ignore_rules", "忽略规则无效"))?;
     }
     builder
         .build()
         .map(Some)
-        .map_err(|_| invalid("忽略规则无效"))
+        .map_err(|_| invalid("mcp.invalid_ignore_rules", "忽略规则无效"))
 }
 fn matches_glob(matcher: &GlobMatcher, path: &Path, root: &Path) -> bool {
     matcher.is_match(path.strip_prefix(root).unwrap_or(path))
@@ -234,7 +259,7 @@ fn language(name: &str) -> Result<&'static [&'static str], AppError> {
         "powershell" => Ok(&["ps1", "psm1", "psd1"]),
         "sql" => Ok(&["sql"]),
         "txt" => Ok(&["txt"]),
-        _ => Err(invalid("未知文件类型")),
+        _ => Err(invalid("mcp.unknown_file_type", "未知文件类型")),
     }
 }
 pub(super) fn search(
@@ -248,7 +273,12 @@ pub(super) fn search(
         .multi_line(true)
         .size_limit(1024 * 1024)
         .build()
-        .map_err(|_| invalid("正则表达式无效或过大"))?;
+        .map_err(|_| {
+            invalid(
+                "mcp.regular_expression_is_invalid_or_too_large",
+                "正则表达式无效或过大",
+            )
+        })?;
     let matcher = string(args, "glob").map(glob).transpose()?;
     let extensions = string(args, "type").map(language).transpose()?;
     let scan = collect(sb, string(args, "path"), false, cancelled, started)?;
@@ -273,8 +303,12 @@ pub(super) fn search(
         {
             continue;
         }
-        let path = sb.resolve_read(path.to_str().ok_or_else(|| invalid("路径不是有效文字"))?)?;
-        let meta = fs::metadata(&path).map_err(|_| invalid("无法读取文件属性"))?;
+        let path = sb.resolve_read(
+            path.to_str()
+                .ok_or_else(|| invalid("mcp.path_is_not_valid_text", "路径不是有效文字"))?,
+        )?;
+        let meta = fs::metadata(&path)
+            .map_err(|_| invalid("mcp.couldn_t_read_file_properties", "无法读取文件属性"))?;
         if meta.len() > FILE_LIMIT as u64 {
             continue;
         }
@@ -407,7 +441,7 @@ pub(super) fn search(
                     break;
                 }
             }
-            _ => return Err(invalid("未知输出模式")),
+            _ => return Err(invalid("mcp.unknown_output_mode", "未知输出模式")),
         }
     }
     Ok(json!({"output_mode":mode,"results":output.values,"truncated":output.truncated}))

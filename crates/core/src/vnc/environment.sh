@@ -3,7 +3,7 @@ prefix_environment() {
     prefix=$1
     [ -d "$prefix" ] || return 0
     if [ -x "$prefix/usr/bin/xkbcomp" ]; then xkb_prefix_compiler=$prefix/usr/bin/xkbcomp; fi
-    case "$prefix" in *:*) fail unsafe_path '安装路径含冒号，无法设置程序和动态库搜索路径';; esac
+    case "$prefix" in *:*) fail unsafe_path 'vnc.prefix_colon' '安装路径含冒号，无法设置程序和动态库搜索路径';; esac
     PATH=${PATH:-/usr/bin:/bin}:$prefix/usr/bin:$prefix/bin
     XDG_DATA_DIRS=${XDG_DATA_DIRS:-/usr/local/share:/usr/share}:$prefix/usr/share
     XDG_CONFIG_DIRS=${XDG_CONFIG_DIRS:-/etc/xdg}:$prefix/etc/xdg
@@ -73,17 +73,17 @@ keyboard_environment() {
                 break
             done
         fi
-        [ -x "${xkb_prefix_compiler:-}" ] || fail xkb_unavailable '系统和安装前缀均没有可用的 xkbcomp'
-        xkb_namespace_tools || fail xkb_unavailable "$xkb_reason"
+        [ -x "${xkb_prefix_compiler:-}" ] || fail xkb_unavailable 'vnc.xkbcomp_missing' '系统和安装前缀均没有可用的 xkbcomp'
+        xkb_namespace_tools || fail xkb_unavailable "$xkb_reason_key" "$xkb_reason"
         xkb_namespace=true
     fi
     # 查找备用前缀可能补充了键盘数据，必须在前缀确定后构造参数。
     if [ -n "${XKB_CONFIG_ROOT:-}" ]; then
         # X server 内部会把此路径放进双引号 shell 命令，拒绝能二次解释的字符。
         case "$XKB_CONFIG_ROOT" in *'"'*|*'$'*|*'`'*|*'\'*|*'
-'*) fail xkb_unavailable 'XKB 数据路径含不受支持的字符';; esac
+'*) fail xkb_unavailable 'vnc.xkb_path_invalid' 'XKB 数据路径含不受支持的字符';; esac
         xkb_args="-xkbdir $(shell_quote "$XKB_CONFIG_ROOT")"
     fi
-    [ -r /usr/share/X11/xkb/rules/evdev ] || [ -n "${XKB_CONFIG_ROOT:-}" ] || fail xkb_unavailable '没有可用的 XKB 键盘数据'
+    [ -r /usr/share/X11/xkb/rules/evdev ] || [ -n "${XKB_CONFIG_ROOT:-}" ] || fail xkb_unavailable 'vnc.xkb_data_missing' '没有可用的 XKB 键盘数据'
     export xkb_args xkb_namespace xkb_prefix_compiler
 }

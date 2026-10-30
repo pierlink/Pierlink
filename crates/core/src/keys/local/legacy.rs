@@ -56,9 +56,12 @@ pub(super) fn keygen(
         ("SSH_ASKPASS_REQUIRE".to_owned(), "never".to_owned()),
     ];
     #[cfg(unix)]
-    let pair = native_pty_system()
-        .openpty(size)
-        .map_err(|_| failed("无法创建密钥生成终端"))?;
+    let pair = native_pty_system().openpty(size).map_err(|_| {
+        failed(
+            "keys.couldn_t_create_the_key_generation_terminal",
+            "无法创建密钥生成终端",
+        )
+    })?;
     #[cfg(unix)]
     let mut child = {
         let mut command = CommandBuilder::new(program);
@@ -69,39 +72,51 @@ pub(super) fn keygen(
         Child::Pty(
             pair.slave
                 .spawn_command(command)
-                .map_err(|_| failed("无法启动 ssh-keygen"))?,
+                .map_err(|_| failed("keys.couldn_t_start_ssh_keygen", "无法启动 ssh-keygen"))?,
         )
     };
     #[cfg(unix)]
     drop(pair.slave);
     #[cfg(windows)]
-    let pair = crate::terminal::windows::open(size).map_err(|_| failed("无法创建密钥生成终端"))?;
+    let pair = crate::terminal::windows::open(size).map_err(|_| {
+        failed(
+            "keys.couldn_t_create_the_key_generation_terminal",
+            "无法创建密钥生成终端",
+        )
+    })?;
     #[cfg(windows)]
     let mut child = Child::Native(
         pair.master
             .spawn(program, args, None, &env)
-            .map_err(|_| failed("无法启动 ssh-keygen"))?,
+            .map_err(|_| failed("keys.couldn_t_start_ssh_keygen", "无法启动 ssh-keygen"))?,
     );
     let mut reader = Reader::start(
-        pair.master
-            .try_clone_reader()
-            .map_err(|_| failed("无法读取密钥生成终端"))?,
+        pair.master.try_clone_reader().map_err(|_| {
+            failed(
+                "keys.couldn_t_read_the_key_generation_terminal",
+                "无法读取密钥生成终端",
+            )
+        })?,
         64 * 1024,
     )?;
     let result = (|| {
-        let mut writer = pair
-            .master
-            .take_writer()
-            .map_err(|_| failed("无法写入密钥生成终端"))?;
+        let mut writer = pair.master.take_writer().map_err(|_| {
+            failed(
+                "keys.couldn_t_write_to_the_key_generation_terminal",
+                "无法写入密钥生成终端",
+            )
+        })?;
         let start = Instant::now();
         let mut answered = 0;
         let mut consumed = 0;
         let mut exited = None;
         loop {
-            let state = reader
-                .state
-                .lock()
-                .map_err(|_| failed("密钥生成输出不可用"))?;
+            let state = reader.state.lock().map_err(|_| {
+                failed(
+                    "keys.key_generation_output_is_unavailable",
+                    "密钥生成输出不可用",
+                )
+            })?;
             if start.elapsed() > timeout {
                 // 附上已回答的提示数和终端最后一段输出（去掉控制序列和口令），便于在 Windows 上定位原因
                 let text = normalize_terminal(&String::from_utf8_lossy(&state.bytes))
@@ -114,15 +129,21 @@ pub(super) fn keygen(
                     .into_iter()
                     .rev()
                     .collect();
-                return Err(failed("ssh-keygen 超时")
+                return Err(failed("keys.ssh_keygen_timed_out", "ssh-keygen 超时")
                     .with("answered", answered)
                     .with("output", format!("{tail:?}")));
             }
             if state.exceeded {
-                return Err(failed("ssh-keygen 输出超过限制"));
+                return Err(failed(
+                    "keys.ssh_keygen_output_exceeds_the_limit",
+                    "ssh-keygen 输出超过限制",
+                ));
             }
             if state.failed {
-                return Err(failed("无法读取密钥生成输出"));
+                return Err(failed(
+                    "keys.couldn_t_read_key_generation_output",
+                    "无法读取密钥生成输出",
+                ));
             }
             if answered < prompts.len()
                 && prompts[answered]
@@ -131,15 +152,17 @@ pub(super) fn keygen(
             {
                 #[cfg(unix)]
                 {
-                    let fd = pair
-                        .master
-                        .as_raw_fd()
-                        .ok_or_else(|| failed("无法检查终端回显"))?;
+                    let fd = pair.master.as_raw_fd().ok_or_else(|| {
+                        failed("keys.couldn_t_check_terminal_echo", "无法检查终端回显")
+                    })?;
                     let mut termios = std::mem::MaybeUninit::<libc::termios>::uninit();
                     if unsafe { libc::tcgetattr(fd, termios.as_mut_ptr()) } != 0
                         || unsafe { termios.assume_init() }.c_lflag & libc::ECHO != 0
                     {
-                        return Err(failed("密钥生成终端未关闭回显"));
+                        return Err(failed(
+                            "keys.key_generation_terminal_echo_is_still_enabled",
+                            "密钥生成终端未关闭回显",
+                        ));
                     }
                 }
                 io(writer.write_all(secret.as_bytes()))?;
@@ -150,7 +173,7 @@ pub(super) fn keygen(
             }
             if let Some(status) = child
                 .try_wait()
-                .map_err(|_| failed("无法等待 ssh-keygen"))?
+                .map_err(|_| failed("keys.couldn_t_wait_for_ssh_keygen", "无法等待 ssh-keygen"))?
             {
                 // ConPTY 在关闭主端前可能不返回 EOF；给输出留出有界排空时间。
                 if state.done
@@ -166,7 +189,10 @@ pub(super) fn keygen(
                         return Ok(None);
                     }
                     if !status.success() || answered != prompts.len() {
-                        return Err(failed("ssh-keygen 执行失败或提示不匹配"));
+                        return Err(failed(
+                            "keys.ssh_keygen_failed_or_returned_an_unexpected_prompt",
+                            "ssh-keygen 执行失败或提示不匹配",
+                        ));
                     }
                     return Ok(Some(output));
                 }

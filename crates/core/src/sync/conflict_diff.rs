@@ -53,7 +53,12 @@ pub enum ConflictDiff {
     },
 }
 fn io(e: std::io::Error) -> AppError {
-    AppError::new("sync.diff_io").with("reason", format!("读取冲突文件失败（{:?}）", e.kind()))
+    AppError::new("sync.diff_io")
+        .with_reason(
+            "sync.read_conflict",
+            format!("读取冲突文件失败（{:?}）", e.kind()),
+        )
+        .with("io_kind", format!("{:?}", e.kind()))
 }
 fn open(root: &Path, relative: &str) -> Result<(File, DiffFile), AppError> {
     let path = safe(root, relative)?;
@@ -131,7 +136,10 @@ fn decode(bytes: &[u8]) -> Option<(String, String)> {
 /// 路径为任务内相对路径，拒绝链接及越界；文件读取期间变化时返回 conflict_changed。
 pub fn compare_conflict(local_root: &Path, conflict: &Conflict) -> Result<ConflictDiff, AppError> {
     if parse_name(&conflict.conflict_file).map(|v| v.0).as_deref() != Some(&conflict.path) {
-        return Err(AppError::new("sync.invalid_input").with("reason", "冲突副本与原文件不匹配"));
+        return Err(AppError::new("sync.invalid_input").with_reason(
+            "sync.conflict_copy_does_not_match_the_original_file",
+            "冲突副本与原文件不匹配",
+        ));
     }
     let root = fs::canonicalize(local_root).map_err(io)?;
     let (mut a, mut left) = open(&root, &conflict.path)?;

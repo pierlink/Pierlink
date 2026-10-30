@@ -28,7 +28,9 @@ pub enum Keep {
     Other,
 }
 fn io(e: std::io::Error) -> AppError {
-    AppError::new("sync.archive_io").with("reason", format!("文件操作失败（{:?}）", e.kind()))
+    AppError::new("sync.archive_io")
+        .with_reason("sync.archive_io", format!("文件操作失败（{:?}）", e.kind()))
+        .with("io_kind", format!("{:?}", e.kind()))
 }
 pub(super) fn relative(path: &str) -> Result<(), AppError> {
     if path.is_empty()
@@ -42,7 +44,10 @@ pub(super) fn relative(path: &str) -> Result<(), AppError> {
             .components()
             .any(|c| !matches!(c, Component::Normal(_)))
     {
-        return Err(error("必须使用安全的相对文件路径"));
+        return Err(error(
+            "sync.use_a_safe_relative_file_path",
+            "必须使用安全的相对文件路径",
+        ));
     }
     Ok(())
 }
@@ -52,7 +57,12 @@ fn safe(root: &Path, relative_path: &str) -> Result<PathBuf, AppError> {
     for c in Path::new(relative_path).components() {
         p.push(c);
         match fs::symlink_metadata(&p) {
-            Ok(m) if m.file_type().is_symlink() => return Err(error("冲突路径不得经过符号链接")),
+            Ok(m) if m.file_type().is_symlink() => {
+                return Err(error(
+                    "sync.conflict_path_cannot_traverse_symbolic_links",
+                    "冲突路径不得经过符号链接",
+                ));
+            }
             Ok(_) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => return Err(io(e)),
@@ -63,7 +73,10 @@ fn safe(root: &Path, relative_path: &str) -> Result<PathBuf, AppError> {
 fn mtime(path: &Path) -> Result<i64, AppError> {
     let m = fs::symlink_metadata(path).map_err(io)?;
     if !m.is_file() || m.file_type().is_symlink() {
-        return Err(error("冲突对象必须是普通文件"));
+        return Err(error(
+            "sync.conflict_item_must_be_a_regular_file",
+            "冲突对象必须是普通文件",
+        ));
     }
     let t = m.modified().map_err(io)?;
     Ok(match t.duration_since(UNIX_EPOCH) {
@@ -193,7 +206,10 @@ fn expand_rules(
     output: &mut Vec<String>,
 ) -> Result<(), AppError> {
     if depth > 16 {
-        return Err(error("排除规则包含文件嵌套过深或形成循环"));
+        return Err(error(
+            "sync.ignore_file_includes_are_nested_too_deeply_or_contain_a",
+            "排除规则包含文件嵌套过深或形成循环",
+        ));
     }
     for rule in rules {
         if let Some(include) = rule.trim().strip_prefix("#include ") {
@@ -205,14 +221,20 @@ fn expand_rules(
                 .read_to_string(&mut content)
                 .map_err(io)?;
             if content.len() > 1024 * 1024 {
-                return Err(error("排除规则包含文件超过 1 MiB"));
+                return Err(error(
+                    "sync.included_ignore_file_exceeds_1_mib",
+                    "排除规则包含文件超过 1 MiB",
+                ));
             }
             let nested = content.lines().map(String::from).collect::<Vec<_>>();
             expand_rules(root, &nested, depth + 1, output)?;
         } else {
             output.push(rule.clone());
             if output.len() > 10000 {
-                return Err(error("展开后的排除规则超过 10000 条"));
+                return Err(error(
+                    "sync.expanded_ignore_rules_exceed_10_000_entries",
+                    "展开后的排除规则超过 10000 条",
+                ));
             }
         }
     }
@@ -256,14 +278,19 @@ pub fn list_conflicts(
                 let entry = entry.map_err(io)?;
                 let ty = entry.file_type().map_err(io)?;
                 if ty.is_symlink() {
-                    return Err(error("跳过符号链接"));
+                    return Err(error("sync.symbolic_link_skipped", "跳过符号链接"));
                 }
                 let p = entry.path();
                 let name = p
                     .strip_prefix(&root)
-                    .map_err(|_| error("路径超出同步目录"))?
+                    .map_err(|_| {
+                        error(
+                            "sync.path_is_outside_the_sync_directory",
+                            "路径超出同步目录",
+                        )
+                    })?
                     .to_str()
-                    .ok_or_else(|| error("文件名不是 UTF-8"))?
+                    .ok_or_else(|| error("sync.filename_is_not_valid_utf_8", "文件名不是 UTF-8"))?
                     .replace('\\', "/");
                 if name
                     .split('/')
@@ -312,7 +339,10 @@ fn archive_path(
 ) -> Result<PathBuf, AppError> {
     let archive = crate::syncthing::folder::normalized(archive)?;
     if archive.starts_with(root) || root.starts_with(&archive) {
-        return Err(error("冲突存档必须位于同步目录之外"));
+        return Err(error(
+            "sync.conflict_archive_must_be_outside_the_sync_directory",
+            "冲突存档必须位于同步目录之外",
+        ));
     }
     let date = format_ms(now_ms())[..10].to_string();
     let path = safe(&archive, &format!("{folder}/{date}/{name}"))?;
@@ -415,7 +445,10 @@ pub fn resolve_conflict_for_folder(
     crate::syncthing::folder::validate_task_folder_id(folder_id)?;
     let root = crate::fs_local::plain_canonical(local_path).map_err(io)?;
     if parse_name(&conflict.conflict_file).as_ref().map(|v| &v.0) != Some(&conflict.path) {
-        return Err(error("冲突文件与原路径不匹配"));
+        return Err(error(
+            "sync.conflict_file_does_not_match_the_original_path",
+            "冲突文件与原路径不匹配",
+        ));
     }
     let current = safe(&root, &conflict.path)?;
     let other = safe(&root, &conflict.conflict_file)?;
@@ -439,10 +472,11 @@ pub fn resolve_conflict_for_folder(
     {
         return Err(AppError::new("sync.conflict_incomplete")
             .with("archive", archived.display())
-            .with(
-                "reason",
+            .with_reason(
+                "sync.replace_conflict",
                 format!("替换失败（{:?}），原版本已存档", e.kind()),
-            ));
+            )
+            .with("io_kind", format!("{:?}", e.kind())));
     }
     Ok(())
 }

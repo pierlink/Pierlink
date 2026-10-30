@@ -35,8 +35,8 @@ fn 内置同步标记只恢复本次改名并保留外部改动() {
 fn failed(path: &str) -> AppError {
     AppError::new("sync.cleanup_failed")
         .with("path", path)
-        .with(
-            "reason",
+        .with_reason(
+            "sync.couldn_t_restore_the_folder_marker_destination_exists_or_marker",
             "无法安全恢复文件夹标记，目标已存在或标记状态发生变化",
         )
 }

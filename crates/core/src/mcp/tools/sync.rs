@@ -50,7 +50,8 @@ fn transient(e: &AppError) -> bool {
 }
 fn check_cancel(cancelled: &AtomicBool) -> Result<(), AppError> {
     if cancelled.load(Ordering::Acquire) {
-        Err(AppError::new("mcp.cancelled").with("reason", "同步等待已取消"))
+        Err(AppError::new("mcp.cancelled")
+            .with_reason("mcp.waiting_for_sync_was_cancelled", "同步等待已取消"))
     } else {
         Ok(())
     }
@@ -104,7 +105,12 @@ fn wait_for(
             states.retain(|s| !s.servers.is_empty());
         }
         if states.is_empty() {
-            return Err(AppError::new("mcp.not_found").with("reason", "没有可等待的同步任务"));
+            let error = AppError::new("mcp.not_found")
+                .with_reason("mcp.no_sync_tasks_to_wait_for", "没有可等待的同步任务");
+            return Err(match task {
+                Some(name) => error.with("path", name),
+                None => error.with_text("path", "mcp.sync_task", "同步任务"),
+            });
         }
         result.tasks = states;
         for state in &result.tasks {

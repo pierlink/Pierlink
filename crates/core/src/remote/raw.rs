@@ -47,7 +47,16 @@ pub fn run_raw(
         });
     }
     if command.is_empty() || command.contains('\0') {
-        return Err(AppError::new("ssh.invalid_argument").with("reason", "命令为空或含空字符"));
+        return Err(AppError::new("ssh.invalid_argument")
+            .with_reason(
+                "remote.command_is_empty_or_contains_null_characters",
+                "命令为空或含空字符",
+            )
+            .with_text(
+                "field",
+                "remote.command_is_empty_or_contains_null_characters",
+                "命令为空或含空字符",
+            ));
     }
     request.interactive = false;
     request.class = ConnectionClass::Main;
@@ -93,7 +102,15 @@ pub fn run_raw(
             let mut cmd = openssh()?;
             if cmd.args.last().map(String::as_str) != Some("/bin/sh -s") || cmd.builtin.is_some() {
                 return Err(AppError::new("ssh.invalid_argument")
-                    .with("reason", "原样执行需要后台用途的 OpenSSH 参数"));
+                    .with_reason(
+                        "remote.raw_execution_requires_background_openssh_arguments",
+                        "原样执行需要后台用途的 OpenSSH 参数",
+                    )
+                    .with_text(
+                        "field",
+                        "remote.raw_execution_requires_background_openssh_arguments",
+                        "原样执行需要后台用途的 OpenSSH 参数",
+                    ));
             }
             cmd.args.pop();
             cmd.args.push(remote);
@@ -121,7 +138,15 @@ pub fn run_raw(
                 return Err(process.finish_error(
                     AppError::new(code)
                         .with("exit_code", 255)
-                        .with("reason", "SSH 连接或认证失败"),
+                        .with_reason(
+                            "remote.ssh_connection_or_authentication_failed",
+                            "SSH 连接或认证失败",
+                        )
+                        .with_text(
+                            "stderr_tail",
+                            "remote.ssh_connection_or_authentication_failed",
+                            "SSH 连接或认证失败",
+                        ),
                 ));
             }
             output

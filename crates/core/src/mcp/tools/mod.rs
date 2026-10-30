@@ -66,7 +66,7 @@ fn target<'a>(targets: &'a [Target], name: &str) -> Result<&'a Target, Failure> 
     targets
         .iter()
         .find(|target| target.target == name || target.id == name)
-        .ok_or_else(|| schema::invalid("目标不存在").into())
+        .ok_or_else(|| schema::invalid("mcp.target_does_not_exist", "目标不存在").into())
 }
 fn check_cancel(cancelled: &AtomicBool) -> Result<(), AppError> {
     if cancelled.load(Ordering::Acquire) {
@@ -118,7 +118,7 @@ impl ActionApproval<'_> {
                     *self.source = "";
                     // action 只进本机的审计记录（发给 agent 的只有 reason）
                     return Err(AppError::new("mcp.action_denied")
-                        .with("reason", "用户拒绝执行")
+                        .with_reason("mcp.the_user_denied_execution", "用户拒绝执行")
                         .with("action", action));
                 }
             }
@@ -139,8 +139,8 @@ pub(super) fn execute(
     check_cancel(&cancelled)?;
     let info = session.snapshot();
     let permissions = shared.host.permissions(&info.entry)?.ok_or_else(|| {
-        AppError::new("mcp.entry_disabled").with(
-            "reason",
+        AppError::new("mcp.entry_disabled").with_reason(
+            "mcp.enable_this_entry_in_pierlink_settings_ai_access",
             "Pierlink 没有打开这个入口：在 Pierlink 设置 → AI 接入里打开",
         )
     })?;
@@ -151,10 +151,10 @@ pub(super) fn execute(
     if let Some(name) = string(args, "target") {
         target(&targets, name)?;
     }
-    let _permit = session
-        .permits
-        .try_acquire()
-        .map_err(|_| AppError::new("mcp.busy").with("reason", "同时进行的操作太多"))?;
+    let _permit = session.permits.try_acquire().map_err(|_| {
+        AppError::new("mcp.busy")
+            .with_reason("mcp.too_many_concurrent_operations", "同时进行的操作太多")
+    })?;
     let mut approval = ActionApproval {
         shared,
         session,
@@ -275,7 +275,7 @@ pub(super) fn execute(
             Duration::from_secs(number(args, "timeout_secs", 300)),
             &cancelled,
         )?)),
-        _ => Err(schema::invalid("未知工具").into()),
+        _ => Err(schema::invalid("mcp.unknown_tool", "未知工具").into()),
     }
 }
 /// 终端工具能看到的目标：本机 Windows 的终端等于执行命令，没有“执行命令”权限时看不到也不能操作
@@ -361,8 +361,10 @@ fn with_revocation<T>(
 /// Windows 目标可能只因为允许了文件夹才出现：执行命令和开本机终端还要单独的“执行命令”权限
 fn windows_commands_allowed(permissions: &Permissions, target: &Target) -> Result<(), AppError> {
     if target.kind == TargetKind::Windows && !permissions.windows_commands {
-        return Err(AppError::new("mcp.commands_denied")
-            .with("reason", "这个入口没有允许在 Windows 上执行命令"));
+        return Err(AppError::new("mcp.commands_denied").with_reason(
+            "mcp.this_entry_cannot_execute_commands_on_windows",
+            "这个入口没有允许在 Windows 上执行命令",
+        ));
     }
     Ok(())
 }
@@ -383,7 +385,10 @@ fn run_command(
     } else {
         if args.contains_key("shell") {
             return Err(AppError::new("mcp.shell_unavailable")
-                .with("reason", "服务器命令使用 /bin/sh，shell 参数只用于 Windows")
+                .with_reason(
+                    "mcp.server_commands_use_bin_sh_the_shell_parameter_is_only",
+                    "服务器命令使用 /bin/sh，shell 参数只用于 Windows",
+                )
                 .into());
         }
         None
@@ -394,7 +399,7 @@ fn run_command(
             .and_then(Value::as_bool)
             .unwrap_or(false)
     {
-        return Err(AppError::new("mcp.background_unsupported").with("reason","服务器执行通道仅返回最终输出，无法保证取消时回收远端进程树；请使用服务器 AI 终端运行长任务").into());
+        return Err(AppError::new("mcp.background_unsupported").with_reason("mcp.server_commands_cannot_guarantee_process_cleanup_on_cancellation_use_an", "服务器执行通道仅返回最终输出，无法保证取消时回收远端进程树；请使用服务器 AI 终端运行长任务").into());
     }
     let action = match string(args, "cwd") {
         Some(cwd) => format!("{command}\n（在目录 {cwd} 里执行）"),
@@ -420,7 +425,10 @@ fn run_command(
         .unwrap_or(false)
     {
         let prepared = prepared.ok_or_else(|| {
-            AppError::new("mcp.background_unsupported").with("reason", "这个目标不支持后台任务")
+            AppError::new("mcp.background_unsupported").with_reason(
+                "mcp.this_target_does_not_support_background_tasks",
+                "这个目标不支持后台任务",
+            )
         })?;
         let weak = Arc::downgrade(shared);
         let info = approval.session.snapshot();
@@ -490,14 +498,14 @@ fn terminal_call(
     let registered = shared
         .registry
         .get(id, &approval.session.snapshot().entry, targets)
-        .ok_or_else(|| schema::invalid("AI 终端不存在"))?;
+        .ok_or_else(|| schema::invalid("mcp.ai_terminal_does_not_exist", "AI 终端不存在"))?;
     registered.check()?;
     let target = targets
         .iter()
         .find(|target| {
             target.id == registered.info.target.id && target.kind == registered.info.target.kind
         })
-        .ok_or_else(|| schema::invalid("目标不存在"))?;
+        .ok_or_else(|| schema::invalid("mcp.target_does_not_exist", "目标不存在"))?;
     let result = match name {
         "close_terminal" => {
             shared.registry.close(id, shared.host.as_ref())?;
@@ -520,7 +528,10 @@ fn terminal_call(
                     terminal_id: id.into(),
                 });
                 return Err(AppError::new("mcp.password_prompt")
-                    .with("reason", "终端正在等待密码，请用户在 Pierlink 里输入")
+                    .with_reason(
+                        "mcp.terminal_is_waiting_for_a_password_enter_it_in_pierlink",
+                        "终端正在等待密码，请用户在 Pierlink 里输入",
+                    )
                     .into());
             }
             // 同一个终端的发送排队，待提交行的读、判断、发送、写回一次做完
@@ -601,7 +612,7 @@ fn terminal_call(
             let pattern = string(args, "pattern")
                 .map(regex::Regex::new)
                 .transpose()
-                .map_err(|_| schema::invalid("正则表达式无效"))?;
+                .map_err(|_| schema::invalid("mcp.invalid_regular_expression", "正则表达式无效"))?;
             Ok(json!(terminal::wait_cancellable(
                 &shared.terminals,
                 id,
@@ -614,7 +625,7 @@ fn terminal_call(
                 || cancelled.load(Ordering::Acquire) || registered.revoked.load(Ordering::Acquire)
             )?))
         }
-        _ => Err(schema::invalid("未知终端工具").into()),
+        _ => Err(schema::invalid("mcp.unknown_terminal_tool", "未知终端工具").into()),
     };
     if name != "close_terminal" {
         registered.check()?;
@@ -635,7 +646,10 @@ fn file_call(
     };
     if permissions.folders.is_empty() {
         return Err(AppError::new("mcp.path_denied")
-            .with("reason", "这个入口没有允许访问的文件夹")
+            .with_reason(
+                "mcp.this_entry_has_no_allowed_folders",
+                "这个入口没有允许访问的文件夹",
+            )
             .into());
     }
     let sandbox = files::Sandbox::new(&permissions.folders);
@@ -707,7 +721,7 @@ fn file_call(
             }
         }
         "list_dir" => Ok(json!(files::list_dir(&sandbox, path)?)),
-        _ => Err(schema::invalid("未知文件工具").into()),
+        _ => Err(schema::invalid("mcp.unknown_file_tool", "未知文件工具").into()),
     }
 }
 

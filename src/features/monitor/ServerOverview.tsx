@@ -122,7 +122,7 @@ function Disks({ sample }: { sample: ResourceSample }) {
         const warn = u.percent !== null && u.percent >= 80;
         const p = u.percent === null ? 0 : Math.max(0, Math.min(100, u.percent));
         return (
-          <div key={d.mount} className="ov-disk" title={`${d.mount}（${d.fsType}）\n${t("monitor.diskDetail", { used: formatBytes(u.used), total: formatBytes(d.total), free: formatBytes(d.free) })}${u.reserved ? `\n${t("monitor.diskReserved", { reserved: formatBytes(u.reserved) })}` : ""}`}>
+          <div key={d.mount} className="ov-disk" title={`${t("common.withNote", { text: d.mount, note: d.fsType })}\n${t("monitor.diskDetail", { used: formatBytes(u.used), total: formatBytes(d.total), free: formatBytes(d.free) })}${u.reserved ? `\n${t("monitor.diskReserved", { reserved: formatBytes(u.reserved) })}` : ""}`}>
             <span className="ov-disk__mount mono pl-ellipsis">{d.mount}</span>
             <span className="res__bar ov-disk__bar" role="meter" aria-label={t("monitor.disk", { mount: d.mount })} aria-valuemin={0} aria-valuemax={100} aria-valuenow={u.percent === null ? undefined : Math.round(p)}><span className={warn ? "res__fill res__fill--warn" : "res__fill"} style={{ width: `${p}%` }} /></span>
             <span className={`ov-disk__pct${warn ? " res__value--warn" : ""}`}>{u.percent === null ? "—" : `${Math.round(p)}%`}</span>

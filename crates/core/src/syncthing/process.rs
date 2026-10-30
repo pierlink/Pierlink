@@ -76,22 +76,24 @@ fn spawn(bin: &SyncthingBin, args: Vec<String>, key: Option<&str>) -> Result<Ssh
         path: bin.path.clone(),
     }
     .spawn_with_environment(&cmd, environment)
-    .map_err(|_| io_error("启动 Syncthing 进程"))
+    .map_err(|_| io_error("syncthing.start_syncthing_process", "启动 Syncthing 进程"))
 }
 fn readers(child: &mut SshProcess) -> Result<Vec<Reader>, AppError> {
     let stdout = child
         .child
         .stdout
         .take()
-        .ok_or_else(|| io_error("获取进程输出"))?;
+        .ok_or_else(|| io_error("syncthing.get_process_output", "获取进程输出"))?;
     let stderr = child
         .child
         .stderr
         .take()
-        .ok_or_else(|| io_error("获取进程错误输出"))?;
+        .ok_or_else(|| io_error("syncthing.get_process_error_output", "获取进程错误输出"))?;
     Ok(vec![
-        Reader::tail(stdout, 64 * 1024).map_err(|_| io_error("读取进程输出"))?,
-        Reader::tail(stderr, 64 * 1024).map_err(|_| io_error("读取进程错误输出"))?,
+        Reader::tail(stdout, 64 * 1024)
+            .map_err(|_| io_error("syncthing.read_process_output", "读取进程输出"))?,
+        Reader::tail(stderr, 64 * 1024)
+            .map_err(|_| io_error("syncthing.read_process_error_output", "读取进程错误输出"))?,
     ])
 }
 fn tail(readers: &[Reader]) -> String {
@@ -106,7 +108,7 @@ fn tail(readers: &[Reader]) -> String {
         .collect::<Vec<_>>()
         .join("\n")
 }
-fn start_error(text: &str, secrets: &[&str], reason: &str) -> AppError {
+fn start_error(text: &str, secrets: &[&str], text_key: &'static str, reason: &str) -> AppError {
     let code = if super::port_in_use(text) {
         "syncthing.listen_port_in_use"
     } else if text.contains("Failed to acquire lock") {
@@ -124,7 +126,7 @@ fn start_error(text: &str, secrets: &[&str], reason: &str) -> AppError {
         .rev()
         .collect::<String>();
     let mut e = AppError::new(code)
-        .with("reason", reason)
+        .with_reason(text_key, reason)
         .with("log_tail", tail);
     if code == "syncthing.home_locked" {
         let pid = regex::Regex::new(r"(?i)pid[= :]+([0-9]+)")
@@ -132,9 +134,11 @@ fn start_error(text: &str, secrets: &[&str], reason: &str) -> AppError {
             .and_then(|re| {
                 re.captures(text)
                     .and_then(|c| c.get(1).map(|v| v.as_str().to_owned()))
-            })
-            .unwrap_or_else(|| "未知".into());
-        e = e.with("pid", pid);
+            });
+        e = match pid {
+            Some(pid) => e.with("pid", pid),
+            None => e.with_text("pid", "syncthing.unknown_pid", "未知"),
+        };
     }
     e
 }
@@ -152,28 +156,36 @@ pub(crate) fn run_short(
                 .child
                 .stdin
                 .take()
-                .ok_or_else(|| io_error("获取标准输入"))?;
+                .ok_or_else(|| io_error("syncthing.get_standard_input", "获取标准输入"))?;
             let bytes = format!("{password}\n").into_bytes();
             let writer = thread::Builder::new()
                 .name("Syncthing口令写入".into())
                 .spawn(move || stdin.write_all(&bytes))
-                .map_err(|_| io_error("创建输入线程"))?;
+                .map_err(|_| io_error("syncthing.create_input_thread", "创建输入线程"))?;
             let deadline = Instant::now() + Duration::from_secs(30);
             while !writer.is_finished() {
                 if Instant::now() >= deadline {
-                    return Err(start_error("", &[], "写入口令超时"));
+                    return Err(start_error(
+                        "",
+                        &[],
+                        "syncthing.writing_the_passphrase_timed_out",
+                        "写入口令超时",
+                    ));
                 }
                 thread::sleep(Duration::from_millis(10));
             }
             writer
                 .join()
-                .map_err(|_| io_error("输入线程失败"))?
-                .map_err(|_| io_error("写入口令"))?;
+                .map_err(|_| io_error("syncthing.input_thread_failed", "输入线程失败"))?
+                .map_err(|_| io_error("syncthing.write_passphrase", "写入口令"))?;
         }
         drop(child.child.stdin.take());
         let deadline = Instant::now() + Duration::from_secs(30);
         loop {
-            if let Some(status) = child.try_wait().map_err(|_| io_error("查询子进程"))? {
+            if let Some(status) = child
+                .try_wait()
+                .map_err(|_| io_error("syncthing.query_child_process", "查询子进程"))?
+            {
                 for reader in &mut readers {
                     reader.join();
                 }
@@ -181,13 +193,14 @@ pub(crate) fn run_short(
                     return Err(start_error(
                         &tail(&readers),
                         &[password.unwrap_or("")],
+                        "syncthing.subcommand_failed",
                         "子命令失败",
                     ));
                 }
                 let out = readers[0]
                     .state
                     .lock()
-                    .map_err(|_| io_error("读取子命令结果"))?;
+                    .map_err(|_| io_error("syncthing.read_subcommand_result", "读取子命令结果"))?;
                 return String::from_utf8(out.bytes.clone())
                     .map_err(|_| AppError::new("syncthing.invalid_response"));
             }
@@ -195,6 +208,7 @@ pub(crate) fn run_short(
                 return Err(start_error(
                     &tail(&readers),
                     &[password.unwrap_or("")],
+                    "syncthing.subcommand_timed_out",
                     "子命令超时",
                 ));
             }
@@ -221,7 +235,7 @@ fn record(home: &Path) -> Result<Option<Record>, AppError> {
                 })
         })),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(_) => Err(io_error("读取 PID 文件")),
+        Err(_) => Err(io_error("syncthing.read_pid_file", "读取 PID 文件")),
     }
 }
 #[cfg(target_os = "linux")]
@@ -263,13 +277,16 @@ fn identity(_: u32, _: &Path, _: &Path, _: &str) -> Option<String> {
 fn matching(bin: &Path, home: &Path, gui: &str) -> Result<Vec<Record>, AppError> {
     #[cfg(target_os = "linux")]
     let pids: Vec<u32> = fs::read_dir("/proc")
-        .map_err(|_| io_error("枚举进程"))?
+        .map_err(|_| io_error("syncthing.enumerate_processes", "枚举进程"))?
         .filter_map(|e| e.ok()?.file_name().to_str()?.parse().ok())
         .collect();
     #[cfg(windows)]
     let pids = super::windows::pids()?;
     #[cfg(not(any(target_os = "linux", windows)))]
-    let pids: Vec<u32> = return Err(io_error("此平台不支持进程身份查询"));
+    let pids: Vec<u32> = return Err(io_error(
+        "syncthing.process_identity_lookup_is_unavailable_on_this_platform",
+        "此平台不支持进程身份查询",
+    ));
     Ok(pids
         .into_iter()
         .filter_map(|pid| identity(pid, bin, home, gui).map(|identity| Record { pid, identity }))
@@ -285,7 +302,10 @@ fn terminate_group(bin: &Path, home: &Path, gui: &str, group: &[Record]) -> Resu
         if unsafe { libc::kill(r.pid as i32, libc::SIGKILL) } != 0
             && std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
         {
-            failure = Some(io_error("终止匹配进程"));
+            failure = Some(io_error(
+                "syncthing.terminate_matching_process",
+                "终止匹配进程",
+            ));
         }
         #[cfg(windows)]
         if let Err(e) = super::windows::terminate(r.pid) {
@@ -301,7 +321,10 @@ fn terminate_group(bin: &Path, home: &Path, gui: &str, group: &[Record]) -> Resu
         .any(|r| identity(r.pid, bin, home, gui).as_ref() == Some(&r.identity))
     {
         if Instant::now() >= deadline {
-            return Err(io_error("等待匹配进程退出"));
+            return Err(io_error(
+                "syncthing.wait_for_matching_process_to_exit",
+                "等待匹配进程退出",
+            ));
         }
         thread::sleep(Duration::from_millis(20));
     }
@@ -316,12 +339,21 @@ pub(crate) fn record_is_running(
 }
 /// 根据 home 内记录的程序与管理地址核验并强制结束整组进程；无匹配进程也成功。
 pub fn force_stop(home: &Path) -> Result<(), AppError> {
-    let home = crate::fs_local::plain_canonical(home).map_err(|_| io_error("解析实例目录"))?;
+    let home = crate::fs_local::plain_canonical(home)
+        .map_err(|_| io_error("syncthing.resolve_instance_directory", "解析实例目录"))?;
     let _lock = home::lock(&home)?;
-    let bytes =
-        fs::read(home.join("pierlink-process.json")).map_err(|_| io_error("读取实例进程信息"))?;
-    let (bin, gui): (PathBuf, String) =
-        serde_json::from_slice(&bytes).map_err(|_| error("实例进程信息无效"))?;
+    let bytes = fs::read(home.join("pierlink-process.json")).map_err(|_| {
+        io_error(
+            "syncthing.read_instance_process_information",
+            "读取实例进程信息",
+        )
+    })?;
+    let (bin, gui): (PathBuf, String) = serde_json::from_slice(&bytes).map_err(|_| {
+        error(
+            "syncthing.invalid_instance_process_information",
+            "实例进程信息无效",
+        )
+    })?;
     let group = matching(&bin, &home, &gui)?;
     terminate_group(&bin, &home, &gui, &group)?;
     remove_pid(&home)
@@ -334,29 +366,40 @@ pub(crate) fn stop_for_migration(
     process_home: &Path,
 ) -> Result<home::HomeLock, AppError> {
     let lock = home::lock(storage)?;
-    let process_home = crate::fs_local::plain_canonical(process_home)
-        .map_err(|_| io_error("解析迁移前实例目录"))?;
+    let process_home = crate::fs_local::plain_canonical(process_home).map_err(|_| {
+        io_error(
+            "syncthing.resolve_instance_directory_before_migration",
+            "解析迁移前实例目录",
+        )
+    })?;
     match fs::read(storage.join("pierlink-process.json")) {
         Ok(bytes) => {
-            let (bin, gui): (PathBuf, String) =
-                serde_json::from_slice(&bytes).map_err(|_| error("实例进程信息无效"))?;
+            let (bin, gui): (PathBuf, String) = serde_json::from_slice(&bytes).map_err(|_| {
+                error(
+                    "syncthing.invalid_instance_process_information",
+                    "实例进程信息无效",
+                )
+            })?;
             let group = matching(&bin, &process_home, &gui)?;
             terminate_group(&bin, &process_home, &gui, &group)?;
             remove_pid(storage)?;
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            if storage
-                .join("pierlink.pid")
-                .try_exists()
-                .map_err(|_| io_error("检查迁移前进程记录"))?
-            {
-                return Err(AppError::new("syncthing.busy").with(
-                    "reason",
-                    "存在 PID 记录但缺少可核验的程序信息，无法安全迁移",
-                ));
+            if storage.join("pierlink.pid").try_exists().map_err(|_| {
+                io_error(
+                    "syncthing.check_process_record_before_migration",
+                    "检查迁移前进程记录",
+                )
+            })? {
+                return Err(AppError::new("syncthing.busy").with_reason("syncthing.pid_record_has_no_verifiable_program_information_migration_cannot_proceed", "存在 PID 记录但缺少可核验的程序信息，无法安全迁移"));
             }
         }
-        Err(_) => return Err(io_error("读取迁移前进程信息")),
+        Err(_) => {
+            return Err(io_error(
+                "syncthing.read_process_information_before_migration",
+                "读取迁移前进程信息",
+            ));
+        }
     }
     Ok(lock)
 }
@@ -370,8 +413,9 @@ pub fn start(
     for attempt in 0..2 {
         match start_once(bin, home, gui, api_key, Duration::from_secs(30)) {
             Err(e) if e.code == "syncthing.home_locked" && attempt == 0 => {
-                let canonical =
-                    crate::fs_local::plain_canonical(home).map_err(|_| io_error("解析实例目录"))?;
+                let canonical = crate::fs_local::plain_canonical(home).map_err(|_| {
+                    io_error("syncthing.resolve_instance_directory", "解析实例目录")
+                })?;
                 let group = matching(&bin.path, &canonical, &gui.cli_address()?)?;
                 if group.is_empty()
                     || e.params
@@ -396,32 +440,55 @@ fn start_once(
     timeout: Duration,
 ) -> Result<RunningInstance, AppError> {
     if api_key.is_empty() {
-        return Err(error("启动实例必须提供 API 密钥"));
+        return Err(error(
+            "syncthing.an_api_key_is_required_to_start_the_instance",
+            "启动实例必须提供 API 密钥",
+        ));
     }
     let address = gui.address()?;
     // 日志里报告的实际监听地址应与之完全一致
     let address_plain = address.clone();
     let cli_address = gui.cli_address()?;
-    let home = crate::fs_local::plain_canonical(home).map_err(|_| io_error("解析实例目录"))?;
+    let home = crate::fs_local::plain_canonical(home)
+        .map_err(|_| io_error("syncthing.resolve_instance_directory", "解析实例目录"))?;
     if !home.join("config.xml").is_file() {
-        return Err(error("必须先初始化实例配置"));
+        return Err(error(
+            "syncthing.initialize_instance_configuration_first",
+            "必须先初始化实例配置",
+        ));
     }
     let _lock = home::lock(&home)?;
     if let GuiListen::Unix { path } = gui {
-        home::socket_dir(path.parent().ok_or_else(|| error("套接字缺少父目录"))?)?;
+        home::socket_dir(path.parent().ok_or_else(|| {
+            error(
+                "syncthing.socket_has_no_parent_directory",
+                "套接字缺少父目录",
+            )
+        })?)?;
     }
     let client = match gui {
         GuiListen::Tcp { .. } => Client::new(&format!("http://{address}"), api_key)?,
         #[cfg(unix)]
         GuiListen::Unix { path } => Client::unix(path, api_key)?,
         #[cfg(not(unix))]
-        GuiListen::Unix { .. } => return Err(error("此平台不支持 Unix 套接字")),
+        GuiListen::Unix { .. } => {
+            return Err(error(
+                "syncthing.unix_sockets_are_unavailable_on_this_platform",
+                "此平台不支持 Unix 套接字",
+            ));
+        }
     };
     let ownership = serde_json::to_vec(&(
-        fs::canonicalize(&bin.path).map_err(|_| io_error("解析程序路径"))?,
+        fs::canonicalize(&bin.path)
+            .map_err(|_| io_error("syncthing.resolve_program_path", "解析程序路径"))?,
         &cli_address,
     ))
-    .map_err(|_| io_error("编码实例进程信息"))?;
+    .map_err(|_| {
+        io_error(
+            "syncthing.encode_instance_process_information",
+            "编码实例进程信息",
+        )
+    })?;
     // 地址或程序变更时保留仍在运行的旧实例信息，让 force_stop 仍能找到它。
     if let Ok(bytes) = fs::read(home.join("pierlink-process.json"))
         && let Ok((old_bin, old_gui)) = serde_json::from_slice::<(PathBuf, String)>(&bytes)
@@ -466,7 +533,12 @@ fn start_once(
                 Ok(true) => break,
                 Ok(false) if Instant::now() >= deadline => {
                     terminate_group(&bin.path, &home, &cli_address, &group)?;
-                    return Err(start_error("", &[], "未见监听地址"));
+                    return Err(start_error(
+                        "",
+                        &[],
+                        "syncthing.no_listening_address_found",
+                        "未见监听地址",
+                    ));
                 }
                 _ => thread::sleep(Duration::from_millis(50)),
             }
@@ -482,15 +554,11 @@ fn start_once(
                 return Err(e);
             }
             result => {
-                return Err(AppError::new("syncthing.adopt_failed")
-                    .with("pid", r.pid)
-                    .with(
-                        "reason",
-                        result
-                            .err()
-                            .map(|e| e.code)
-                            .unwrap_or_else(|| "同步监听未就绪".into()),
-                    ));
+                let error = AppError::new("syncthing.adopt_failed").with("pid", r.pid);
+                return Err(match result {
+                    Err(cause) => error.with("reason", cause.code),
+                    Ok(_) => error.with_reason("syncthing.listener_not_ready", "同步监听未就绪"),
+                });
             }
         }
         let group = matching(&bin.path, &home, &cli_address)?;
@@ -513,7 +581,10 @@ fn start_once(
         "serve".into(),
         format!(
             "--home={}",
-            home.to_str().ok_or_else(|| error("实例路径不是有效文本"))?
+            home.to_str().ok_or_else(|| error(
+                "syncthing.instance_path_is_not_valid_text",
+                "实例路径不是有效文本"
+            ))?
         ),
         "--no-browser".into(),
         "--no-restart".into(),
@@ -521,15 +592,22 @@ fn start_once(
         format!("--gui-address={cli_address}"),
         format!(
             "--log-file={}",
-            home.join("syncthing.log")
-                .to_str()
-                .ok_or_else(|| error("日志路径不是有效文本"))?
+            home.join("syncthing.log").to_str().ok_or_else(|| error(
+                "syncthing.log_path_is_not_valid_text",
+                "日志路径不是有效文本"
+            ))?
         ),
         "--log-max-size=10485760".into(),
         "--log-max-old-files=1".into(),
     ];
-    let mut child =
-        spawn(bin, args, Some(api_key)).map_err(|_| start_error("", &[], "无法启动程序"))?;
+    let mut child = spawn(bin, args, Some(api_key)).map_err(|_| {
+        start_error(
+            "",
+            &[],
+            "syncthing.couldn_t_start_the_program",
+            "无法启动程序",
+        )
+    })?;
     drop(child.child.stdin.take());
     let readers = readers(&mut child)?;
     let pid = child.child.id();
@@ -554,9 +632,9 @@ fn start_once(
         if instance
             .child
             .as_mut()
-            .ok_or_else(|| io_error("丢失进程句柄"))?
+            .ok_or_else(|| io_error("syncthing.process_handle_is_missing", "丢失进程句柄"))?
             .try_wait()
-            .map_err(|_| io_error("查询进程"))?
+            .map_err(|_| io_error("syncthing.query_process", "查询进程"))?
             .is_some()
         {
             for reader in &mut instance.readers {
@@ -566,6 +644,7 @@ fn start_once(
                 &instance.home,
                 &tail(&instance.readers),
                 api_key,
+                "syncthing.process_exited",
                 "进程提前退出",
             ));
         }
@@ -579,26 +658,29 @@ fn start_once(
                 .with("actual", actual));
         }
         if text.to_ascii_lowercase().contains("address already in use") {
-            return Err(start_error(&text, &[api_key], "监听端口被占用"));
+            return Err(start_error(
+                &text,
+                &[api_key],
+                "syncthing.listening_port_is_in_use",
+                "监听端口被占用",
+            ));
         }
         if text.contains("Failed to acquire lock") {
             return Err(launch_error(
                 &instance.home,
                 &text,
                 api_key,
+                "syncthing.instance_in_use",
                 "实例目录已被占用",
             ));
         }
         if Instant::now() >= deadline {
-            return Err(start_error(
-                &text,
-                &[api_key],
-                if home::listening_address(&text).is_none() {
-                    "未见监听地址"
-                } else {
-                    "管理接口启动超时"
-                },
-            ));
+            let (text_key, reason) = if home::listening_address(&text).is_none() {
+                ("syncthing.no_listening_address_found", "未见监听地址")
+            } else {
+                ("syncthing.gui_timeout", "管理接口启动超时")
+            };
+            return Err(start_error(&text, &[api_key], text_key, reason));
         }
         if home::listening_address(&text).is_none() {
             thread::sleep(Duration::from_millis(50));
@@ -632,7 +714,14 @@ fn start_once(
                 }
             }
             instance.identity = identity(pid, &bin.path, &instance.home, &instance.gui)
-                .ok_or_else(|| start_error("", &[], "无法确认进程身份"))?;
+                .ok_or_else(|| {
+                    start_error(
+                        "",
+                        &[],
+                        "syncthing.couldn_t_verify_process_identity",
+                        "无法确认进程身份",
+                    )
+                })?;
             instance.group = matching(&bin.path, &instance.home, &instance.gui)?;
             // 同步监听失败可能不退出进程，须等连接子系统报告后再确认启动成功。
             if tail(&instance.readers)
@@ -642,6 +731,7 @@ fn start_once(
                 return Err(start_error(
                     &tail(&instance.readers),
                     &[api_key],
+                    "syncthing.listening_port_is_in_use",
                     "监听端口被占用",
                 ));
             }
@@ -662,14 +752,21 @@ fn write_record(home: &Path, primary: &Record, group: &[Record]) -> Result<(), A
     let bytes = serde_json::to_vec(&serde_json::json!({
         "pid": primary.pid, "identity": primary.identity, "group": group
     }))
-    .map_err(|_| io_error("编码 PID 文件"))?;
+    .map_err(|_| io_error("syncthing.encode_pid_file", "编码 PID 文件"))?;
     home::atomic_write(&home.join("pierlink.pid"), &bytes)
 }
-fn launch_error(home: &Path, text: &str, key: &str, reason: &str) -> AppError {
-    let mut e = start_error(text, &[key], reason);
+fn launch_error(
+    home: &Path,
+    text: &str,
+    key: &str,
+    text_key: &'static str,
+    reason: &str,
+) -> AppError {
+    let mut e = start_error(text, &[key], text_key, reason);
     if e.code == "syncthing.home_locked"
         && let Some(pid) = lock_owner(home)
     {
+        e.params.remove("pid_key");
         e = e.with("pid", pid);
     }
     e
@@ -713,22 +810,25 @@ fn read_log(home: &Path) -> Result<String, AppError> {
     let mut file = match fs::File::open(home.join("syncthing.log")) {
         Ok(f) => f,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(String::new()),
-        Err(_) => return Err(io_error("读取启动日志")),
+        Err(_) => return Err(io_error("syncthing.read_startup_log", "读取启动日志")),
     };
-    let length = file.metadata().map_err(|_| io_error("读取日志大小"))?.len();
+    let length = file
+        .metadata()
+        .map_err(|_| io_error("syncthing.read_log_size", "读取日志大小"))?
+        .len();
     file.seek(SeekFrom::Start(length.saturating_sub(65536)))
-        .map_err(|_| io_error("读取日志尾部"))?;
+        .map_err(|_| io_error("syncthing.read_log_tail", "读取日志尾部"))?;
     let mut bytes = Vec::new();
     file.take(65536)
         .read_to_end(&mut bytes)
-        .map_err(|_| io_error("读取启动日志"))?;
+        .map_err(|_| io_error("syncthing.read_startup_log", "读取启动日志"))?;
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 fn remove_pid(home: &Path) -> Result<(), AppError> {
     match fs::remove_file(home.join("pierlink.pid")) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(_) => Err(io_error("清理 PID 文件")),
+        Err(_) => Err(io_error("syncthing.clean_up_pid_file", "清理 PID 文件")),
     }
 }
 impl RunningInstance {
@@ -761,7 +861,9 @@ impl RunningInstance {
             return Ok(());
         }
         let child_result = if let Some(mut child) = self.child.take() {
-            child.terminate().map_err(|_| io_error("终止进程树"))
+            child
+                .terminate()
+                .map_err(|_| io_error("syncthing.terminate_process_tree", "终止进程树"))
         } else {
             Ok(())
         };
@@ -882,6 +984,7 @@ mod tests {
             dir.path(),
             "Failed to acquire lock",
             "key",
+            "syncthing.instance_in_use",
             "实例目录已被占用",
         );
         assert_eq!(e.params["pid"], std::process::id().to_string());
@@ -896,7 +999,12 @@ mod tests {
                 .code,
             "syncthing.gui_address_mismatch"
         );
-        let error = start_error("Failed to acquire lock (pid=123)", &[], "实例目录已被占用");
+        let error = start_error(
+            "Failed to acquire lock (pid=123)",
+            &[],
+            "syncthing.instance_in_use",
+            "实例目录已被占用",
+        );
         assert_eq!(error.code, "syncthing.home_locked");
         assert_eq!(error.params["pid"], "123");
     }
@@ -1013,6 +1121,7 @@ mod tests {
         let e = start_error(
             "address already in use\nX-API-Key: key\npassword=口令",
             &["key", "口令"],
+            "syncthing.listening_port_is_in_use",
             "监听失败",
         );
         assert_eq!(e.code, "syncthing.listen_port_in_use");
@@ -1020,6 +1129,7 @@ mod tests {
         let e = start_error(
             &format!("{}apikey=secret", "中".repeat(3000)),
             &["secret"],
+            "syncthing.process_exited",
             "进程失败",
         );
         assert_eq!(e.code, "syncthing.start_failed");

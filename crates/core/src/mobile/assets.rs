@@ -16,7 +16,13 @@ pub(super) async fn serve(
     let accepts_gzip = accepts_gzip(accept_encoding);
     let asset = tokio::task::spawn_blocking(move || read(&root, &relative, accepts_gzip))
         .await
-        .map_err(|_| error("mobile.assets", "网页资源读取任务失败"))??;
+        .map_err(|_| {
+            error(
+                "mobile.assets",
+                "mobile.web_asset_reader_task_failed",
+                "网页资源读取任务失败",
+            )
+        })??;
     let mut response = bytes_response(StatusCode::OK, asset.bytes);
     let headers = response.headers_mut();
     headers.insert(
@@ -76,7 +82,13 @@ struct Asset {
 }
 
 fn relative_path(path: &str) -> Result<PathBuf, AppError> {
-    let invalid = || error("mobile.invalid_path", "网页资源路径不合法");
+    let invalid = || {
+        error(
+            "mobile.invalid_path",
+            "mobile.invalid_web_asset_path",
+            "网页资源路径不合法",
+        )
+    };
     let bytes = path.as_bytes();
     let mut decoded = Vec::with_capacity(bytes.len());
     let mut i = 0;
@@ -110,8 +122,13 @@ fn relative_path(path: &str) -> Result<PathBuf, AppError> {
 }
 
 fn read(root: &Path, relative: &Path, accepts_gzip: bool) -> Result<Asset, AppError> {
-    let root =
-        std::fs::canonicalize(root).map_err(|_| error("mobile.assets", "无法检查网页资源目录"))?;
+    let root = std::fs::canonicalize(root).map_err(|_| {
+        error(
+            "mobile.assets",
+            "mobile.couldn_t_inspect_the_web_asset_directory",
+            "无法检查网页资源目录",
+        )
+    })?;
     let mut requested = if relative.as_os_str().is_empty() {
         root.join("index.html")
     } else {
@@ -121,8 +138,13 @@ fn read(root: &Path, relative: &Path, accepts_gzip: bool) -> Result<Asset, AppEr
         Some(path) => path,
         None => {
             requested = root.join("index.html");
-            resolve(&root, &requested)?
-                .ok_or_else(|| error("mobile.not_found", "网页首页不存在"))?
+            resolve(&root, &requested)?.ok_or_else(|| {
+                error(
+                    "mobile.not_found",
+                    "mobile.web_homepage_does_not_exist",
+                    "网页首页不存在",
+                )
+            })?
         }
     };
     // 原文件须存在且安全，才能选择它旁边的压缩文件；回退首页时也使用首页的压缩文件。
@@ -155,20 +177,40 @@ fn resolve(root: &Path, requested: &Path) -> Result<Option<PathBuf>, AppError> {
                 match std::fs::canonicalize(p) {
                     Ok(resolved) => {
                         if !resolved.starts_with(root) {
-                            return Err(error("mobile.invalid_path", "资源路径越出了网页目录"));
+                            return Err(error(
+                                "mobile.invalid_path",
+                                "mobile.asset_path_is_outside_the_web_directory",
+                                "资源路径越出了网页目录",
+                            ));
                         }
                         break;
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::NotFound => parent = p.parent(),
-                    Err(_) => return Err(error("mobile.assets", "无法检查网页资源目录")),
+                    Err(_) => {
+                        return Err(error(
+                            "mobile.assets",
+                            "mobile.couldn_t_inspect_the_web_asset_directory",
+                            "无法检查网页资源目录",
+                        ));
+                    }
                 }
             }
             return Ok(None);
         }
-        Err(_) => return Err(error("mobile.assets", "无法读取网页资源路径")),
+        Err(_) => {
+            return Err(error(
+                "mobile.assets",
+                "mobile.couldn_t_read_the_web_asset_path",
+                "无法读取网页资源路径",
+            ));
+        }
     };
     if !path.starts_with(root) {
-        return Err(error("mobile.invalid_path", "资源路径越出了网页目录"));
+        return Err(error(
+            "mobile.invalid_path",
+            "mobile.asset_path_is_outside_the_web_directory",
+            "资源路径越出了网页目录",
+        ));
     }
     Ok(Some(path))
 }
@@ -176,27 +218,56 @@ fn resolve(root: &Path, requested: &Path) -> Result<Option<PathBuf>, AppError> {
 const MAX_ASSET: u64 = 16 * 1024 * 1024;
 
 fn check_file(path: &Path) -> Result<(), AppError> {
-    let metadata =
-        std::fs::metadata(path).map_err(|_| error("mobile.assets", "无法读取网页资源信息"))?;
+    let metadata = std::fs::metadata(path).map_err(|_| {
+        error(
+            "mobile.assets",
+            "mobile.couldn_t_read_web_asset_properties",
+            "无法读取网页资源信息",
+        )
+    })?;
     if !metadata.is_file() {
-        return Err(error("mobile.not_found", "网页资源不是普通文件"));
+        return Err(error(
+            "mobile.not_found",
+            "mobile.web_asset_is_not_a_regular_file",
+            "网页资源不是普通文件",
+        ));
     }
     // 资源为打包时生成的小文件，防止误配置目录导致任意大文件占满内存。
     if metadata.len() > MAX_ASSET {
-        return Err(error("mobile.assets", "网页资源超过十六 MiB 上限"));
+        return Err(error(
+            "mobile.assets",
+            "mobile.web_asset_exceeds_16_mib",
+            "网页资源超过十六 MiB 上限",
+        ));
     }
     Ok(())
 }
 
 fn read_file(path: &Path) -> Result<Vec<u8>, AppError> {
     use std::io::Read;
-    let file = std::fs::File::open(path).map_err(|_| error("mobile.assets", "无法打开网页资源"))?;
+    let file = std::fs::File::open(path).map_err(|_| {
+        error(
+            "mobile.assets",
+            "mobile.couldn_t_open_the_web_asset",
+            "无法打开网页资源",
+        )
+    })?;
     let mut bytes = Vec::new();
     file.take(MAX_ASSET + 1)
         .read_to_end(&mut bytes)
-        .map_err(|_| error("mobile.assets", "无法读取网页资源"))?;
+        .map_err(|_| {
+            error(
+                "mobile.assets",
+                "mobile.couldn_t_read_the_web_asset",
+                "无法读取网页资源",
+            )
+        })?;
     if bytes.len() as u64 > MAX_ASSET {
-        return Err(error("mobile.assets", "网页资源超过十六 MiB 上限"));
+        return Err(error(
+            "mobile.assets",
+            "mobile.web_asset_exceeds_16_mib",
+            "网页资源超过十六 MiB 上限",
+        ));
     }
     Ok(bytes)
 }

@@ -11,24 +11,25 @@ apt_attempt() {
         apt_command "$@" 2>&1
         printf '%s' "$?" > "$work/apt-status"
     ) | awk '
-        /No space left|not enough free space/ {reason="磁盘可用空间不足"}
-        /Permission denied|Operation not permitted/ {reason="没有访问软件源或缓存的权限"}
-        /Hash Sum mismatch|Size mismatch/ {reason="软件包校验失败"}
-        /NO_PUBKEY|not signed|signatures|signature verification/ {reason="软件源签名校验失败"}
-        /Could not resolve|Temporary failure resolving/ {reason="无法解析软件源域名"}
-        /Could not connect|Connection failed|Connection refused/ {reason="无法连接软件源"}
-        /timed out|Timeout/ {reason="连接软件源超时"}
-        /404 |Unable to locate package|no installation candidate/ {reason="软件源中没有可用的软件包"}
-        END {print reason}
+        /No space left|not enough free space/ {reason="磁盘可用空间不足"; reason_key="vnc.apt_no_space"}
+        /Permission denied|Operation not permitted/ {reason="没有访问软件源或缓存的权限"; reason_key="vnc.apt_permission"}
+        /Hash Sum mismatch|Size mismatch/ {reason="软件包校验失败"; reason_key="vnc.apt_checksum"}
+        /NO_PUBKEY|not signed|signatures|signature verification/ {reason="软件源签名校验失败"; reason_key="vnc.apt_signature"}
+        /Could not resolve|Temporary failure resolving/ {reason="无法解析软件源域名"; reason_key="vnc.apt_dns"}
+        /Could not connect|Connection failed|Connection refused/ {reason="无法连接软件源"; reason_key="vnc.apt_network"}
+        /timed out|Timeout/ {reason="连接软件源超时"; reason_key="vnc.apt_timeout"}
+        /404 |Unable to locate package|no installation candidate/ {reason="软件源中没有可用的软件包"; reason_key="vnc.apt_unavailable"}
+        END {print reason; print reason_key}
     ' > "$work/apt-reason"
     apt_status=$(cat "$work/apt-status")
-    apt_reason=$(cat "$work/apt-reason")
-    if [ -z "$apt_reason" ]; then apt_reason="软件源操作失败，退出码 $apt_status"; fi
+    apt_reason=$(sed -n '1p' "$work/apt-reason")
+    apt_reason_key=$(sed -n '2p' "$work/apt-reason")
+    if [ -z "$apt_reason" ]; then apt_reason="软件源操作失败，退出码 $apt_status"; apt_reason_key=vnc.apt_failed; fi
     [ "$apt_status" = 0 ]
 }
 package_error() {
     printf '{"error":"vnc.%s","source":"Apt","package":' "$1"; json "$2"
-    printf ',"reason":'; json "$3"; printf '}'; exit 0
+    printf ',"reason":'; json "$4"; printf ',"reason_key":'; json "$3"; error_params; printf '}'; exit 0
 }
 # depends 的顶层行才是递归展开的真实包；缩进的依赖、提供者和虚包均不直接下载。
 dependency_names() {
@@ -105,16 +106,16 @@ dependency_closure() {
     ' "$work/available" "$work/missing" "$work/depends"
 }
 apt_unpack() {
-    command -v apt-get >/dev/null && command -v apt-cache >/dev/null && command -v dpkg-query >/dev/null && command -v dpkg-deb >/dev/null || fail light_unavailable '需要 apt-get、apt-cache 和 dpkg'
+    command -v apt-get >/dev/null && command -v apt-cache >/dev/null && command -v dpkg-query >/dev/null && command -v dpkg-deb >/dev/null || fail light_unavailable 'vnc.apt_tools_missing' '需要 apt-get、apt-cache 和 dpkg'
     apt_root=$HOME/.cache/pierlink/apt
     private_dir "$apt_root"
     mkdir "$apt_root/.lock" || fail locked
     apt_private=true
     safe_path "$apt_root/lists"; safe_path "$apt_root/cache"
     mkdir -p "$apt_root/lists/partial" "$apt_root/cache/archives/partial" || fail permission_denied
-    apt_attempt apt-get update -o APT::Update::Error-Mode=any || fail download_failed "软件源索引更新失败：$apt_reason"
-    apt_command apt-cache depends --recurse --no-recommends --no-suggests --no-conflicts --no-breaks --no-replaces --no-enhances "$@" > "$work/depends" 2>/dev/null || fail download_failed '无法计算发行版依赖'
-    dependency_closure "$@" > "$work/closure" || fail download_failed '依赖组中没有可用的软件包'
+    apt_attempt apt-get update -o APT::Update::Error-Mode=any || fail download_failed "$apt_reason_key" "软件源索引更新失败：$apt_reason"
+    apt_command apt-cache depends --recurse --no-recommends --no-suggests --no-conflicts --no-breaks --no-replaces --no-enhances "$@" > "$work/depends" 2>/dev/null || fail download_failed 'vnc.apt_dependencies' '无法计算发行版依赖'
+    dependency_closure "$@" > "$work/closure" || fail download_failed 'vnc.apt_dependency_unavailable' '依赖组中没有可用的软件包'
     missing_packages < "$work/closure" > "$work/packages"
     # 入口程序保留自己的副本；其余依赖（包括字体和总线）优先复用系统已装包。
     printf '%s\n' "$version_package" >> "$work/packages"
@@ -124,16 +125,16 @@ apt_unpack() {
     : > "$work/plan"
     while IFS= read -r apt_package; do
         # print-uris 只读本次已校验的索引，不开始下载；下载仍使用同一索引。
-        apt_command apt-get --print-uris download "$apt_package" > "$work/uri" 2>/dev/null || package_error download_failed "$apt_package" '软件源中没有可下载的包'
+        apt_command apt-get --print-uris download "$apt_package" > "$work/uri" 2>/dev/null || package_error download_failed "$apt_package" 'vnc.apt_package_missing' '软件源中没有可下载的包'
         size=$(awk 'NF>=4 && $3 ~ /^[0-9]+$/ {n++;size=$3} END {if(n==1) print size}' "$work/uri")
-        case "$size" in ''|*[!0-9]*) package_error invalid_package "$apt_package" '软件源没有提供唯一的下载大小';; esac
+        case "$size" in ''|*[!0-9]*) package_error invalid_package "$apt_package" 'vnc.apt_size_unknown' '软件源没有提供唯一的下载大小';; esac
         if [ "${#size}" -gt 10 ]; then
             printf '{"error":"vnc.download_limit","limit_bytes":"314572800","total_bytes":'; json "$size"
-            printf ',"reason":"单个依赖下载超过 300 MiB"}'; exit 0
+            printf ',"reason_key":"vnc.apt_single_limit","reason":"单个依赖下载超过 300 MiB"}'; exit 0
         fi
         total_bytes=$((total_bytes+size))
         if [ "$total_bytes" -gt 314572800 ]; then
-            printf '{"error":"vnc.download_limit","limit_bytes":"314572800","total_bytes":"%s","reason":"依赖下载总量超过 300 MiB"}' "$total_bytes"; exit 0
+            printf '{"error":"vnc.download_limit","limit_bytes":"314572800","total_bytes":"%s","reason_key":"vnc.apt_total_limit","reason":"依赖下载总量超过 300 MiB"}' "$total_bytes"; exit 0
         fi
         printf '%s %s\n' "$apt_package" "$size" >> "$work/plan"
     done < "$work/selected"
@@ -141,19 +142,19 @@ apt_unpack() {
     mkdir "$work/download" || fail permission_denied
     while read -r apt_package size; do
         cd "$work/download" || fail permission_denied
-        apt_attempt apt-get download "$apt_package" || package_error download_failed "$apt_package" "$apt_reason"
+        apt_attempt apt-get download "$apt_package" || package_error download_failed "$apt_package" "$apt_reason_key" "$apt_reason"
         cd "$work" || fail permission_denied
         set -- "$work/download"/*.deb
-        [ "$#" = 1 ] && [ -f "$1" ] || package_error invalid_package "$apt_package" '没有得到唯一的软件包'
-        [ "$(wc -c < "$1")" = "$size" ] || package_error invalid_package "$apt_package" '软件包大小与索引不符'
-        actual=$(dpkg-deb -f "$1" Package) || package_error invalid_package "$apt_package" '无法读取软件包名称'
-        [ "$actual" = "${apt_package%%:*}" ] || package_error invalid_package "$apt_package" '软件包名称与请求不符'
+        [ "$#" = 1 ] && [ -f "$1" ] || package_error invalid_package "$apt_package" 'vnc.apt_package_ambiguous' '没有得到唯一的软件包'
+        [ "$(wc -c < "$1")" = "$size" ] || package_error invalid_package "$apt_package" 'vnc.apt_size_mismatch' '软件包大小与索引不符'
+        actual=$(dpkg-deb -f "$1" Package) || package_error invalid_package "$apt_package" 'vnc.apt_name_unreadable' '无法读取软件包名称'
+        [ "$actual" = "${apt_package%%:*}" ] || package_error invalid_package "$apt_package" 'vnc.apt_name_mismatch' '软件包名称与请求不符'
         if [ "$actual" = "$version_package" ]; then package_version=$(dpkg-deb -f "$1" Version); fi
-        bounded 60 dpkg-deb -x "$1" "$work/unpack" >/dev/null 2>&1 || package_error invalid_package "$apt_package" '软件包解压失败'
+        bounded 60 dpkg-deb -x "$1" "$work/unpack" >/dev/null 2>&1 || package_error invalid_package "$apt_package" 'vnc.apt_extract_failed' '软件包解压失败'
         downloaded_bytes=$((downloaded_bytes+size))
         rm -f -- "$1"
     done < "$work/plan"
-    case "$package_version" in ''|*[!a-zA-Z0-9.+:~_-]*) fail invalid_package '软件包版本不正确';; esac
+    case "$package_version" in ''|*[!a-zA-Z0-9.+:~_-]*) fail invalid_package 'vnc.apt_version_invalid' '软件包版本不正确';; esac
     # 版本中的 epoch 分隔符不能直接出现在 PATH 和动态库搜索路径里。
     version=apt-$(printf %s "$package_version" | tr ':' '_')
 }

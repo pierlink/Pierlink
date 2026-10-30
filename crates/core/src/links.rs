@@ -38,26 +38,37 @@ pub fn open_in_browser(url: &str) -> Result<(), AppError> {
     }
 }
 
-fn invalid_url(reason: &str) -> AppError {
-    AppError::new("link.invalid_url").with("reason", reason)
+fn invalid_url(text_key: &'static str, reason: &str) -> AppError {
+    AppError::new("link.invalid_url").with_reason(text_key, reason)
 }
 
 fn validate_url(url: &str) -> Result<&str, AppError> {
     if url.len() > URL_LIMIT {
-        return Err(invalid_url("网址不能超过 8192 字节"));
+        return Err(invalid_url(
+            "links.url_exceeds_8192_bytes",
+            "网址不能超过 8192 字节",
+        ));
     }
     if url
         .chars()
         .any(|c| c.is_whitespace() || c.is_ascii_control() || c == '"')
     {
-        return Err(invalid_url("网址不能包含空白、ASCII 控制字符或双引号"));
+        return Err(invalid_url(
+            "links.url_cannot_contain_whitespace_ascii_control_characters_or_double_quotes",
+            "网址不能包含空白、ASCII 控制字符或双引号",
+        ));
     }
     let (_, rest) = url
         .split_once("://")
         .filter(|(scheme, _)| {
             scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https")
         })
-        .ok_or_else(|| invalid_url("只允许以 http:// 或 https:// 开头的网址"))?;
+        .ok_or_else(|| {
+            invalid_url(
+                "links.only_http_and_https_urls_are_allowed",
+                "只允许以 http:// 或 https:// 开头的网址",
+            )
+        })?;
     // 浏览器也将反斜杠视为路径分隔符；用户信息和端口都不能充当主机名。
     let authority = rest.split(['/', '\\', '?', '#']).next().unwrap_or_default();
     let host_port = authority.rsplit('@').next().unwrap_or_default();
@@ -69,7 +80,10 @@ fn validate_url(url: &str) -> Result<&str, AppError> {
         host_port.split(':').next().unwrap_or_default()
     };
     if host.is_empty() {
-        return Err(invalid_url("网址必须包含主机名"));
+        return Err(invalid_url(
+            "links.url_must_include_a_hostname",
+            "网址必须包含主机名",
+        ));
     }
     Ok(url)
 }
@@ -94,7 +108,12 @@ fn launch(command: &mut std::process::Command) -> Result<(), AppError> {
                 let _ = child.wait();
             }
         })
-        .map_err(|_| AppError::new("link.open_failed").with("reason", "创建启动器回收线程失败"))?;
+        .map_err(|_| {
+            AppError::new("link.open_failed").with_reason(
+                "links.couldn_t_create_the_launcher_cleanup_thread",
+                "创建启动器回收线程失败",
+            )
+        })?;
     let child = command
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -102,14 +121,20 @@ fn launch(command: &mut std::process::Command) -> Result<(), AppError> {
         .spawn()
         .map_err(|error| {
             AppError::new("link.open_failed")
-                .with("reason", "启动默认浏览器失败")
+                .with_reason(
+                    "links.couldn_t_launch_the_default_browser",
+                    "启动默认浏览器失败",
+                )
                 .with("status", error.raw_os_error().unwrap_or(0))
         })?;
     if let Err(error) = sender.send(child) {
         let mut child = error.0;
         let _ = child.kill();
         let _ = child.wait();
-        return Err(AppError::new("link.open_failed").with("reason", "启动器回收线程已退出"));
+        return Err(AppError::new("link.open_failed").with_reason(
+            "links.launcher_cleanup_thread_has_exited",
+            "启动器回收线程已退出",
+        ));
     }
     Ok(())
 }
@@ -121,7 +146,8 @@ mod tests {
     fn assert_invalid(url: &str) {
         let error = validate_url(url).unwrap_err();
         assert_eq!(error.code, "link.invalid_url");
-        assert_eq!(error.params.len(), 1);
+        assert_eq!(error.params.len(), 2);
+        assert!(error.params["reason_key"].starts_with("links."));
         assert!(!error.params["reason"].is_ascii());
     }
 

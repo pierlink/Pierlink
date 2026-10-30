@@ -196,7 +196,7 @@ impl TunnelManager {
         let worker = thread::Builder::new()
             .name("ssh隧道".into())
             .spawn(move || schedule(program, rx, shared, worker_shutdown))
-            .map_err(|_| io_error("创建隧道线程"))?;
+            .map_err(|_| io_error("tunnel.create_tunnel_thread", "创建隧道线程"))?;
         Ok(Self {
             program: kept,
             tx,
@@ -228,7 +228,7 @@ impl TunnelManager {
     pub fn network_restored(&self) -> Result<(), AppError> {
         self.tx
             .try_send(Request::NetworkRestored)
-            .map_err(|_| io_error("通知网络恢复"))
+            .map_err(|_| io_error("tunnel.notify_network_recovery", "通知网络恢复"))
     }
     /// 无参数；主动结束已连接及正在建立的隧道，立即排队重连；仍遵守每服务器三个并发上限。
     /// 返回排队结果；队列满或管理器已关闭时返回 tunnel.busy，不重试认证或主机密钥错误。
@@ -239,7 +239,10 @@ impl TunnelManager {
     }
     /// 无参数；取走每条隧道尚未消费的最新事件；状态稳定三秒才发布，初始连接和显式停止/终止错误立即发布。
     pub fn drain_events(&self) -> Result<Vec<TunnelEvent>, AppError> {
-        let mut events = self.events.lock().map_err(|_| io_error("读取隧道事件"))?;
+        let mut events = self
+            .events
+            .lock()
+            .map_err(|_| io_error("tunnel.read_tunnel_events", "读取隧道事件"))?;
         Ok(std::mem::take(&mut *events).into_values().collect())
     }
 }
@@ -542,6 +545,18 @@ impl Entry {
     }
     fn fail(&mut self, mut error: AppError, events: &Events) {
         self.builtin_connection = None;
+        if error.code == "tunnel.remote_forward_failed" && !error.params.contains_key("port") {
+            let ports = self
+                .spec
+                .forwards
+                .iter()
+                .filter_map(|forward| match forward {
+                    TunnelForward::Remote { remote_port, .. } => Some(remote_port.to_string()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            error = error.with("port", ports.join(", "));
+        }
         if self.spec.builtin.is_some() && error.code == "tunnel.port_in_use" {
             let reported = error
                 .params
@@ -752,7 +767,7 @@ impl Entry {
             .child
             .stderr
             .take()
-            .ok_or_else(|| io_error("获取隧道输出"))?;
+            .ok_or_else(|| io_error("tunnel.get_tunnel_output", "获取隧道输出"))?;
         let stderr = if self.spec.readiness == Readiness::AuthMarker {
             // ProxyJump 的日志级别只通过 -v 继承，不传递 LogLevel=VERBOSE；日志地址可与别名不同。
             Reader::tail_authenticated(input, 16 * 1024)?
@@ -782,13 +797,13 @@ impl Entry {
             .stderr
             .state
             .lock()
-            .map_err(|_| io_error("读取隧道输出"))?;
+            .map_err(|_| io_error("tunnel.read_tunnel_output", "读取隧道输出"))?;
         let text = String::from_utf8_lossy(&data.bytes);
         if data.exceeded {
             return Err(AppError::new("remote.output_too_large"));
         }
         if data.failed {
-            return Err(io_error("读取隧道输出"));
+            return Err(io_error("tunnel.read_tunnel_output", "读取隧道输出"));
         }
         if data.prohibited {
             // 同步隧道整条依赖转发：被禁止就是不可用，始终致命；端口转发就绪后只是某个目标被拒，记日志继续
@@ -803,7 +818,7 @@ impl Entry {
         if let Some(status) = connection
             .process
             .try_wait()
-            .map_err(|_| io_error("查询隧道"))?
+            .map_err(|_| io_error("tunnel.query_tunnel", "查询隧道"))?
         {
             if !data.done
                 && connection.exited.get_or_insert_with(Instant::now).elapsed()
@@ -850,7 +865,13 @@ impl Entry {
         }
         if !connection.ready {
             if connection.started.elapsed() >= Duration::from_secs(15) {
-                return Err(AppError::new("ssh.unreachable").with("reason", "连接建立超时"));
+                return Err(AppError::new("ssh.unreachable")
+                    .with_reason("tunnel.connection_setup_timed_out", "连接建立超时")
+                    .with_text(
+                        "stderr_tail",
+                        "tunnel.connection_setup_timed_out",
+                        "连接建立超时",
+                    ));
             }
             // 预先验证端口可绑定，并在探测成功后再次确认 SSH 未退出，避免把占用者当作隧道。
             let listening = match self.spec.readiness {
@@ -877,7 +898,7 @@ impl Entry {
                 && connection
                     .process
                     .try_wait()
-                    .map_err(|_| io_error("确认隧道"))?
+                    .map_err(|_| io_error("tunnel.confirm_tunnel", "确认隧道"))?
                     .is_none()
             {
                 connection.ready = true;

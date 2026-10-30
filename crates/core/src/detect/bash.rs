@@ -43,8 +43,8 @@ else
     esac
 fi
 "#;
-fn error(operation: &str) -> AppError {
-    AppError::new("detect.shell_config_failed").with("reason", operation)
+fn error(text_key: &'static str, operation: &str) -> AppError {
+    AppError::new("detect.shell_config_failed").with_reason(text_key, operation)
 }
 fn script(login: bool, git: bool) -> String {
     let startup = if login { LOGIN_RC } else { USER_RC };
@@ -82,15 +82,29 @@ fn replace(from: &Path, to: &Path) -> io::Result<()> {
     }
 }
 fn write_script(dir: &Path, name: &str, content: &str) -> Result<PathBuf, AppError> {
-    fs::create_dir_all(dir).map_err(|_| error("创建 Bash 包装脚本目录失败"))?;
-    let dir =
-        crate::fs_local::plain_canonical(dir).map_err(|_| error("解析 Bash 包装脚本目录失败"))?;
+    fs::create_dir_all(dir).map_err(|_| {
+        error(
+            "detect.couldn_t_create_the_bash_wrapper_directory",
+            "创建 Bash 包装脚本目录失败",
+        )
+    })?;
+    let dir = crate::fs_local::plain_canonical(dir).map_err(|_| {
+        error(
+            "detect.couldn_t_resolve_the_bash_wrapper_directory",
+            "解析 Bash 包装脚本目录失败",
+        )
+    })?;
     let target = dir.join(name);
     match fs::read(&target) {
         Ok(bytes) if bytes == content.as_bytes() => return Ok(target),
         Ok(_) => (),
         Err(e) if e.kind() == io::ErrorKind::NotFound => (),
-        Err(_) => return Err(error("读取 Bash 包装脚本失败")),
+        Err(_) => {
+            return Err(error(
+                "detect.couldn_t_read_the_bash_wrapper",
+                "读取 Bash 包装脚本失败",
+            ));
+        }
     }
     let pending = PendingFile(dir.join(format!(".bash-{}.tmp", uuid::Uuid::new_v4())));
     let mut options = OpenOptions::new();
@@ -100,20 +114,36 @@ fn write_script(dir: &Path, name: &str, content: &str) -> Result<PathBuf, AppErr
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);
     }
-    let mut file: File = options
-        .open(&pending.0)
-        .map_err(|_| error("创建 Bash 包装临时文件失败"))?;
+    let mut file: File = options.open(&pending.0).map_err(|_| {
+        error(
+            "detect.couldn_t_create_a_temporary_bash_wrapper",
+            "创建 Bash 包装临时文件失败",
+        )
+    })?;
     file.write_all(content.as_bytes())
         .and_then(|()| file.sync_all())
-        .map_err(|_| error("保存 Bash 包装脚本失败"))?;
+        .map_err(|_| {
+            error(
+                "detect.couldn_t_save_the_bash_wrapper",
+                "保存 Bash 包装脚本失败",
+            )
+        })?;
     drop(file);
-    replace(&pending.0, &target).map_err(|_| error("原子替换 Bash 包装脚本失败"))?;
+    replace(&pending.0, &target).map_err(|_| {
+        error(
+            "detect.couldn_t_replace_the_bash_wrapper_atomically",
+            "原子替换 Bash 包装脚本失败",
+        )
+    })?;
     Ok(target)
 }
 fn argument_path(path: &Path) -> Result<String, AppError> {
-    let path = path
-        .to_str()
-        .ok_or_else(|| error("Bash 包装脚本路径不是 UTF-8"))?;
+    let path = path.to_str().ok_or_else(|| {
+        error(
+            "detect.bash_wrapper_path_is_not_valid_utf_8",
+            "Bash 包装脚本路径不是 UTF-8",
+        )
+    })?;
     #[cfg(windows)]
     {
         // Rust 规范化的扩展长度前缀不能直接交给 MSYS，驱动器及 UNC 都转成 Bash 可读取形式。

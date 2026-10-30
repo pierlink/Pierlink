@@ -93,7 +93,12 @@ fn xml(input: &[u8], old: &Path, new: &Path) -> Result<(Vec<u8>, usize), AppErro
     let mut reader = Reader::from_reader(input);
     let mut writer = Writer::new(Vec::new());
     let mut changed = 0;
-    let invalid = || failure("无法解析待迁移的 XML 配置");
+    let invalid = || {
+        failure(
+            "app_data.couldn_t_parse_the_xml_configuration_to_migrate",
+            "无法解析待迁移的 XML 配置",
+        )
+    };
     let mut depth = 0usize;
     let mut roots = 0;
     let mut pending = Vec::new();
@@ -262,7 +267,10 @@ fn read(path: &Path) -> Result<Vec<u8>, AppError> {
         .and_then(|f| f.take(16 * 1024 * 1024 + 1).read_to_end(&mut bytes))
         .map_err(io)?;
     if bytes.len() > 16 * 1024 * 1024 {
-        return Err(failure("待迁移配置超过 16 MiB"));
+        return Err(failure(
+            "app_data.configuration_to_migrate_exceeds_16_mib",
+            "待迁移配置超过 16 MiB",
+        ));
     }
     Ok(bytes)
 }
@@ -273,17 +281,22 @@ fn collect(
     depth: usize,
 ) -> Result<(), AppError> {
     if depth > 64 {
-        return Err(failure("配置目录嵌套过深"));
+        return Err(failure(
+            "app_data.configuration_directories_are_nested_too_deeply",
+            "配置目录嵌套过深",
+        ));
     }
     let p = root.join(relative);
     plain(&p)?;
     if p.is_dir() {
         for entry in fs::read_dir(&p).map_err(io)? {
             let e = entry.map_err(io)?;
-            let name = e
-                .file_name()
-                .into_string()
-                .map_err(|_| failure("配置文件名不是有效文本"))?;
+            let name = e.file_name().into_string().map_err(|_| {
+                failure(
+                    "app_data.configuration_filename_is_not_valid_text",
+                    "配置文件名不是有效文本",
+                )
+            })?;
             collect(root, &format!("{relative}/{name}"), output, depth + 1)?;
         }
     } else if relative.starts_with("ssh-configs/")
@@ -328,7 +341,10 @@ pub(super) fn files(plan: &Plan) -> Result<Vec<String>, AppError> {
     Ok(files)
 }
 fn sql_error(_: rusqlite::Error) -> AppError {
-    failure("无法改写数据库中的本机路径")
+    failure(
+        "app_data.couldn_t_update_local_paths_in_the_database",
+        "无法改写数据库中的本机路径",
+    )
 }
 fn database(file: &Path, old: &Path, new: &Path) -> Result<usize, AppError> {
     let mut conn =
@@ -339,7 +355,10 @@ fn database(file: &Path, old: &Path, new: &Path) -> Result<usize, AppError> {
         .query_row("PRAGMA quick_check", [], |r| r.get(0))
         .map_err(sql_error)?;
     if check != "ok" {
-        return Err(failure("待迁移数据库完整性检查失败"));
+        return Err(failure(
+            "app_data.database_integrity_check_failed_before_migration",
+            "待迁移数据库完整性检查失败",
+        ));
     }
     let tx = conn.transaction().map_err(sql_error)?;
     let mut changed = 0;
@@ -391,8 +410,12 @@ fn database(file: &Path, old: &Path, new: &Path) -> Result<usize, AppError> {
             .collect::<Result<Vec<_>, _>>()
             .map_err(sql_error)?;
         for (rowid, input) in rows {
-            let mut value: serde_json::Value =
-                serde_json::from_str(&input).map_err(|_| failure("数据库路径列表不是有效 JSON"))?;
+            let mut value: serde_json::Value = serde_json::from_str(&input).map_err(|_| {
+                failure(
+                    "app_data.database_path_list_is_not_valid_json",
+                    "数据库路径列表不是有效 JSON",
+                )
+            })?;
             let count = json(&mut value, old, new);
             if count > 0 {
                 tx.execute(
@@ -412,8 +435,12 @@ fn database(file: &Path, old: &Path, new: &Path) -> Result<usize, AppError> {
         .collect::<Result<Vec<_>, _>>()
         .map_err(sql_error)?;
     for (key, value) in rows {
-        let mut value: serde_json::Value = serde_json::from_str(&value)
-            .map_err(|_| failure("数据库设置不是有效 JSON，无法安全迁移路径"))?;
+        let mut value: serde_json::Value = serde_json::from_str(&value).map_err(|_| {
+            failure(
+                "app_data.database_settings_are_not_valid_json_paths_cannot_be_migrated",
+                "数据库设置不是有效 JSON，无法安全迁移路径",
+            )
+        })?;
         let count = json(&mut value, old, new);
         if count > 0 {
             tx.execute(
@@ -454,8 +481,13 @@ pub(super) fn prepare(plan: &Plan, journal: &Path) -> Result<usize, AppError> {
         let from = plan.old.join(name);
         if name.starts_with("backups/") {
             let to = prepared.join(name);
-            fs::create_dir_all(to.parent().ok_or_else(|| failure("数据库备份没有父目录"))?)
-                .map_err(io)?;
+            fs::create_dir_all(to.parent().ok_or_else(|| {
+                failure(
+                    "app_data.database_backup_has_no_parent_directory",
+                    "数据库备份没有父目录",
+                )
+            })?)
+            .map_err(io)?;
             fs::copy(&from, &to).map_err(io)?;
             changed += database(&to, &plan.old, &plan.new)?;
             continue;
@@ -466,22 +498,40 @@ pub(super) fn prepare(plan: &Plan, journal: &Path) -> Result<usize, AppError> {
         {
             xml(&bytes, &plan.old, &plan.new)?
         } else if from.extension().is_some_and(|s| s == "json") {
-            let mut v: serde_json::Value =
-                serde_json::from_slice(&bytes).map_err(|_| failure("配置文件不是有效 JSON"))?;
+            let mut v: serde_json::Value = serde_json::from_slice(&bytes).map_err(|_| {
+                failure(
+                    "app_data.configuration_file_is_not_valid_json",
+                    "配置文件不是有效 JSON",
+                )
+            })?;
             let count = json(&mut v, &plan.old, &plan.new);
             (
-                serde_json::to_vec_pretty(&v).map_err(|_| failure("无法编码迁移后配置"))?,
+                serde_json::to_vec_pretty(&v).map_err(|_| {
+                    failure(
+                        "app_data.couldn_t_encode_the_migrated_configuration",
+                        "无法编码迁移后配置",
+                    )
+                })?,
                 count,
             )
         } else {
-            let input =
-                std::str::from_utf8(&bytes).map_err(|_| failure("SSH 配置不是有效 UTF-8 文本"))?;
+            let input = std::str::from_utf8(&bytes).map_err(|_| {
+                failure(
+                    "app_data.ssh_configuration_is_not_valid_utf_8",
+                    "SSH 配置不是有效 UTF-8 文本",
+                )
+            })?;
             let (out, count) = ssh(input, &plan.old, &plan.new);
             (out.into_bytes(), count)
         };
         let to = prepared.join(name);
-        fs::create_dir_all(to.parent().ok_or_else(|| failure("配置文件没有父目录"))?)
-            .map_err(io)?;
+        fs::create_dir_all(to.parent().ok_or_else(|| {
+            failure(
+                "app_data.configuration_file_has_no_parent_directory",
+                "配置文件没有父目录",
+            )
+        })?)
+        .map_err(io)?;
         let updated = if count == 0 { &bytes } else { &updated };
         crate::syncthing::home::atomic_write(&to, updated)?;
         fs::set_permissions(&to, fs::metadata(&from).map_err(io)?.permissions()).map_err(io)?;

@@ -61,7 +61,7 @@ English · [简体中文](README.md)
 - View a server's VNC desktop in a tab, split next to terminals; over SSH, no ports opened
 - Finds existing desktops on the server (TigerVNC and others); enter the password once and remember it
 - No desktop on the server? Create one in a click: only you can connect, and it keeps running after you close the tab; TigerVNC is fetched automatically, no admin rights needed
-- Quality, scaling, remote resolution that follows the window or a preset, full screen, separate window
+- Quality, scaling, remote resolution that follows the window or a preset, full screen, separate window (optionally by default)
 - Copy and paste between Windows and the desktop with plain Ctrl+C and Ctrl+V; type the clipboard text (Chinese included) into the desktop
 
 ### Phone access

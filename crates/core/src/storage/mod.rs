@@ -30,25 +30,35 @@ pub struct Db {
     conn: Connection,
 }
 
-fn failure(code: &str, reason: &str) -> AppError {
-    AppError::new(code).with("reason", reason)
+fn failure(code: &str, text_key: &'static str, reason: &str) -> AppError {
+    AppError::new(code).with_reason(text_key, reason)
 }
 
 fn sql_error(error: rusqlite::Error) -> AppError {
     // 不转发 SQLite 原始错误文本，避免 SQL、触发器或参数中的秘密泄露。
-    let (code, reason) = match error.sqlite_error_code() {
-        Some(rusqlite::ErrorCode::DatabaseCorrupt | rusqlite::ErrorCode::NotADatabase) => {
-            ("storage.corrupt", "数据库完整性检查失败")
-        }
-        Some(rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked) => {
-            ("storage.busy", "数据库正被其他操作占用")
-        }
-        Some(rusqlite::ErrorCode::ConstraintViolation) => {
-            ("storage.constraint", "数据不满足唯一性、外键或字段约束")
-        }
-        _ => ("storage.database", "数据库操作失败"),
+    let (code, text_key, reason) = match error.sqlite_error_code() {
+        Some(rusqlite::ErrorCode::DatabaseCorrupt | rusqlite::ErrorCode::NotADatabase) => (
+            "storage.corrupt",
+            "storage.database_integrity_check_failed",
+            "数据库完整性检查失败",
+        ),
+        Some(rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked) => (
+            "storage.busy",
+            "storage.database_busy",
+            "数据库正被其他操作占用",
+        ),
+        Some(rusqlite::ErrorCode::ConstraintViolation) => (
+            "storage.constraint",
+            "storage.constraint_failed",
+            "数据不满足唯一性、外键或字段约束",
+        ),
+        _ => (
+            "storage.database",
+            "storage.database_operation",
+            "数据库操作失败",
+        ),
     };
-    let mut result = failure(code, reason);
+    let mut result = failure(code, text_key, reason);
     if let Some(e) = error.sqlite_error() {
         result = result.with("sqlite_code", e.extended_code);
     }
@@ -56,7 +66,11 @@ fn sql_error(error: rusqlite::Error) -> AppError {
 }
 
 fn io_error(error: std::io::Error) -> AppError {
-    let mut result = failure("storage.io", "无法读写数据库目录或文件");
+    let mut result = failure(
+        "storage.io",
+        "storage.couldn_t_access_the_database_directory_or_file",
+        "无法读写数据库目录或文件",
+    );
     if let Some(code) = error.raw_os_error() {
         result = result.with("os_code", code);
     }
@@ -76,7 +90,11 @@ pub fn open(path: &Path) -> Result<Db, AppError> {
         .query_row("PRAGMA quick_check", [], |row| row.get(0))
         .map_err(sql_error)?;
     if check != "ok" {
-        return Err(failure("storage.corrupt", "数据库完整性检查失败"));
+        return Err(failure(
+            "storage.corrupt",
+            "storage.database_integrity_check_failed",
+            "数据库完整性检查失败",
+        ));
     }
     conn.pragma_update(None, "journal_mode", "WAL")
         .map_err(sql_error)?;
@@ -93,7 +111,13 @@ pub fn open(path: &Path) -> Result<Db, AppError> {
         M::up(include_str!("v8.sql")),
     ])
     .to_latest(&mut conn)
-    .map_err(|_| failure("storage.migration", "数据库结构迁移失败或版本不受支持"))?;
+    .map_err(|_| {
+        failure(
+            "storage.migration",
+            "storage.database_migration_failed_or_its_version_is_unsupported",
+            "数据库结构迁移失败或版本不受支持",
+        )
+    })?;
     Ok(Db { conn })
 }
 
@@ -130,7 +154,11 @@ impl Db {
                 rusqlite::params![server.ssh_alias, update, server.id], |row| row.get(0)
             ).map_err(sql_error)?;
             if exists {
-                return Err(failure("storage.alias_exists", "此 SSH 别名已经导入"));
+                return Err(failure(
+                    "storage.alias_exists",
+                    "storage.this_ssh_alias_has_already_been_imported",
+                    "此 SSH 别名已经导入",
+                ));
             }
         }
         if update {
@@ -170,13 +198,19 @@ impl Db {
         let names: Vec<String> = tx.prepare("SELECT t.name FROM sync_tasks t JOIN sync_endpoints e ON e.task_id=t.id WHERE e.server_id=?1 ORDER BY t.name,t.id").map_err(sql_error)?
             .query_map([id], |r| r.get(0)).map_err(sql_error)?.collect::<Result<_, _>>().map_err(sql_error)?;
         if !names.is_empty() {
-            return Err(
-                failure("storage.server_in_use", "服务器仍被同步任务使用").with(
-                    "task_names",
-                    serde_json::to_string(&names)
-                        .map_err(|_| failure("storage.json", "任务名列表序列化失败"))?,
-                ),
-            );
+            let task_names = serde_json::to_string(&names).map_err(|_| {
+                failure(
+                    "storage.json",
+                    "storage.couldn_t_serialize_the_task_name_list",
+                    "任务名列表序列化失败",
+                )
+            })?;
+            return Err(failure(
+                "storage.server_in_use",
+                "storage.server_is_still_used_by_sync_tasks",
+                "服务器仍被同步任务使用",
+            )
+            .with("task_names", task_names));
         }
         require_changed(
             tx.execute("DELETE FROM servers WHERE id=?1", [id])
@@ -269,7 +303,11 @@ impl Db {
             )
             .map_err(sql_error)?;
         if !exists {
-            return Err(failure("storage.not_found", "同步任务不存在"));
+            return Err(failure(
+                "storage.not_found",
+                "storage.sync_task_does_not_exist",
+                "同步任务不存在",
+            ));
         }
         check_overlap(&tx, &task, true)?;
         writes::update_sync_tasks(&tx, &task)?;
@@ -307,7 +345,11 @@ impl Db {
             )
             .map_err(sql_error)?;
         if !exists {
-            return Err(failure("storage.not_found", "同步任务不存在"));
+            return Err(failure(
+                "storage.not_found",
+                "storage.sync_task_does_not_exist",
+                "同步任务不存在",
+            ));
         }
         tx.execute("DELETE FROM sync_endpoints WHERE task_id=?1", [task_id])
             .map_err(sql_error)?;
@@ -325,6 +367,7 @@ impl Db {
             if cred != &format!("pierlink/instance/{}/{purpose}", inst.server_id) {
                 return Err(failure(
                     "storage.invalid_credential_ref",
+                    "storage.instance_credential_fields_must_reference_this_server_s_credentials",
                     "实例凭据字段只能保存此服务器的凭据引用",
                 ));
             }
@@ -377,8 +420,13 @@ impl Db {
     /// 将非敏感 value 序列化成 JSON 并写入 key，已有值会替换；返回写入结果。
     /// 密码、API 密钥和口令必须通过凭据管理器保存，不得作为设置传入。
     pub fn set_setting<T: Serialize>(&self, key: &str, value: &T) -> Result<(), AppError> {
-        let value =
-            serde_json::to_string(value).map_err(|_| failure("storage.json", "设置序列化失败"))?;
+        let value = serde_json::to_string(value).map_err(|_| {
+            failure(
+                "storage.json",
+                "storage.couldn_t_serialize_settings",
+                "设置序列化失败",
+            )
+        })?;
         self.conn.execute("INSERT INTO settings(key,value) VALUES (?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [key, &value]).map_err(sql_error)?;
         Ok(())
     }
@@ -397,6 +445,7 @@ impl Db {
             {
                 return Err(failure(
                     "storage.invalid_device_id",
+                    "storage.saved_device_short_id_has_an_invalid_format",
                     "已保存的设备短 ID 格式错误",
                 ));
             }
@@ -408,8 +457,13 @@ impl Db {
         let id: String = (0..8)
             .map(|_| alphabet[rng.random_range(0..alphabet.len())] as char)
             .collect();
-        let json = serde_json::to_string(&id)
-            .map_err(|_| failure("storage.json", "设备短 ID 序列化失败"))?;
+        let json = serde_json::to_string(&id).map_err(|_| {
+            failure(
+                "storage.json",
+                "storage.couldn_t_serialize_the_device_short_id",
+                "设备短 ID 序列化失败",
+            )
+        })?;
         tx.execute(
             "INSERT INTO settings(key,value) VALUES ('device.short_id',?1)",
             [json],
@@ -428,6 +482,7 @@ fn validate_server(server: &Server) -> Result<(), AppError> {
     {
         return Err(failure(
             "storage.invalid_credential_ref",
+            "storage.password_field_must_reference_this_server_s_credentials",
             "密码字段只能保存此服务器的凭据引用",
         ));
     }
@@ -436,7 +491,11 @@ fn validate_server(server: &Server) -> Result<(), AppError> {
 
 fn require_changed(changed: usize) -> Result<(), AppError> {
     if changed == 0 {
-        Err(failure("storage.not_found", "记录不存在"))
+        Err(failure(
+            "storage.not_found",
+            "storage.record_does_not_exist",
+            "记录不存在",
+        ))
     } else {
         Ok(())
     }
@@ -444,8 +503,13 @@ fn require_changed(changed: usize) -> Result<(), AppError> {
 
 fn normalized_task(task: &SyncTask) -> Result<SyncTask, AppError> {
     let mut task = task.clone();
-    task.local_path = paths::normalized_absolute(&task.local_path)
-        .ok_or_else(|| failure("storage.invalid_path", "本地目录必须为有效绝对路径"))?;
+    task.local_path = paths::normalized_absolute(&task.local_path).ok_or_else(|| {
+        failure(
+            "storage.invalid_path",
+            "storage.local_directory_must_be_a_valid_absolute_path",
+            "本地目录必须为有效绝对路径",
+        )
+    })?;
     Ok(task)
 }
 
@@ -459,10 +523,12 @@ fn check_overlap(conn: &Connection, task: &SyncTask, exclude_self: bool) -> Resu
         let name: String = row.get(1).map_err(sql_error)?;
         let path: String = row.get(2).map_err(sql_error)?;
         if !(exclude_self && id == task.id) && paths_overlap(&path, &task.local_path) {
-            return Err(
-                failure("storage.local_path_overlap", "本地目录与已有任务重叠")
-                    .with("task_name", name),
-            );
+            return Err(failure(
+                "storage.local_path_overlap",
+                "storage.local_directory_overlaps_an_existing_task",
+                "本地目录与已有任务重叠",
+            )
+            .with("task_name", name));
         }
     }
     Ok(())
@@ -472,6 +538,7 @@ fn validate_endpoints(task_id: &str, endpoints: &[SyncEndpoint]) -> Result<(), A
     if endpoints.is_empty() || endpoints.iter().any(|e| e.task_id != task_id) {
         return Err(failure(
             "storage.invalid_endpoints",
+            "storage.endpoints_must_be_nonempty_and_belong_to_the_current_task",
             "端点不能为空且必须属于当前任务",
         ));
     }
@@ -514,8 +581,13 @@ fn read_setting<T: DeserializeOwned>(conn: &Connection, key: &str) -> Result<Opt
         .map_err(sql_error)?;
     value
         .map(|v| {
-            serde_json::from_str(&v)
-                .map_err(|_| failure("storage.json", "设置内容或类型不符合 JSON 约定"))
+            serde_json::from_str(&v).map_err(|_| {
+                failure(
+                    "storage.json",
+                    "storage.settings_content_or_type_does_not_match_the_json_contract",
+                    "设置内容或类型不符合 JSON 约定",
+                )
+            })
         })
         .transpose()
 }

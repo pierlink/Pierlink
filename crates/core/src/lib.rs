@@ -33,6 +33,9 @@ pub mod tunnel;
 pub mod vnc;
 
 #[cfg(test)]
+mod error_text_tests;
+
+#[cfg(test)]
 mod test_support;
 
 #[cfg(all(test, unix))]

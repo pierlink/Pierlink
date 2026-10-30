@@ -53,8 +53,8 @@ fn environment_from(
     env
 }
 
-pub(crate) fn io_error(operation: &str) -> AppError {
-    AppError::new("ssh.io_failed").with("operation", operation)
+pub(crate) fn io_error(text_key: &'static str, operation: &str) -> AppError {
+    AppError::new("ssh.io_failed").with_text("operation", text_key, operation)
 }
 
 /// 持有进程树；释放时终止整个进程组或作业对象，并回收直接子进程。
@@ -71,7 +71,15 @@ impl SshProgram {
     pub fn spawn(&self, cmd: &SshCommand) -> Result<SshProcess, AppError> {
         if cmd.builtin.is_some() {
             return Err(AppError::new("ssh.invalid_argument")
-                .with("reason", "内置后台命令不能启动本地进程"));
+                .with_reason(
+                    "process.built_in_background_commands_cannot_start_local_processes",
+                    "内置后台命令不能启动本地进程",
+                )
+                .with_text(
+                    "field",
+                    "process.built_in_background_commands_cannot_start_local_processes",
+                    "内置后台命令不能启动本地进程",
+                ));
         }
         let cmd = cmd.prepare()?;
         self.spawn_with_environment(&cmd, environment(&cmd))
@@ -205,7 +213,10 @@ impl TreeProcess {
                 return exit_status_unreaped(self.child.id());
             }
         }
-        let status = self.child.try_wait().map_err(|_| io_error("查询进程"))?;
+        let status = self
+            .child
+            .try_wait()
+            .map_err(|_| io_error("process.query_process", "查询进程"))?;
         if status.is_some() {
             self.terminated = true;
         }
@@ -227,13 +238,16 @@ impl TreeProcess {
             if self
                 .child
                 .try_wait()
-                .map_err(|_| io_error("回收进程"))?
+                .map_err(|_| io_error("process.reap_process", "回收进程"))?
                 .is_some()
             {
                 return Ok(());
             }
             if started.elapsed() >= Duration::from_secs(5) {
-                return Err(io_error("等待进程树退出超时"));
+                return Err(io_error(
+                    "process.waiting_for_the_process_tree_to_exit_timed_out",
+                    "等待进程树退出超时",
+                ));
             }
             thread::sleep(Duration::from_millis(10));
         }
@@ -353,7 +367,7 @@ impl Reader {
                     }
                 }
             })
-            .map_err(|_| io_error("创建读取线程"))?;
+            .map_err(|_| io_error("process.create_reader_thread", "创建读取线程"))?;
         Ok(Self {
             state,
             handle: Some(handle),
@@ -392,7 +406,7 @@ pub(crate) fn exit_status_unreaped(pid: u32) -> Result<Option<std::process::Exit
             if std::io::Error::last_os_error().raw_os_error() == Some(libc::ECHILD) {
                 return Ok(None);
             }
-            return Err(io_error("查询未回收进程"));
+            return Err(io_error("process.query_unreaped_process", "查询未回收进程"));
         }
         if info.si_pid() == 0 {
             return Ok(None);
@@ -416,11 +430,13 @@ fn spawn_retrying(command: &mut Command) -> Result<std::process::Child, AppError
                 Err(e) if e.raw_os_error() == Some(libc::ETXTBSY) => {
                     std::thread::sleep(std::time::Duration::from_millis(20 * attempt));
                 }
-                other => return other.map_err(|_| io_error("启动进程")),
+                other => return other.map_err(|_| io_error("process.start_process", "启动进程")),
             }
         }
     }
-    command.spawn().map_err(|_| io_error("启动进程"))
+    command
+        .spawn()
+        .map_err(|_| io_error("process.start_process", "启动进程"))
 }
 
 #[cfg(all(test, unix))]

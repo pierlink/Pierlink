@@ -27,7 +27,13 @@ impl Db {
         let destination = dir.join(format!("pierlink-{date}.db"));
         match fs::symlink_metadata(&destination) {
             Ok(meta) if meta.file_type().is_file() => {}
-            Ok(_) => return Err(failure("storage.backup", "备份目标不是普通文件")),
+            Ok(_) => {
+                return Err(failure(
+                    "storage.backup",
+                    "storage.backup_destination_is_not_a_regular_file",
+                    "备份目标不是普通文件",
+                ));
+            }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 let staging_path = dir.join(format!(".pierlink-backup-{}", uuid::Uuid::new_v4()));
                 fs::create_dir(&staging_path).map_err(io_error)?;
@@ -43,6 +49,7 @@ impl Db {
                             _ if Instant::now() >= deadline => {
                                 return Err(failure(
                                     "storage.backup_timeout",
+                                    "storage.online_backup_waited_longer_than_30_seconds",
                                     "在线备份等待超过三十秒",
                                 ));
                             }

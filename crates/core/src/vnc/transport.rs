@@ -116,13 +116,13 @@ pub fn open_stream(
 fn validate(target: &VncTarget) -> Result<(), AppError> {
     match target {
         VncTarget::Loopback(0) => {
-            Err(AppError::new("vnc.invalid_target").with("reason", "端口必须大于零"))
+            Err(AppError::new("vnc.invalid_target").with_reason("vnc.port_zero", "端口必须大于零"))
         }
         VncTarget::UnixPath(path)
             if !path.starts_with('/') || path.len() > 107 || path.contains('\0') =>
         {
-            Err(AppError::new("vnc.invalid_target").with(
-                "reason",
+            Err(AppError::new("vnc.invalid_target").with_reason(
+                "vnc.socket_must_be_an_absolute_path_without_null_characters_and",
                 "套接字必须为不含空字符的绝对路径，且不超过 107 字节",
             ))
         }
@@ -135,7 +135,10 @@ fn fallback_error(error: AppError) -> AppError {
         error
     } else {
         AppError::new("vnc.forwarding_prohibited")
-            .with("reason", "SSH 转发不可用，执行中继也未能连接桌面")
+            .with_reason(
+                "vnc.ssh_forwarding_is_unavailable_and_the_relay_could_not_connect",
+                "SSH 转发不可用，执行中继也未能连接桌面",
+            )
             .with("cause", error.code)
     }
 }
@@ -179,7 +182,15 @@ pub(super) fn open_relay(
 fn background_command(cmd: &SshCommand) -> Result<SshCommand, AppError> {
     if cmd.builtin.is_some() || cmd.args.last().map(String::as_str) != Some("/bin/sh -s") {
         return Err(AppError::new("ssh.invalid_argument")
-            .with("reason", "桌面连接需要后台用途的 SSH 命令上下文"));
+            .with_reason(
+                "vnc.desktop_connection_requires_a_background_ssh_command_context",
+                "桌面连接需要后台用途的 SSH 命令上下文",
+            )
+            .with_text(
+                "field",
+                "vnc.desktop_connection_requires_a_background_ssh_command_context",
+                "桌面连接需要后台用途的 SSH 命令上下文",
+            ));
     }
     let mut cmd = cmd.clone();
     cmd.args.pop();
@@ -231,7 +242,7 @@ fn openssh_version(program: &SshProgram) -> Result<(u16, u16), AppError> {
         .find_map(|bytes| parse::ssh_version(&String::from_utf8_lossy(&bytes)));
     parsed
         .filter(|_| !output.timed_out && output.exit_code == Some(0))
-        .ok_or_else(|| AppError::new("vnc.ssh_too_old").with("version", "未知"))
+        .ok_or_else(|| AppError::new("vnc.ssh_too_old").with_text("version", "vnc.unknown", "未知"))
 }
 
 pub(super) fn banner(stream: &mut VncStream, timeout: Duration) -> Result<(), AppError> {

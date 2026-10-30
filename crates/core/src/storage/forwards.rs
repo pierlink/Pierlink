@@ -37,7 +37,13 @@ impl Db {
             )
             .optional()
             .map_err(sql_error)?
-            .ok_or_else(|| failure("storage.not_found", "端口转发不存在"))?;
+            .ok_or_else(|| {
+                failure(
+                    "storage.not_found",
+                    "storage.port_forward_does_not_exist",
+                    "端口转发不存在",
+                )
+            })?;
         f.enabled = enabled;
         crate::tunnel::forward::validate(&f)?;
         check_conflict(&tx, &f)?;
@@ -77,20 +83,24 @@ impl Db {
             ("body", &s.body),
         ] {
             if value.trim().is_empty() || value.contains('\0') {
-                return Err(
-                    failure("storage.invalid_snippet", "片段字段不能为空或含 NUL")
-                        .with("field", field),
-                );
+                return Err(failure(
+                    "storage.invalid_snippet",
+                    "storage.snippet_field_cannot_be_empty_or_contain_null_characters",
+                    "片段字段不能为空或含 NUL",
+                )
+                .with("field", field));
             }
         }
         if s.group_name
             .as_ref()
             .is_some_and(|g| g.trim().is_empty() || g.contains('\0'))
         {
-            return Err(
-                failure("storage.invalid_snippet", "片段分组必须为空或有效名称")
-                    .with("field", "group_name"),
-            );
+            return Err(failure(
+                "storage.invalid_snippet",
+                "storage.snippet_group_must_be_empty_or_a_valid_name",
+                "片段分组必须为空或有效名称",
+            )
+            .with("field", "group_name"));
         }
         self.conn.execute("INSERT INTO snippets(id,title,body,group_name,sort_order) VALUES (?1,?2,?3,?4,?5) ON CONFLICT(id) DO UPDATE SET title=excluded.title,body=excluded.body,group_name=excluded.group_name,sort_order=excluded.sort_order",
             params![s.id,s.title,s.body,s.group_name,s.sort_order]).map_err(sql_error)?;

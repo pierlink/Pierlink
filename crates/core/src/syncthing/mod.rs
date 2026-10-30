@@ -9,8 +9,8 @@ mod tests;
 mod xml;
 
 use crate::error::AppError;
-fn error(reason: &str) -> AppError {
-    AppError::new("syncthing.invalid_config").with("reason", reason)
+fn error(text_key: &'static str, reason: &str) -> AppError {
+    AppError::new("syncthing.invalid_config").with_reason(text_key, reason)
 }
 /// Syncthing 报告的监听错误是不是“端口不能用”（需要换一个端口）。
 /// Linux：address already in use；Windows：WSAEADDRINUSE 的“Only one usage of each socket address”，
@@ -35,8 +35,8 @@ fn 端口占用的三种报法() {
     ));
     assert!(!port_in_use("open database: permission denied"));
 }
-fn io_error(operation: &str) -> AppError {
-    AppError::new("syncthing.io_failed").with("operation", operation)
+fn io_error(text_key: &'static str, operation: &str) -> AppError {
+    AppError::new("syncthing.io_failed").with_text("operation", text_key, operation)
 }
 #[cfg(unix)]
 mod unix;

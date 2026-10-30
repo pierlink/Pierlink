@@ -143,7 +143,7 @@ impl Scan {
     }
 }
 fn io_error() -> AppError {
-    AppError::new("mcp.path_invalid").with("reason", "无法读取文件")
+    AppError::new("mcp.path_invalid").with_reason("mcp.couldn_t_read_the_file", "无法读取文件")
 }
 fn name(encoding: &'static Encoding) -> &'static str {
     if encoding == UTF_8 {

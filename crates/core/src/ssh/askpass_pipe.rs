@@ -144,7 +144,7 @@ impl AskpassServer {
         let worker = thread::Builder::new()
             .name("密码管道监听".into())
             .spawn(move || serve(listener, shared))
-            .map_err(|_| failed("创建监听线程"))?;
+            .map_err(|_| failed("ssh.create_listener_thread", "创建监听线程"))?;
         Ok(Self {
             inner,
             worker: Some(worker),
@@ -166,13 +166,13 @@ impl Drop for AskpassServer {
 }
 fn register(inner: &Arc<Inner>, mut spec: RegistrationSpec) -> Result<Arc<Registration>, AppError> {
     if inner.stopped.load(Ordering::Acquire) {
-        return Err(failed("服务已停止"));
+        return Err(failed("ssh.service_has_stopped", "服务已停止"));
     }
     if spec.server_id.is_empty()
         || !spec.expected_prompt.contains('@')
         || spec.expected_prompt.contains(['\0', '\n', '\r'])
     {
-        return Err(failed("登记目标无效"));
+        return Err(failed("ssh.invalid_registered_target", "登记目标无效"));
     }
     spec.expected_prompt = super::askpass::normalize_password_target(&spec.expected_prompt);
     let binding = Arc::new(Binding {
@@ -183,7 +183,7 @@ fn register(inner: &Arc<Inner>, mut spec: RegistrationSpec) -> Result<Arc<Regist
     let nonce = random_secret(16);
     let mut bindings = inner.bindings.lock().unwrap_or_else(|e| e.into_inner());
     if bindings.len() >= 4096 {
-        return Err(failed("登记数量超限"));
+        return Err(failed("ssh.too_many_registrations", "登记数量超限"));
     }
     bindings.insert(nonce.clone(), Arc::downgrade(&binding));
     Ok(Arc::new(Registration {
@@ -238,8 +238,10 @@ impl Registration {
                     .vault
                     .get(&self.binding.spec.server_id)
                     .map_err(|_| {
-                        AppError::new("ssh.password_needed")
-                            .with("reason", "已保存密码载入失败，需要重新输入")
+                        AppError::new("ssh.password_needed").with_reason(
+                            "ssh.couldn_t_load_the_saved_password_enter_it_again",
+                            "已保存密码载入失败，需要重新输入",
+                        )
                     })?
                     .is_none()
             {
@@ -307,34 +309,44 @@ struct Response {
     version: u8,
     answer: Option<String>,
 }
-fn failed(reason: &str) -> AppError {
-    AppError::new("ssh.askpass_failed").with("reason", reason)
+fn failed(text_key: &'static str, reason: &str) -> AppError {
+    AppError::new("ssh.askpass_failed").with_reason(text_key, reason)
 }
 fn read_line(input: &mut impl Read) -> Result<Zeroizing<Vec<u8>>, AppError> {
     let mut line = Zeroizing::new(Vec::new());
     let deadline = Instant::now() + TIMEOUT;
     while line.len() < MAX_MESSAGE && Instant::now() < deadline {
         let mut byte = [0];
-        if input.read(&mut byte).map_err(|_| failed("读取消息失败"))? != 1 {
-            return Err(failed("消息未完成"));
+        if input
+            .read(&mut byte)
+            .map_err(|_| failed("ssh.couldn_t_read_the_message", "读取消息失败"))?
+            != 1
+        {
+            return Err(failed("ssh.incomplete_message", "消息未完成"));
         }
         if byte[0] == b'\n' {
             return Ok(line);
         }
         line.push(byte[0]);
     }
-    Err(failed("消息超长或超时"))
+    Err(failed(
+        "ssh.message_is_too_long_or_timed_out",
+        "消息超长或超时",
+    ))
 }
 fn write_json(output: &mut impl Write, value: &impl Serialize) -> Result<(), AppError> {
-    let bytes = Zeroizing::new(serde_json::to_vec(value).map_err(|_| failed("编码消息失败"))?);
+    let bytes = Zeroizing::new(
+        serde_json::to_vec(value)
+            .map_err(|_| failed("ssh.couldn_t_encode_the_message", "编码消息失败"))?,
+    );
     if bytes.len() >= MAX_MESSAGE {
-        return Err(failed("消息超长"));
+        return Err(failed("ssh.message_is_too_long", "消息超长"));
     }
     output
         .write_all(&bytes)
         .and_then(|()| output.write_all(b"\n"))
         .and_then(|()| output.flush())
-        .map_err(|_| failed("写入消息失败"))
+        .map_err(|_| failed("ssh.couldn_t_write_the_message", "写入消息失败"))
 }
 fn serve(mut listener: platform::Listener, inner: Arc<Inner>) {
     let mut workers: Vec<JoinHandle<()>> = Vec::new();
@@ -372,7 +384,8 @@ fn serve(mut listener: platform::Listener, inner: Arc<Inner>) {
 }
 fn handle_connection(stream: &mut (impl Read + Write), inner: &Arc<Inner>) -> Result<(), AppError> {
     let line = read_line(stream)?;
-    let request: Request = serde_json::from_slice(&line).map_err(|_| failed("无效协议"))?;
+    let request: Request =
+        serde_json::from_slice(&line).map_err(|_| failed("ssh.invalid_protocol", "无效协议"))?;
     let nonce = request.nonce.clone();
     let answer = dispatch(inner, request).filter(|_| {
         !inner.stopped.load(Ordering::Acquire)
@@ -541,10 +554,15 @@ fn exchange(
         },
     )?;
     let line = read_line(stream)?;
-    let response: Response = serde_json::from_slice(&line).map_err(|_| failed("无效响应"))?;
-    let answer = Zeroizing::new(response.answer.ok_or_else(|| failed("请求被拒绝"))?);
+    let response: Response =
+        serde_json::from_slice(&line).map_err(|_| failed("ssh.invalid_response", "无效响应"))?;
+    let answer = Zeroizing::new(
+        response
+            .answer
+            .ok_or_else(|| failed("ssh.request_was_rejected", "请求被拒绝"))?,
+    );
     if response.version != VERSION || answer.contains(['\0', '\n', '\r']) {
-        return Err(failed("无效响应"));
+        return Err(failed("ssh.invalid_response", "无效响应"));
     }
     Ok(answer)
 }
@@ -565,8 +583,10 @@ fn run_client(
     request: impl Fn(&str, &str, &str, PromptKind) -> Result<Zeroizing<String>, AppError>,
 ) -> i32 {
     let result = (|| {
-        let pipe = env("PIERLINK_ASKPASS_PIPE").ok_or_else(|| failed("缺少管道"))?;
-        let nonce = env("PIERLINK_ASKPASS_NONCE").ok_or_else(|| failed("缺少登记"))?;
+        let pipe = env("PIERLINK_ASKPASS_PIPE")
+            .ok_or_else(|| failed("ssh.pipe_is_missing", "缺少管道"))?;
+        let nonce = env("PIERLINK_ASKPASS_NONCE")
+            .ok_or_else(|| failed("ssh.registration_is_missing", "缺少登记"))?;
         let kind = match env("SSH_ASKPASS_PROMPT").as_deref() {
             Some("confirm") => PromptKind::Confirm,
             Some("none") => PromptKind::None,
@@ -577,7 +597,7 @@ fn run_client(
             .write_all(answer.as_bytes())
             .and_then(|()| stdout.write_all(b"\n"))
             .and_then(|()| stdout.flush())
-            .map_err(|_| failed("输出答案失败"))
+            .map_err(|_| failed("ssh.couldn_t_write_the_answer", "输出答案失败"))
     })();
     if result.is_ok() { 0 } else { 1 }
 }

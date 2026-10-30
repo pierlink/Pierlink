@@ -160,7 +160,12 @@ impl Monitor {
         let worker = thread::Builder::new()
             .name("资源采样".into())
             .spawn(move || run(program, command, shared, on_event))
-            .map_err(|_| io_error("创建资源采样线程"))?;
+            .map_err(|_| {
+                io_error(
+                    "monitor.create_resource_sampling_thread",
+                    "创建资源采样线程",
+                )
+            })?;
         Ok(Self {
             control,
             worker: Some(worker),
@@ -422,7 +427,10 @@ fn observe(
             return End::Error(
                 AppError::new("monitor.sample_timeout")
                     .with("timeout_ms", timeout.as_millis())
-                    .with("reason", "超过三个采样间隔未收到有效资源帧"),
+                    .with_reason(
+                        "monitor.no_valid_resource_frame_received_for_three_sampling_intervals",
+                        "超过三个采样间隔未收到有效资源帧",
+                    ),
             );
         }
         control.wait(Duration::from_millis(20), *generation);

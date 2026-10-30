@@ -248,7 +248,12 @@ impl LineReader {
                 }
                 shared.lock().unwrap_or_else(|e| e.into_inner()).done = true;
             })
-            .map_err(|_| io_error("创建资源帧读取线程"))?;
+            .map_err(|_| {
+                io_error(
+                    "monitor.create_resource_frame_reader_thread",
+                    "创建资源帧读取线程",
+                )
+            })?;
         Ok(Self {
             state,
             worker: Some(worker),
@@ -287,23 +292,21 @@ impl OpenSshSession {
                 .child
                 .stdout
                 .take()
-                .ok_or_else(|| io_error("获取资源输出"))?,
+                .ok_or_else(|| io_error("monitor.get_resource_output", "获取资源输出"))?,
         )?);
-        session.stderr = Some(Reader::tail(
-            session
-                .process
-                .child
-                .stderr
-                .take()
-                .ok_or_else(|| io_error("获取资源错误输出"))?,
-            16 * 1024,
-        )?);
+        session.stderr =
+            Some(Reader::tail(
+                session.process.child.stderr.take().ok_or_else(|| {
+                    io_error("monitor.get_resource_error_output", "获取资源错误输出")
+                })?,
+                16 * 1024,
+            )?);
         let stdin = session
             .process
             .child
             .stdin
             .take()
-            .ok_or_else(|| io_error("获取采样脚本输入"))?;
+            .ok_or_else(|| io_error("monitor.get_sampling_script_input", "获取采样脚本输入"))?;
         session.writer = Some(InputWriter::start(
             stdin,
             lifetime_script(&script)?,
@@ -315,12 +318,12 @@ impl OpenSshSession {
         let mut data = self
             .stdout
             .as_ref()
-            .ok_or_else(|| io_error("获取资源读取器"))?
+            .ok_or_else(|| io_error("monitor.get_resource_reader", "获取资源读取器"))?
             .state
             .lock()
-            .map_err(|_| io_error("读取资源帧"))?;
+            .map_err(|_| io_error("monitor.read_resource_frame", "读取资源帧"))?;
         if data.failed {
-            return Err(io_error("读取资源输出"));
+            return Err(io_error("monitor.read_resource_output", "读取资源输出"));
         }
         Ok(data.pending.drain(..).collect())
     }
@@ -328,10 +331,10 @@ impl OpenSshSession {
         let stderr = self
             .stderr
             .as_ref()
-            .ok_or_else(|| io_error("获取错误读取器"))?
+            .ok_or_else(|| io_error("monitor.get_error_reader", "获取错误读取器"))?
             .state
             .lock()
-            .map_err(|_| io_error("读取采样错误输出"))?;
+            .map_err(|_| io_error("monitor.read_sampling_error_output", "读取采样错误输出"))?;
         let text = String::from_utf8_lossy(&stderr.bytes);
         let mut error = classify_error(None, &text, &[]);
         // 不保留任何远端原文；即便服务器原样打印秘密，也不会进入事件或日志。
@@ -346,16 +349,19 @@ impl OpenSshSession {
             return Err(self.process.finish_error(error));
         }
         if stderr.failed {
-            return Err(io_error("读取采样错误输出"));
+            return Err(io_error(
+                "monitor.read_sampling_error_output",
+                "读取采样错误输出",
+            ));
         }
         if let Some(status) = self.process.try_wait()? {
             let out = self
                 .stdout
                 .as_ref()
-                .ok_or_else(|| io_error("获取资源读取器"))?
+                .ok_or_else(|| io_error("monitor.get_resource_reader", "获取资源读取器"))?
                 .state
                 .lock()
-                .map_err(|_| io_error("读取资源状态"))?;
+                .map_err(|_| io_error("monitor.read_resource_status", "读取资源状态"))?;
             // 让读取线程先消化进程退出前的最后一帧，尤其是 Unsupported。
             if (out.done && stderr.done && out.pending.is_empty())
                 || self.exited.get_or_insert_with(Instant::now).elapsed()
@@ -453,7 +459,7 @@ impl InputWriter {
                     }
                 }
             })
-            .map_err(|_| io_error("创建采样控制线程"))?;
+            .map_err(|_| io_error("monitor.create_sampling_control_thread", "创建采样控制线程"))?;
         Ok(Self {
             updates,
             worker: Some(worker),

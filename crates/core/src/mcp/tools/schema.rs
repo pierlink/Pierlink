@@ -68,21 +68,24 @@ pub(super) fn validate(name: &str, args: &JsonObject) -> Result<(), ErrorData> {
     let tool = TOOLS
         .iter()
         .find(|tool| tool.name == name)
-        .ok_or_else(|| invalid("未知工具"))?;
+        .ok_or_else(|| invalid("mcp.unknown_tool", "未知工具"))?;
     let properties = &tool.input_schema["properties"];
     if let Some(required) = tool.input_schema["required"].as_array() {
         for field in required.iter().filter_map(Value::as_str) {
             if !args.contains_key(field) {
-                return Err(invalid("缺少必需参数"));
+                return Err(invalid("mcp.required_parameter_is_missing", "缺少必需参数"));
             }
         }
     }
     for (key, value) in args {
         let Some(schema) = properties.get(key) else {
-            return Err(invalid("包含未知参数"));
+            return Err(invalid("mcp.unknown_parameter", "包含未知参数"));
         };
         if !valid_value(value, schema) {
-            return Err(invalid("参数类型或取值不合法"));
+            return Err(invalid(
+                "mcp.invalid_parameter_type_or_value",
+                "参数类型或取值不合法",
+            ));
         }
     }
     if name == "terminal_send"
@@ -92,19 +95,25 @@ pub(super) fn validate(name: &str, args: &JsonObject) -> Result<(), ErrorData> {
             .and_then(Value::as_array)
             .is_none_or(Vec::is_empty)
     {
-        return Err(invalid("需要 text 或 keys"));
+        return Err(invalid("mcp.text_or_keys_is_required", "需要 text 或 keys"));
     }
     if name == "terminal_wait"
         && let Some(pattern) = args.get("pattern").and_then(Value::as_str)
         && regex::Regex::new(pattern).is_err()
     {
-        return Err(invalid("pattern 不是有效的正则表达式"));
+        return Err(invalid(
+            "mcp.pattern_is_not_a_valid_regular_expression",
+            "pattern 不是有效的正则表达式",
+        ));
     }
     if name == "read_file"
         && (args.contains_key("offset") || args.contains_key("limit"))
         && (args.contains_key("byte_offset") || args.contains_key("max_bytes"))
     {
-        return Err(invalid("按行和按字节参数不能混用"));
+        return Err(invalid(
+            "mcp.line_and_byte_parameters_cannot_be_combined",
+            "按行和按字节参数不能混用",
+        ));
     }
     if name == "write_file"
         && args
@@ -112,7 +121,10 @@ pub(super) fn validate(name: &str, args: &JsonObject) -> Result<(), ErrorData> {
             .and_then(Value::as_str)
             .is_some_and(|text| text.len() > 5 * 1024 * 1024)
     {
-        return Err(invalid("文件内容超过 5 MiB"));
+        return Err(invalid(
+            "mcp.file_content_exceeds_5_mib",
+            "文件内容超过 5 MiB",
+        ));
     }
     Ok(())
 }
@@ -145,6 +157,11 @@ fn valid_value(value: &Value, schema: &Value) -> bool {
         _ => false,
     }
 }
-pub(super) fn invalid(message: &'static str) -> ErrorData {
-    ErrorData::invalid_params(message, None)
+pub(super) fn invalid(text_key: &'static str, message: &'static str) -> ErrorData {
+    ErrorData::invalid_params(
+        message,
+        Some(json!(
+            crate::error::AppError::new("mcp.invalid_argument").with_reason(text_key, message)
+        )),
+    )
 }

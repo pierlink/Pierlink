@@ -126,13 +126,13 @@ pub(super) fn pids() -> Result<Vec<u32>, AppError> {
     unsafe {
         let snapshot = Handle(CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0));
         if snapshot.0 == INVALID_HANDLE_VALUE {
-            return Err(io_error("枚举进程"));
+            return Err(io_error("syncthing.enumerate_processes", "枚举进程"));
         }
         let mut entry: PROCESSENTRY32W = std::mem::zeroed();
         entry.dwSize = std::mem::size_of_val(&entry) as u32;
         let mut out = Vec::new();
         if Process32FirstW(snapshot.0, &mut entry) == 0 {
-            return Err(io_error("读取进程快照"));
+            return Err(io_error("syncthing.read_process_snapshot", "读取进程快照"));
         }
         loop {
             out.push(entry.th32ProcessID);
@@ -147,14 +147,20 @@ pub(super) fn terminate(pid: u32) -> Result<(), AppError> {
     unsafe {
         let process = Handle(OpenProcess(PROCESS_TERMINATE | 0x00100000, 0, pid));
         if process.0.is_null() {
-            return Err(io_error("打开接管进程"));
+            return Err(io_error("syncthing.open_adopted_process", "打开接管进程"));
         }
         if TerminateProcess(process.0, 1) == 0 && WaitForSingleObject(process.0, 0) == WAIT_TIMEOUT
         {
-            return Err(io_error("终止接管进程"));
+            return Err(io_error(
+                "syncthing.terminate_adopted_process",
+                "终止接管进程",
+            ));
         }
         if WaitForSingleObject(process.0, 5000) == WAIT_TIMEOUT {
-            return Err(io_error("等待接管进程退出"));
+            return Err(io_error(
+                "syncthing.wait_for_adopted_process_to_exit",
+                "等待接管进程退出",
+            ));
         }
         Ok(())
     }

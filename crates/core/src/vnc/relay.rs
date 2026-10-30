@@ -82,8 +82,10 @@ pub(super) fn command(tools: &Tools, target: &VncTarget) -> Result<String, AppEr
             value,
         ]
     } else {
-        return Err(AppError::new("vnc.relay_unavailable")
-            .with("reason", "服务器缺少 socat、Python 和 Perl 中继程序"));
+        return Err(AppError::new("vnc.relay_unavailable").with_reason(
+            "vnc.server_has_no_socat_python_or_perl_relay",
+            "服务器缺少 socat、Python 和 Perl 中继程序",
+        ));
     };
     let quoted = args
         .iter()

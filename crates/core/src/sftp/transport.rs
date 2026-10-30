@@ -25,8 +25,8 @@ pub(super) struct Transport {
     timeout: Duration,
     broken: bool,
 }
-fn lost(reason: &str) -> AppError {
-    AppError::new("sftp.connection_lost").with("reason", reason)
+fn lost(text_key: &'static str, reason: &str) -> AppError {
+    AppError::new("sftp.connection_lost").with_reason(text_key, reason)
 }
 enum Backend {
     Process(SshProcess),
@@ -49,17 +49,26 @@ struct Pending {
 }
 fn read_packet(output: &mut impl Read) -> Result<Vec<u8>, AppError> {
     let mut length = [0; 4];
-    output
-        .read_exact(&mut length)
-        .map_err(|_| lost("读取子系统管道失败"))?;
+    output.read_exact(&mut length).map_err(|_| {
+        lost(
+            "sftp.couldn_t_read_the_subsystem_pipe",
+            "读取子系统管道失败",
+        )
+    })?;
     let length = u32::from_be_bytes(length) as usize;
     if length == 0 || length > MAX_PACKET {
-        return Err(protocol("响应包长度超限"));
+        return Err(protocol(
+            "sftp.response_packet_exceeds_the_size_limit",
+            "响应包长度超限",
+        ));
     }
     let mut packet = vec![0; length];
-    output
-        .read_exact(&mut packet)
-        .map_err(|_| lost("响应未完整到达，连接已断开"))?;
+    output.read_exact(&mut packet).map_err(|_| {
+        lost(
+            "sftp.connection_closed_before_the_complete_response_arrived",
+            "响应未完整到达，连接已断开",
+        )
+    })?;
     Ok(packet)
 }
 impl Transport {
@@ -69,7 +78,10 @@ impl Transport {
         timeout: Duration,
     ) -> Result<Self, AppError> {
         if timeout.is_zero() {
-            return Err(protocol("超时必须大于零"));
+            return Err(protocol(
+                "sftp.timeout_must_be_greater_than_zero",
+                "超时必须大于零",
+            ));
         }
         if let Some(command) = &command.builtin {
             let mut request = command.request();
@@ -81,21 +93,21 @@ impl Transport {
             return Self::builtin(session, timeout);
         }
         let mut process = program.spawn(command)?;
-        let stdin = process
-            .child
-            .stdin
-            .take()
-            .ok_or_else(|| lost("缺少子系统输入管道"))?;
-        let stdout = process
-            .child
-            .stdout
-            .take()
-            .ok_or_else(|| lost("缺少子系统输出管道"))?;
+        let stdin =
+            process.child.stdin.take().ok_or_else(|| {
+                lost("sftp.subsystem_input_pipe_is_missing", "缺少子系统输入管道")
+            })?;
+        let stdout = process.child.stdout.take().ok_or_else(|| {
+            lost(
+                "sftp.subsystem_output_pipe_is_missing",
+                "缺少子系统输出管道",
+            )
+        })?;
         let stderr = process
             .child
             .stderr
             .take()
-            .ok_or_else(|| lost("缺少错误管道"))?;
+            .ok_or_else(|| lost("sftp.error_pipe_is_missing", "缺少错误管道"))?;
         Self::streams(Backend::Process(process), stdin, stdout, stderr, timeout)
     }
     fn builtin(
@@ -112,8 +124,12 @@ impl Transport {
         stderr: impl Read + Send + 'static,
         timeout: Duration,
     ) -> Result<Self, AppError> {
-        let mut stderr =
-            Reader::tail(stderr, 8192).map_err(|_| lost("创建错误管道读取线程失败"))?;
+        let mut stderr = Reader::tail(stderr, 8192).map_err(|_| {
+            lost(
+                "sftp.couldn_t_create_the_error_pipe_reader_thread",
+                "创建错误管道读取线程失败",
+            )
+        })?;
         let (tx, rx) = mpsc::sync_channel::<Vec<u8>>(WINDOW);
         let (results, output) = mpsc::sync_channel(WINDOW);
         let errors = results.clone();
@@ -127,7 +143,10 @@ impl Transport {
                         .and_then(|_| stdin.flush())
                         .is_err()
                     {
-                        let _ = errors.send(Err(lost("写入子系统管道失败")));
+                        let _ = errors.send(Err(lost(
+                            "sftp.couldn_t_write_to_the_subsystem_pipe",
+                            "写入子系统管道失败",
+                        )));
                         break;
                     }
                 }
@@ -136,7 +155,10 @@ impl Transport {
             Err(_) => {
                 backend.abort();
                 stderr.join();
-                return Err(lost("创建子系统发送线程失败"));
+                return Err(lost(
+                    "sftp.couldn_t_create_the_subsystem_sender_thread",
+                    "创建子系统发送线程失败",
+                ));
             }
         };
         let reader = match thread::Builder::new()
@@ -157,7 +179,10 @@ impl Transport {
                 backend.abort();
                 join_bounded(writer, Duration::from_secs(2));
                 stderr.join();
-                return Err(lost("创建子系统接收线程失败"));
+                return Err(lost(
+                    "sftp.couldn_t_create_the_subsystem_receiver_thread",
+                    "创建子系统接收线程失败",
+                ));
             }
         };
         Ok(Self {
@@ -190,28 +215,42 @@ impl Transport {
     }
     fn send_packet(&mut self, packet: Vec<u8>) -> Result<(), AppError> {
         if self.broken {
-            return Err(lost("子系统连接已失效"));
+            return Err(lost(
+                "sftp.subsystem_connection_is_no_longer_valid",
+                "子系统连接已失效",
+            ));
         }
         if packet.is_empty() || packet.len() > MAX_PACKET {
-            return Err(protocol("请求包长度超限"));
+            return Err(protocol(
+                "sftp.request_packet_exceeds_the_size_limit",
+                "请求包长度超限",
+            ));
         }
         self.input
             .as_ref()
-            .ok_or_else(|| lost("输入管道已关闭"))?
+            .ok_or_else(|| lost("sftp.input_pipe_is_closed", "输入管道已关闭"))?
             .send(packet)
-            .map_err(|_| lost("子系统已退出"))
+            .map_err(|_| lost("sftp.subsystem_has_exited", "子系统已退出"))
     }
     fn receive_packet(&self, timeout: Duration) -> Result<Vec<u8>, AppError> {
         self.output
             .as_ref()
-            .ok_or_else(|| lost("输出管道已关闭"))?
+            .ok_or_else(|| lost("sftp.output_pipe_is_closed", "输出管道已关闭"))?
             .recv_timeout(timeout)
-            .map_err(|_| lost("子系统请求超时或进程已退出"))?
+            .map_err(|_| {
+                lost(
+                    "sftp.subsystem_request_timed_out_or_the_process_exited",
+                    "子系统请求超时或进程已退出",
+                )
+            })?
     }
     pub fn send(&mut self, id: u32, packet: Vec<u8>) -> Result<(), AppError> {
         if self.pending.len() >= WINDOW || self.pending.contains_key(&id) {
             self.abort();
-            return Err(protocol("在途请求超过窗口或请求编号重复"));
+            return Err(protocol(
+                "sftp.too_many_pending_requests_or_duplicate_request_id",
+                "在途请求超过窗口或请求编号重复",
+            ));
         }
         if let Err(error) = self.send_packet(packet) {
             self.abort();
@@ -239,10 +278,12 @@ impl Transport {
     }
     fn receive_matching(&mut self, id: u32) -> Result<Vec<u8>, AppError> {
         loop {
-            let pending = self
-                .pending
-                .get_mut(&id)
-                .ok_or_else(|| lost("请求不存在或子系统连接已失效"))?;
+            let pending = self.pending.get_mut(&id).ok_or_else(|| {
+                lost(
+                    "sftp.request_is_missing_or_the_subsystem_connection_is_no_longer",
+                    "请求不存在或子系统连接已失效",
+                )
+            })?;
             if let Some(reply) = pending.reply.take() {
                 self.pending.remove(&id);
                 return Ok(reply);
@@ -260,12 +301,17 @@ impl Transport {
             let mut input = Decoder(&packet);
             input.byte()?;
             let response_id = input.u32()?;
-            let pending = self
-                .pending
-                .get_mut(&response_id)
-                .ok_or_else(|| protocol("响应请求编号不匹配"))?;
+            let pending = self.pending.get_mut(&response_id).ok_or_else(|| {
+                protocol(
+                    "sftp.response_request_id_does_not_match",
+                    "响应请求编号不匹配",
+                )
+            })?;
             if pending.reply.is_some() {
-                return Err(protocol("响应请求编号重复"));
+                return Err(protocol(
+                    "sftp.duplicate_response_request_id",
+                    "响应请求编号重复",
+                ));
             }
             pending.reply = Some(packet);
         }
@@ -328,7 +374,10 @@ impl Transport {
         };
         let mut input = Decoder(&response);
         if input.byte()? != 2 || input.u32()? != 3 {
-            return Err(protocol("服务器未协商 SFTP 第三版"));
+            return Err(protocol(
+                "sftp.server_did_not_negotiate_sftp_v3",
+                "服务器未协商 SFTP 第三版",
+            ));
         }
         let mut posix_rename = false;
         while !input.0.is_empty() {

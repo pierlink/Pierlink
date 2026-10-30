@@ -635,7 +635,8 @@ fn lock_within(
                 std::thread::sleep(std::time::Duration::from_millis(100));
             }
             Err(TryLockError::WouldBlock) => {
-                return Err(AppError::new("sync.busy").with("reason", "同步服务正忙，请稍后再查"));
+                return Err(AppError::new("sync.busy")
+                    .with_reason("sync.service_busy_check_later", "同步服务正忙，请稍后再查"));
             }
         }
     }

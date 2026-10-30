@@ -221,6 +221,7 @@ fn device_name(name: &str) -> Result<&str, AppError> {
     if name.is_empty() || name.chars().count() > 80 || name.chars().any(char::is_control) {
         return Err(error(
             "mobile.invalid_request",
+            "mobile.device_name_must_contain_1_to_80_printable_characters",
             "设备名必须为一至八十个可显示字符",
         ));
     }
@@ -242,6 +243,7 @@ pub fn validate_bind_address(bind: SocketAddr) -> Result<(), AppError> {
     } else {
         Err(error(
             "mobile.invalid_bind",
+            "mobile.only_loopback_private_lan_or_tailscale_addresses_are_allowed",
             "只允许绑定回环、私有局域网或 Tailscale 地址",
         ))
     }
@@ -312,10 +314,19 @@ impl Shared {
         assets: PathBuf,
         db: Arc<Mutex<Db>>,
     ) -> Result<Arc<Self>, AppError> {
-        let assets = std::fs::canonicalize(assets)
-            .map_err(|_| error("mobile.assets", "无法打开网页资源目录"))?;
+        let assets = std::fs::canonicalize(assets).map_err(|_| {
+            error(
+                "mobile.assets",
+                "mobile.couldn_t_open_the_web_asset_directory",
+                "无法打开网页资源目录",
+            )
+        })?;
         if !assets.is_dir() {
-            return Err(error("mobile.assets", "网页资源路径必须为目录"));
+            return Err(error(
+                "mobile.assets",
+                "mobile.web_asset_path_must_be_a_directory",
+                "网页资源路径必须为目录",
+            ));
         }
         lock(&db).prune_mobile_devices(now())?;
         Ok(Arc::new(Self {
@@ -374,11 +385,16 @@ fn now() -> i64 {
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|e| e.into_inner())
 }
-fn error(code: &str, reason: &str) -> AppError {
-    AppError::new(code).with("reason", reason)
+fn error(code: &str, text_key: &'static str, reason: &str) -> AppError {
+    AppError::new(code).with_reason(text_key, reason)
 }
 fn listen_error(e: std::io::Error) -> AppError {
-    error("mobile.listen_failed", "无法启动手机入口监听").with("io_kind", format!("{:?}", e.kind()))
+    error(
+        "mobile.listen_failed",
+        "mobile.couldn_t_start_the_mobile_entry_listener",
+        "无法启动手机入口监听",
+    )
+    .with("io_kind", format!("{:?}", e.kind()))
 }
 
 #[cfg(test)]

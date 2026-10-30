@@ -117,7 +117,8 @@ impl Session {
             );
         }
         if *decision == Some(false) {
-            return Err(AppError::new("mcp.connection_denied").with("reason", "用户拒绝了这个连接"));
+            return Err(AppError::new("mcp.connection_denied")
+                .with_reason("mcp.the_user_denied_this_connection", "用户拒绝了这个连接"));
         }
         Ok(())
     }
@@ -137,7 +138,7 @@ impl Session {
     }
 }
 pub(super) fn cancelled_error() -> AppError {
-    AppError::new("mcp.cancelled").with("reason", "操作已取消")
+    AppError::new("mcp.cancelled").with_reason("mcp.operation_cancelled", "操作已取消")
 }
 
 /// 后台会话句柄；丢弃句柄不主动断开客户端。
@@ -153,7 +154,8 @@ impl SessionHandle {
     /// 消耗句柄，在同步线程等待会话结束；返回传输或后台任务错误，不应在异步工作线程调用。
     pub fn wait(self) -> Result<(), AppError> {
         self.done.recv().unwrap_or_else(|_| {
-            Err(AppError::new("mcp.session_failed").with("reason", "会话工作线程已结束"))
+            Err(AppError::new("mcp.session_failed")
+                .with_reason("mcp.session_worker_thread_has_exited", "会话工作线程已结束"))
         })
     }
 }

@@ -2,6 +2,7 @@ import i18n from "../../i18n";
 import { sampleScreen, samplePrompt, screenshotMode } from "../../dev/screenshots";
 import { inTauri } from "../shell/TitleBar";
 import { createPreviewBackend } from "./previewBackend";
+import { localShellFamily } from "./kittyKeys";
 import { createTauriBackend, listLocalShellsFromBackend } from "./tauriBackend";
 import type { TerminalBackend } from "./types";
 
@@ -10,6 +11,11 @@ export interface LocalShellView {
   id: string;
   name: string;
   isDefault: boolean;
+}
+
+/** 本机终端在界面上的名字：命令提示符按界面语言显示（后端检测时起的是中文名），其他用检测到的名字 */
+export function localShellName(shell: { id: string; name: string }): string {
+  return localShellFamily(shell.id) === "cmd" ? i18n.t("terminal.cmdName") : shell.name;
 }
 
 let backend: TerminalBackend | null = null;
@@ -31,6 +37,6 @@ export async function listLocalShells(): Promise<LocalShellView[]> {
     { id: "pwsh", name: "PowerShell 7", isDefault: true },
     { id: "powershell", name: "Windows PowerShell 5.1", isDefault: false },
     { id: "gitbash", name: "Git Bash", isDefault: false },
-    { id: "cmd", name: "命令提示符 / Command Prompt", isDefault: false },
+    { id: "C:\\Windows\\System32\\cmd.exe", name: "命令提示符", isDefault: false },
   ];
 }

@@ -35,9 +35,10 @@ pub fn builtin_spec(
         return Ok(spec);
     }
     if spec.server_id != request.server.id {
-        return Err(
-            AppError::new("tunnel.invalid_spec").with("reason", "隧道与连接请求的服务器不一致")
-        );
+        return Err(AppError::new("tunnel.invalid_spec").with_reason(
+            "tunnel.tunnel_and_connection_request_refer_to_different_servers",
+            "隧道与连接请求的服务器不一致",
+        ));
     }
     spec.builtin = Some(Arc::new(BuiltinTunnel {
         manager: manager.clone(),
@@ -223,7 +224,7 @@ impl Attempt {
                 })();
                 let _ = tx.send(result);
             })
-            .map_err(|_| io_error("创建内置隧道线程"))?;
+            .map_err(|_| io_error("tunnel.create_built_in_tunnel_thread", "创建内置隧道线程"))?;
         Ok(Self {
             cancelled,
             result,
@@ -239,13 +240,16 @@ impl Attempt {
                 Ok(result) => self.forwarding = Some(result?),
                 Err(mpsc::TryRecvError::Empty) => return Ok(false),
                 Err(mpsc::TryRecvError::Disconnected) => {
-                    return Err(io_error("内置隧道连接线程退出"));
+                    return Err(io_error(
+                        "tunnel.built_in_tunnel_connection_thread_exited",
+                        "内置隧道连接线程退出",
+                    ));
                 }
             }
         }
         self.forwarding
             .as_ref()
-            .ok_or_else(|| io_error("读取内置隧道"))?
+            .ok_or_else(|| io_error("tunnel.read_built_in_tunnel", "读取内置隧道"))?
             .status()
             .map_err(map_error)
     }
@@ -275,9 +279,13 @@ pub(super) fn bind_error(port: u16, kind: std::io::ErrorKind) -> AppError {
 pub(super) fn map_error(error: pierlink_ssh_engine::Error) -> AppError {
     if error == pierlink_ssh_engine::Error::RequestRejected("远程转发") {
         AppError::new("tunnel.remote_forward_failed")
-            .with("reason", "服务器拒绝远程监听，可能端口已被占用或禁止转发")
-            .with(
+            .with_reason(
+                "tunnel.server_refused_remote_listening_port_may_be_in_use_or",
+                "服务器拒绝远程监听，可能端口已被占用或禁止转发",
+            )
+            .with_text(
                 "stderr_tail",
+                "tunnel.server_refused_remote_listening_port_may_be_in_use_or",
                 "服务器拒绝远程监听，可能端口已被占用或禁止转发",
             )
     } else {
