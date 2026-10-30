@@ -1,4 +1,5 @@
 //! 配置快照及原子导入；只写服务器、转发、片段三张表。
+//! 服务器的命令预测设置随配置迁移，命令历史始终留在本机，不读取或导入。
 use super::{Db, ForwardKind, PortForward, Server, ServerSource, sql_error, writes};
 use crate::{
     error::AppError,
@@ -248,4 +249,113 @@ fn import_snippets(db: &Db, profile: &Profile, report: &mut ImportReport) -> Res
         report.snippets_added += 1;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        profile::{ProfileExtras, export_profile, import_profile, parse_profile},
+        storage::{CommandEntry, open},
+    };
+
+    fn database() -> Db {
+        open(Path::new(":memory:")).unwrap()
+    }
+
+    #[test]
+    fn 配置迁移保留预测设置且不携带或改写命令历史() {
+        let mut source = database();
+        for (id, enabled) in [("enabled", true), ("disabled", false)] {
+            let mut server = crate::server_input::build_alias_server(id, None, id, 1).unwrap();
+            server.command_prediction = enabled;
+            source.insert_server(&server).unwrap();
+        }
+        let record = CommandEntry {
+            scope: "server:disabled".into(),
+            cwd: Some("/private-workspace".into()),
+            command: "echo history-only-value".into(),
+            exit_code: Some(0),
+            used_at_ms: 1,
+        };
+        source.add_command(&record).unwrap();
+        let profile = export_profile(
+            &source,
+            ProfileExtras {
+                app_version: "1".into(),
+                settings: serde_json::json!({}),
+            },
+        )
+        .unwrap();
+        let json = serde_json::to_string(&profile).unwrap();
+        assert!(!json.contains("history-only-value"));
+        assert!(!json.contains("private-workspace"));
+        assert!(!json.contains("command_history"));
+        assert!(json.contains("\"command_prediction\":false"));
+        let parsed = parse_profile(json.as_bytes()).unwrap();
+        let mut target = database();
+        let mut local_record = record.clone();
+        local_record.scope = "local:bash".into();
+        target.add_command(&local_record).unwrap();
+        let report = import_profile(&mut target, &parsed).unwrap();
+        assert_eq!(report.servers_added, 2);
+        for server in &parsed.servers {
+            let id = &report.server_id_map[&server.id];
+            let imported = target.get_server(id).unwrap().unwrap();
+            assert_eq!(imported.command_prediction, server.command_prediction);
+            assert!(
+                target
+                    .list_commands(&format!("server:{id}"))
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+        assert!(target.list_commands("server:disabled").unwrap().is_empty());
+        assert_eq!(target.list_commands("local:bash").unwrap(), [local_record]);
+        assert_eq!(source.list_commands("server:disabled").unwrap(), [record]);
+    }
+
+    #[test]
+    fn 旧配置缺少预测字段时默认跟随全局且拒绝错误类型() {
+        let source = database();
+        let server = crate::server_input::build_alias_server("dev", None, "old", 1).unwrap();
+        source.insert_server(&server).unwrap();
+        let profile = export_profile(
+            &source,
+            ProfileExtras {
+                app_version: "1".into(),
+                settings: serde_json::json!({}),
+            },
+        )
+        .unwrap();
+        let mut value = serde_json::to_value(profile).unwrap();
+        value["servers"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("command_prediction");
+        let parsed = parse_profile(&serde_json::to_vec(&value).unwrap()).unwrap();
+        assert!(parsed.servers[0].command_prediction);
+        let mut target = database();
+        let report = import_profile(&mut target, &parsed).unwrap();
+        assert!(
+            target
+                .get_server(&report.server_id_map["old"])
+                .unwrap()
+                .unwrap()
+                .command_prediction
+        );
+        for invalid in [
+            serde_json::json!(2),
+            serde_json::json!("false"),
+            serde_json::Value::Null,
+        ] {
+            value["servers"][0]["command_prediction"] = invalid;
+            assert_eq!(
+                parse_profile(&serde_json::to_vec(&value).unwrap())
+                    .unwrap_err()
+                    .code,
+                "profile.invalid_json"
+            );
+        }
+    }
 }

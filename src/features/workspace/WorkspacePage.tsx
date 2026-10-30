@@ -38,7 +38,7 @@ type Modal =
 
 function toView(r: ServerRecord): ServerView {
   // 连接状态与同步状态在后续阶段接入；目前只区分有无打开的终端由终端区负责
-  return { id: r.id, name: r.name, address: serverAddress(r), group: r.groupName, favorite: r.favorite, status: "offline", openTabs: 0, linked: r.source === "ssh_config", syncState: "none" };
+  return { id: r.id, name: r.name, address: serverAddress(r), group: r.groupName, favorite: r.favorite, status: "offline", openTabs: 0, linked: r.source === "ssh_config", noPrediction: !r.commandPrediction, syncState: "none" };
 }
 
 /** 删除失败的原因：仍被同步任务使用时列出任务名 */
@@ -66,7 +66,7 @@ function loadPanel(): { open: boolean; page: ToolPage } {
 /** 工作区：服务器列表 | 终端标签区 | 工具面板，底部状态栏。 */
 export function WorkspacePage() {
   const { t } = useTranslation();
-  const { servers: records, loaded: serversLoaded, loadError, reload, save, remove, setFavorite } = useServers();
+  const { servers: records, loaded: serversLoaded, loadError, reload, save, remove, setFavorite, setCommandPrediction } = useServers();
   const [connections, setConnections] = useState<Record<string, "online" | "connecting">>({});
   const views = useMemo(() => records.map((r) => ({ ...toView(r), status: connections[r.id] ?? "offline" })), [records, connections]);
   const groups = useMemo(() => [...new Set(records.map((r) => r.groupName).filter((g): g is string => !!g))].sort(), [records]);
@@ -129,6 +129,7 @@ export function WorkspacePage() {
             onEdit: (id) => { const s = byId(id); if (s) setModal({ kind: "edit", server: s }); },
             onDelete: (id) => { const s = byId(id); if (s) setModal({ kind: "delete", server: s, error: null, busy: false }); },
             onToggleFavorite: (id) => { const s = byId(id); if (s) setFavorite(id, !s.favorite).catch(fail(t("servers.saveFailed"))); },
+            onTogglePrediction: (id) => { const s = byId(id); if (s) setCommandPrediction(id, !s.commandPrediction).catch(fail(t("servers.saveFailed"))); },
             onDeploy: (id) => { const s = byId(id); if (s) setModal({ kind: "deploy", server: s }); },
             onCopyAddress: (id) => {
               const s = byId(id);

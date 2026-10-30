@@ -17,16 +17,16 @@ export function createTauriBackend(): TerminalBackend {
   const queues = new Map<string, Promise<unknown>>();
   return {
     preview: false,
-    async open(spec, cols, rows, onEvent) {
+    async open(spec, cols, rows, onEvent, prediction = false) {
       // 先建立接收通道再发起打开：后端可能在命令返回之前就开始推送输出
       const channel = new Channel<TerminalEventDto_Deserialize>();
       channel.onmessage = (e) => {
         if (e.kind === "output") onEvent({ kind: "output", data: base64ToBytes(e.data) });
         else onEvent({ kind: "exited", code: e.code ?? null, closedByUser: e.closedByUser, auth: e.auth ?? null });
       };
-      if (spec.kind === "local") return unwrap(await commands.terminalOpenLocal(spec.shellId, cols, rows, channel));
-      if (spec.kind === "server") return unwrap(await commands.terminalOpenServer(spec.serverId, cols, rows, channel));
-      return unwrap(await commands.terminalOpenQuick(spec.host, spec.port, spec.user, cols, rows, channel));
+      if (spec.kind === "local") return unwrap(await commands.terminalOpenLocal(spec.shellId, cols, rows, prediction, channel));
+      if (spec.kind === "server") return unwrap(await commands.terminalOpenServer(spec.serverId, cols, rows, prediction, channel));
+      return unwrap(await commands.terminalOpenQuick(spec.host, spec.port, spec.user, cols, rows, prediction, channel));
     },
     write(id, data) {
       const next = (queues.get(id) ?? Promise.resolve())

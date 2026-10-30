@@ -223,3 +223,48 @@ fn wsl启动器不加包装脚本() {
         r"C:\Program Files\Git\bin\bash.exe"
     )));
 }
+
+#[cfg(unix)]
+#[test]
+fn 仅gitbash且环境显式启用时安装预测钩子() {
+    for git in [false, true] {
+        for predict in [None, Some("0"), Some("1"), Some("invalid")] {
+            let root = crate::test_support::tempdir();
+            fs::write(root.path().join(".bashrc"), "PS1='LOCAL> '\n").unwrap();
+            let script = write_script(root.path(), "test.rc", &script(false, git)).unwrap();
+            let mut command = std::process::Command::new("/bin/bash");
+            command.args([
+                    "--rcfile",
+                    script.to_str().unwrap(),
+                    "-ic",
+                    "declare -F __pl_pre; declare -p PROMPT_COMMAND; printf 'PREDICT=%s\\n' \"${PIERLINK_PREDICT-unset}\"; /bin/bash --norc -c 'printf \"CHILD-PREDICT=%s\\n\" \"${PIERLINK_PREDICT-unset}\"'",
+                ])
+                .env("HOME", root.path())
+                .env_remove("PIERLINK_PREDICT")
+                .env("HISTFILE", "/dev/null");
+            if let Some(predict) = predict {
+                command.env("PIERLINK_PREDICT", predict);
+            }
+            let output = command.output().unwrap();
+            assert!(output.status.success());
+            let text = String::from_utf8_lossy(&output.stdout);
+            let enabled = git && predict == Some("1");
+            assert_eq!(text.contains("\x1b]7701;i;native=0\x07"), enabled);
+            assert_eq!(text.contains("__pl_pre"), enabled);
+            assert!(text.contains("__pierlink_report_cwd"));
+            let expected = if git {
+                "unset"
+            } else {
+                predict.unwrap_or("unset")
+            };
+            assert!(
+                text.contains(&format!("\nPREDICT={expected}\n")),
+                "{text:?}"
+            );
+            assert!(
+                text.contains(&format!("\nCHILD-PREDICT={expected}\n")),
+                "{text:?}"
+            );
+        }
+    }
+}

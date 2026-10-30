@@ -24,6 +24,7 @@ pub mod remote;
 pub mod security;
 pub mod server_input;
 pub mod sftp;
+mod shell_integration;
 pub mod ssh;
 pub mod storage;
 pub mod sync;

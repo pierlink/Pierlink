@@ -25,4 +25,5 @@ pub struct ExplicitTarget {
     pub(crate) config_file: PathBuf,
     pub(crate) hostname: String,
     pub(crate) user: String,
+    pub(crate) has_remote_command: bool,
 }

@@ -23,12 +23,14 @@ pub enum TerminalRequest {
 }
 
 /// 按 options 和 auth 建立回显终端对端，将 PTY、环境、shell、exec 和尺寸请求写入 requests。
+/// sshid 指定服务端 SSH 版本字符串，为 None 时使用默认值。
 /// 返回真实已认证的内存连接；不启动本机进程或监听端口。
 pub fn connect_terminal(
     engine: &Engine,
     options: ConnectionOptions,
     auth: Authentication,
     requests: Arc<Mutex<Vec<TerminalRequest>>>,
+    sshid: Option<&str>,
 ) -> Result<Connection> {
     // 小传输缓冲确保终端回显与换钥在写入背压下仍能推进。
     crate::memory_peer::connect_peer(
@@ -36,6 +38,7 @@ pub fn connect_terminal(
         options,
         auth,
         crate::memory_peer::Peer {
+            server_id: sshid.map(str::to_owned),
             terminal_requests: requests,
             ..Default::default()
         },

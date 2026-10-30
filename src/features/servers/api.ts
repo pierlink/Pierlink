@@ -22,6 +22,8 @@ export interface ServerRecord {
   connectionEngine: "builtin" | "openssh";
   /** 为什么用系统 OpenSSH（导入时写的，或内置连不上后改用时写的） */
   engineNote: string | null;
+  /** 命令预测：true 跟随全局设置，false 这台服务器关闭（连接时也不装提示符钩子） */
+  commandPrediction: boolean;
 }
 
 /** 新建或修改服务器的表单 */
@@ -68,6 +70,8 @@ export interface ServersApi {
   setFavorite(id: string, favorite: boolean): Promise<void>;
   /** 只改连接方式（内置 SSH 连不上时“改用系统 OpenSSH 重试”）；note 是显示在服务器设置里的原因，null 清掉 */
   setEngine(id: string, engine: "builtin" | "openssh", note: string | null): Promise<ServerRecord>;
+  /** 打开（跟随全局设置）或关闭这台服务器的命令预测；各种来源的服务器都可以设 */
+  setCommandPrediction(id: string, enabled: boolean): Promise<ServerRecord>;
   /** 预览把导入的服务器转成内置 SSH（不改数据） */
   convertPreview(id: string): Promise<ConversionPreview>;
   /** 按刚才的预览转换：变成应用内添加、用内置 SSH 的服务器 */
@@ -102,7 +106,7 @@ export function serverAddress(s: ServerRecord): string {
 /** 浏览器预览用：内存里的示例数据，刷新页面后恢复 */
 function createPreviewApi(): ServersApi {
   let seq = 10;
-  const base = { groupName: null, favorite: false, source: "manual" as const, sshAlias: null, port: 22, authMethod: "agent" as const, identityFile: null, loginShell: null, hasPassword: false, notes: "", connectionEngine: "builtin" as const, engineNote: null };
+  const base = { groupName: null, favorite: false, source: "manual" as const, sshAlias: null, port: 22, authMethod: "agent" as const, identityFile: null, loginShell: null, hasPassword: false, notes: "", connectionEngine: "builtin" as const, engineNote: null, commandPrediction: true };
   let items: ServerRecord[] = [
     { ...base, id: "s1", name: "gpu-dev", host: "203.0.113.18", username: "dev", favorite: true },
     { ...base, id: "s2", name: "hk-web-01", host: "198.51.100.7", username: "deploy", favorite: true },
@@ -132,6 +136,10 @@ function createPreviewApi(): ServersApi {
     async setFavorite(id, favorite) { items = items.map((x) => (x.id === id ? { ...x, favorite } : x)); },
     async setEngine(id, engine, note) {
       items = items.map((x) => (x.id === id ? { ...x, connectionEngine: engine, engineNote: note } : x));
+      return items.find((x) => x.id === id)!;
+    },
+    async setCommandPrediction(id, enabled) {
+      items = items.map((x) => (x.id === id ? { ...x, commandPrediction: enabled } : x));
       return items.find((x) => x.id === id)!;
     },
     async updateLink(id, groupName, notes) {

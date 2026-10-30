@@ -2,6 +2,12 @@ import type { OpenSpec, TerminalBackend, TerminalEvent } from "./types";
 
 const enc = new TextEncoder();
 
+/** 像装了 Pierlink shell 钩子一样给提示符加上标记（OSC 133 A/B），预览里也能看命令预测 */
+const marked = (prompt: string) => `\x1b]133;A\x07${prompt}\x1b]133;B\x07`;
+/** 一条命令结束后的标记：退出码、命令记录、当前目录 */
+const finished = (line: string) =>
+  `\x1b]133;D;0\x07\x1b]7701;c;0;${btoa(String.fromCharCode(...enc.encode(line)))}\x07\x1b]7;file://preview/home/preview\x07`;
+
 /**
  * 浏览器里调试界面用的预览后端：不连接任何东西，只回显输入。
  * 运行在 Tauri 里时不会用到它。
@@ -18,7 +24,7 @@ export function createPreviewBackend(banner: (spec: OpenSpec) => string, promptF
       const id = `preview-${++seq}`;
       const prompt = promptFor?.(spec) ?? defaultPrompt;
       sessions.set(id, { emit: onEvent, line: "", busy: false, prompt });
-      queueMicrotask(() => onEvent({ kind: "output", data: enc.encode(`${banner(spec)}\r\n${prompt}`) }));
+      queueMicrotask(() => onEvent({ kind: "output", data: enc.encode(`${banner(spec)}\r\n${marked(prompt)}`) }));
       return id;
     },
     async write(id, data) {
@@ -36,12 +42,12 @@ export function createPreviewBackend(banner: (spec: OpenSpec) => string, promptF
           }
           // 预览里用 sleep 模拟“有程序在运行”：不出提示符，直到 Ctrl+C
           if (/^sleep\b/.test(s.line.trim())) { out += "\r\n"; s.busy = true; s.line = ""; continue; }
-          out += `\r\n${s.line ? `${s.line}\r\n` : ""}${prompt}`;
+          out += `\r\n${s.line ? `${s.line}\r\n${finished(s.line)}` : ""}${marked(prompt)}`;
           s.line = "";
         } else if (ch === "\x7f") {
           if (s.line) { s.line = s.line.slice(0, -1); out += "\b \b"; }
         } else if (ch === "\x03") {
-          out += `^C\r\n${prompt}`;
+          out += `^C\r\n${marked(prompt)}`;
           s.line = "";
           s.busy = false;
         } else if (ch >= " ") {

@@ -12,6 +12,7 @@ import { announceUpdate } from "../updates/UpdateNotice";
 import { formatError } from "../../errors";
 import { BackupSection } from "./BackupSection";
 import { MobileSection } from "../mobile/MobileSection";
+import { clearHistory } from "../terminal/history";
 import "./settings.css";
 
 type Section = "appearance" | "terminal" | "desktop" | "sync" | "phone" | "backup" | "about";
@@ -115,6 +116,8 @@ export function SettingsPage({ version }: { version: string | null }) {
     return () => main.removeEventListener("scroll", onScroll);
   }, []);
   const [checking, setChecking] = useState(false);
+  const [historyCleared, setHistoryCleared] = useState(false);
+  const [historyError, setHistoryError] = useState<string | null>(null);
   const [updateResult, setUpdateResult] = useState<{ tone: "ok" | "accent" | "danger"; text: string } | null>(null);
   const checkUpdate = () => {
     setChecking(true);
@@ -209,6 +212,13 @@ export function SettingsPage({ version }: { version: string | null }) {
             <Row label={t("settings.term.closeConfirm")} hint={t("settings.term.closeConfirmHint")}>
               <Switch label={t("settings.term.closeConfirm")} checked={term.confirmClose} onChange={(v) => setTerm({ confirmClose: v })} />
             </Row>
+            <Row label={t("settings.term.prediction")} hint={t("settings.term.predictionHint")}>
+              <Switch label={t("settings.term.prediction")} checked={term.commandPrediction} onChange={(v) => setTerm({ commandPrediction: v })} />
+            </Row>
+            <Row label={t("settings.term.clearHistory")} hint={historyCleared ? t("settings.term.historyCleared") : undefined}>
+              <Button size="sm" onClick={() => { void clearHistory().then(() => setHistoryCleared(true), (e: unknown) => setHistoryError(formatError(e))); }}>{t("settings.term.clearHistoryButton")}</Button>
+            </Row>
+            {historyError && <Banner tone="danger" title={historyError} />}
             <Row label={t("settings.term.shortcuts")} hint={t("settings.term.shortcutsHint")}>
               <span className="set-kbd mono">Ctrl+C / Ctrl+V / Ctrl+Shift+B</span>
             </Row>

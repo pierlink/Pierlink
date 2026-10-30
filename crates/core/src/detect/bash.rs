@@ -11,7 +11,7 @@ const USER_RC: &str = r#"if [[ -r ~/.bashrc ]]; then
     . ~/.bashrc
 fi
 "#;
-const LOGIN_RC: &str = r#"# --login 会令 Bash 忽略 --rcfile，因此在包装脚本中按登录顺序加载配置。
+pub(crate) const LOGIN_RC: &str = r#"# --login 会令 Bash 忽略 --rcfile，因此在包装脚本中按登录顺序加载配置。
 if [[ -r /etc/profile ]]; then
     . /etc/profile
 fi
@@ -53,8 +53,16 @@ fn script(login: bool, git: bool) -> String {
     } else {
         "$PWD"
     };
+    let prediction = if git {
+        format!(
+            "\nif [[ ${{PIERLINK_PREDICT-}} == 1 ]]; then\n{}\nfi\nunset PIERLINK_PREDICT\n",
+            crate::shell_integration::bash_hook()
+        )
+    } else {
+        String::new()
+    };
     format!(
-        "{startup}\n__pierlink_report_cwd() {{\n    printf '\\033]9;9;\"%s\"\\033\\\\' \"{path}\"\n}}\n{APPEND_HOOK}"
+        "{startup}\n__pierlink_report_cwd() {{\n    printf '\\033]9;9;\"%s\"\\033\\\\' \"{path}\"\n}}\n{APPEND_HOOK}{prediction}"
     )
 }
 struct PendingFile(PathBuf);

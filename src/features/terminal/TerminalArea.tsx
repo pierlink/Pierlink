@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
-import { Bot, Columns2, FolderOpen, Gauge, Monitor, Radio, Rows2, X } from "lucide-react";
+import { Bot, Columns2, FolderOpen, Gauge, Monitor, Plug, Radio, Rows2, Unplug, X } from "lucide-react";
 import { Button, Dialog, Menu, TextField, type MenuEntry } from "../../components";
 import { formatError } from "../../errors";
 import { TabBar } from "../workspace/TabBar";
@@ -1099,6 +1099,24 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
                             <button type="button" className="pane__ai-back" onClick={() => takeBack(id)}>{t("terminal.handover.takeBack")}</button>
                           </span>
                         )}
+                        {p.spec.kind !== "local" && !p.handover && !(p.ai && !p.ai.takenOver) && (() => {
+                          // 服务器终端的“连接 / 断开”：连着时断开（内容留着），没连着时连接（和按 Enter 一样）。
+                          // AI 正在用的终端不给：断开后 AI 那边收不了尾，要断开先收回
+                          const live = !p.restored && p.status === "running";
+                          const label = live ? t("terminal.disconnect") : t("terminal.connect");
+                          return (
+                            <button type="button" className="pane__btn" title={label} aria-label={label}
+                              onClick={() => {
+                                const h = handles.current.get(id);
+                                if (p.restored) revive(id);
+                                else if (live) h?.disconnect();
+                                else h?.reconnect();
+                                h?.focus();
+                              }}>
+                              {live ? <Unplug size={14} /> : <Plug size={14} />}
+                            </button>
+                          );
+                        })()}
                         {!p.handover && !p.ai && p.session && p.spec.kind !== "quick" && (
                           <button type="button" className="pane__btn" title={t("terminal.handover.button")} aria-label={t("terminal.handover.button")} aria-haspopup="menu"
                             onClick={(e) => openHandoverMenu(e.currentTarget, id)}>
@@ -1231,6 +1249,8 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
                       onSplit={(dir) => splitSame(tab.key, id, dir)}
                       canSplit={(dir) => canSplit(id, dir)}
                       fileDrop={fileDrop === id}
+                      prediction={settings.terminal.commandPrediction && !(p.ai && !p.ai.takenOver) && !p.handover
+                        && !(p.spec.kind === "server" && servers.find((x) => p.spec.kind === "server" && x.id === p.spec.serverId)?.noPrediction)}
                       broadcasting={inBroadcast}
                       onInput={inBroadcast ? (data) => onBroadcastInput(tab.key, id, data) : undefined}
                       onOutput={inBroadcast ? (tail) => onBroadcastOutput(tab.key, id, tail) : undefined}

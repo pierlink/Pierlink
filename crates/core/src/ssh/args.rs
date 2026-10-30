@@ -13,6 +13,8 @@ pub enum Purpose {
     Terminal {
         login_shell: Option<String>,
         cwd_marker: Option<String>,
+        /// 是否注入提示符与命令记录标记；关闭时保留原连接命令。
+        integration: bool,
     },
     Background,
     /// 主机密钥确认；隔离配置中每一级均允许交互确认，但禁止密码认证。
@@ -118,6 +120,8 @@ pub struct CommonOpts {
     pub known_hosts: Option<PathBuf>,
     pub askpass: Option<AskPass>,
     pub connect_timeout: Option<u16>,
+    /// 别名目标的 ssh -G 结果；未知时保守跳过集成，避免覆盖 RemoteCommand。
+    pub has_remote_command: Option<bool>,
 }
 
 /// 调用方用 args 和 env 设置子进程，不修改当前进程环境。
@@ -243,6 +247,7 @@ pub fn explicit_target(
         config_file: config_file.into(),
         hostname: cfg.hostname.clone(),
         user: cfg.user.clone(),
+        has_remote_command: cfg.has_remote_command,
     })
 }
 
@@ -261,8 +266,11 @@ impl std::fmt::Debug for SshCommand {
     }
 }
 
-pub(crate) fn terminal_command(shell: &Option<String>) -> Result<Option<String>, AppError> {
-    shell
+pub(crate) fn terminal_command(
+    shell: &Option<String>,
+    integration: bool,
+) -> Result<Option<String>, AppError> {
+    let original = shell
         .as_ref()
         .map(|s| {
             text(s, "login_shell")?;
@@ -275,7 +283,12 @@ pub(crate) fn terminal_command(shell: &Option<String>) -> Result<Option<String>,
             }
             Ok(format!("exec {} -l", sh_quote(s)?))
         })
-        .transpose()
+        .transpose()?;
+    if integration {
+        crate::shell_integration::command(shell.as_deref()).map(Some)
+    } else {
+        Ok(original)
+    }
 }
 
 /// 按目标、用途及公共设置生成 SSH 参数和子进程环境；非法值返回不含原文的错误。
@@ -552,8 +565,20 @@ pub fn build_args(
         Purpose::Background => args.push("/bin/sh -s".into()),
         Purpose::HostKeyProbe => args.push("exit".into()),
         Purpose::Sftp => args.push("sftp".into()),
-        Purpose::Terminal { login_shell, .. } => {
-            if let Some(command) = terminal_command(login_shell)? {
+        Purpose::Terminal {
+            login_shell,
+            integration,
+            ..
+        } => {
+            let has_remote_command = opts.has_remote_command == Some(true)
+                || match target {
+                    SshTarget::Alias { .. } => opts.has_remote_command.unwrap_or(true),
+                    SshTarget::Explicit(target) => target.has_remote_command,
+                    SshTarget::Manual { .. } => false,
+                };
+            if let Some(command) =
+                terminal_command(login_shell, *integration && !has_remote_command)?
+            {
                 args.push(command);
             }
         }
@@ -576,6 +601,64 @@ pub fn build_args(
 mod tests {
     use super::*;
     #[test]
+    fn 配置远程命令时跳过集成且保留登录shell覆盖行为() {
+        let mut cfg =
+            super::super::config::parse_ssh_g(include_str!("../../tests/data/ssh-g.txt")).unwrap();
+        for has_remote_command in [false, true] {
+            cfg.has_remote_command = has_remote_command;
+            let explicit = SshTarget::Explicit(Box::new(
+                explicit_target(&cfg, "dev", Path::new("config")).unwrap(),
+            ));
+            for target in [&alias(), &explicit] {
+                let opts = CommonOpts {
+                    known_hosts: Some("hosts".into()),
+                    has_remote_command: Some(has_remote_command),
+                    ..Default::default()
+                };
+                for shell in [None, Some("/bin/bash".into())] {
+                    let purpose = Purpose::Terminal {
+                        login_shell: shell.clone(),
+                        cwd_marker: None,
+                        integration: true,
+                    };
+                    let command = build_args(target, &purpose, &opts).unwrap();
+                    assert_eq!(
+                        command
+                            .args
+                            .last()
+                            .unwrap()
+                            .starts_with("exec /bin/sh -c '"),
+                        !has_remote_command
+                    );
+                    assert_eq!(
+                        has(&command.args, ["-o", "RemoteCommand=none"]),
+                        shell.is_some()
+                    );
+                    if has_remote_command {
+                        let old = build_args(
+                            target,
+                            &Purpose::Terminal {
+                                login_shell: shell,
+                                cwd_marker: None,
+                                integration: false,
+                            },
+                            &opts,
+                        )
+                        .unwrap();
+                        assert_eq!(command, old);
+                    }
+                }
+            }
+        }
+        let purpose = Purpose::Terminal {
+            login_shell: None,
+            cwd_marker: None,
+            integration: true,
+        };
+        assert_eq!(build(&alias(), purpose).args.last().unwrap(), "example");
+    }
+
+    #[test]
     fn 终端目录标记严格校验及setenv() {
         let marker = "Abc_123-xyz";
         let command = build(
@@ -583,6 +666,7 @@ mod tests {
             Purpose::Terminal {
                 login_shell: None,
                 cwd_marker: Some(marker.into()),
+                integration: false,
             },
         );
         assert!(has(&command.args, ["-o", "SendEnv=LC_PIERLINK_TERM"]));
@@ -596,6 +680,7 @@ mod tests {
             Purpose::Terminal {
                 login_shell: None,
                 cwd_marker: None,
+                integration: false,
             },
         );
         assert!(!plain.args.iter().any(|a| a.contains("LC_PIERLINK_TERM")));
@@ -606,6 +691,7 @@ mod tests {
                 &Purpose::Terminal {
                     login_shell: None,
                     cwd_marker: Some(marker.into()),
+                    integration: false,
                 },
                 &CommonOpts::default(),
             )
@@ -646,10 +732,12 @@ mod tests {
             Purpose::Terminal {
                 login_shell: None,
                 cwd_marker: None,
+                integration: false,
             },
             Purpose::Terminal {
                 login_shell: Some("/bin/sh".into()),
                 cwd_marker: None,
+                integration: false,
             },
         ] {
             let args = build(&alias(), purpose.clone()).args;
@@ -675,7 +763,8 @@ mod tests {
                     purpose,
                     Purpose::Terminal {
                         login_shell: None,
-                        cwd_marker: None
+                        cwd_marker: None,
+                        ..
                     }
                 )
             );
@@ -935,6 +1024,7 @@ mod tests {
                 Purpose::Terminal {
                     login_shell: Some("/bin/sh".into()),
                     cwd_marker: None,
+                    integration: false,
                 },
             )
             .args,
@@ -947,6 +1037,7 @@ mod tests {
     #[test]
     fn s23_s24_s25_认证隔离和后台安全选项() {
         let opts = CommonOpts {
+            has_remote_command: None,
             dedicated_key: None,
             config_file: Some("/app/config".into()),
             known_hosts: Some("/app/hosts".into()),
@@ -1003,6 +1094,7 @@ mod tests {
             &Purpose::Terminal {
                 login_shell: None,
                 cwd_marker: None,
+                integration: false,
             },
             &opts,
         )
@@ -1045,7 +1137,7 @@ mod tests {
             assert!(name(bad, "user", false).is_err(), "{bad:?}");
         }
         for bad in ["/bin/a b", "fish;id", "$(id)", "中文", "a'", "a\n"] {
-            assert!(terminal_command(&Some(bad.into())).is_err());
+            assert!(terminal_command(&Some(bad.into()), true).is_err());
         }
         assert_eq!(
             config_word(r"C:\100%\hosts", "path").unwrap(),
@@ -1075,6 +1167,7 @@ mod tests {
             Purpose::Terminal {
                 login_shell: None,
                 cwd_marker: None,
+                integration: false,
             },
         ] {
             let cmd = build(&alias(), purpose.clone());
@@ -1132,6 +1225,7 @@ mod tests {
     #[test]
     fn askpass_只传引用且覆盖批处理配置() {
         let opts = CommonOpts {
+            has_remote_command: None,
             dedicated_key: None,
             known_hosts: Some("C:\\中文 空格\\known_hosts".into()),
             askpass: Some(AskPass {
@@ -1151,6 +1245,7 @@ mod tests {
             Purpose::Terminal {
                 login_shell: None,
                 cwd_marker: None,
+                integration: false,
             },
         ] {
             let cmd = build_args(&manual(), &purpose, &opts).unwrap();
@@ -1196,6 +1291,7 @@ mod tests {
                     hostname: host.into(),
                     user: "Alice".into(),
                     config_file: "config".into(),
+                    has_remote_command: false,
                 })),
             ];
             for target in targets {
@@ -1264,6 +1360,7 @@ mod tests {
             Purpose::Terminal {
                 login_shell: Some(shell.into()),
                 cwd_marker: None,
+                integration: false,
             },
         );
         assert_eq!(
@@ -1319,6 +1416,7 @@ mod tests {
                 &alias(),
                 &Purpose::Background,
                 &CommonOpts {
+                    has_remote_command: None,
                     dedicated_key: None,
                     known_hosts: Some("a\"\nProxyCommand secret".into()),
                     askpass: None,
@@ -1334,6 +1432,7 @@ mod tests {
                 &Purpose::Terminal {
                     login_shell: Some("x\0secret".into()),
                     cwd_marker: None,
+                    integration: false,
                 },
                 &CommonOpts::default()
             )
@@ -1344,6 +1443,7 @@ mod tests {
     #[cfg(unix)]
     fn 参数被真实_openssh_接受() {
         let opts = CommonOpts {
+            has_remote_command: None,
             dedicated_key: None,
             known_hosts: Some("/中文 空格/a'hosts".into()),
             askpass: None,
@@ -1413,6 +1513,7 @@ mod dedicated_tests {
             Purpose::Terminal {
                 login_shell: None,
                 cwd_marker: None,
+                integration: false,
             },
             Purpose::Sftp,
             Purpose::Tunnel {
@@ -1466,6 +1567,7 @@ mod dedicated_tests {
             hostname: "host".into(),
             user: "user".into(),
             config_file: config,
+            has_remote_command: false,
         }));
         let opts = CommonOpts {
             dedicated_key: Some(DedicatedKey {

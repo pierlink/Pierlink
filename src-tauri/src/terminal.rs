@@ -411,6 +411,7 @@ pub async fn terminal_open_local(
     shell_id: String,
     cols: u16,
     rows: u16,
+    prediction: bool,
     on_event: Channel<TerminalEventDto>,
 ) -> Result<String, AppError> {
     let owner = webview.label().to_owned();
@@ -429,8 +430,9 @@ pub async fn terminal_open_local(
                 // 和 Windows Terminal 一样从用户主目录开始；不设置时会继承 Pierlink 进程的目录
                 //（从开始菜单启动时是安装目录）
                 cwd: user_home(),
-                // 提示符钩子（报告当前目录给文件面板）需要的环境变量
-                env: shell.env.clone(),
+                // 提示符钩子（报告当前目录给文件面板）需要的环境变量；
+                // Git Bash 打开命令预测时再装上提示符标记和命令记录
+                env: local_env(shell, prediction),
             },
             cols,
             rows,
@@ -476,6 +478,7 @@ pub async fn terminal_open_quick(
     user: Option<String>,
     cols: u16,
     rows: u16,
+    prediction: bool,
     on_event: Channel<TerminalEventDto>,
 ) -> Result<String, AppError> {
     let loc = crate::files::LocDto::Quick {
@@ -499,6 +502,7 @@ pub async fn terminal_open_quick(
         loc,
         cols,
         rows,
+        prediction,
         on_event,
     )
     .await
@@ -513,6 +517,7 @@ pub async fn terminal_open_server(
     server_id: String,
     cols: u16,
     rows: u16,
+    prediction: bool,
     on_event: Channel<TerminalEventDto>,
 ) -> Result<String, AppError> {
     let server = crate::servers::load(&app, &server_id)?;
@@ -527,9 +532,36 @@ pub async fn terminal_open_server(
         crate::files::LocDto::Server { server_id },
         cols,
         rows,
+        prediction,
         on_event,
     )
     .await
+}
+
+/// 本机终端的环境变量：Git Bash 打开命令预测时加上 PIERLINK_PREDICT=1（包装脚本据此装上提示符标记）。
+fn local_env(shell: &LocalShell, prediction: bool) -> Vec<(String, String)> {
+    let mut env = shell.env.clone();
+    if prediction && shell.kind == shells::ShellKind::GitBash {
+        env.push(("PIERLINK_PREDICT".into(), "1".into()));
+    }
+    env
+}
+
+/// 导入自 ssh config 的服务器有没有配 RemoteCommand：要装命令预测的钩子时先用 ssh -G 查一下，
+/// 有的话不装（不能覆盖用户自己的远程命令）；查不出来返回 None，同样不装。
+fn alias_remote_command(app: &AppHandle, target: &SshTarget) -> Option<bool> {
+    let SshTarget::Alias { alias } = target else {
+        return None;
+    };
+    let program = pierlink_core::process::SshProgram {
+        path: find_ssh(app).ok()?,
+    };
+    pierlink_core::ssh::config_file::resolve_alias(&program, alias, Duration::from_secs(5))
+        .map(|cfg| cfg.has_remote_command)
+        .map_err(|e| {
+            eprintln!("查询 RemoteCommand 失败，不装命令预测的钩子: 别名={alias}, 错误={e:?}")
+        })
+        .ok()
 }
 
 /// 打开远程终端的公共部分
@@ -543,6 +575,7 @@ async fn open_remote(
     loc: crate::files::LocDto,
     cols: u16,
     rows: u16,
+    prediction: bool,
     on_event: Channel<TerminalEventDto>,
 ) -> Result<String, AppError> {
     let owner = webview.label().to_owned();
@@ -550,9 +583,14 @@ async fn open_remote(
     blocking(app, move |app, state| {
         // 给这个终端一个标记，文件面板据此在服务器上找到它的 shell、查当前目录
         let marker = crate::files::new_marker();
+        let mut opts = opts;
+        if prediction && matches!(target, SshTarget::Alias { .. }) {
+            opts.has_remote_command = alias_remote_command(app, &target);
+        }
         let purpose = Purpose::Terminal {
             login_shell,
             cwd_marker: Some(marker.clone()),
+            integration: prediction,
         };
         let openssh = || -> Result<TerminalKind, AppError> {
             Ok(TerminalKind::Remote {
@@ -580,6 +618,7 @@ async fn open_remote(
                             cancelled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                         },
                         Some(marker.clone()),
+                        prediction,
                         openssh,
                     )?,
                     _ => openssh()?,

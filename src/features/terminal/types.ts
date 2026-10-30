@@ -26,7 +26,8 @@ export type HostKeyStep =
 export interface TerminalBackend {
   /** 是否是浏览器里的预览实现 */
   readonly preview: boolean;
-  open(spec: OpenSpec, cols: number, rows: number, onEvent: (e: TerminalEvent) => void): Promise<string>;
+  /** prediction：装上命令预测的 shell 钩子（服务器 bash、zsh 和本机 Git Bash；其他终端忽略） */
+  open(spec: OpenSpec, cols: number, rows: number, onEvent: (e: TerminalEvent) => void, prediction?: boolean): Promise<string>;
   write(id: string, data: string): Promise<void>;
   resize(id: string, cols: number, rows: number): Promise<void>;
   /** 告诉后端前端已经处理完多少字节（流量控制） */

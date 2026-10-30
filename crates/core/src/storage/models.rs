@@ -59,6 +59,9 @@ pub struct Server {
     pub host_key_alias: Option<String>,
     pub jump_server_id: Option<String>,
     pub login_shell: Option<String>,
+    /// true 跟随全局命令预测设置，false 关闭；旧迁移包缺省为跟随全局。
+    #[serde(default = "default_command_prediction")]
+    pub command_prediction: bool,
     pub use_tmux: bool,
     pub remember_password: bool,
     pub password_cred: Option<String>,
@@ -97,6 +100,7 @@ impl Server {
             host_key_alias: row.get("host_key_alias")?,
             jump_server_id: row.get("jump_server_id")?,
             login_shell: row.get("login_shell")?,
+            command_prediction: row.get("command_prediction")?,
             use_tmux: row.get("use_tmux")?,
             remember_password: row.get("remember_password")?,
             password_cred: row.get("password_cred")?,
@@ -107,6 +111,10 @@ impl Server {
             updated_at: row.get("updated_at")?,
         })
     }
+}
+
+fn default_command_prediction() -> bool {
+    true
 }
 
 fn default_sync_mode() -> EndpointMode {

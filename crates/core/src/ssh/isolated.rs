@@ -520,6 +520,7 @@ mod manual_tests {
             Purpose::Terminal {
                 login_shell: None,
                 cwd_marker: None,
+                integration: false,
             },
         ] {
             let cmd = build_args(&chain(3), &purpose, &settings).unwrap();

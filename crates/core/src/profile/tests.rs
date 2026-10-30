@@ -30,6 +30,7 @@ fn server(id: &str) -> Server {
         host_key_alias: Some("已知主机".into()),
         jump_server_id: None,
         login_shell: Some("/bin/zsh".into()),
+        command_prediction: true,
         use_tmux: false,
         remember_password: true,
         password_cred: Some(format!("pierlink/server/{id}/password")),
@@ -93,6 +94,7 @@ fn 导出经文件解析导入空库保留全部配置与不透明设置() {
     source.insert_server(&jump).unwrap();
     let mut target = server("target");
     target.jump_server_id = Some(jump.id.clone());
+    target.command_prediction = false;
     target.sort_order = -1;
     target.auth_method = AuthMethod::DedicatedKey;
     target.identity_file = Some(root.path().join("missing-key").to_string_lossy().into());

@@ -18,9 +18,13 @@ impl Terminal {
             interactive: true,
             cancelled: Arc::new(AtomicBool::new(false)),
         };
-        let kind = terminal::remote(connections, request, Some("terminal-test".into()), || {
-            panic!("不能回退到 OpenSSH")
-        })
+        let kind = terminal::remote(
+            connections,
+            request,
+            Some("terminal-test".into()),
+            false,
+            || panic!("不能回退到 OpenSSH"),
+        )
         .unwrap();
         let manager = TerminalManager::new();
         let (tx, events) = mpsc::channel();

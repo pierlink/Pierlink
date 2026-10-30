@@ -204,3 +204,14 @@ body.pane-checking, body.pane-checking * { cursor: progress !important; }
   background: color-mix(in srgb, var(--accent) 10%, transparent);
 }
 .term-filedrop span { padding: 6px 12px; border-radius: var(--r-sm); background: var(--surface); color: var(--text); font-size: var(--fs-sm); box-shadow: var(--shadow-sm, 0 1px 3px rgb(0 0 0 / 0.2)); }
+
+/* 命令预测：光标后面的浅色文字。画在 xterm 的装饰层上，不在终端内容里，不能选中 */
+.term-ghost {
+  display: flex;
+  white-space: pre;
+  overflow: hidden;
+  pointer-events: none;
+  user-select: none;
+  opacity: 0.85;
+}
+.term-ghost > span { display: inline-block; flex: none; overflow: hidden; }

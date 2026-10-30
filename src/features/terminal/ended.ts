@@ -12,8 +12,13 @@ export type Ended =
   | { kind: "authFailed"; password?: boolean; twoFactor?: boolean; builtin?: boolean; tooManyAuth?: boolean }
   /** 没输密码（取消了密码框，或密码框开着时 ssh 等不及先退出了）：输入密码后自动重新连接 */
   | { kind: "passwordNeeded" }
-  /** 程序自己结束了 */
-  | { kind: "exited"; code: number | null }
+  /**
+   * 程序自己结束了。hookHint：带着命令预测的提示符钩子连上后很快就退出、一个提示符都没出现，
+   * 多半是钩子和这台服务器不兼容：off 表示已自动为这台服务器关掉预测；quick 表示快速连接，提示到设置里关
+   */
+  | { kind: "exited"; code: number | null; hookHint?: "off" | "quick" }
+  /** 用户点了“断开” */
+  | { kind: "disconnected" }
   /** 没能打开；builtin：内置 SSH 连不上，可以改用系统 OpenSSH 重试 */
   | { kind: "failed"; text: string; builtin?: boolean };
 
@@ -47,4 +52,28 @@ export function endedFromOpenError(err: unknown): Ended {
     default:
       return { kind: "failed", text: formatError(err), builtin };
   }
+}
+
+/**
+ * 断开、退出这几种不盖提示块：终端内容留着，只在最下面写一行说明（像 FinalShell）。
+ * 登录失败、没能打开等要用户选择怎么办的，仍然盖上提示块。
+ * @param ended 结束的情况
+ * @returns true 表示写一行说明，不盖提示块
+ */
+export function endsInline(ended: Ended): boolean {
+  return ended.kind === "lost" || ended.kind === "exited" || ended.kind === "disconnected";
+}
+
+/**
+ * 结束时写进终端的内容：先退出全屏程序的备用屏幕，恢复光标、按键模式、滚动区域，关掉鼠标上报，
+ * 再在新的一行写上说明，最后隐藏光标（会话已经结束，不能再输入）。
+ * @param text 说明文字
+ * @param warn true 用黄色（连接断开），false 用灰色
+ * @param alt 当前是不是在备用屏幕（vim、less 等全屏程序里）
+ * @returns 要写进终端的文字
+ */
+export function endedLine(text: string, warn: boolean, alt: boolean): string {
+  // \x1b[!p 是软复位：光标显示、键盘模式、滚动区域、字符属性回到默认，不移动光标
+  const reset = `${alt ? "\x1b[?1049l" : ""}\x1b[!p\x1b[?9l\x1b[?1000l\x1b[?1002l\x1b[?1003l`;
+  return `${reset}\r\n\x1b[${warn ? "33" : "90"}m${text}\x1b[0m\r\n\x1b[?25l`;
 }

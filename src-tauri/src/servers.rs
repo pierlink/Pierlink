@@ -34,6 +34,8 @@ pub struct ServerDto {
     pub connection_engine: Engine,
     /// 为什么用系统 OpenSSH（导入时写的，或内置连不上后改用时写的）
     pub engine_note: Option<String>,
+    /// 命令预测：true 跟随全局设置，false 这台服务器关闭（连接时也不装提示符钩子）
+    pub command_prediction: bool,
 }
 
 impl From<Server> for ServerDto {
@@ -54,6 +56,7 @@ impl From<Server> for ServerDto {
             has_password: s.remember_password && s.password_cred.is_some(),
             connection_engine: s.connection_engine,
             engine_note: s.engine_note,
+            command_prediction: s.command_prediction,
             notes: s.notes,
         }
     }
@@ -327,6 +330,31 @@ pub async fn server_set_engine(
     if changed {
         crate::builtin::connection_changed(&app, &id).await;
     }
+    Ok(dto)
+}
+
+/// 打开或关闭这台服务器的命令预测；关闭后下次连接也不装提示符钩子。各种来源的服务器都可以设
+///
+/// :param id: 服务器 id
+/// :param enabled: true 跟随全局设置，false 关闭
+/// :return: 保存后的服务器；不存在时返回 `server.not_found`
+#[tauri::command]
+#[specta::specta]
+pub async fn server_set_command_prediction(
+    app: AppHandle,
+    id: String,
+    enabled: bool,
+) -> Result<ServerDto, AppError> {
+    let dto = app.state::<DbState>().with(|db| {
+        let mut server = db
+            .get_server(&id)?
+            .ok_or_else(|| AppError::new("server.not_found"))?;
+        server.command_prediction = enabled;
+        server.updated_at = now_ms();
+        db.update_server(&server)?;
+        Ok(ServerDto::from(server))
+    })?;
+    eprintln!("设置命令预测: 服务器={id}, 开启={enabled}");
     Ok(dto)
 }
 

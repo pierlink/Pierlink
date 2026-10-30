@@ -9,6 +9,7 @@ mod deploy;
 mod desktop;
 mod files;
 mod forwards;
+mod history;
 mod host_key;
 mod keys;
 mod mcp;
@@ -149,6 +150,9 @@ fn specta_builder() -> Builder<tauri::Wry> {
         profile::servers_export,
         profile::servers_import,
         snippets::snippet_list,
+        history::history_list,
+        history::history_add,
+        history::history_clear,
         snippets::snippet_save,
         snippets::snippet_delete,
         servers::server_set_favorite,
@@ -156,6 +160,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
         convert::server_convert_preview,
         convert::server_convert,
         servers::server_set_engine,
+        servers::server_set_command_prediction,
         builtin::server_login,
         servers::server_resolve,
         keys::key_status,

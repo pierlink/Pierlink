@@ -1,8 +1,10 @@
 //! SQLite 仓储：迁移、实体读写、路径约束及每日在线备份。
 //! 凭据只能传入凭据管理器的引用名；普通文本和设置不得用于存放秘密。
 mod backup;
+pub mod command_history;
 mod conversion;
 pub use backup::{Restored, open_or_restore};
+pub use command_history::CommandEntry;
 mod forwards;
 mod mobile;
 mod models;
@@ -78,7 +80,7 @@ fn io_error(error: std::io::Error) -> AppError {
 }
 
 /// 打开 path 指定的数据库并创建父目录；返回启用 WAL、外键、5 秒忙等待且完成迁移的 Db。
-/// 启动完整性检查失败返回 storage.corrupt，不自动覆盖损坏文件。
+/// 清理超过 180 天的命令历史；启动完整性检查失败返回 storage.corrupt，不自动覆盖损坏文件。
 pub fn open(path: &Path) -> Result<Db, AppError> {
     if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
         std::fs::create_dir_all(parent).map_err(io_error)?;
@@ -109,6 +111,7 @@ pub fn open(path: &Path) -> Result<Db, AppError> {
         M::up(include_str!("v6.sql")),
         M::up(include_str!("v7.sql")),
         M::up(include_str!("v8.sql")),
+        M::up(include_str!("v9.sql")),
     ])
     .to_latest(&mut conn)
     .map_err(|_| {
@@ -118,7 +121,20 @@ pub fn open(path: &Path) -> Result<Db, AppError> {
             "数据库结构迁移失败或版本不受支持",
         )
     })?;
-    Ok(Db { conn })
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .and_then(|duration| i64::try_from(duration.as_millis()).ok())
+        .ok_or_else(|| {
+            failure(
+                "storage.clock",
+                "storage.system_time_is_outside_the_supported_range",
+                "系统时间超出可保存范围",
+            )
+        })?;
+    let mut db = Db { conn };
+    db.prune_commands(now_ms)?;
+    Ok(db)
 }
 
 impl Db {
@@ -216,6 +232,11 @@ impl Db {
             tx.execute("DELETE FROM servers WHERE id=?1", [id])
                 .map_err(sql_error)?,
         )?;
+        tx.execute(
+            "DELETE FROM command_history WHERE scope=?1",
+            [format!("server:{id}")],
+        )
+        .map_err(sql_error)?;
         tx.commit().map_err(sql_error)
     }
 

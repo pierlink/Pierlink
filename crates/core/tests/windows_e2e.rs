@@ -177,6 +177,7 @@ fn run_once(ssh: &Path, key: &Path, user: &str) {
         &Purpose::Terminal {
             login_shell: None,
             cwd_marker: Some("winE2E".into()),
+            integration: false,
         },
         &opts,
     )

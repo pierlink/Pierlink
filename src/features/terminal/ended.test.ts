@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import "../../i18n";
-import { endedFromOpenError } from "./ended";
+import { endedFromOpenError, endedLine, endsInline } from "./ended";
 
 const err = (code: string, params: Record<string, string> = {}) => ({ code, params });
 
@@ -31,5 +31,28 @@ describe("终端打开失败时的提示块", () => {
     expect(endedFromOpenError(err("ssh.host_key_unknown", { engine: "builtin" }))).toMatchObject({ kind: "failed", builtin: true });
     expect(endedFromOpenError(err("ssh.failed"))).toMatchObject({ kind: "failed", builtin: false });
     expect(endedFromOpenError(new Error("x"))).toMatchObject({ kind: "failed" });
+  });
+});
+
+describe("断开和退出时写进终端的一行", () => {
+  it("断开、退出不盖提示块，登录失败和打不开仍然盖", () => {
+    expect(endsInline({ kind: "lost" })).toBe(true);
+    expect(endsInline({ kind: "disconnected" })).toBe(true);
+    expect(endsInline({ kind: "exited", code: 0 })).toBe(true);
+    expect(endsInline({ kind: "authFailed" })).toBe(false);
+    expect(endsInline({ kind: "passwordNeeded" })).toBe(false);
+    expect(endsInline({ kind: "failed", text: "x" })).toBe(false);
+  });
+
+  it("在备用屏幕里先退出备用屏幕；说明写在新的一行，最后隐藏光标", () => {
+    const alt = endedLine("连接已断开", true, true);
+    expect(alt.startsWith("\x1b[?1049l\x1b[!p")).toBe(true);
+    expect(alt).toContain("\r\n\x1b[33m连接已断开\x1b[0m\r\n");
+    expect(alt.endsWith("\x1b[?25l")).toBe(true);
+    const main = endedLine("已断开", false, false);
+    expect(main).not.toContain("?1049l");
+    expect(main).toContain("\x1b[90m已断开");
+    // 关掉鼠标上报：断开后点终端不再往外发鼠标序列
+    expect(main).toContain("\x1b[?1000l");
   });
 });

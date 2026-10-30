@@ -18,6 +18,7 @@ export function createTauriServersApi(): ServersApi {
     async remove(id) { unwrap(await commands.serverDelete(id)); },
     async setFavorite(id, favorite) { unwrap(await commands.serverSetFavorite(id, favorite)); },
     async setEngine(id, engine, note) { return unwrap(await commands.serverSetEngine(id, engine, note)); },
+    async setCommandPrediction(id, enabled) { return unwrap(await commands.serverSetCommandPrediction(id, enabled)); },
     async updateLink(id, groupName, notes) { return unwrap(await commands.serverUpdateLink(id, groupName, notes)); },
     async resolve(id) { return unwrap(await commands.serverResolve(id)); },
     async convertPreview(id) { return unwrap(await commands.serverConvertPreview(id)); },

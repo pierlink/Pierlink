@@ -132,7 +132,7 @@ mod tests {
                 db.conn
                     .query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0))
                     .unwrap(),
-                8
+                9
             );
             let devices = db.mobile_devices().unwrap();
             assert_eq!(devices.len(), 2);
@@ -172,7 +172,7 @@ mod tests {
             db.conn
                 .query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0))
                 .unwrap(),
-            8
+            9
         );
         db.conn.execute("INSERT INTO mobile_devices(id,name,token_hash,created_at,last_active_at) VALUES ('old','旧手机',?1,1,1)", [[1u8; 32]]).unwrap();
         let old = db.mobile_devices().unwrap().remove(0).device;

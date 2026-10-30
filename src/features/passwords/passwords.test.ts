@@ -6,7 +6,7 @@ import type { ServerRecord } from "../servers/api";
 const base: ServerRecord = {
   id: "s1", name: "gpu", groupName: null, favorite: false, source: "manual", sshAlias: null, host: "203.0.113.21", port: 22,
   username: "ml", authMethod: "password", identityFile: null, loginShell: null, hasPassword: false, notes: "",
-  connectionEngine: "builtin", engineNote: null,
+  connectionEngine: "builtin", engineNote: null, commandPrediction: true,
 };
 
 describe("共用密码", () => {

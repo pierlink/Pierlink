@@ -31,7 +31,7 @@ fn v1逐级到当前版本按来源迁移且重复打开保留用户选择() {
         db.conn
             .query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0))
             .unwrap(),
-        8
+        9
     );
     let mut manual = db.get_server("manual").unwrap().unwrap();
     assert_eq!(manual.connection_engine, Engine::Builtin);
@@ -166,6 +166,7 @@ fn server(id: &str, name: &str) -> Server {
         host_key_alias: None,
         jump_server_id: None,
         login_shell: Some("/bin/bash".into()),
+        command_prediction: true,
         use_tmux: true,
         remember_password: true,
         password_cred: Some(format!("pierlink/server/{id}/password")),
@@ -234,7 +235,7 @@ fn 数据库全部公共接口及异常约束() {
         db.conn
             .query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
             .unwrap(),
-        8
+        9
     );
     let tables: i64 = db
         .conn
@@ -244,7 +245,7 @@ fn 数据库全部公共接口及异常约束() {
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(tables, 11);
+    assert_eq!(tables, 12);
     // 建表语句要和接口约定文档一致；公开仓库不含开发文档，没有时跳过
     let doc = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/接口约定.md");
     match std::fs::read_to_string(&doc) {
@@ -782,6 +783,7 @@ fn 服务器实例记录的写入替换与删除() {
         host_key_alias: None,
         jump_server_id: None,
         login_shell: None,
+        command_prediction: true,
         use_tmux: false,
         remember_password: false,
         password_cred: None,
@@ -1240,7 +1242,7 @@ fn v1数据库升级保留任务且本机默认收发_设置往返() {
         db.conn
             .query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
             .unwrap(),
-        8
+        9
     );
     db.insert_server(&server("s", "服务器")).unwrap();
     db.set_endpoints("old", &[endpoint("old", "s")]).unwrap();
@@ -1457,7 +1459,7 @@ fn v1_v2升级当前版本保留转发与片段_排序默认零() {
             db.conn
                 .query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0))
                 .unwrap(),
-            8
+            9
         );
         let forwards = db.list_port_forwards(None).unwrap();
         assert_eq!(forwards[0].sort_order, 0);

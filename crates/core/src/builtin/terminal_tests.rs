@@ -9,24 +9,41 @@ use std::sync::mpsc;
 const MARKER: &str = "0123456789abcdef0123456789abcdef";
 
 fn fixture() -> (Fixture, Arc<Mutex<Vec<TerminalRequest>>>) {
+    fixture_with_sshid(None)
+}
+
+fn fixture_with_sshid(sshid: Option<&str>) -> (Fixture, Arc<Mutex<Vec<TerminalRequest>>>) {
     let mut f = Fixture::new(AuthMethod::Password);
     f.server.connection_engine = crate::storage::Engine::Builtin;
     let requests = Arc::new(Mutex::new(Vec::new()));
     let observed = requests.clone();
+    let sshid = sshid.map(str::to_owned);
     let engine = Engine::new().unwrap();
     *f.manager.pool.connector.lock().unwrap() = Some(Arc::new(move |_, _, options, auth| {
-        connect_terminal(&engine, options, auth, observed.clone())
+        connect_terminal(&engine, options, auth, observed.clone(), sshid.as_deref())
     }));
     (f, requests)
 }
 
 fn open(f: &Fixture, manager: &TerminalManager) -> (String, mpsc::Receiver<TerminalEvent>) {
+    open_with_integration(f, manager, false)
+}
+
+fn open_with_integration(
+    f: &Fixture,
+    manager: &TerminalManager,
+    integration: bool,
+) -> (String, mpsc::Receiver<TerminalEvent>) {
     let (tx, rx) = mpsc::channel();
     let mut request = f.request(false);
     request.class = ConnectionClass::Bulk;
-    let kind = terminal::remote(&f.manager, request, Some(MARKER.into()), || {
-        panic!("不能调用 OpenSSH")
-    })
+    let kind = terminal::remote(
+        &f.manager,
+        request,
+        Some(MARKER.into()),
+        integration,
+        || panic!("不能调用 OpenSSH"),
+    )
     .unwrap();
     let (id, registration) = manager
         .open_with_registration(
@@ -70,6 +87,73 @@ fn exited(rx: &mpsc::Receiver<TerminalEvent>) -> (Option<i32>, bool) {
         {
             return (code, closed_by_user);
         }
+    }
+}
+
+#[test]
+fn 内置终端对windows服务器的集成请求与关闭集成逐字节相同() {
+    for shell in [None, Some("/bin/bash")] {
+        let sshid = "SSH-2.0-OpenSSH_for_Windows_9.5";
+        let (mut f, requests) = fixture_with_sshid(Some(sshid));
+        f.server.login_shell = shell.map(str::to_owned);
+        let manager = TerminalManager::new();
+        let (first, first_rx) = open_with_integration(&f, &manager, true);
+        let integrated = requests.lock().unwrap().clone();
+        assert_eq!(
+            integrated.last(),
+            Some(&match shell {
+                None => TerminalRequest::Shell,
+                Some(_) => TerminalRequest::Exec(b"exec '/bin/bash' -l".to_vec()),
+            })
+        );
+        let connection = f.manager.get_connection(f.request(false)).unwrap();
+        assert_eq!(connection.remote_sshid(), Some(sshid));
+
+        let (second, second_rx) = open(&f, &manager);
+        assert_eq!(&requests.lock().unwrap()[integrated.len()..], integrated);
+        let reused = f.manager.get_connection(f.request(false)).unwrap();
+        assert!(connection.same_connection(&reused));
+        assert_eq!(reused.remote_sshid(), Some(sshid));
+        assert_eq!(connection.statistics().opened_sessions, 2);
+        assert_eq!(f.callbacks.passwords.load(Ordering::SeqCst), 1);
+
+        manager.close(&first).unwrap();
+        manager.close(&second).unwrap();
+        assert!(exited(&first_rx).1);
+        assert!(exited(&second_rx).1);
+    }
+}
+
+#[test]
+fn 内置终端对普通openssh服务器保留集成命令且仍可关闭() {
+    for shell in [None, Some("/bin/bash")] {
+        let sshid = "SSH-2.0-OpenSSH_9.6p1 Ubuntu-3ubuntu13";
+        let (mut f, requests) = fixture_with_sshid(Some(sshid));
+        f.server.login_shell = shell.map(str::to_owned);
+        let manager = TerminalManager::new();
+        let (id, rx) = open_with_integration(&f, &manager, true);
+        let expected = crate::shell_integration::command(shell).unwrap();
+        assert!(expected.starts_with("exec /bin/sh -c '"));
+        assert_eq!(
+            requests.lock().unwrap().last(),
+            Some(&TerminalRequest::Exec(expected.into_bytes()))
+        );
+        let connection = f.manager.get_connection(f.request(false)).unwrap();
+        assert_eq!(connection.remote_sshid(), Some(sshid));
+
+        let (plain, plain_rx) = open(&f, &manager);
+        assert_eq!(
+            requests.lock().unwrap().last(),
+            Some(&match shell {
+                None => TerminalRequest::Shell,
+                Some(_) => TerminalRequest::Exec(b"exec '/bin/bash' -l".to_vec()),
+            })
+        );
+        assert_eq!(connection.statistics().opened_sessions, 2);
+        manager.close(&id).unwrap();
+        manager.close(&plain).unwrap();
+        assert!(exited(&rx).1);
+        assert!(exited(&plain_rx).1);
     }
 }
 
@@ -275,7 +359,10 @@ fn 指定登录shell安全转义且系统模式原样回退() {
     for shell in ["/bin/sh;id", "$(id)", "x\0secret", "-sh", ""] {
         f.server.login_shell = Some(shell.into());
         assert!(
-            terminal::remote(&f.manager, f.request(true), None, || panic!("不能回退")).is_err()
+            terminal::remote(&f.manager, f.request(true), None, false, || panic!(
+                "不能回退"
+            ))
+            .is_err()
         );
     }
     f.server.login_shell = None;
@@ -284,6 +371,7 @@ fn 指定登录shell安全转义且系统模式原样回退() {
             &f.manager,
             f.request(true),
             Some("无效标记".into()),
+            false,
             || panic!("不能回退")
         )
         .is_err()
@@ -298,7 +386,7 @@ fn 指定登录shell安全转义且系统模式原样回退() {
             f.server.ssh_alias = Some("dev".into());
         }
         let mut called = false;
-        let kind = terminal::remote(&f.manager, f.request(true), None, || {
+        let kind = terminal::remote(&f.manager, f.request(true), None, false, || {
             called = true;
             Ok(TerminalKind::Local {
                 program: "原路径".into(),

@@ -45,5 +45,10 @@ export function useServers() {
     await reload();
   }, [reload]);
 
-  return { servers, loaded, loadError, reload, save, remove, setFavorite };
+  const setCommandPrediction = useCallback(async (id: string, enabled: boolean) => {
+    await (await getServersApi()).setCommandPrediction(id, enabled);
+    await reload();
+  }, [reload]);
+
+  return { servers, loaded, loadError, reload, save, remove, setFavorite, setCommandPrediction };
 }

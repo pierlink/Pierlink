@@ -361,6 +361,27 @@ await rec.step(conn, "服务器概况：Linux 服务器终端右上角显示运�
   return `${info.summary}｜CPU ${cpu.now}%（${cpu.detail}）｜内存 ${mem.now}%（${mem.detail}）｜${disk.label} ${disk.now}%（${disk.detail}）`;
 });
 
+await rec.step(conn, "服务器终端的连接 / 断开按钮：断开后内容留着、最下面写一行；点连接或按 Enter 清屏重新连接", async () => {
+  if (!HAVE_LINUX) throw new Error("没有 WSL Linux 服务器");
+  const term = `([...document.querySelectorAll('.pane-slot')].filter(s=>s.style.display!=='none')[0]?.querySelector('.xterm-rows')?.innerText||'')`;
+  await clickVisible(".xterm-screen", 0);
+  await u.typeLine("echo PL-KEEP-$((40+2))");
+  await u.waitFor(`/^PL-KEEP-42\\s*$/m.test(${term})`, "echo 的输出", 10000);
+  await clickVisible('[aria-label="Disconnect"]');
+  const text = await u.waitFor(`(()=>{const t=${term}; return /Disconnected\\. Press Enter to reconnect\\./.test(t) ? t : null;})()`, "终端最下面写了“已断开”", 15000);
+  if (!/^PL-KEEP-42\s*$/m.test(text)) throw new Error(`断开后原来的内容没了：${text}`);
+  if (await p.js(`[...document.querySelectorAll('.pane-slot')].filter(s=>s.style.display!=='none').some(s=>s.querySelector('.term-ended'))`)) throw new Error("断开后不该盖提示块");
+  await clickVisible('[aria-label="Connect"]');
+  await u.waitFor(`${bashPanes} >= 1 && !/PL-KEEP-42|Disconnected/.test(${term})`, "清屏后重新出现 bash 提示符", 30000);
+  // 再断开一次，在终端里按 Enter 重新连接
+  await clickVisible('[aria-label="Disconnect"]');
+  await u.waitFor(`/Disconnected\\./.test(${term})`, "第二次断开", 15000);
+  await clickVisible(".xterm-screen", 0);
+  await u.enter();
+  await u.waitFor(`${bashPanes} >= 1 && !/Disconnected/.test(${term})`, "按 Enter 重新连接", 30000);
+  return text.split("\n").filter(Boolean).slice(-2).join(" / ");
+});
+
 await rec.step(conn, "bash 下的广播：两格同时收到；片段发到两个窗格各执行一次；sudo 密码提示让窗格退出广播", async () => {
   if (!HAVE_LINUX) throw new Error("没有 WSL Linux 服务器");
   await collapsePanel();

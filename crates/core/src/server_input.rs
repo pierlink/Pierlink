@@ -193,6 +193,7 @@ pub fn build_server(
         host_key_alias: base.as_ref().and_then(|b| b.host_key_alias.clone()),
         jump_server_id: base.as_ref().and_then(|b| b.jump_server_id.clone()),
         login_shell,
+        command_prediction: existing.is_none_or(|s| s.command_prediction),
         use_tmux: false,
         // 换成非密码方式时不再保留记住密码的标记
         remember_password: input.auth_method == AuthMethod::Password
@@ -248,6 +249,7 @@ pub fn build_alias_server(
         host_key_alias: None,
         jump_server_id: None,
         login_shell: None,
+        command_prediction: true,
         use_tmux: false,
         remember_password: false,
         password_cred: None,
@@ -309,6 +311,7 @@ mod tests {
         assert_eq!(s.source, ServerSource::Manual);
         assert_eq!(s.connection_engine, Engine::Builtin);
         assert_eq!(s.engine_note, None);
+        assert!(s.command_prediction);
     }
 
     #[test]
@@ -336,6 +339,7 @@ mod tests {
         }
         let imported = build_alias_server("dev", Some("分组"), "a", 5).unwrap();
         assert_eq!(imported.connection_engine, Engine::OpenSsh);
+        assert!(imported.command_prediction);
         assert_eq!(
             imported.engine_note.as_deref(),
             Some("从 ssh config 导入，按原配置连接")
@@ -459,13 +463,12 @@ mod tests {
         assert!(same.favorite);
         assert_eq!(same.created_at, 1);
         assert_eq!(same.host_key_sha256.as_deref(), Some("SHA256:abc"));
+        assert!(same.command_prediction);
+        old.command_prediction = false;
         let mut moved = input();
         moved.host = "198.51.100.7".into();
-        assert_eq!(
-            build_server(&moved, Some(&old), "x", 3)
-                .unwrap()
-                .host_key_sha256,
-            None
-        );
+        let moved = build_server(&moved, Some(&old), "x", 3).unwrap();
+        assert_eq!(moved.host_key_sha256, None);
+        assert!(!moved.command_prediction);
     }
 }

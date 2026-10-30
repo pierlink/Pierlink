@@ -85,7 +85,12 @@
       "closeConfirm": "关闭终端标签前确认",
       "closeConfirmHint": "关闭正在运行的标签会结束里面的程序",
       "broadcastDanger": "广播时确认危险命令",
-      "broadcastDangerHint": "rm -rf、reboot、git push --force 等命令回车前先问一次；上箭头翻出的历史命令识别不到"
+      "broadcastDangerHint": "rm -rf、reboot、git push --force 等命令回车前先问一次；上箭头翻出的历史命令识别不到",
+      "prediction": "命令预测",
+      "predictionHint": "输入时显示用过的命令，按 → 补全，Ctrl+→ 补一个词。",
+      "clearHistory": "命令记录",
+      "clearHistoryButton": "清除命令记录",
+      "historyCleared": "已清除"
     },
     "sync": {
       "lead": "只对新建的同步任务生效。",
@@ -179,6 +184,8 @@
     "testConnection": "测试连接",
     "favorite": "加入收藏",
     "unfavorite": "取消收藏",
+    "predictionOff": "关闭命令预测",
+    "predictionOn": "开启命令预测",
     "moveToGroup": "移到分组",
     "disconnectAll": "断开该服务器所有终端",
     "deleteServer": "删除服务器…",
@@ -196,6 +203,9 @@
   },
   "errors": {
     "unknown": "出了点问题（错误码 {{code}}）",
+    "history": {
+      "invalid_entry": "命令记录不正确（{{field}}）"
+    },
     "detail": {
       "runtime": "内置 SSH 运行时或回调任务执行失败",
       "dns": "域名解析失败，请检查服务器地址和网络",
@@ -1587,7 +1597,6 @@
     }
   },
   "terminal": {
-    "exited": "进程已退出（代码 {{code}}）",
     "closed": "会话已关闭",
     "pressEnter": "按 Enter 重新打开",
     "previewBanner": "Pierlink 预览模式：浏览器里不连接任何服务器，只回显输入。输入 exit 结束。",
@@ -1630,16 +1639,20 @@
       "tabLabel": "{{name}}（{{count}} 个终端）"
     },
     "closeRemoteBody": "会断开 SSH，前台和后台作业都会结束。",
-    "endedLost": "连接已断开",
-    "endedLostDetail": "网络中断，或服务器关闭了连接。服务器上这个会话里运行的程序已经结束。",
     "endedAuth": "登录失败",
     "endedAuthDetail": "用户名、密码或密钥不对。可以在服务器设置里修改保存的密码，或者重新连接后手动输入。",
     "endedTooManyAuthDetail": "登录尝试次数超限：ssh-agent 里的密钥太多。请在服务器设置里把登录方式改为“指定私钥”或“密码”（ssh config 导入的服务器，在 ~/.ssh/config 里加 IdentitiesOnly yes 和 IdentityFile），或从 ssh-agent 移除不用的密钥，然后点“重新连接”。",
     "endedFailed": "没能打开终端",
-    "endedExitedDetail": "终端里的程序已经结束。",
     "reconnect": "重新连接",
     "reopen": "重新打开",
     "endedEnterHint": "也可以直接按 Enter",
+    "disconnect": "断开",
+    "lineLost": "连接已断开，按 Enter 重新连接",
+    "lineDisconnected": "已断开，按 Enter 重新连接",
+    "lineExited": "进程已退出（代码 {{code}}），按 Enter 重新连接",
+    "lineExitedLocal": "进程已退出（代码 {{code}}），按 Enter 重新打开",
+    "hookOff": "这台服务器上用不了命令预测，已为它关闭（服务器右键菜单可以重新打开）",
+    "hookHintQuick": "连上就退出时，可以在 设置 → 终端 里关闭命令预测后重试",
     "paneCount": "{{count}} 个窗格",
     "splitSame": "再开一个“{{name}}”",
     "splitChoose": "在新窗格里打开",

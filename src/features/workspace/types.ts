@@ -13,6 +13,8 @@ export interface ServerView {
   openTabs: number;
   /** 导入自 ssh config（连接参数以配置文件为准） */
   linked?: boolean;
+  /** 这台服务器关掉了命令预测（全局设置开着也不预测、不装提示符钩子） */
+  noPrediction?: boolean;
   syncState: "none" | "ok" | "busy" | "warn";
 }
 

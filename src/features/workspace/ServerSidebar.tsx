@@ -5,6 +5,7 @@ import { IconButton, Menu, Segmented, StatusDot, useContextMenu, type MenuEntry 
 import type { ServerView } from "./types";
 import { BuiltinSshNotice } from "./BuiltinSshNotice";
 import { focusDesktopWindow, useDesktopPopouts } from "../desktop/popouts";
+import { useSettings } from "../settings/store";
 
 type Filter = "all" | "favorites" | "online";
 
@@ -24,6 +25,8 @@ export interface ServerActions {
   onEdit: (id: string) => void;
   onDelete: (id: string) => void;
   onToggleFavorite: (id: string) => void;
+  /** 打开或关闭这台服务器的命令预测 */
+  onTogglePrediction: (id: string) => void;
   onCopyAddress: (id: string) => void;
   onDeploy: (id: string) => void;
   onDedicatedKey: (id: string) => void;
@@ -32,6 +35,7 @@ export interface ServerActions {
 /** 左侧服务器列表：搜索、筛选、分组、右键菜单。双击或回车打开终端。 */
 export function ServerSidebar({ servers, selectedId, onSelect, actions }: { servers: ServerView[]; selectedId: string | null; onSelect: (id: string) => void; actions: ServerActions }) {
   const { t } = useTranslation();
+  const { settings } = useSettings();
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<Filter>("all");
   const ctx = useContextMenu(t("workspace.servers"));
@@ -66,6 +70,10 @@ export function ServerSidebar({ servers, selectedId, onSelect, actions }: { serv
     // 导入自 ssh config 的服务器由用户在 ssh config 里管理密钥
     ...(s.linked ? [] : [{ id: "key", label: t("menu.dedicatedKey"), onSelect: () => actions.onDedicatedKey(s.id) }]),
     { id: "fav", label: s.favorite ? t("menu.unfavorite") : t("menu.favorite"), onSelect: () => actions.onToggleFavorite(s.id) },
+    // 全局的命令预测开着时才有意义：可以只对这台服务器关掉
+    ...(settings.terminal.commandPrediction
+      ? [{ id: "predict", label: s.noPrediction ? t("menu.predictionOn") : t("menu.predictionOff"), onSelect: () => actions.onTogglePrediction(s.id) }]
+      : []),
     ...(s.linked ? [] : [{ id: "export", label: t("menu.exportServer"), onSelect: () => actions.onExport(s.id) }]),
     { kind: "separator", id: "s3" },
     { id: "delete", label: t("menu.deleteServer"), danger: true, onSelect: () => actions.onDelete(s.id) },

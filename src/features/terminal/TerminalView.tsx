@@ -10,8 +10,8 @@ import { currentTerminalTheme } from "./theme";
 import { needsPasteConfirm, parseOsc7, parseOsc99 } from "./util";
 import { useSettings } from "../settings/store";
 import { useContextMenu } from "../../components";
-import { formatError } from "../../errors";
-import { endedFromOpenError, type Ended } from "./ended";
+import { formatError, isAppError } from "../../errors";
+import { endedFromOpenError, endedLine, endsInline, type Ended } from "./ended";
 import { getServersApi, notifyServersChanged } from "../servers/api";
 import type { OpenSpec, TerminalBackend } from "./types";
 import { Button } from "../../components";
@@ -21,6 +21,8 @@ import { inTauri } from "../shell/TitleBar";
 import { explorerFolder } from "./localPaths";
 import { passwordBus } from "../passwords/bus";
 import { KittyKeyboard, localShellFamily, newlineKey, parseOsc52 } from "./kittyKeys";
+import { Prediction } from "./prediction";
+import { historyScope } from "./predict";
 
 interface Props {
   backend: TerminalBackend;
@@ -63,6 +65,8 @@ interface Props {
   canSplit?: (dir: "row" | "col") => boolean;
   /** 正从资源管理器拖着文件经过这个本机终端：显示“松开填入路径” */
   fileDrop?: boolean;
+  /** 显示命令预测（设置开着、这台服务器没关、没交给 AI） */
+  prediction?: boolean;
 }
 
 /** 从外部操作终端：粘贴、输入都走终端自己的输入通道（广播、回车计数照常生效） */
@@ -72,22 +76,27 @@ export interface TermHandle {
   /** 当作用户按键输入（例如一个回车） */
   input: (data: string) => void;
   focus: () => void;
+  /** 断开会话（服务器终端的“断开”按钮）：内容留在终端里，最下面写一行“已断开” */
+  disconnect: () => void;
+  /** 会话已结束时重新连接（清屏后重新打开，和按 Enter 一样）；还连着时不做什么 */
+  reconnect: () => void;
 }
 
 /**
  * 一个终端窗格：xterm.js 显示 + 后端会话。
  * 规则：有选中文字时 Ctrl+C、Ctrl+Shift+C 复制，没有时 Ctrl+C 发给程序（中断）；Ctrl+V、Ctrl+Shift+V 粘贴；
- * 会话结束（断网、退出、登录失败）后，终端区域换成一块提示，提供“重新连接”和“关闭标签”；
- * 不自动重连，也不自动关闭标签（设计 3.9）。
+ * 会话断开或退出后，终端内容留着，最下面写一行说明，按 Enter 重新连接；登录失败、没能打开时盖上一块提示，
+ * 提供“重新连接”和“关闭标签”。不自动重连，也不自动关闭标签（设计 3.9）。
  */
-export function TerminalView({ backend, spec, visible, confirmPaste, openLink, onStatus, onError, onCloseTab, closeLabel, onCwd, onCommand, onSession, broadcasting, onInput, onOutput, onToggleBroadcast, onHandle, cwd, onSplit, canSplit, fileDrop }: Props) {
+export function TerminalView({ backend, spec, visible, confirmPaste, openLink, onStatus, onError, onCloseTab, closeLabel, onCwd, onCommand, onSession, broadcasting, onInput, onOutput, onToggleBroadcast, onHandle, cwd, onSplit, canSplit, fileDrop, prediction }: Props) {
   const { t } = useTranslation();
   const host = useRef<HTMLDivElement>(null);
   // 回调放进 ref，避免它们变化时重建终端
   const { settings } = useSettings();
   const opts = settings.terminal;
-  const cb = useRef({ confirmPaste, openLink, onStatus, onError, onCwd, onCommand, onSession, t, opts, broadcasting, onInput, onOutput, onToggleBroadcast, onHandle, cwd, onSplit, canSplit });
-  cb.current = { confirmPaste, openLink, onStatus, onError, onCwd, onCommand, onSession, t, opts, broadcasting, onInput, onOutput, onToggleBroadcast, onHandle, cwd, onSplit, canSplit };
+  const cb = useRef({ confirmPaste, openLink, onStatus, onError, onCwd, onCommand, onSession, t, opts, broadcasting, onInput, onOutput, onToggleBroadcast, onHandle, cwd, onSplit, canSplit, prediction });
+  cb.current = { confirmPaste, openLink, onStatus, onError, onCwd, onCommand, onSession, t, opts, broadcasting, onInput, onOutput, onToggleBroadcast, onHandle, cwd, onSplit, canSplit, prediction };
+  const predictionRef = useRef<Prediction | null>(null);
   const termRef = useRef<Terminal | null>(null);
   // 粘贴要走多行确认，函数在终端创建时生成，经 ref 给右键菜单用
   const pasteRef = useRef<(text: string) => Promise<void>>(async () => {});
@@ -178,6 +187,14 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
       if (text) copyText.current(text);
       return true;
     });
+    // 命令预测：听 shell 钩子的提示符标记，在光标后面用浅色画出预测
+    const prediction = new Prediction(term, {
+      scope: historyScope(spec),
+      enabled: () => !!cb.current.prediction && !cb.current.broadcasting,
+      record: () => !!cb.current.prediction,
+      cwd: () => cb.current.cwd ?? null,
+    });
+    predictionRef.current = prediction;
     // kitty 键盘协议（只支持“消除歧义”）：程序开启后 Shift+Enter 等能和 Enter 区分开
     const kitty = new KittyKeyboard();
     const num = (p: number | number[] | undefined, d: number) => (typeof p === "number" && p > 0 ? p : d);
@@ -192,13 +209,42 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
     let earlyBytes = 0;
     let exited = false;
     let disposed = false;
+    // 用户点了“断开”：结束后写“已断开”，不当成断网；连接过程中点的，连上后马上关掉
+    let manual = false;
+    // 这次连接有没有带命令预测的提示符钩子，收到多少输出、按了几次回车（连上就退出时判断是不是钩子的问题）
+    let hooked = false;
+    let sessionBytes = 0;
+    let sessionEnters = 0;
     let last = { cols: term.cols, rows: term.rows };
     // 最近一段输出（只用来判断“登录失败”：ssh 打印 Permission denied 后以 255 退出）
     let tail = "";
     const decoder = new TextDecoder();
 
+    /** 会话结束：断开、退出时写一行说明，其他情况盖上提示块 */
+    const end = (e: Ended) => {
+      prediction.reset();
+      kitty.reset();
+      setEnded(e);
+      if (!endsInline(e)) return;
+      const tr = cb.current.t;
+      // 服务器拒绝了带钩子的请求时进程没启动过，不说“进程已退出”
+      let text = e.kind === "lost" ? tr("terminal.lineLost")
+        : e.kind === "disconnected" || (e.kind === "exited" && e.hookHint && e.code === null) ? tr("terminal.lineDisconnected")
+        : tr(spec.kind === "local" ? "terminal.lineExitedLocal" : "terminal.lineExited", { code: e.kind === "exited" ? e.code ?? "-" : "-" });
+      if (e.kind === "exited" && e.hookHint) text += `\r\n${tr(e.hookHint === "off" ? "terminal.hookOff" : "terminal.hookHintQuick")}`;
+      // 等已收到的输出处理完再看是不是在全屏程序里；这期间重新连接了就不写
+      term.write("", () => {
+        if (disposed || !exited) return;
+        term.write(endedLine(text, e.kind === "lost", term.buffer.active.type === "alternate"));
+      });
+    };
+
     const open = async () => {
       exited = false;
+      manual = false;
+      hooked = spec.kind !== "local" && !!cb.current.prediction;
+      sessionBytes = 0;
+      sessionEnters = 0;
       tail = "";
       setEnded(null);
       earlyBytes = 0;
@@ -208,6 +254,7 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
           if (disposed) return;
           if (e.kind === "output") {
             const n = e.data.length;
+            sessionBytes += n;
             tail = (tail + decoder.decode(e.data, { stream: true })).slice(-2048);
             cb.current.onOutput?.(tail);
             term.write(e.data, () => {
@@ -219,49 +266,96 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
             id = null;
             cb.current.onSession?.(null);
             cb.current.onStatus?.("exited");
-            if (e.closedByUser) return;
+            if (e.closedByUser) { if (manual) end({ kind: "disconnected" }); return; }
             // 后端已判断出是密码的问题
-            if (e.auth === "ssh.password_needed") { setEnded({ kind: "passwordNeeded" }); return; }
-            if (e.auth === "ssh.auth_failed") { setEnded({ kind: "authFailed", password: true }); return; }
-            if (e.auth === "ssh.two_factor_required") { setEnded({ kind: "authFailed", twoFactor: true }); return; }
-            if (e.auth === "ssh.too_many_auth_attempts") { setEnded({ kind: "authFailed", tooManyAuth: true }); return; }
+            if (e.auth === "ssh.password_needed") { end({ kind: "passwordNeeded" }); return; }
+            if (e.auth === "ssh.auth_failed") { end({ kind: "authFailed", password: true }); return; }
+            if (e.auth === "ssh.two_factor_required") { end({ kind: "authFailed", twoFactor: true }); return; }
+            if (e.auth === "ssh.too_many_auth_attempts") { end({ kind: "authFailed", tooManyAuth: true }); return; }
+            // 服务器拒绝了带钩子的命令（系统 OpenSSH 打印 exec request failed on channel 0 后以 255 退出）
+            if (spec.kind !== "local" && e.code === 255 && hooked && !prediction.integrated && /(exec|shell) request failed/i.test(tail)) {
+              hookIncompatible();
+              return;
+            }
             // 远程会话里 ssh 以 255 退出：连接断开（网络中断、服务器重启等），或登录失败
             if (spec.kind !== "local" && e.code === 255) {
-              setEnded(/Too many authentication failures/i.test(tail) ? { kind: "authFailed", tooManyAuth: true }
+              end(/Too many authentication failures/i.test(tail) ? { kind: "authFailed", tooManyAuth: true }
                 : /Permission denied/i.test(tail) ? { kind: "authFailed" } : { kind: "lost" });
             } else {
-              setEnded({ kind: "exited", code: e.code ?? null });
+              // 带钩子连上，一个提示符都没出现、没输出多少、也没敲几条命令（输密码最多算两次回车）就退出：
+              // 多半是钩子和这台服务器不兼容（系统 OpenSSH 连的 Windows 服务器、rbash、ForceCommand 等）。
+              // 保存过的服务器自动为它关掉预测（这样的服务器上预测本来也用不了），按 Enter 就按原来的方式连接
+              // 只认正常的退出码：Ctrl+C 打断 ssh.exe 得到的是 Windows 的状态码（如 0xC000013A），被信号结束时为空
+              const normalExit = e.code !== null && e.code !== undefined && e.code >= 0 && e.code <= 255;
+              const suspect = hooked && !prediction.integrated && normalExit && sessionBytes < 8192 && sessionEnters <= 2;
+              if (suspect) hookIncompatible(e.code ?? null);
+              else end({ kind: "exited", code: e.code ?? null });
             }
           }
-        });
+        }, !!cb.current.prediction);
         if (disposed) { void backend.close(newId); return; }
+        // 已经结束（连上前就断了，退出事件先到）：不再记这个会话
+        if (exited) return;
         id = newId;
         cb.current.onSession?.(newId);
         if (earlyBytes > 0) {
           void backend.ack(newId, earlyBytes);
           earlyBytes = 0;
         }
+        // 连接过程中点了“断开”
+        if (manual) void backend.close(newId).catch(() => undefined);
       } catch (err) {
         exited = true;
         cb.current.onStatus?.("exited");
+        // 连接过程中点了“断开”，之后连接失败：照样显示“已断开”
+        if (manual) { end({ kind: "disconnected" }); return; }
+        // 内置 SSH：服务器拒绝了带钩子的命令请求
+        if (hooked && isAppError(err) && err.code === "ssh.failed" && err.params?.reason_key === "request_rejected") {
+          hookIncompatible();
+          return;
+        }
         cb.current.onError?.(err);
-        setEnded(endedFromOpenError(err));
+        end(endedFromOpenError(err));
       }
+    };
+    /** 钩子和这台服务器不兼容：保存过的服务器自动关掉预测，结束行说明；快速连接提示到设置里关 */
+    const hookIncompatible = (code: number | null = null) => {
+      if (spec.kind === "server") void turnOffPrediction(spec.serverId);
+      end({ kind: "exited", code, hookHint: spec.kind === "server" ? "off" : "quick" });
+    };
+    /** 为这台服务器关掉命令预测（钩子和它不兼容时）；失败时在终端顶部提示 */
+    const turnOffPrediction = async (serverId: string) => {
+      try {
+        await (await getServersApi()).setCommandPrediction(serverId, false);
+        notifyServersChanged();
+      } catch (err) {
+        if (!disposed) showNotice.current(formatError(err));
+      }
+    };
+    /** 断开：已经结束时不做什么 */
+    const disconnect = () => {
+      if (exited || manual) return;
+      manual = true;
+      if (id) void backend.close(id).catch((err: unknown) => { if (!disposed) showNotice.current(formatError(err)); });
     };
 
     // 终端对程序查询的回答：只发给这个会话（不走广播）
     const reply = (data: string) => {
       if (id && !exited) void backend.write(id, data).catch(() => undefined);
     };
-    const reopen = () => { term.reset(); kitty.reset(); void open(); };
+    const reopen = () => { term.reset(); kitty.reset(); prediction.reset(); void open(); };
     reopenRef.current = reopen;
     term.onData((data) => {
+      prediction.onUserData(data);
       // 会话已结束：按 Enter 等于点“重新连接”
       if (exited) {
         if (data === "\r") reopen();
         return;
       }
-      if (data.includes("\r")) cb.current.onCommand?.();
+      if (data.includes("\r")) {
+        sessionEnters++;
+        cb.current.onCommand?.();
+      }
       // 广播输入：由上层发给参与广播的所有窗格（包括这一个）
       if (cb.current.onInput?.(data)) return;
       if (id) {
@@ -284,6 +378,9 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
     // 没有选中时 Ctrl+C 照常发给程序（中断）；Ctrl+V、Ctrl+Shift+V 粘贴；Ctrl+Shift+B 开关广播输入。
     // 拦下的按键要阻止浏览器默认动作：Ctrl+V 在浏览器里本身就是粘贴，不阻止会再粘贴一次（粘贴两份）
     term.attachCustomKeyEventHandler((ev) => {
+      // 正在显示命令预测时，→ 补全整条、Ctrl+→ 补一个词
+      const predicted = prediction.handleKey(ev);
+      if (predicted !== null) return predicted;
       // Shift+Enter、Ctrl+Enter 是换行（按所在环境发能换行的按键）；其他带修饰键的回车在程序开启 kitty 协议时按协议发
       const seq = newlineKey(ev, {
         kitty: (kitty.flags & 1) !== 0,
@@ -356,7 +453,13 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
     mo.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
 
     void open();
-    cb.current.onHandle?.({ paste: (text) => term.paste(text), input: (data) => term.input(data, true), focus: () => term.focus() });
+    cb.current.onHandle?.({
+      paste: (text) => term.paste(text),
+      input: (data) => term.input(data, true),
+      focus: () => term.focus(),
+      disconnect,
+      reconnect: () => { if (exited) reopen(); },
+    });
 
     return () => {
       cb.current.onHandle?.(null);
@@ -369,12 +472,17 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
       el.removeEventListener("mouseup", onRightButton, true);
       if (id) void backend.close(id);
       if (noticeTimer.current) clearTimeout(noticeTimer.current);
+      prediction.dispose();
+      predictionRef.current = null;
       termRef.current = null;
       term.dispose();
     };
     // spec 和 backend 在一个窗格的生命周期内不变
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // 设置、广播、交给 AI 变了：马上重新判断要不要显示预测
+  useEffect(() => { predictionRef.current?.schedule(); }, [prediction, broadcasting]);
 
   useEffect(() => {
     if (visible) resizeRef.current();
@@ -440,23 +548,19 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
       }}
     >
       <div ref={host} className="term-host" />
-      {ended && (
-        // 盖住终端内容：断开后终端里不再显示任何东西，只显示状态和两个按钮
+      {ended && !endsInline(ended) && (
+        // 登录失败、没能打开：盖住终端内容，说明原因并提供按钮
         <div className={`term-ended term-ended--${ended.kind}`} role="alert">
           <div className="term-ended__box">
             <div className="term-ended__title">
-              {ended.kind === "lost" ? t("terminal.endedLost")
-                : ended.kind === "passwordNeeded" ? t("terminal.endedPasswordNeeded")
+              {ended.kind === "passwordNeeded" ? t("terminal.endedPasswordNeeded")
                 : ended.kind === "authFailed" ? t("terminal.endedAuth")
-                : ended.kind === "failed" ? t("terminal.endedFailed")
-                : t("terminal.exited", { code: ended.code ?? "-" })}
+                : t("terminal.endedFailed")}
             </div>
             <div className="term-ended__detail">
-              {ended.kind === "lost" ? t("terminal.endedLostDetail")
-                : ended.kind === "passwordNeeded" ? t("terminal.endedPasswordNeededDetail")
+              {ended.kind === "passwordNeeded" ? t("terminal.endedPasswordNeededDetail")
                 : ended.kind === "authFailed" ? t(ended.tooManyAuth ? "terminal.endedTooManyAuthDetail" : ended.twoFactor ? "terminal.endedTwoFactorDetail" : ended.password ? "terminal.endedAuthPasswordDetail" : "terminal.endedAuthDetail")
-                : ended.kind === "failed" ? ended.text
-                : t("terminal.endedExitedDetail")}
+                : ended.kind === "failed" ? ended.text : null}
             </div>
             {offerOpenSsh && <div className="term-ended__detail">{t("terminal.openSshOffer")}</div>}
             <div className="term-ended__actions">

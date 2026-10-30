@@ -2,7 +2,7 @@
 use super::*;
 pub(super) fn insert_servers(conn: &Connection, value: &Server) -> Result<(), AppError> {
     let changed = conn.execute(
-        "INSERT INTO servers (id, name, group_name, favorite, sort_order, source, ssh_alias, host, port, username, auth_method, identity_file, jump_server_id, login_shell, use_tmux, remember_password, password_cred, host_key_sha256, vnc_autostart, notes, created_at, updated_at, connection_engine, engine_note, identity_files, identities_only, host_key_alias) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27)",
+        "INSERT INTO servers (id, name, group_name, favorite, sort_order, source, ssh_alias, host, port, username, auth_method, identity_file, jump_server_id, login_shell, use_tmux, remember_password, password_cred, host_key_sha256, vnc_autostart, notes, created_at, updated_at, connection_engine, engine_note, identity_files, identities_only, host_key_alias, command_prediction) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28)",
         rusqlite::params![
             value.id,
             value.name,
@@ -30,7 +30,8 @@ pub(super) fn insert_servers(conn: &Connection, value: &Server) -> Result<(), Ap
             value.engine_note,
             serde_json::to_string(&value.identity_files).map_err(|_| failure("storage.json", "storage.couldn_t_encode_the_identity_file_list", "身份文件列表编码失败"))?,
             value.identities_only,
-            value.host_key_alias
+            value.host_key_alias,
+            value.command_prediction
         ],
     ).map_err(sql_error)?;
     if changed == 0 {
@@ -44,7 +45,7 @@ pub(super) fn insert_servers(conn: &Connection, value: &Server) -> Result<(), Ap
 }
 pub(super) fn update_servers(conn: &Connection, value: &Server) -> Result<(), AppError> {
     let changed = conn.execute(
-        "UPDATE servers SET name=?2, group_name=?3, favorite=?4, sort_order=?5, source=?6, ssh_alias=?7, host=?8, port=?9, username=?10, auth_method=?11, identity_file=?12, jump_server_id=?13, login_shell=?14, use_tmux=?15, remember_password=?16, password_cred=?17, host_key_sha256=?18, vnc_autostart=?19, notes=?20, created_at=?21, updated_at=?22, connection_engine=?23, engine_note=?24, identity_files=?25, identities_only=?26, host_key_alias=?27 WHERE id=?1",
+        "UPDATE servers SET name=?2, group_name=?3, favorite=?4, sort_order=?5, source=?6, ssh_alias=?7, host=?8, port=?9, username=?10, auth_method=?11, identity_file=?12, jump_server_id=?13, login_shell=?14, use_tmux=?15, remember_password=?16, password_cred=?17, host_key_sha256=?18, vnc_autostart=?19, notes=?20, created_at=?21, updated_at=?22, connection_engine=?23, engine_note=?24, identity_files=?25, identities_only=?26, host_key_alias=?27, command_prediction=?28 WHERE id=?1",
         rusqlite::params![
             value.id,
             value.name,
@@ -72,7 +73,8 @@ pub(super) fn update_servers(conn: &Connection, value: &Server) -> Result<(), Ap
             value.engine_note,
             serde_json::to_string(&value.identity_files).map_err(|_| failure("storage.json", "storage.couldn_t_encode_the_identity_file_list", "身份文件列表编码失败"))?,
             value.identities_only,
-            value.host_key_alias
+            value.host_key_alias,
+            value.command_prediction
         ],
     ).map_err(sql_error)?;
     if changed == 0 {

@@ -22,6 +22,8 @@ export interface AppSettings {
     confirmClose: boolean;
     /** 广播输入时，回车前确认危险命令（rm -rf、reboot 等） */
     broadcastConfirmDanger: boolean;
+    /** 命令预测：输入时在光标后面用浅色显示用过的命令（服务器 bash、zsh 和本机 Git Bash） */
+    commandPrediction: boolean;
   };
   desktop: {
     /** 打开服务器桌面时直接用独立窗口（不在主窗口里开窗格） */
@@ -54,7 +56,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   theme: "dark",
   language: "system",
   closeToTray: true,
-  terminal: { fontSize: 13, cursorStyle: "bar", cursorBlink: true, scrollback: 10000, defaultShell: null, confirmMultilinePaste: true, rightClickCopyPaste: false, confirmClose: true, broadcastConfirmDanger: true },
+  terminal: { fontSize: 13, cursorStyle: "bar", cursorBlink: true, scrollback: 10000, defaultShell: null, confirmMultilinePaste: true, rightClickCopyPaste: false, confirmClose: true, broadcastConfirmDanger: true, commandPrediction: true },
   desktop: { openInWindow: false },
   updates: { autoCheck: true },
   notices: { builtinSsh: false },
@@ -97,6 +99,7 @@ export function normalizeSettings(raw: unknown): AppSettings {
       rightClickCopyPaste: bool(t.rightClickCopyPaste, t.rightClickCopy === true || t.rightClickPaste === true || d.terminal.rightClickCopyPaste),
       broadcastConfirmDanger: bool(t.broadcastConfirmDanger, d.terminal.broadcastConfirmDanger),
       confirmClose: bool(t.confirmClose, d.terminal.confirmClose),
+      commandPrediction: bool(t.commandPrediction, d.terminal.commandPrediction),
     },
     desktop: { openInWindow: bool(dk.openInWindow, d.desktop.openInWindow) },
     updates: { autoCheck: bool(u.autoCheck, d.updates.autoCheck) },

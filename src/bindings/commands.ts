@@ -126,12 +126,12 @@ export const commands = {
 	/**  列出本机终端，并标出默认项（PowerShell 7 → Windows PowerShell → Git Bash → 其他 → 命令提示符）。 */
 	listLocalShells: () => typedError<LocalShellInfo[], AppError>(__TAURI_INVOKE("list_local_shells")),
 	/**  打开本机终端，返回会话 ID。 */
-	terminalOpenLocal: (shellId: string, cols: number, rows: number, onEvent: Channel<TerminalEventDto_Deserialize>) => typedError<string, AppError>(__TAURI_INVOKE("terminal_open_local", { shellId, cols, rows, onEvent })),
+	terminalOpenLocal: (shellId: string, cols: number, rows: number, prediction: boolean, onEvent: Channel<TerminalEventDto_Deserialize>) => typedError<string, AppError>(__TAURI_INVOKE("terminal_open_local", { shellId, cols, rows, prediction, onEvent })),
 	/**
 	 *  快速连接：按 `用户@主机:端口` 打开远程终端（应用内新建的连接，不读用户 ssh config）。
 	 *  前端应先用 `host_key_check` 在应用内确认指纹；若未确认，ssh 仍会在终端里自行询问。
 	 */
-	terminalOpenQuick: (host: string, port: number, user: string | null, cols: number, rows: number, onEvent: Channel<TerminalEventDto_Deserialize>) => typedError<string, AppError>(__TAURI_INVOKE("terminal_open_quick", { host, port, user, cols, rows, onEvent })),
+	terminalOpenQuick: (host: string, port: number, user: string | null, cols: number, rows: number, prediction: boolean, onEvent: Channel<TerminalEventDto_Deserialize>) => typedError<string, AppError>(__TAURI_INVOKE("terminal_open_quick", { host, port, user, cols, rows, prediction, onEvent })),
 	/**  向终端写入键盘输入（xterm.js 给出的文本）。 */
 	terminalWrite: (id: string, data: string) => typedError<null, AppError>(__TAURI_INVOKE("terminal_write", { id, data })),
 	/**
@@ -148,7 +148,7 @@ export const commands = {
 	/**  关闭终端（结束整个进程树）。 */
 	terminalClose: (id: string) => typedError<null, AppError>(__TAURI_INVOKE("terminal_close", { id })),
 	/**  按已保存的服务器打开远程终端（使用它的私钥、登录 shell、保存的密码等设置）。 */
-	terminalOpenServer: (serverId: string, cols: number, rows: number, onEvent: Channel<TerminalEventDto_Deserialize>) => typedError<string, AppError>(__TAURI_INVOKE("terminal_open_server", { serverId, cols, rows, onEvent })),
+	terminalOpenServer: (serverId: string, cols: number, rows: number, prediction: boolean, onEvent: Channel<TerminalEventDto_Deserialize>) => typedError<string, AppError>(__TAURI_INVOKE("terminal_open_server", { serverId, cols, rows, prediction, onEvent })),
 	/**  读取系统剪贴板的文字（不经过网页权限，不会弹出“是否允许读取剪贴板”）。没有文字时返回 null。 */
 	clipboardReadText: () => typedError<string | null, AppError>(__TAURI_INVOKE("clipboard_read_text")),
 	/**  把文字写进系统剪贴板（网页方式要求窗口在前台，程序在窗口不在前台时发来的复制请求会失败） */
@@ -392,6 +392,12 @@ export const commands = {
 	serversImport: () => typedError<ImportResultDto_Serialize | null, AppError>(__TAURI_INVOKE("servers_import")),
 	/**  列出全部命令片段（按分组、排序号） */
 	snippetList: () => typedError<SnippetDto_Serialize[], AppError>(__TAURI_INVOKE("snippet_list")),
+	/**  读一个范围的命令记录（按时间先后，最多最新 5000 条） */
+	historyList: (scope: string) => typedError<HistoryEntryDto_Serialize[], AppError>(__TAURI_INVOKE("history_list", { scope })),
+	/**  记一条执行过的命令。可能带口令、令牌的命令后端会再过滤一次：不记，也不报错 */
+	historyAdd: (scope: string, entry: HistoryEntryDto_Deserialize) => typedError<null, AppError>(__TAURI_INVOKE("history_add", { scope, entry })),
+	/**  清除全部命令记录（设置里的“清除命令记录”） */
+	historyClear: () => typedError<null, AppError>(__TAURI_INVOKE("history_clear")),
 	/**  新建或修改命令片段；返回保存后的记录 */
 	snippetSave: (input: SnippetInput_Deserialize) => typedError<SnippetDto_Serialize, AppError>(__TAURI_INVOKE("snippet_save", { input })),
 	/**  删除命令片段 */
@@ -429,6 +435,14 @@ export const commands = {
 	 *  :return: 保存后的服务器；从 ssh config 导入的服务器返回 `server.not_editable`
 	 */
 	serverSetEngine: (id: string, engine: Engine, note: string | null) => typedError<ServerDto_Serialize, AppError>(__TAURI_INVOKE("server_set_engine", { id, engine, note })),
+	/**
+	 *  打开或关闭这台服务器的命令预测；关闭后下次连接也不装提示符钩子。各种来源的服务器都可以设
+	 * 
+	 *  :param id: 服务器 id
+	 *  :param enabled: true 跟随全局设置，false 关闭
+	 *  :return: 保存后的服务器；不存在时返回 `server.not_found`
+	 */
+	serverSetCommandPrediction: (id: string, enabled: boolean) => typedError<ServerDto_Serialize, AppError>(__TAURI_INVOKE("server_set_command_prediction", { id, enabled })),
 	/**
 	 *  用户点“登录”：用内置 SSH 交互登录这台服务器（按需问密码、验证码），主连接建好后返回。
 	 *  要验证码的服务器后台功能自己登不上；登录一次后资源概览、端口转发、同步都用这条连接。
@@ -1381,6 +1395,31 @@ export type GpuDto_Serialize = {
 	tempC: number | null,
 };
 
+/**  一条命令记录，字段和前端的 HistoryEntry 一致 */
+export type HistoryEntryDto = HistoryEntryDto_Serialize | HistoryEntryDto_Deserialize;
+
+/**  一条命令记录，字段和前端的 HistoryEntry 一致 */
+export type HistoryEntryDto_Deserialize = {
+	command: string,
+	/**  敲这条命令时所在的目录；不知道时为 null */
+	cwd?: string | null,
+	/**  退出码；不知道时为 null */
+	exit?: number | null,
+	/**  执行时间（Unix 毫秒） */
+	at: number | null,
+};
+
+/**  一条命令记录，字段和前端的 HistoryEntry 一致 */
+export type HistoryEntryDto_Serialize = {
+	command: string,
+	/**  敲这条命令时所在的目录；不知道时为 null */
+	cwd: string | null,
+	/**  退出码；不知道时为 null */
+	exit: number | null,
+	/**  执行时间（Unix 毫秒） */
+	at: number | null,
+};
+
 /**  确认流程的一步。注意 Trusted 只表示应用内不需要再弹确认框；真正的终端连接仍由 ssh 自己校验指纹。 */
 export type HostKeyStep = 
 /**  指纹已在 known_hosts 里且一致（或刚刚确认完），可以连接 */
@@ -2027,6 +2066,8 @@ export type ServerDto_Deserialize = {
 	connectionEngine: Engine,
 	/**  为什么用系统 OpenSSH（导入时写的，或内置连不上后改用时写的） */
 	engineNote?: string | null,
+	/**  命令预测：true 跟随全局设置，false 这台服务器关闭（连接时也不装提示符钩子） */
+	commandPrediction: boolean,
 };
 
 /**  给前端的服务器信息：只含界面需要的字段（数据库里的时间戳、排序号、凭据引用等不外传） */
@@ -2050,6 +2091,8 @@ export type ServerDto_Serialize = {
 	connectionEngine: Engine,
 	/**  为什么用系统 OpenSSH（导入时写的，或内置连不上后改用时写的） */
 	engineNote: string | null,
+	/**  命令预测：true 跟随全局设置，false 这台服务器关闭（连接时也不装提示符钩子） */
+	commandPrediction: boolean,
 };
 
 /**  一台服务器上的入口 */

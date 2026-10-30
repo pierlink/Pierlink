@@ -1,7 +1,7 @@
 //! 本机 shell 检测与默认项选择；不修改用户环境或尝试提权。
 use std::path::{Path, PathBuf};
 #[path = "bash.rs"]
-mod bash;
+pub(crate) mod bash;
 #[path = "git.rs"]
 mod git;
 #[cfg(windows)]
