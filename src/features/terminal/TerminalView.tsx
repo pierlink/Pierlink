@@ -227,8 +227,9 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
       setEnded(e);
       if (!endsInline(e)) return;
       const tr = cb.current.t;
+      // 服务器拒绝了带钩子的请求时进程没启动过，不说“进程已退出”
       let text = e.kind === "lost" ? tr("terminal.lineLost")
-        : e.kind === "disconnected" ? tr("terminal.lineDisconnected")
+        : e.kind === "disconnected" || (e.kind === "exited" && e.hookHint && e.code === null) ? tr("terminal.lineDisconnected")
         : tr(spec.kind === "local" ? "terminal.lineExitedLocal" : "terminal.lineExited", { code: e.kind === "exited" ? e.code ?? "-" : "-" });
       if (e.kind === "exited" && e.hookHint) text += `\r\n${tr(e.hookHint === "off" ? "terminal.hookOff" : "terminal.hookHintQuick")}`;
       // 等已收到的输出处理完再看是不是在全屏程序里；这期间重新连接了就不写
@@ -272,7 +273,7 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
             if (e.auth === "ssh.two_factor_required") { end({ kind: "authFailed", twoFactor: true }); return; }
             if (e.auth === "ssh.too_many_auth_attempts") { end({ kind: "authFailed", tooManyAuth: true }); return; }
             // 服务器拒绝了带钩子的命令（系统 OpenSSH 打印 exec request failed on channel 0 后以 255 退出）
-            if (spec.kind !== "local" && e.code === 255 && hooked && !prediction.integrated && /request failed on channel/i.test(tail)) {
+            if (spec.kind !== "local" && e.code === 255 && hooked && !prediction.integrated && /(exec|shell) request failed/i.test(tail)) {
               hookIncompatible();
               return;
             }
@@ -284,7 +285,9 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
               // 带钩子连上，一个提示符都没出现、没输出多少、也没敲几条命令（输密码最多算两次回车）就退出：
               // 多半是钩子和这台服务器不兼容（系统 OpenSSH 连的 Windows 服务器、rbash、ForceCommand 等）。
               // 保存过的服务器自动为它关掉预测（这样的服务器上预测本来也用不了），按 Enter 就按原来的方式连接
-              const suspect = hooked && !prediction.integrated && sessionBytes < 8192 && sessionEnters <= 2;
+              // 只认正常的退出码：Ctrl+C 打断 ssh.exe 得到的是 Windows 的状态码（如 0xC000013A），被信号结束时为空
+              const normalExit = e.code !== null && e.code !== undefined && e.code >= 0 && e.code <= 255;
+              const suspect = hooked && !prediction.integrated && normalExit && sessionBytes < 8192 && sessionEnters <= 2;
               if (suspect) hookIncompatible(e.code ?? null);
               else end({ kind: "exited", code: e.code ?? null });
             }

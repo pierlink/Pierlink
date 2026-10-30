@@ -178,16 +178,24 @@ await rec.step(conn, "Windows 服务器改用系统 OpenSSH：带钩子连上就
     await setEngine("System OpenSSH", WIN_NAME);
     await u.click(".srv-row", await serverRow(WIN_NAME), "left", 2);
     const text = await u.waitFor(`(()=>{const t=${TERM}; return /Command prediction doesn't work on this server/.test(t) ? t : null;})()`, "终端里说明已为这台服务器关掉预测", 30000);
-    await u.click(".srv-row", await serverRow(WIN_NAME), "right");
-    const items = await p.js(`[...document.querySelectorAll('.pl-menu [role=menuitem]')].map(x=>x.textContent.trim())`);
-    await u.esc();
+    // 关掉预测后服务器列表异步刷新：等右键菜单里变成“开启命令预测”
+    let items = [];
+    const deadline = Date.now() + 10000;
+    for (;;) {
+      await u.click(".srv-row", await serverRow(WIN_NAME), "right");
+      items = await p.js(`[...document.querySelectorAll('.pl-menu [role=menuitem]')].map(x=>x.textContent.trim())`);
+      await u.esc();
+      if (items.includes("Turn on command prediction") || Date.now() > deadline) break;
+      await sleep(500);
+    }
     if (!items.includes("Turn on command prediction")) throw new Error(`右键菜单里应该变成“开启命令预测”：${items.join(" / ")}`);
     await clickVisible(".xterm-screen");
     await u.enter();
     await u.waitFor(`/>$/.test(${LAST}) && !/Command prediction doesn't work/.test(${TERM})`, "按 Enter 后不带钩子连上 Windows 服务器", 30000);
     return text.split("\n").filter(Boolean).slice(-2).join(" / ");
   } finally {
-    await setEngine("Built-in SSH", WIN_NAME);
+    // 恢复失败只记下，不盖住这一步原本的错误
+    try { await setEngine("Built-in SSH", WIN_NAME); } catch (e) { console.log(`改回内置 SSH 失败：${e}`); }
     // 恢复默认：这台服务器的预测重新打开
     await u.click(".srv-row", await serverRow(WIN_NAME), "right");
     const items = await p.js(`[...document.querySelectorAll('.pl-menu [role=menuitem]')].map(x=>x.textContent.trim())`);
