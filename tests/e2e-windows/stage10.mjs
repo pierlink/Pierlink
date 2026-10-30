@@ -8,7 +8,7 @@
 import net from "node:net";
 import { join } from "node:path";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import { killApp, launchApp, recorder, sleep } from "./lib.mjs";
 
 const EXE = process.env.PIERLINK_EXE;
@@ -101,6 +101,25 @@ async function call(agent, name, args = {}, label = "Allow this time", timeoutMs
     }
     await sleep(300);
   }
+  return result;
+}
+/** 调用工具，期间不该弹确认框：弹了就点“拒绝”并报错 */
+async function callNoDialog(agent, name, args = {}, timeoutMs = 120000) {
+  let done = false;
+  let result;
+  let dialog = null;
+  agent.request("tools/call", { name, arguments: args }, timeoutMs).then((r) => { done = true; result = r; }, (e) => { done = true; result = { error: { message: String(e) } }; });
+  const end = Date.now() + timeoutMs + 5000;
+  while (!done && Date.now() < end) {
+    const text = await p.js(`(()=>{const d=document.querySelector('.pl-dialog .mcp-confirm')?.closest('.pl-dialog'); return d ? d.innerText.replace(/\\s+/g,' ') : null;})()`).catch(() => null);
+    if (text) {
+      dialog = text;
+      await u.clickText("Deny", ".pl-dialog");
+      await sleep(500);
+    }
+    await sleep(300);
+  }
+  if (dialog) throw new Error(`${name} 不该弹确认框：${dialog.slice(0, 200)}`);
   return result;
 }
 /** 工具结果里的结构化内容；工具报错时抛出它给模型看的文字 */
@@ -299,6 +318,42 @@ await rec.step(p, "终端：AI 终端里 Ctrl+C 中断、terminal_read 按游标
   return `终端 ${id.slice(0, 8)}… 已关闭`;
 });
 
+await rec.step(p, "Windows AI 终端：换行结尾的命令会执行；第一条命令不弹“内容未知”；send 返回的 cursor 直接给 wait 用", async () => {
+  if (!agent) throw new Error("没有客户端");
+  await u.clickText("Workspace", "header nav");
+  const opened = ok(await call(agent, "open_terminal", { target: "windows" }, "Allow this time", 150000));
+  const id = opened.terminal_id;
+  ok(await call(agent, "terminal_wait", { terminal_id: id, quiet_ms: 2000, timeout_secs: 30 }));
+  const sent = ok(await callNoDialog(agent, "terminal_send", { terminal_id: id, text: "Write-Output \"pl-lf-$(6*7)\"\n" }));
+  if (typeof sent.cursor !== "number") throw new Error(`terminal_send 没有返回 cursor：${JSON.stringify(sent)}`);
+  // 回显的命令里是 $(6*7)，只有真的执行了才会出现 pl-lf-42
+  const waited = ok(await call(agent, "terminal_wait", { terminal_id: id, pattern: "pl-lf-42", since: sent.cursor, timeout_secs: 30 }));
+  if (!waited.matched) throw new Error(`换行结尾的命令没有执行：${JSON.stringify(waited).slice(0, 300)}`);
+  ok(await call(agent, "close_terminal", { terminal_id: id }));
+  return `终端 ${id.slice(0, 8)}…：命令已执行`;
+});
+
+await rec.step(p, "run_command：Windows 上原生程序的退出码原样返回；最后一条成功时是 0", async () => {
+  if (!agent) throw new Error("没有客户端");
+  const failedRun = ok(await call(agent, "run_command", { target: "windows", command: "cmd /c exit 3" }));
+  if (failedRun.exit_code !== 3) throw new Error(`cmd /c exit 3 的退出码应该是 3：${JSON.stringify(failedRun).slice(0, 200)}`);
+  const later = ok(await call(agent, "run_command", { target: "windows", command: "cmd /c exit 3; Write-Output after" }));
+  if (later.exit_code !== 0) throw new Error(`最后一条命令成功时退出码应该是 0：${JSON.stringify(later).slice(0, 200)}`);
+  return "3 和 0 都对";
+});
+
+await rec.step(p, "授权文件夹里改 .js、.py 不弹确认框；写 .ps1 仍要确认（点拒绝后没写）", async () => {
+  if (!agent) throw new Error("没有客户端");
+  const js = join(DEEP, "src", "index.js");
+  ok(await callNoDialog(agent, "write_file", { file_path: js, content: "console.log(1);\n" }));
+  ok(await callNoDialog(agent, "edit_file", { file_path: js, old_string: "console.log(1)", new_string: "console.log(2)" }));
+  ok(await callNoDialog(agent, "write_file", { file_path: join(DEEP, "tool2.py"), content: "print(1)\n" }));
+  const ps1 = join(DEEP, "run.ps1");
+  const denied = failed(await call(agent, "write_file", { file_path: ps1, content: "Write-Output 1\n" }, "Deny"));
+  if (existsSync(ps1)) throw new Error("拒绝了却还是写了 .ps1");
+  return `.ps1：${denied.slice(0, 80)}`;
+});
+
 if (agent) agent.close();
 
 await rec.step(p, "服务器入口：服务器上的 AI 读、改几行、搜索、找 Windows 上的文件", async () => {
@@ -391,6 +446,10 @@ await rec.step(p, "一键添加到本机 Claude Code、Codex：它们自己的�
     if (listed.code !== 0 || !/pierlink/i.test(listed.out)) throw new Error(`${cmd} mcp list 里没有 pierlink（${listed.code}）：${listed.out.slice(-600)}`);
     // 能连上的客户端会把它标成已连接（Claude Code：✓ Connected）；只记录，连接检查的输出各版本写法不同
     results.push(`${name}：${listed.out.split(/\r?\n/).find((l) => /pierlink/i.test(l))?.trim()}`);
+    if (cmd === "codex") {
+      const config = readFileSync(join(process.env.USERPROFILE, ".codex", "config.toml"), "utf8");
+      if (!/\[mcp_servers\.pierlink\][^[]*tool_timeout_sec = 1800/.test(config)) throw new Error(`本机 Codex 配置里没有 30 分钟的工具超时：${config.slice(-400)}`);
+    }
   }
   return results.join("｜");
 });
@@ -412,6 +471,10 @@ await rec.step(p, "一键添加到服务器上的 Claude Code、Codex：服务�
     const [rc, ...rest] = r.out.split("\n");
     const text = rest.join("\n");
     if (rc.trim() !== "0" || !/pierlink/i.test(text)) throw new Error(`服务器上 ${cmd} mcp list 里没有 pierlink（${rc}）：${text.slice(-600)}｜${r.err.slice(-300)}`);
+    if (cmd === "codex") {
+      const toml = wslPython("import os; print(open(os.path.expanduser('~/.codex/config.toml')).read())");
+      if (!/\[mcp_servers\.pierlink\][^[]*tool_timeout_sec = 1800/.test(toml.out)) throw new Error(`服务器上的 Codex 配置里没有 30 分钟的工具超时：${toml.out.slice(-400)}`);
+    }
     // 令牌会不会被客户端自己的列表命令打印出来，只记录（那是客户端的行为）
     const leaked = /Bearer\s+[A-Za-z0-9_-]{8,}/.test(text) ? "（列表里显示了令牌）" : "";
     results.push(`${name}：${text.split("\n").find((l) => /pierlink/i.test(l))?.trim()}${leaked}`);

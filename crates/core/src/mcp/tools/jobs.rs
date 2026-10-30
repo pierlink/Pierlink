@@ -13,6 +13,7 @@ use std::{
     },
     time::{Duration, Instant},
 };
+const READ_LIMIT: usize = 64 * 1024;
 const CAPACITY: usize = 1024 * 1024;
 const RETENTION: Duration = Duration::from_secs(30 * 60);
 #[derive(Default)]
@@ -25,9 +26,21 @@ struct Job {
     target: Target,
     cwd: Option<String>,
     shell: String,
+    command: String,
+    started_ms: u64,
     cancelled: Arc<AtomicBool>,
     state: Mutex<State>,
 }
+impl Job {
+    fn cancel(&self, reason: &'static str) {
+        let mut state = lock(&self.state);
+        if state.finished.is_none() {
+            state.stop_reason.get_or_insert(reason);
+            self.cancelled.store(true, Ordering::Release);
+        }
+    }
+}
+
 #[derive(Default)]
 struct State {
     ring: VecDeque<(bool, Vec<u8>)>,
@@ -37,6 +50,7 @@ struct State {
     exit_code: Option<i32>,
     error: Option<AppError>,
     timed_out: bool,
+    stop_reason: Option<&'static str>,
     preview_out: VecDeque<u8>,
     preview_err: VecDeque<u8>,
 }
@@ -79,26 +93,74 @@ impl State {
     }
     fn output(&self, since: u64) -> Value {
         let base = self.cursor.saturating_sub(self.bytes as u64);
+        let mut streams = [StreamPage::default(), StreamPage::default()];
         let mut position = base;
-        let mut stdout = Vec::new();
-        let mut stderr = Vec::new();
-        for (err, bytes) in &self.ring {
-            let skip = since.saturating_sub(position).min(bytes.len() as u64) as usize;
-            if *err {
-                stderr.extend_from_slice(&bytes[skip..]);
-            } else {
-                stdout.extend_from_slice(&bytes[skip..]);
-            }
+        for (stderr, bytes) in &self.ring {
+            let stream = &mut streams[usize::from(*stderr)];
+            stream.bytes.extend_from_slice(bytes);
+            stream
+                .positions
+                .extend(position..position + bytes.len() as u64);
             position += bytes.len() as u64;
         }
-        json!({"stdout":text::strip_ansi(&stdout),"stderr":text::strip_ansi(&stderr),"running":self.finished.is_none(),"exit_code":self.exit_code,"cursor":self.cursor,"lost":since < base,"timed_out":self.timed_out,"error":self.error})
+        let start = since.max(base);
+        let mut cursor = self.cursor;
+        loop {
+            let previous = cursor;
+            for stream in &streams {
+                cursor = stream.boundary(start, cursor, self.finished.is_some());
+            }
+            let size = streams
+                .iter()
+                .map(|stream| stream.read(start, cursor).len())
+                .sum::<usize>();
+            if size > READ_LIMIT {
+                cursor = start + (cursor - start) * READ_LIMIT as u64 / size as u64;
+                continue;
+            }
+            if cursor == previous {
+                break;
+            }
+        }
+        json!({"stdout":streams[0].read(start, cursor),"stderr":streams[1].read(start, cursor),"running":self.finished.is_none(),"exit_code":self.exit_code,"cursor":cursor,"more":cursor < self.cursor,"lost":since < base,"timed_out":self.timed_out,"stop_reason":self.stop_reason,"error":self.error})
     }
 }
+#[derive(Default)]
+struct StreamPage {
+    bytes: Vec<u8>,
+    positions: Vec<u64>,
+}
+impl StreamPage {
+    fn boundary(&self, since: u64, limit: u64, finished: bool) -> u64 {
+        let mut offset =
+            text::aligned_start(&self.bytes, self.positions.partition_point(|p| *p < since));
+        while offset < self.bytes.len() && self.positions[offset] < limit {
+            let size = match text::token_len(&self.bytes[offset..]) {
+                Some(size) => size,
+                None if finished => self.bytes.len() - offset,
+                None => return self.positions[offset],
+            };
+            if self.positions[offset + size - 1] >= limit {
+                return self.positions[offset];
+            }
+            offset += size;
+        }
+        limit
+    }
+    fn read(&self, since: u64, cursor: u64) -> String {
+        let start =
+            text::aligned_start(&self.bytes, self.positions.partition_point(|p| *p < since));
+        let end = self.positions.partition_point(|p| *p < cursor);
+        text::strip_ansi(&self.bytes[start.min(end)..end])
+    }
+}
+
 pub(super) struct Spec {
     pub entry: Entry,
     pub target: Target,
     pub cwd: Option<String>,
     pub shell: String,
+    pub command: String,
 }
 impl Jobs {
     pub(super) fn start(
@@ -113,6 +175,7 @@ impl Jobs {
             target,
             cwd,
             shell,
+            command,
         } = spec;
         let mut jobs = lock(&self.jobs);
         check_cancel(request)?;
@@ -124,7 +187,7 @@ impl Jobs {
         {
             return Err(AppError::new("mcp.job_limit").with("max", 8).with_reason(
                 "mcp.this_entry_allows_at_most_8_concurrent_background_tasks",
-                "这个入口最多同时运行 8 个后台任务",
+                "这个入口最多同时运行 8 个后台任务；用 list_jobs 查看、job_stop 结束不用的",
             ));
         }
         let id = uuid::Uuid::new_v4().to_string();
@@ -134,6 +197,11 @@ impl Jobs {
             target,
             cwd,
             shell,
+            command: crate::security::redact(&command, &[])
+                .chars()
+                .take(200)
+                .collect(),
+            started_ms: crate::mcp::audit::now_ms(),
             cancelled: Arc::new(AtomicBool::new(false)),
             state: Mutex::new(State::default()),
         });
@@ -150,7 +218,10 @@ impl Jobs {
                     match result {
                         Ok(output) => {
                             state.exit_code = output.exit_code;
-                            state.timed_out = output.timed_out;
+                            state.timed_out = output.timed_out && state.stop_reason.is_none();
+                            if state.timed_out {
+                                state.stop_reason = Some("timeout");
+                            }
                         }
                         Err(mut error) => {
                             for value in error.params.values_mut() {
@@ -230,7 +301,7 @@ impl Jobs {
     }
     pub(super) fn stop(&self, entry: &Entry, id: &str) -> Result<Value, AppError> {
         let job = self.get(entry, id)?;
-        job.cancelled.store(true, Ordering::Release);
+        job.cancel("stopped");
         let started = Instant::now();
         while lock(&job.state).finished.is_none() {
             if started.elapsed() > Duration::from_secs(6) {
@@ -245,8 +316,13 @@ impl Jobs {
     }
     pub(super) fn list(&self, entry: &Entry) -> Value {
         let jobs = lock(&self.jobs);
-        let mut values:Vec<_>=jobs.values().filter(|j| &j.entry==entry).map(|job| { let state=lock(&job.state); json!({"job_id":job.id,"target":job.target.id,"cwd":job.cwd,"shell":job.shell,"running":state.finished.is_none(),"exit_code":state.exit_code,"output_streaming":job.target.kind==TargetKind::Windows}) }).collect();
-        values.sort_by(|a, b| a["job_id"].as_str().cmp(&b["job_id"].as_str()));
+        let mut values:Vec<_>=jobs.values().filter(|j| &j.entry==entry).map(|job| { let state=lock(&job.state); json!({"job_id":job.id,"target":job.target.id,"cwd":job.cwd,"shell":job.shell,"running":state.finished.is_none(),"exit_code":state.exit_code,"output_streaming":job.target.kind==TargetKind::Windows,"command":job.command,"started_ms":job.started_ms,"stop_reason":state.stop_reason}) }).collect();
+        values.sort_by(|a, b| {
+            a["started_ms"]
+                .as_u64()
+                .cmp(&b["started_ms"].as_u64())
+                .then_with(|| a["job_id"].as_str().cmp(&b["job_id"].as_str()))
+        });
         json!(values)
     }
     pub(in crate::mcp) fn cancel_entry(&self, entry: Option<&Entry>) {
@@ -254,7 +330,7 @@ impl Jobs {
             .values()
             .filter(|j| entry.is_none_or(|e| e == &j.entry))
         {
-            job.cancelled.store(true, Ordering::Release);
+            job.cancel("entry_closed");
         }
     }
     fn prune(&self) {
@@ -271,16 +347,17 @@ impl Jobs {
             if lock(&job.state).finished.is_some() {
                 continue;
             }
-            let allowed = host
-                .permissions(&job.entry)
-                .ok()
-                .flatten()
-                .is_some_and(|p| match job.target.kind {
-                    TargetKind::Windows => p.windows_commands,
-                    TargetKind::Server => p.servers.contains(&job.target.id),
-                });
-            if !allowed {
-                job.cancelled.store(true, Ordering::Release);
+            match host.permissions(&job.entry) {
+                Ok(Some(permissions)) => {
+                    let allowed = match job.target.kind {
+                        TargetKind::Windows => permissions.windows_commands,
+                        TargetKind::Server => permissions.servers.contains(&job.target.id),
+                    };
+                    if !allowed {
+                        job.cancel("permission_revoked");
+                    }
+                }
+                _ => job.cancel("entry_closed"),
             }
         }
     }
@@ -308,6 +385,7 @@ mod tests {
             },
             cwd: None,
             shell: "sh".into(),
+            command: "echo 测试".into(),
         }
     }
     #[test]
@@ -366,9 +444,14 @@ mod tests {
         assert_eq!(jobs.list(&Entry::Windows).as_array().unwrap().len(), 8);
         let stopped = jobs.stop(&Entry::Windows, &ids[0]).unwrap();
         assert_eq!(stopped["running"], false);
+        assert_eq!(stopped["stop_reason"], "stopped");
+        assert_eq!(stopped["timed_out"], false);
         jobs.cancel_entry(Some(&Entry::Windows));
-        for id in ids {
-            assert_eq!(jobs.stop(&Entry::Windows, &id).unwrap()["running"], false);
+        for id in &ids[1..] {
+            let result = jobs.stop(&Entry::Windows, id).unwrap();
+            assert_eq!(result["running"], false);
+            assert_eq!(result["stop_reason"], "entry_closed");
+            assert_eq!(result["timed_out"], false);
         }
     }
     #[cfg(unix)]
@@ -417,10 +500,60 @@ mod tests {
         assert_eq!(jobs.output(&Entry::Windows, &id, 5).unwrap()["stdout"], "");
         let result = jobs.stop(&Entry::Windows, &id).unwrap();
         assert_eq!(result["running"], false);
+        assert_eq!(result["stop_reason"], "stopped");
+        assert_eq!(result["timed_out"], false);
         let pid = std::fs::read_to_string(pid).unwrap();
         let stat = std::fs::read_to_string(format!("/proc/{}/stat", pid.trim()));
         assert!(stat.is_err() || stat.unwrap().split_whitespace().nth(2) == Some("Z"));
     }
+    #[test]
+    fn 任务列表包含有界命令和开始时间且正常完成不变成停止() {
+        let jobs = Jobs::default();
+        let before = crate::mcp::audit::now_ms();
+        let mut ids = Vec::new();
+        for timed_out in [false, true] {
+            let mut request = spec();
+            request.command = "甲".repeat(210);
+            ids.push(
+                jobs.start(
+                    request,
+                    &AtomicBool::new(false),
+                    move |_, _| {
+                        Ok(RunOutput {
+                            timed_out,
+                            ..Default::default()
+                        })
+                    },
+                    |_| {},
+                )
+                .unwrap(),
+            );
+        }
+        let started = Instant::now();
+        while ids
+            .iter()
+            .any(|id| jobs.output(&Entry::Windows, id, 0).unwrap()["running"] == true)
+        {
+            assert!(started.elapsed() < Duration::from_secs(2));
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let values = jobs.list(&Entry::Windows);
+        let values = values.as_array().unwrap();
+        assert!(
+            values
+                .windows(2)
+                .all(|pair| pair[0]["started_ms"].as_u64() <= pair[1]["started_ms"].as_u64())
+        );
+        for value in values {
+            assert_eq!(value["command"].as_str().unwrap().chars().count(), 200);
+            assert!(value["started_ms"].as_u64().unwrap() >= before);
+        }
+        assert!(jobs.stop(&Entry::Windows, &ids[0]).unwrap()["stop_reason"].is_null());
+        let timeout = jobs.stop(&Entry::Windows, &ids[1]).unwrap();
+        assert_eq!(timeout["stop_reason"], "timeout");
+        assert_eq!(timeout["timed_out"], true);
+    }
+
     #[test]
     fn 完成记录保留三十分钟后整体释放() {
         let jobs = Jobs::default();
@@ -437,5 +570,100 @@ mod tests {
         lock(&job.state).finished = Some(Instant::now() - RETENTION - Duration::from_secs(1));
         jobs.prune();
         assert!(jobs.get(&Entry::Windows, &id).is_err());
+    }
+}
+
+#[cfg(test)]
+mod page_tests {
+    use super::*;
+    #[test]
+    fn 运行中字符串控制序列封顶后边界和双流分页继续推进() {
+        for kind in *b"]PX^_" {
+            let mut bytes = vec![0x1b, kind];
+            bytes.resize(text::STRING_SEQUENCE_LIMIT - 1, b'x');
+            let mut stream = StreamPage {
+                positions: (100..100 + bytes.len() as u64).collect(),
+                bytes,
+            };
+            assert_eq!(stream.boundary(100, u64::MAX, false), 100);
+            stream.bytes.extend_from_slice(b"xREADY");
+            stream.positions = (100..100 + stream.bytes.len() as u64).collect();
+            let end = 100 + stream.bytes.len() as u64;
+            assert_eq!(stream.boundary(100, end, false), end);
+            assert_eq!(stream.read(100, end), "READY");
+            assert_eq!(stream.boundary(100, 101, false), 100);
+
+            let mut state = State::default();
+            state.push(false, &stream.bytes[..2]);
+            state.push(true, b"err");
+            state.push(false, &stream.bytes[2..]);
+            let page = state.output(0);
+            assert_eq!(page["stdout"], "READY");
+            assert_eq!(page["stderr"], "err");
+            assert_eq!(page["cursor"], state.cursor);
+            assert_eq!(page["more"], false);
+            assert_eq!(page["running"], true);
+            state.push(false, b"NEXT");
+            assert_eq!(
+                state.output(page["cursor"].as_u64().unwrap())["stdout"],
+                "NEXT"
+            );
+        }
+    }
+
+    #[test]
+    fn 输出分页不切中文或跨流拆开的控制序列() {
+        let mut state = State::default();
+        state.push(false, &vec![b'x'; READ_LIMIT - 1]);
+        state.push(false, &[0xe7]);
+        state.push(true, b"err");
+        let first = state.output(0);
+        assert_eq!(first["cursor"], READ_LIMIT - 1);
+        assert_eq!(first["more"], true);
+        let since = first["cursor"].as_u64().unwrap();
+        state.push(false, &[0x94, 0xb2]);
+        state.push(false, b"\x1b]0;title");
+        let second = state.output(since);
+        assert_eq!(second["stdout"], "甲");
+        assert_eq!(second["stderr"], "err");
+        assert_eq!(second["more"], true);
+        let since = second["cursor"].as_u64().unwrap();
+        state.push(false, b"\x1b\\tail");
+        let last = state.output(since);
+        assert_eq!(last["stdout"], "tail");
+        assert_eq!(last["more"], false);
+        assert_eq!(last["cursor"], state.cursor);
+    }
+
+    #[test]
+    fn 无效编码替换字符也遵守输出上限() {
+        let mut state = State::default();
+        state.push(false, &vec![0xff; READ_LIMIT]);
+        let page = state.output(0);
+        assert!(page["stdout"].as_str().unwrap().len() <= READ_LIMIT);
+        assert_eq!(page["more"], true);
+    }
+
+    #[test]
+    fn 单页双流合计最多六十四千字节且丢失后仍可读完() {
+        let mut state = State::default();
+        state.push(false, &vec![b'o'; CAPACITY / 2]);
+        state.push(true, &vec![b'e'; CAPACITY]);
+        let mut cursor = 0;
+        let mut total = 0;
+        loop {
+            let page = state.output(cursor);
+            let size =
+                page["stdout"].as_str().unwrap().len() + page["stderr"].as_str().unwrap().len();
+            assert!(size <= READ_LIMIT);
+            assert_eq!(page["lost"], cursor == 0);
+            total += size;
+            cursor = page["cursor"].as_u64().unwrap();
+            if page["more"] == false {
+                break;
+            }
+        }
+        assert_eq!(total, CAPACITY);
+        assert_eq!(cursor, state.cursor);
     }
 }

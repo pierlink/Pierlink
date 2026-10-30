@@ -73,6 +73,15 @@ impl Input {
         }
     }
 
+    fn push_user(&mut self, data: &[u8]) {
+        // 终端自动应答照常转给程序，不作废 AI 的待提交行或暂停自动化。
+        if !is_terminal_report(data) {
+            self.generation = self.generation.wrapping_add(1);
+            self.user_at = Some(Instant::now());
+        }
+        self.user.push_back(data.to_vec());
+    }
+
     fn ready(&self, now: Instant) -> bool {
         !self.user.is_empty()
             || !self.taken_over && !self.paused(now) && !self.automation.is_empty()
@@ -170,12 +179,7 @@ impl TerminalManager {
             input.bytes += data.len();
             match source {
                 InputSource::User => {
-                    // 终端获得/失去焦点时 xterm 发的焦点报告不是用户打字：照常转给程序，但不作废 AI 的待提交行
-                    if !is_focus_report(data) {
-                        input.generation = input.generation.wrapping_add(1);
-                        input.user_at = Some(Instant::now());
-                    }
-                    input.user.push_back(data.to_vec());
+                    input.push_user(data);
                 }
                 InputSource::Automation => input.automation.push_back((data.to_vec(), expected)),
             }
@@ -346,24 +350,195 @@ mod tests {
     }
 }
 
-/// data 是否只由焦点报告（ESC [ I、ESC [ O）组成
-fn is_focus_report(data: &[u8]) -> bool {
-    !data.is_empty()
-        && data.len().is_multiple_of(3)
-        && data.chunks(3).all(|c| c == b"\x1b[I" || c == b"\x1b[O")
+/// data 必须全部由焦点、设备属性、状态、光标位置、键盘协议、版本或颜色应答组成。
+fn is_terminal_report(mut data: &[u8]) -> bool {
+    if data.is_empty() {
+        return false;
+    }
+    while !data.is_empty() {
+        let Some(length) = terminal_report_len(data) else {
+            return false;
+        };
+        data = &data[length..];
+    }
+    true
+}
+
+fn terminal_report_len(data: &[u8]) -> Option<usize> {
+    if let Some(body) = data.strip_prefix(b"\x1b[") {
+        let end = body.iter().position(|b| (0x40..=0x7e).contains(b))?;
+        let params = &body[..end];
+        let numbers = |bytes: &[u8]| {
+            bytes
+                .split(|b| *b == b';')
+                .all(|part| !part.is_empty() && part.iter().all(u8::is_ascii_digit))
+        };
+        let pair =
+            |bytes: &[u8]| bytes.iter().filter(|b| **b == b';').count() == 1 && numbers(bytes);
+        let valid = match body[end] {
+            b'I' | b'O' => params.is_empty(),
+            b'c' => {
+                params.first().is_some_and(|b| matches!(b, b'?' | b'>')) && numbers(&params[1..])
+            }
+            b'u' => params.starts_with(b"?") && numbers(&params[1..]),
+            b'R' => pair(params.strip_prefix(b"?").unwrap_or(params)),
+            b'n' => params == b"0",
+            b'y' => params
+                .strip_prefix(b"?")
+                .and_then(|p| p.strip_suffix(b"$"))
+                .is_some_and(pair),
+            _ => false,
+        };
+        return valid.then_some(end + 3);
+    }
+    if let Some(version) = data.strip_prefix(b"\x1bP>|") {
+        let end = version.iter().position(|b| *b == 0x1b)?;
+        return (!version[..end].is_empty()
+            && version[..end].iter().all(|b| (0x20..=0x7e).contains(b))
+            && version[end..].starts_with(b"\x1b\\"))
+        .then_some(4 + end + 2);
+    }
+    let body = data.strip_prefix(b"\x1b]")?;
+    let end = body.iter().position(|b| matches!(b, 7 | 0x1b))?;
+    let terminator = if body[end] == 7 {
+        1
+    } else if body[end..].starts_with(b"\x1b\\") {
+        2
+    } else {
+        return None;
+    };
+    let mut fields = body[..end].split(|b| *b == b';');
+    let valid = match fields.next()? {
+        b"10" | b"11" | b"12" => fields.next().is_some_and(is_rgb) && fields.next().is_none(),
+        b"4" => {
+            let mut count = 0;
+            while let Some(index) = fields.next() {
+                if index.is_empty()
+                    || !index.iter().all(u8::is_ascii_digit)
+                    || !fields.next().is_some_and(is_rgb)
+                {
+                    return None;
+                }
+                count += 1;
+            }
+            count > 0
+        }
+        _ => false,
+    };
+    valid.then_some(2 + end + terminator)
+}
+
+fn is_rgb(data: &[u8]) -> bool {
+    data.strip_prefix(b"rgb:").is_some_and(|color| {
+        color.split(|b| *b == b'/').count() == 3
+            && color
+                .split(|b| *b == b'/')
+                .all(|part| (1..=4).contains(&part.len()) && part.iter().all(u8::is_ascii_hexdigit))
+    })
 }
 
 #[cfg(test)]
 mod focus_tests {
-    use super::is_focus_report;
+    use super::is_terminal_report;
 
     #[test]
     fn 焦点报告不算用户输入() {
-        assert!(is_focus_report(b"\x1b[I"));
-        assert!(is_focus_report(b"\x1b[O\x1b[I"));
-        assert!(!is_focus_report(b""));
-        assert!(!is_focus_report(b"a"));
-        assert!(!is_focus_report(b"\x1b[Ia"));
-        assert!(!is_focus_report(b"\x1b[A"));
+        assert!(is_terminal_report(b"\x1b[I"));
+        assert!(is_terminal_report(b"\x1b[O\x1b[I"));
+        assert!(!is_terminal_report(b""));
+        assert!(!is_terminal_report(b"a"));
+        assert!(!is_terminal_report(b"\x1b[Ia"));
+        assert!(!is_terminal_report(b"\x1b[A"));
+    }
+}
+
+#[cfg(test)]
+mod report_tests {
+    use super::*;
+
+    fn reports() -> Vec<&'static [u8]> {
+        vec![
+            b"\x1b[?1;2c",
+            b"\x1b[>0;276;0c",
+            b"\x1b[12;40R",
+            b"\x1b[?12;40R",
+            b"\x1b[?2026;2$y",
+            b"\x1b[0n",
+            b"\x1bP>|XTerm(390)\x1b\\",
+            b"\x1b[?1u",
+            b"\x1b]10;rgb:ffff/eeee/dddd\x07",
+            b"\x1b]11;rgb:00/01/02\x1b\\",
+            b"\x1b]12;rgb:ffff/eeee/dddd\x07",
+            b"\x1b]12;rgb:00/01/02\x1b\\",
+            b"\x1b]4;255;rgb:aa/bb/cc\x07",
+            b"\x1b]4;0;rgb:0000/1111/2222;15;rgb:f/e/d\x1b\\",
+            b"\x1b[I",
+            b"\x1b[O",
+        ]
+    }
+
+    #[test]
+    fn 自动应答可单条或拼接且混入按键不豁免() {
+        for report in reports() {
+            assert!(is_terminal_report(report), "{report:?}");
+            assert!(!is_terminal_report(&[report, b"x"].concat()));
+            assert!(!is_terminal_report(&[b"\r", report].concat()));
+            assert!(!is_terminal_report(&report[..report.len() - 1]));
+        }
+        assert!(is_terminal_report(&reports().concat()));
+        for invalid in [
+            b"\x1b[?c".as_slice(),
+            b"\x1b[1R",
+            b"\x1b[1;2;3R",
+            b"\x1b[?1R",
+            b"\x1b[?1;2;3R",
+            b"\x1b[?;2R",
+            b"\x1b[?1;2y",
+            b"\x1b[1;2$y",
+            b"\x1b[?1;$y",
+            b"\x1b[?1;2;3$y",
+            b"\x1b[5n",
+            b"\x1bP>|\x1b\\",
+            b"\x1bP>|version\rcommand\x1b\\",
+            b"\x1bP>|version\x07",
+            b"\x1bP>version\x1b\\",
+            b"\x1b[>1u",
+            b"\x1b]10;rgb:gg/00/00\x07",
+            b"\x1b]12;rgb:gg/00/00\x07",
+            b"\x1b]12;rgb:00/00/00;extra\x07",
+            b"\x1b]4;rgb:00/00/00\x07",
+            b"\x1b]4;;rgb:00/00/00\x07",
+            b"\x1b]4;x;rgb:00/00/00\x07",
+            b"\x1b]4;0;rgb:00/00/00;1\x07",
+            b"\x1b]4;0;rgb:00/00/00\x1bx",
+        ] {
+            assert!(!is_terminal_report(invalid));
+        }
+    }
+
+    fn preserves_automation(conpty: bool) {
+        let mut input = Input::new(conpty);
+        input.automation.push_back((b"echo ok\r".to_vec(), Some(0)));
+        let data = reports().concat();
+        input.bytes = data.len() + 8;
+        input.push_user(&data);
+        assert_eq!(input.generation, 0);
+        assert!(input.user_at.is_none());
+        assert_eq!(input.next(Instant::now()).unwrap().1, data);
+        assert_eq!(input.next(Instant::now()).unwrap().1, b"echo ok\r");
+        input.push_user(b"x");
+        assert_eq!(input.generation, 1);
+        assert!(input.paused(Instant::now()));
+    }
+
+    #[test]
+    fn 自动应答原样发送且不丢弃排队命令或暂停() {
+        preserves_automation(false);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn 控制台自动应答不改变用户代数() {
+        preserves_automation(true);
     }
 }

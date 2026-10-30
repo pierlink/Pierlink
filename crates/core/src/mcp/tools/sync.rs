@@ -15,6 +15,7 @@ pub struct SyncWait {
     pub completed: bool,
     pub timed_out: bool,
     pub reason: Option<String>,
+    pub errors: Vec<String>,
     pub tasks: Vec<SyncTaskState>,
 }
 /// 先扫描 task（ID、名称或 None 表示全部）的本地目录，再等同步完成；timeout 至多 1800 秒。
@@ -79,6 +80,7 @@ fn wait_for(
         completed: false,
         timed_out: false,
         reason: None,
+        errors: vec![],
         tasks: vec![],
     };
     loop {
@@ -113,6 +115,22 @@ fn wait_for(
             });
         }
         result.tasks = states;
+        result.errors = result
+            .tasks
+            .iter()
+            .filter(|state| state.state == "error" || !state.errors.is_empty())
+            .flat_map(|state| {
+                if state.errors.is_empty() {
+                    vec![format!("同步任务“{}”发生错误", state.name)]
+                } else {
+                    state.errors.clone()
+                }
+            })
+            .collect();
+        if !result.errors.is_empty() {
+            result.reason = Some("同步任务发生错误，请查看 errors 和 tasks 中的错误列表".into());
+            return Ok(result);
+        }
         for state in &result.tasks {
             if state.paused || state.state == "paused" {
                 result.reason = Some(format!("同步任务“{}”已暂停", state.name));
@@ -190,6 +208,7 @@ mod tests {
                     name: "任务".into(),
                     folder_id: "folder".into(),
                     state: "idle".into(),
+                    errors: vec![],
                     paused: false,
                     need_bytes: 0,
                     servers: vec![SyncServerState {
@@ -283,6 +302,33 @@ mod tests {
         assert_eq!(host.scans.load(Ordering::Relaxed), 1);
         assert!(host.calls.load(Ordering::Relaxed) >= 3);
     }
+    #[test]
+    fn 错误状态立即返回错误列表且不扫描() {
+        for errors in [vec![], vec!["磁盘已满".into(), "文件被占用".into()]] {
+            let host = Host::new();
+            {
+                let mut states = host.states.lock().unwrap();
+                states[0].state = "error".into();
+                states[0].errors = errors.clone();
+            }
+            let started = Instant::now();
+            let result = sync_wait(
+                &host,
+                None,
+                Duration::from_secs(300),
+                &AtomicBool::new(false),
+            )
+            .unwrap();
+            assert!(!result.completed && !result.timed_out);
+            assert!(!result.errors.is_empty());
+            if !errors.is_empty() {
+                assert_eq!(result.errors, errors);
+            }
+            assert!(started.elapsed() < Duration::from_secs(1));
+            assert_eq!(host.scans.load(Ordering::Relaxed), 0);
+        }
+    }
+
     #[test]
     fn 离线暂停立即返回且不扫描() {
         for paused in [false, true] {

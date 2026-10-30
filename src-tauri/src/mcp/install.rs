@@ -82,6 +82,16 @@ fn find_client(client: &str) -> Option<PathBuf> {
     if let Some(appdata) = std::env::var_os("APPDATA") {
         dirs.push(PathBuf::from(appdata).join("npm"));
     }
+    // Codex 的 Windows 独立安装包装在这里，不一定在 PATH 里
+    if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+        dirs.push(
+            PathBuf::from(local)
+                .join("Programs")
+                .join("OpenAI")
+                .join("Codex")
+                .join("bin"),
+        );
+    }
     find_in(&dirs, names)
 }
 
@@ -150,6 +160,62 @@ fn tail(text: &str, max: usize) -> String {
 }
 
 /// 用客户端自己的命令行加：先删掉同名的（可能是旧路径），再加用户级的
+/// Codex 等工具结果默认只等 60 秒、启动只等 10 秒；Pierlink 的命令最长 1800 秒。
+const CODEX_TIMEOUTS: [(&str, &str); 2] =
+    [("tool_timeout_sec", "1800"), ("startup_timeout_sec", "20")];
+
+/// 在 Codex 配置的 [mcp_servers.pierlink] 段里补上超时设置（已有的不动）；
+/// 文件或这一段不存在时什么也不做。先写临时文件再替换。
+fn codex_timeouts() -> std::io::Result<()> {
+    let dir = std::env::var_os("CODEX_HOME")
+        .map(PathBuf::from)
+        .or_else(|| home_dir().map(|h| h.join(".codex")));
+    let Some(path) = dir.map(|d| d.join("config.toml")) else {
+        return Ok(());
+    };
+    let text = match std::fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e),
+    };
+    let Some(updated) = with_codex_timeouts(&text) else {
+        return Ok(());
+    };
+    let part = path.with_extension("toml.pierlink-part");
+    std::fs::write(&part, updated)?;
+    std::fs::rename(&part, &path)
+}
+
+/// 返回补好超时设置的配置文本；没有 pierlink 段或已经都有时返回 None
+fn with_codex_timeouts(text: &str) -> Option<String> {
+    let header = format!("[mcp_servers.{NAME}]");
+    let lines: Vec<&str> = text.lines().collect();
+    let start = lines.iter().position(|l| l.trim() == header)?;
+    let end = lines[start + 1..]
+        .iter()
+        .position(|l| l.trim_start().starts_with('['))
+        .map_or(lines.len(), |i| start + 1 + i);
+    let missing: Vec<String> = CODEX_TIMEOUTS
+        .iter()
+        .filter(|(key, _)| {
+            !lines[start + 1..end].iter().any(|l| {
+                l.trim_start()
+                    .strip_prefix(key)
+                    .is_some_and(|rest| rest.trim_start().starts_with('='))
+            })
+        })
+        .map(|(key, value)| format!("{key} = {value}"))
+        .collect();
+    if missing.is_empty() {
+        return None;
+    }
+    let mut out: Vec<String> = lines[..=start].iter().map(|l| (*l).to_owned()).collect();
+    out.extend(missing);
+    out.extend(lines[start + 1..].iter().map(|l| (*l).to_owned()));
+    let newline = if text.contains("\r\n") { "\r\n" } else { "\n" };
+    Some(out.join(newline) + newline)
+}
+
 fn install_cli(client: &str, exe: &str) -> Result<McpInstallDto, AppError> {
     let program = find_client(client)
         .ok_or_else(|| AppError::new("mcp.client_not_found").with("client", display(client)))?;
@@ -168,6 +234,11 @@ fn install_cli(client: &str, exe: &str) -> Result<McpInstallDto, AppError> {
     let (ok, out) = run_client(&program, &add)?;
     if !ok {
         return Err(failed(client, out));
+    }
+    if client == "codex"
+        && let Err(e) = codex_timeouts()
+    {
+        eprintln!("给 Codex 的 pierlink 写超时设置失败: 错误={e}");
     }
     eprintln!(
         "已把 Pierlink 加进 {client}: 程序={}",
@@ -202,7 +273,7 @@ fn merge_cursor(existing: Option<&str>, exe: &str) -> Result<String, AppError> {
         .ok_or_else(|| AppError::new("mcp.cursor_config_invalid"))?;
     servers.insert(
         NAME.into(),
-        serde_json::json!({ "command": exe, "args": ["--mcp"] }),
+        serde_json::json!({ "type": "stdio", "command": exe, "args": ["--mcp"] }),
     );
     serde_json::to_string_pretty(&root).map_err(|e| failed("cursor", e.to_string()))
 }
@@ -343,7 +414,7 @@ trap 'rm -f "$tmp"' EXIT
 if [ -f "$f" ]; then
   awk '/^[[:space:]]*\[/ {{ skip = ($0 ~ /^[[:space:]]*\[mcp_servers\.{name}(\]|\.)/) }} !skip' "$f" > "$tmp" || exit 4
 fi
-printf '\n[mcp_servers.{name}]\nurl = "%s"\nhttp_headers = {{ "Authorization" = "Bearer %s" }}\n' "$url" "$token" >> "$tmp" || exit 4
+printf '\n[mcp_servers.{name}]\nurl = "%s"\nhttp_headers = {{ "Authorization" = "Bearer %s" }}\ntool_timeout_sec = 1800\nstartup_timeout_sec = 20\n' "$url" "$token" >> "$tmp" || exit 4
 # 配置文件是符号链接（dotfiles 管理的）时写到链接指向的文件里，不把链接换成普通文件
 if [ -L "$f" ]; then
   cat "$tmp" > "$f" || exit 4
@@ -518,8 +589,11 @@ fn cursor_installed() -> bool {
         let dirs: Vec<PathBuf> = std::env::split_paths(&p).collect();
         find_in(&dirs, &["cursor.cmd", "cursor.exe", "cursor"]).is_some()
     });
+    let all_users = std::env::var_os("ProgramFiles")
+        .map(|d| PathBuf::from(d).join("cursor").join("Cursor.exe"))
+        .is_some_and(|p| p.is_file());
     let used = home_dir().is_some_and(|h| h.join(".cursor").is_dir());
-    local || in_path || used
+    local || all_users || in_path || used
 }
 
 /// 检测这台电脑上装了 Claude Code、Codex、Cursor 中的哪些
@@ -592,7 +666,7 @@ pub async fn mcp_detect_server_clients(
 /// 换令牌后：这台服务器上一键添加过的客户端，在后台用新令牌重加
 pub(crate) fn reinstall_after_rotate(app: &AppHandle, server_id: &str) {
     let list = installed(app);
-    let clients: Vec<&str> = ["claude", "codex"]
+    let clients: Vec<&str> = ["claude", "codex", "gemini"]
         .into_iter()
         .filter(|c| list.iter().any(|x| *x == installed_key(server_id, c)))
         .collect();
@@ -634,6 +708,31 @@ mod tests {
             r"C:\Pierlink\Pierlink.exe"
         );
         assert_eq!(v["mcpServers"]["pierlink"]["args"][0], "--mcp");
+    }
+
+    #[test]
+    fn codex配置补上超时设置且只补缺的() {
+        let text = "model = \"x\"\n\n[mcp_servers.pierlink]\ncommand = 'C:\\P\\Pierlink.exe'\nargs = [\"--mcp\"]\n\n[mcp_servers.other]\ntool_timeout_sec = 5\n";
+        let out = with_codex_timeouts(text).unwrap();
+        assert!(out.contains(
+            "[mcp_servers.pierlink]\ntool_timeout_sec = 1800\nstartup_timeout_sec = 20\ncommand"
+        ));
+        // 别的段里的同名设置不算
+        assert!(out.contains("[mcp_servers.other]\ntool_timeout_sec = 5\n"));
+        assert_eq!(with_codex_timeouts(&out), None);
+        let partial = "[mcp_servers.pierlink]\r\ntool_timeout_sec = 600\r\n";
+        let out = with_codex_timeouts(partial).unwrap();
+        assert_eq!(
+            out,
+            "[mcp_servers.pierlink]\r\nstartup_timeout_sec = 20\r\ntool_timeout_sec = 600\r\n"
+        );
+        assert_eq!(with_codex_timeouts("[mcp_servers.other]\nx = 1\n"), None);
+    }
+
+    #[test]
+    fn cursor条目写明stdio() {
+        let v: serde_json::Value = serde_json::from_str(&merge_cursor(None, "p").unwrap()).unwrap();
+        assert_eq!(v["mcpServers"]["pierlink"]["type"], "stdio");
     }
 
     #[test]

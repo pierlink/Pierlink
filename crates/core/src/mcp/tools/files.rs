@@ -769,8 +769,8 @@ pub fn write_needs_confirmation(path: &Path) -> Option<String> {
         return Some("写入启动文件夹会在登录时运行程序".into());
     }
     [
-        ".ps1", ".psm1", ".psd1", ".bat", ".cmd", ".vbs", ".vbe", ".js", ".jse", ".wsf", ".wsh",
-        ".lnk", ".hta", ".exe", ".com", ".scr", ".sh", ".py", ".url", ".reg",
+        ".ps1", ".psm1", ".bat", ".cmd", ".vbs", ".vbe", ".jse", ".wsf", ".lnk", ".hta", ".exe",
+        ".com", ".scr", ".url", ".reg", ".msi",
     ]
     .iter()
     .any(|suffix| path.trim_end_matches([' ', '.']).ends_with(suffix))
@@ -1446,5 +1446,27 @@ mod editing_tests {
             "mcp.file_too_large"
         );
         assert_eq!(fs::read_to_string(path).unwrap(), "x".repeat(5000));
+    }
+}
+
+#[cfg(test)]
+mod confirmation_tests {
+    use super::*;
+    #[test]
+    fn 开发源码按普通文件而可执行类型和启动目录要确认() {
+        for ext in ["js", "py", "sh", "ts", "mjs", "jsx", "psd1"] {
+            assert!(!is_dangerous_path(&format!("C:/work/code.{ext}")));
+            assert!(is_dangerous_path(&format!("C:/Startup/code.{ext}")));
+        }
+        for ext in [
+            "ps1", "psm1", "bat", "cmd", "vbs", "vbe", "lnk", "exe", "scr", "hta", "reg", "url",
+            "wsf", "msi", "com", "jse",
+        ] {
+            assert!(is_dangerous_path(&format!("C:/work/start.{ext}")));
+            assert!(is_dangerous_path(&format!(
+                "C:/work/start.{} .",
+                ext.to_uppercase()
+            )));
+        }
     }
 }

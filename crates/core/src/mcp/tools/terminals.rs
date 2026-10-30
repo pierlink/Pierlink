@@ -44,7 +44,10 @@ pub(in crate::mcp) struct Registered {
 impl Registered {
     pub(super) fn check(&self) -> Result<(), AppError> {
         if self.revoked.load(Ordering::Acquire) {
-            Err(cancelled_error())
+            Err(AppError::new("mcp.cancelled").with_reason(
+                "mcp.terminal_taken_back",
+                "用户已收回这个终端：用 list_terminals 查看，或 open_terminal 新开",
+            ))
         } else {
             Ok(())
         }

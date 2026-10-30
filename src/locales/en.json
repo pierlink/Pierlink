@@ -428,6 +428,15 @@
         "launcher_cleanup_thread_has_exited": "launcher cleanup thread has exited"
       },
       "mcp": {
+        "terminal_taken_back": "The user took back this terminal: use list_terminals to inspect terminals or open_terminal to create one",
+        "terminal_shell_not_found": "Terminal shell not found: ask the user to check the local shell or server login shell configuration in Pierlink, then retry",
+        "host_key_rejected": "The user rejected this server fingerprint. Do not retry immediately",
+        "parameter_boolean": "{{parameter}} must be a boolean: true or false",
+        "parameter_string": "{{parameter}} must be a string of at least {{minimum}} characters",
+        "parameter_integer_range": "{{parameter}} must be an integer from {{minimum}} to {{maximum}}",
+        "parameter_enum": "{{parameter}} must be one of: {{allowed}}",
+        "parameter_array": "{{parameter}} must be an array. Each item must satisfy: {{constraint}}",
+        "confirmation_no_answer": "No response within 60 seconds: ask the user to confirm in Pierlink, then retry",
         "couldn_t_clean_up_audit_logs": "couldn't clean up audit logs",
         "entry_token_cannot_be_empty": "entry token cannot be empty",
         "couldn_t_start_the_local_mcp_http_listener": "couldn't start the local MCP HTTP listener",
@@ -470,7 +479,7 @@
         "matching_text_cannot_be_empty": "matching text cannot be empty",
         "matching_text_was_not_found_in_the_file": "matching text was not found in the file",
         "multiple_matches_found_provide_more_context_or_use_replace_all": "multiple matches found; provide more context or use replace_all",
-        "this_entry_allows_at_most_8_concurrent_background_tasks": "this entry allows at most 8 concurrent background tasks",
+        "this_entry_allows_at_most_8_concurrent_background_tasks": "This entry allows at most 8 concurrent background jobs; use list_jobs to inspect them and job_stop to stop unused jobs",
         "couldn_t_create_the_background_task_thread": "couldn't create the background task thread",
         "background_task_is_missing_from_this_entry_or_its_record": "background task is missing from this entry or its record has expired",
         "permission_for_the_background_task_target_was_revoked": "permission for the background task target was revoked",
@@ -490,7 +499,7 @@
         "couldn_t_read_command_output": "couldn't read command output",
         "target_does_not_exist": "target does not exist",
         "the_user_denied_execution": "the user denied execution",
-        "enable_this_entry_in_pierlink_settings_ai_access": "enable this entry in Pierlink Settings → AI access",
+        "enable_this_entry_in_pierlink_settings_ai_access": "This entry is disabled: enable it on the MCP page at the top of Pierlink",
         "too_many_concurrent_operations": "too many concurrent operations",
         "unknown_tool": "unknown tool",
         "this_entry_cannot_execute_commands_on_windows": "this entry cannot execute commands on Windows",
@@ -504,9 +513,8 @@
         "this_entry_has_no_allowed_folders": "this entry has no allowed folders",
         "unknown_file_tool": "unknown file tool",
         "couldn_t_read_the_file": "couldn't read the file",
-        "required_parameter_is_missing": "required parameter is missing",
-        "unknown_parameter": "unknown parameter",
-        "invalid_parameter_type_or_value": "invalid parameter type or value",
+        "required_parameter_is_missing": "Missing required parameter {{parameter}}",
+        "unknown_parameter": "Unknown parameter {{parameter}}; available parameters: {{allowed}}",
         "text_or_keys_is_required": "text or keys is required",
         "pattern_is_not_a_valid_regular_expression": "pattern is not a valid regular expression",
         "line_and_byte_parameters_cannot_be_combined": "line and byte parameters cannot be combined",
@@ -535,7 +543,7 @@
         "login_required": "log in to this server in Pierlink",
         "operation_failed": "operation failed ({{error_code}})",
         "entry_stopped": "entry has stopped",
-        "session_limit": "this entry allows at most 8 sessions",
+        "session_limit": "too many AIs are connected to this entry at once (at most 8); click Stop all in Pierlink and try again",
         "session_stopped": "session has stopped",
         "worker_stopped": "tool worker thread ended unexpectedly",
         "ai_access_not_started": "not started yet",
@@ -543,7 +551,7 @@
         "server_has_no_entry": "this server has no entry",
         "terminal_cannot_be_handed_to_ai": "this terminal can't be handed to AI",
         "terminal_not_open": "Pierlink returned no terminal",
-        "ui_did_not_open_the_terminal": "Pierlink didn't open the terminal (it may be waiting for you to confirm the fingerprint or enter a password)",
+        "ui_did_not_open_the_terminal": "Pierlink didn't open the terminal in time: it may be waiting for the user to confirm a fingerprint or enter a password; retry after that",
         "sync_task": "sync task",
         "home_folder_not_found": "couldn't find the user folder",
         "address_or_token_has_unsupported_characters": "the address or token has unsupported characters",
@@ -1261,7 +1269,8 @@
       "write_failed": "Couldn't send input to the terminal",
       "input_overflow": "The terminal program isn't reading input; too much is queued, so this input was dropped",
       "cwd_not_found": "The terminal's starting folder doesn't exist",
-      "task_failed": "A terminal background task ended unexpectedly"
+      "task_failed": "A terminal background task ended unexpectedly",
+      "invalid_position": "Invalid read position ({{operation}})"
     },
     "server": {
       "not_found": "This server wasn't found; it may have been deleted",
@@ -1402,7 +1411,8 @@
       "cancelled": "The operation was cancelled",
       "file_too_large": "The file is too large (limit {{max_bytes}} bytes)",
       "not_found": "The file or folder doesn't exist: {{path}}",
-      "path_outside": "Not inside an allowed folder: {{path}}"
+      "path_outside": "Not inside an allowed folder: {{path}}",
+      "no_answer": "Nobody answered the confirmation within 60 seconds; it will ask again next time"
     },
     "tunnel": {
       "port_unavailable": "No local port is available",
@@ -2842,8 +2852,8 @@
     "addedCursor": "Written to {{path}}; Cursor loads it automatically",
     "addedServer": "Added to {{client}} on {{server}}",
     "manualCommands": "Or run it yourself",
-    "rotateTokenHint": "The old token stops working immediately and connected AIs disconnect",
-    "rotated": "Token rotated; the old one no longer works and one-click setups are redone",
+    "rotateTokenHint": "The old token stops working immediately; connected AIs disconnect and their background jobs end",
+    "rotated": "Token rotated; the old one no longer works. One-click setups are redone and take effect once the client reconnects (for example /mcp in Claude Code)",
     "clientMissing": "{{client}} wasn't found on this PC. Reopen this page after installing it, or copy a command below to add it manually",
     "addToMissing": "{{client}} (not installed)",
     "addOnServerTo": "Add to {{client}} on the server",
@@ -2852,7 +2862,9 @@
     "detecting": "Checking…",
     "serverClientMissingOther": "{{client}} wasn't found on {{server}}. Reopen this page after installing it there",
     "showOutput": "Show output",
-    "stderr": "Error output:"
+    "stderr": "Error output:",
+    "fileWritten": "~/.pierlink/mcp.json on the server is ready",
+    "fileNotWritten": "~/.pierlink/mcp.json is written once the entry connects; commands copied before that get no token"
   },
   "backup": {
     "export": "Export to file",

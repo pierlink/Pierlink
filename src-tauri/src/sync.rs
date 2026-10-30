@@ -692,12 +692,18 @@ pub(crate) fn mcp_task_states(
             .iter()
             .map(|e| (e.server_id.clone(), e.remote_path.clone()))
             .collect();
-        let (state, need_bytes, server_states) = match inner.local.as_ref() {
+        let (state, need_bytes, server_states, errors) = match inner.local.as_ref() {
             Some(local) => {
                 let s = sync::task_status(local, &t.folder_id, &servers)?;
-                (s.state, s.need_bytes, s.servers)
+                // 同步出错的文件：让 AI 的 sync_wait 立即知道，不用等到超时
+                let errors = s
+                    .errors
+                    .iter()
+                    .map(|e| format!("{}: {}", e.path, e.reason))
+                    .collect();
+                (s.state, s.need_bytes, s.servers, errors)
             }
-            None => ("stopped".to_owned(), 0, Vec::new()),
+            None => ("stopped".to_owned(), 0, Vec::new(), Vec::new()),
         };
         out.push(SyncTaskState {
             servers: server_states
@@ -717,6 +723,7 @@ pub(crate) fn mcp_task_states(
             folder_id: t.folder_id,
             local_path: t.local_path,
             state,
+            errors,
             paused: t.paused,
             need_bytes,
         });

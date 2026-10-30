@@ -1,7 +1,10 @@
 //! 终端自动化输入及有界增量输出；权限和 AI 登记由分发层检查。
 use crate::{
     error::AppError,
-    mcp::{safety::looks_like_password_prompt, text::strip_ansi},
+    mcp::{
+        safety::looks_like_password_prompt,
+        text::{ALIGN_LOOKBEHIND, aligned_start, strip_ansi, token_len},
+    },
     terminal::{InputSource, TerminalEvent, TerminalManager},
 };
 use regex::Regex;
@@ -17,10 +20,13 @@ const WAIT_LIMIT: usize = 256 * 1024;
 #[derive(Debug, Serialize)]
 pub struct SendOutcome {
     pub queued: bool,
+    /// 入队前的原始输出末尾字节游标
+    pub cursor: u64,
     pub reason: &'static str,
 }
 #[derive(Debug, Default, Serialize)]
 pub struct TerminalRead {
+    pub more: bool,
     pub text: String,
     pub cursor: u64,
     pub lost: bool,
@@ -41,6 +47,7 @@ pub fn key_bytes(key: &str) -> Result<Vec<u8>, AppError> {
         "Tab" => b"\t",
         "Esc" => b"\x1b",
         "Backspace" => b"\x7f",
+        "Delete" => b"\x1b[3~",
         "Up" => b"\x1b[A",
         "Down" => b"\x1b[B",
         "Right" => b"\x1b[C",
@@ -165,6 +172,11 @@ pub fn submits_recalled_history(text: Option<&str>, keys: &[String]) -> bool {
     recalled && submits
 }
 
+/// 将 text 中的 CRLF 和 LF 统一成终端提交用的 CR，返回转换后的文字。
+pub(super) fn normalize_text(text: &str) -> String {
+    text.replace("\r\n", "\r").replace('\n', "\r")
+}
+
 /// 将 text 和 keys 按自动化来源放入 id 的输入队列；返回值只说明已入队，不表示已执行。
 /// 密码提示拒绝非空文字；用户接管返回 terminal.automation_rejected，未知按键返回 mcp.invalid_argument。
 pub fn terminal_send(
@@ -182,7 +194,7 @@ pub(super) fn send_at_generation(
     keys: &[String],
     generation: Option<u64>,
 ) -> Result<SendOutcome, AppError> {
-    let mut bytes = text.unwrap_or_default().as_bytes().to_vec();
+    let mut bytes = normalize_text(text.unwrap_or_default()).into_bytes();
     for key in keys {
         bytes.extend(key_bytes(key)?);
     }
@@ -192,6 +204,7 @@ pub(super) fn send_at_generation(
             "终端正在等待密码，请用户在 Pierlink 里输入",
         ));
     }
+    let cursor = m.output_position(id)?;
     if let Some(generation) = generation {
         m.write_automation_at_generation(id, &bytes, generation)?;
     } else {
@@ -199,6 +212,7 @@ pub(super) fn send_at_generation(
     }
     Ok(SendOutcome {
         queued: true,
+        cursor,
         reason: "已入队，不表示已执行；请读取或等待终端输出确认",
     })
 }
@@ -209,57 +223,10 @@ fn clean_prefix(bytes: &[u8], start: u64) -> (String, VecDeque<u64>, usize) {
     let mut positions = VecDeque::new();
     let mut i = 0;
     while i < bytes.len() {
-        let mut end = i + 1;
-        if bytes[i] == 0x1b {
-            let Some(&kind) = bytes.get(end) else { break };
-            end += 1;
-            match kind {
-                b'[' => {
-                    while end < bytes.len() {
-                        let b = bytes[end];
-                        end += 1;
-                        if (0x40..=0x7e).contains(&b) {
-                            break;
-                        }
-                    }
-                }
-                b']' | b'P' | b'X' | b'^' | b'_' => {
-                    while end < bytes.len() {
-                        if kind == b']' && bytes[end] == 7 {
-                            end += 1;
-                            break;
-                        }
-                        if bytes[end..].starts_with(b"\x1b\\") {
-                            end += 2;
-                            break;
-                        }
-                        end += 1;
-                    }
-                }
-                b'O' | b'N' => {
-                    end = (end + 1).min(bytes.len());
-                }
-                0x20..=0x2f => {
-                    while bytes.get(end).is_some_and(|b| (0x20..=0x2f).contains(b)) {
-                        end += 1;
-                    }
-                    end = (end + 1).min(bytes.len());
-                }
-                _ => {}
-            }
-        } else if bytes[i..].starts_with(b"\r\n") {
-            end += 1;
-        } else if bytes[i] >= 0xc2 {
-            let width = match bytes[i] {
-                0xc2..=0xdf => 2,
-                0xe0..=0xef => 3,
-                0xf0..=0xf4 => 4,
-                _ => 1,
-            };
-            if i + width <= bytes.len() && std::str::from_utf8(&bytes[i..i + width]).is_ok() {
-                end = i + width;
-            }
-        }
+        let Some(size) = token_len(&bytes[i..]) else {
+            break;
+        };
+        let end = i + size;
         let token = strip_ansi(&bytes[i..end]);
         if text.len() + token.len() > READ_LIMIT {
             break;
@@ -274,25 +241,63 @@ fn read_chunk(
     m: &TerminalManager,
     id: &str,
     since: Option<u64>,
+    tail_bytes: Option<u64>,
 ) -> Result<(TerminalRead, VecDeque<u64>), AppError> {
-    let output = m.output_since(id, since.unwrap_or(0))?;
-    let (text, positions, consumed) = clean_prefix(&output.data, output.start);
-    Ok((
+    // 在历史锁内确定尾部和窗口，只复制本次需要的字节及少量边界上下文。
+    read_window(|limit| {
+        m.output_window(
+            id,
+            since.unwrap_or(0),
+            tail_bytes.map(|tail| tail.min(READ_LIMIT as u64) as usize),
+            ALIGN_LOOKBEHIND,
+            limit,
+        )
+    })
+}
+
+fn read_window(
+    mut window: impl FnMut(usize) -> Result<(crate::terminal::OutputRead, u64), AppError>,
+) -> Result<(TerminalRead, VecDeque<u64>), AppError> {
+    let mut limit = READ_LIMIT + ALIGN_LOOKBEHIND;
+    loop {
+        let (output, requested) = window(limit)?;
+        let result = read_output(&output, requested);
+        let consumed = (result.0.cursor - output.start) as usize;
+        // 窗口切到控制序列时只扩大重读一次；字符串序列有 4 KiB 上限，
+        // 即使历史全是控制序列，累计复制也不超过 3 × READ_LIMIT + 5 × ALIGN_LOOKBEHIND。
+        if limit == READ_LIMIT + ALIGN_LOOKBEHIND
+            && output.start + (output.data.len() as u64) < output.next
+            && token_len(&output.data[consumed..]).is_none()
+        {
+            limit = limit.saturating_mul(2);
+            continue;
+        }
+        return Ok(result);
+    }
+}
+fn read_output(output: &crate::terminal::OutputRead, since: u64) -> (TerminalRead, VecDeque<u64>) {
+    let skip = aligned_start(&output.data, since.saturating_sub(output.start) as usize);
+    let start = output.start + skip as u64;
+    let (text, positions, consumed) = clean_prefix(&output.data[skip..], start);
+    (
         TerminalRead {
             text,
-            cursor: output.start + consumed as u64,
-            lost: output.lost,
+            cursor: start + consumed as u64,
+            lost: output.lost || since < output.start,
+            more: start + (consumed as u64) < output.next,
         },
         positions,
-    ))
+    )
 }
-/// 从 id 的 since（默认历史开头）读取至多 64 KiB 去 ANSI 文字，返回原始字节游标和历史丢失标记。
+/// 从 id 的 since（默认历史开头）读取至多 64 KiB 去 ANSI 文字；tail_bytes 限定最近字节范围，最多 64 KiB。
+/// 返回原始字节游标、历史丢失标记和后面是否仍有输出；起点向后对齐字符及控制序列。
 pub fn terminal_read(
     m: &TerminalManager,
     id: &str,
     since: Option<u64>,
+    tail_bytes: Option<u64>,
 ) -> Result<TerminalRead, AppError> {
-    read_chunk(m, id, since).map(|v| v.0)
+    read_chunk(m, id, since, tail_bytes).map(|v| v.0)
 }
 /// 返回 id 当前渲染后的屏幕文字；无效终端返回 terminal.not_found。
 pub fn terminal_screen(m: &TerminalManager, id: &str) -> Result<String, AppError> {
@@ -325,13 +330,14 @@ pub(super) fn wait_cancellable(
 ) -> Result<TerminalWait, AppError> {
     let start = Instant::now();
     let timeout = timeout.min(Duration::from_secs(1800));
+    let quiet = quiet.or_else(|| pattern.is_none().then_some(Duration::from_secs(2)));
     let subscription = match m.subscribe(id, READ_LIMIT) {
         Ok(s) => Some(s),
         Err(e) if e.code == "terminal.not_found" => None,
         Err(e) => return Err(e),
     };
     let mut result = TerminalWait {
-        cursor: since.unwrap_or(m.output_since(id, 0).map(|v| v.next).unwrap_or(0)),
+        cursor: since.unwrap_or_else(|| m.output_position(id).unwrap_or(0)),
         exited: subscription.is_none(),
         ..Default::default()
     };
@@ -344,7 +350,7 @@ pub(super) fn wait_cancellable(
             );
         }
         let previous = result.cursor;
-        match read_chunk(m, id, Some(previous)) {
+        match read_chunk(m, id, Some(previous), None) {
             Ok((read, offsets)) => {
                 if read.cursor != previous {
                     last_output = Instant::now();
@@ -389,10 +395,10 @@ pub(super) fn wait_cancellable(
         }
         // 先排空退出前的历史，不能因收到退出事件而漏掉末尾的匹配。
         let pending = m
-            .output_since(id, result.cursor)
-            .map(|v| !v.data.is_empty())
+            .output_position(id)
+            .map(|position| position > result.cursor)
             .unwrap_or(false);
-        if result.exited && !pending {
+        if result.exited && (!pending || result.cursor == previous) {
             return Ok(result);
         }
         if quiet.is_some_and(|q| last_output.elapsed() >= q) {
@@ -414,6 +420,17 @@ mod line_tests {
 
     fn keys(k: &[&str]) -> Vec<String> {
         k.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn 换行统一为回车且提交内容一致() {
+        let normalized = super::normalize_text("echo a\r\necho b\necho c\r");
+        assert_eq!(normalized, "echo a\recho b\recho c\r");
+        assert_eq!(
+            submitted_lines("", Some(&normalized), &[]).0,
+            ["echo a", "echo b", "echo c"]
+        );
+        assert_eq!(super::key_bytes("Delete").unwrap(), b"\x1b[3~");
     }
 
     #[test]
@@ -546,6 +563,7 @@ mod tests {
             ("Tab", "\t"),
             ("Esc", "\x1b"),
             ("Backspace", "\x7f"),
+            ("Delete", "\x1b[3~"),
             ("Up", "\x1b[A"),
             ("Down", "\x1b[B"),
             ("Left", "\x1b[D"),
@@ -572,19 +590,19 @@ mod tests {
         terminal_send(&m, &id, Some("stty -echo\n"), &[]).unwrap();
         std::thread::sleep(Duration::from_millis(100));
         let start = m.output_since(&id, 0).unwrap().next;
-        terminal_send(
+        let sent = terminal_send(
             &m,
             &id,
             Some("printf '\\033[31m甲乙\\033[0m余下\\n'\n"),
             &[],
         )
         .unwrap();
-        let matched = wait(&m, &id, "甲乙", start);
+        let matched = wait(&m, &id, "甲乙", sent.cursor);
         assert!(matched.matched);
         assert!(matched.text.ends_with("甲乙"));
         assert!(wait(&m, &id, "余下", matched.cursor).matched);
         assert!(terminal_screen(&m, &id).unwrap().contains("甲乙余下"));
-        let read = terminal_read(&m, &id, Some(start)).unwrap();
+        let read = terminal_read(&m, &id, Some(start), None).unwrap();
         assert!(!read.text.contains('\x1b'));
         let quiet = terminal_wait(
             &m,
@@ -597,6 +615,20 @@ mod tests {
         )
         .unwrap();
         assert!(!quiet.matched && !quiet.timed_out);
+        let default_quiet = terminal_wait(
+            &m,
+            &id,
+            None,
+            None,
+            None,
+            Duration::from_secs(3),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        assert!(!default_quiet.timed_out);
+        let tail = terminal_read(&m, &id, None, Some(1)).unwrap();
+        assert!(tail.text.len() <= 1);
+        assert!(!tail.more);
         let timeout = terminal_wait(
             &m,
             &id,
@@ -686,11 +718,333 @@ mod tests {
         m.close(&id).unwrap();
     }
     #[test]
+    fn 四兆历史下千次增量和尾部读取保持有界耗时() {
+        let manager = TerminalManager::new();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let id = manager
+            .open(
+                TerminalSpec {
+                    kind: TerminalKind::Local {
+                        program: "/bin/sh".into(),
+                        args: vec![
+                            "-c".into(),
+                            "head -c 4194304 /dev/zero | tr '\\000' x; printf '\\033]0;'; head -c 102400 /dev/zero | tr '\\000' x; printf '\\007DONE'; read line"
+                                .into(),
+                        ],
+                        cwd: None,
+                        env: vec![],
+                    },
+                    cols: 100,
+                    rows: 24,
+                },
+                Arc::new(move |event| {
+                    let _ = tx.send(event);
+                }),
+            )
+            .unwrap();
+        let mut received = 0;
+        while received < 4 * 1024 * 1024 + 102400 + 9 {
+            let TerminalEvent::Output(bytes) = rx.recv_timeout(Duration::from_secs(15)).unwrap()
+            else {
+                panic!("输出历史填满前终端已退出");
+            };
+            manager.ack(&id, bytes.len()).unwrap();
+            received += bytes.len();
+        }
+        let end = manager.output_position(&id).unwrap();
+        assert_eq!(
+            manager.output_since(&id, 0).unwrap().data.len(),
+            4 * 1024 * 1024
+        );
+        let started = Instant::now();
+        for _ in 0..1000 {
+            let read = read_chunk(&manager, &id, Some(end), None).unwrap().0;
+            assert_eq!(read.cursor, end);
+            assert!(read.text.is_empty() && !read.more && !read.lost);
+            let tail = read_chunk(&manager, &id, None, Some(4)).unwrap().0;
+            assert_eq!(tail.text, "DONE");
+            assert_eq!(tail.cursor, end);
+            assert!(!tail.more && !tail.lost);
+        }
+        let elapsed = started.elapsed();
+        eprintln!("四兆历史下各一千次增量和尾部读取耗时：{elapsed:?}");
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "增量读取耗时过长：{elapsed:?}"
+        );
+        assert_eq!(
+            read_chunk(&manager, &id, Some(end + 1), None)
+                .unwrap_err()
+                .code,
+            "terminal.invalid_position"
+        );
+        let first = read_chunk(&manager, &id, Some(0), None).unwrap().0;
+        assert!(first.lost && first.more);
+        assert_eq!(first.text.len(), READ_LIMIT);
+        for since in [4194304, 4194306] {
+            let read = read_chunk(&manager, &id, Some(since), None).unwrap().0;
+            // 超长 OSC 在 4 KiB 处结束，后续字节作为正常输出分页返回。
+            assert_eq!(read.text, "x".repeat(READ_LIMIT));
+            assert!(read.more && !read.lost);
+            let next = read_chunk(&manager, &id, Some(read.cursor), None)
+                .unwrap()
+                .0;
+            assert_eq!(
+                next.text,
+                format!(
+                    "{}\x07DONE",
+                    "x".repeat(102404 - crate::mcp::text::STRING_SEQUENCE_LIMIT - READ_LIMIT)
+                )
+            );
+            assert_eq!(next.cursor, end);
+            assert!(!next.more && !next.lost);
+        }
+        manager.close(&id).unwrap();
+        assert_eq!(
+            manager.output_position("不存在").unwrap_err().code,
+            "terminal.not_found"
+        );
+        assert_eq!(
+            read_chunk(&manager, "不存在", None, None).unwrap_err().code,
+            "terminal.not_found"
+        );
+    }
+
+    #[test]
+    fn 未终止字符串控制序列后的正常输出可读取和等待() {
+        let manager = TerminalManager::new();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let id = manager
+            .open(
+                TerminalSpec {
+                    kind: TerminalKind::Local {
+                        program: "/bin/sh".into(),
+                        args: vec![
+                            "-c".into(),
+                            "printf '\\033]'; head -c 4094 /dev/zero | tr '\\000' x; printf READY; read line".into(),
+                        ],
+                        cwd: None,
+                        env: vec![],
+                    },
+                    cols: 100,
+                    rows: 24,
+                },
+                Arc::new(move |event| {
+                    let _ = tx.send(event);
+                }),
+            )
+            .unwrap();
+        let end = crate::mcp::text::STRING_SEQUENCE_LIMIT + 5;
+        let mut received = 0;
+        while received < end {
+            let TerminalEvent::Output(bytes) = rx.recv_timeout(Duration::from_secs(5)).unwrap()
+            else {
+                panic!("输出完成前终端已退出");
+            };
+            manager.ack(&id, bytes.len()).unwrap();
+            received += bytes.len();
+        }
+        let read = terminal_read(&manager, &id, Some(0), None).unwrap();
+        assert_eq!(read.text, "READY");
+        assert_eq!(read.cursor, end as u64);
+        assert!(!read.more);
+        let wait = terminal_wait(
+            &manager,
+            &id,
+            Some(&Regex::new("READY").unwrap()),
+            None,
+            Some(0),
+            Duration::from_secs(1),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        assert!(wait.matched && !wait.timed_out);
+        assert_eq!(wait.text, "READY");
+        assert_eq!(wait.cursor, end as u64);
+        manager.close(&id).unwrap();
+    }
+
+    #[test]
     fn 输出限额宽字符及控制序列游标() {
         let bytes = format!("\x1b[31m{}\x1b[0m尾", "甲".repeat(40000));
         let (text, offsets, count) = clean_prefix(bytes.as_bytes(), 100);
         assert!(text.len() <= READ_LIMIT && std::str::from_utf8(text.as_bytes()).is_ok());
         assert_eq!(offsets.back().copied(), Some(100 + count as u64));
         assert!(count < bytes.len());
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+    use crate::terminal::{TerminalKind, TerminalSpec};
+    use std::sync::Arc;
+
+    #[test]
+    fn 控制台换行提交能执行命令() {
+        let manager = TerminalManager::new();
+        let id = manager
+            .open(
+                TerminalSpec {
+                    kind: TerminalKind::Local {
+                        program: std::path::PathBuf::from(std::env::var_os("SystemRoot").unwrap())
+                            .join("System32/WindowsPowerShell/v1.0/powershell.exe"),
+                        args: vec!["-NoLogo".into(), "-NoProfile".into()],
+                        cwd: None,
+                        env: vec![],
+                    },
+                    cols: 100,
+                    rows: 24,
+                },
+                Arc::new(|_| {}),
+            )
+            .unwrap();
+        let pattern = Regex::new("LF_OK").unwrap();
+        let sent =
+            terminal_send(&manager, &id, Some("Write-Output ('LF_' + 'OK')\n"), &[]).unwrap();
+        let output = terminal_wait(
+            &manager,
+            &id,
+            Some(&pattern),
+            None,
+            Some(sent.cursor),
+            Duration::from_secs(15),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        assert!(output.matched, "{output:?}");
+        manager.close(&id).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod boundary_tests {
+    use super::*;
+    #[test]
+    fn 历史窗口遇到未终止序列最多重读一次且复制总量有界() {
+        use crate::mcp::text::STRING_SEQUENCE_LIMIT;
+        let initial = READ_LIMIT + ALIGN_LOOKBEHIND;
+        for prefix in [0, initial - 1, 2 * initial - 1] {
+            // 前缀只有可完整消费的控制序列，覆盖在首轮和重读窗口末尾截断的情形。
+            let mut history = b"\x1b7".repeat(prefix / 2);
+            if prefix % 2 == 1 {
+                history.push(b'a');
+            }
+            let sequence = history.len();
+            history.extend_from_slice(b"\x1b]");
+            history.resize(sequence + STRING_SEQUENCE_LIMIT, b'x');
+            history.extend_from_slice(b"READY");
+            history.resize(4 * 1024 * 1024, b'x');
+            let mut since = 0;
+            let mut found = false;
+            for _ in 0..3 {
+                let mut copies = Vec::new();
+                let read = read_window(|limit| {
+                    let start = (since as usize).saturating_sub(ALIGN_LOOKBEHIND);
+                    let end = (since as usize + limit).min(history.len());
+                    let data = history[start..end].to_vec();
+                    copies.push(data.len());
+                    Ok((
+                        crate::terminal::OutputRead {
+                            start: start as u64,
+                            next: history.len() as u64,
+                            data,
+                            lost: false,
+                        },
+                        since,
+                    ))
+                })
+                .unwrap()
+                .0;
+                assert!(copies.len() <= 2);
+                assert!(copies.iter().sum::<usize>() <= 3 * READ_LIMIT + 5 * ALIGN_LOOKBEHIND);
+                assert!(
+                    copies
+                        .iter()
+                        .all(|n| *n <= 2 * READ_LIMIT + 3 * ALIGN_LOOKBEHIND)
+                );
+                assert!(read.cursor > since);
+                since = read.cursor;
+                found |= read.text.contains("READY");
+                if found {
+                    break;
+                }
+            }
+            assert!(found, "截断位置：{prefix}");
+        }
+    }
+
+    #[test]
+    fn 分块中文和控制序列未完整前不推进游标() {
+        for data in [
+            "甲".as_bytes(),
+            b"\x1b[31m".as_slice(),
+            b"\x1b]0;title\x1b\\",
+        ] {
+            for split in 1..data.len() {
+                let bytes = [b"a", &data[..split]].concat();
+                let (text, _, count) = clean_prefix(&bytes, 0);
+                assert_eq!(text, "a");
+                assert_eq!(count, 1, "{data:?}/{split}");
+                let (tail, _, consumed) = clean_prefix(data, count as u64);
+                assert_eq!(consumed, data.len());
+                assert_eq!(tail, if data[0] == 0x1b { "" } else { "甲" });
+            }
+        }
+    }
+
+    #[test]
+    fn 分页和尾部起点均对齐且返回更多标志() {
+        let data = format!("{}甲\x1b[31m尾\x1b[0m", "x".repeat(READ_LIMIT - 1)).into_bytes();
+        let output = crate::terminal::OutputRead {
+            start: 0,
+            next: data.len() as u64,
+            data,
+            lost: false,
+        };
+        let first = read_output(&output, 0).0;
+        assert!(first.more);
+        assert_eq!(first.cursor, (READ_LIMIT - 1) as u64);
+        let second = read_output(&output, first.cursor).0;
+        assert_eq!(second.text, "甲尾");
+        assert!(!second.more);
+        assert_eq!(second.cursor, output.next);
+        assert_eq!(read_output(&output, READ_LIMIT as u64).0.text, "尾");
+        assert_eq!(read_output(&output, (READ_LIMIT + 3) as u64).0.text, "尾");
+    }
+    #[test]
+    fn 有界回看对齐多字节字符和各类控制序列内部起点() {
+        for token in [
+            "甲😀".as_bytes(),
+            b"\x1b[38;2;255;0;0m",
+            b"\x1b]0;title\x07",
+            b"\x1b]0;title\x1b\\",
+            b"\x1bPpayload\x1b\\",
+            b"\x1b(B",
+            b"\x1bOA",
+            b"\r\n",
+        ] {
+            let mut data = vec![b'x'; 2 * ALIGN_LOOKBEHIND];
+            let start = data.len();
+            data.extend_from_slice(token);
+            data.extend_from_slice(b"tail");
+            let output = crate::terminal::OutputRead {
+                start: 100,
+                next: 100 + data.len() as u64,
+                data,
+                lost: false,
+            };
+            for split in 1..token.len() {
+                let read = read_output(&output, 100 + (start + split) as u64).0;
+                let expected = if token == "甲😀".as_bytes() && split <= 3 {
+                    "😀tail"
+                } else {
+                    "tail"
+                };
+                assert_eq!(read.text, expected, "{token:?}/{split}");
+                assert_eq!(read.cursor, output.next);
+                assert!(!read.more && !read.lost);
+            }
+        }
     }
 }

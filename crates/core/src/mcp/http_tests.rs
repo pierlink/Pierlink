@@ -386,6 +386,10 @@ async fn 每入口最多八个会话并可在删除后继续接入() {
         ids.push(client.initialize().await);
     }
     assert_eq!(f.service.sessions().len(), 8);
+    let active: Vec<_> = lock(&f.service.shared.sessions)
+        .values()
+        .map(|s| s.call_flag())
+        .collect();
     let reply = client
         .request("POST", &modern_headers(), &call(Some("2026-07-28")))
         .await;
@@ -393,8 +397,9 @@ async fn 每入口最多八个会话并可在删除后继续接入() {
         reply.json()["error"]["message"]
             .as_str()
             .unwrap()
-            .contains("最多允许 8 个")
+            .contains("最多 8 个")
     );
+    drop(active);
     let mut other = HttpClient::connect(
         f.service
             .start_http_entry("other", Zeroizing::new("test-entry-token".into()))
@@ -587,7 +592,7 @@ async fn 换令牌重启入口和全部停止后重新审批操作() {
 }
 
 #[tokio::test]
-async fn 空闲连接慢速请求头和孤立会话有期限() {
+async fn 空闲连接和慢速请求头有期限但旧式会话保留() {
     let f = Fixture::new();
     let timeout = Duration::from_millis(180);
     let port = f
@@ -602,22 +607,14 @@ async fn 空闲连接慢速请求头和孤立会话有期限() {
     let mut idle = HttpClient::connect(port).await;
     let id = idle.initialize().await;
     idle.closed().await;
-    until(|| f.service.sessions().is_empty()).await;
-    // 会话刚回收时底层可能短暂回 500（会话正在关闭），随后稳定为 404：最多等 2 秒
-    let deadline = Instant::now() + Duration::from_secs(2);
-    loop {
-        let mut stale = HttpClient::connect(port).await;
-        let status = stale
+    let mut resumed = HttpClient::connect(port).await;
+    assert_eq!(
+        resumed
             .request("POST", &legacy_headers(&id), &call(None))
             .await
-            .status;
-        if status == 404 {
-            break;
-        }
-        assert_eq!(status, 500, "过期会话只能被拒绝");
-        assert!(Instant::now() < deadline, "过期会话一直没有变成 404");
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+            .status,
+        200
+    );
     let mut slow = HttpClient::connect(port).await;
     slow.io
         .get_mut()
@@ -803,6 +800,10 @@ async fn 内存字节流会话上限取消与令牌脱敏() {
         ids.push(client.initialize().await);
     }
     assert_eq!(f.service.sessions().len(), 8);
+    let active: Vec<_> = lock(&f.service.shared.sessions)
+        .values()
+        .map(|s| s.call_flag())
+        .collect();
     let reply = client
         .request("POST", &modern_headers(), &call(Some("2026-07-28")))
         .await;
@@ -810,8 +811,9 @@ async fn 内存字节流会话上限取消与令牌脱敏() {
         reply.json()["error"]["message"]
             .as_str()
             .unwrap()
-            .contains("最多允许 8 个")
+            .contains("最多 8 个")
     );
+    drop(active);
     lock(&f.host.output).stdout = b"test-entry-token".to_vec();
     let command = json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"run_command","arguments":{"target":"server-id","command":"printf test-entry-token"}}}).to_string();
     let reply = client
@@ -978,12 +980,7 @@ async fn disconnected_command(mut client: HttpClient, legacy: bool) {
         .await
         .unwrap();
     assert_eq!(reply.status, 200);
-    let started = Instant::now();
-    while !pidfile.exists() {
-        assert!(started.elapsed() < Duration::from_secs(5));
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    let pid = std::fs::read_to_string(&pidfile).unwrap();
+    let pid = wait_pid(&pidfile).await;
     drop(client);
     let started = Instant::now();
     loop {
@@ -996,6 +993,21 @@ async fn disconnected_command(mut client: HttpClient, legacy: bool) {
             "断开后进程仍在运行，旧式协议={legacy}"
         );
         tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// 等 pid 文件里写好进程号再读：文件刚建好时可能还是空的，读到空串会去查 /proc/stat。
+#[cfg(unix)]
+async fn wait_pid(pidfile: &std::path::Path) -> String {
+    let started = Instant::now();
+    loop {
+        if let Ok(text) = std::fs::read_to_string(pidfile)
+            && text.trim().parse::<u32>().is_ok()
+        {
+            return text.trim().to_owned();
+        }
+        assert!(started.elapsed() < Duration::from_secs(5), "等进程号超时");
+        tokio::time::sleep(Duration::from_millis(10)).await;
     }
 }
 
@@ -1024,12 +1036,7 @@ async fn 后台任务在无握手请求间保留并在入口关闭后结束() {
         format!("{AUTH}{ACCEPT}{VERSION}Mcp-Method: tools/call\r\nMcp-Name: job_output\r\n");
     let reply=client.request("POST",&headers,&json!({"jsonrpc":"2.0","id":94,"method":"tools/call","params":{"name":"job_output","arguments":{"job_id":id},"_meta":meta("2026-07-28")}}).to_string()).await;
     assert_eq!(reply.json()["result"]["structuredContent"]["running"], true);
-    let started = Instant::now();
-    while !pidfile.exists() {
-        assert!(started.elapsed() < Duration::from_secs(5));
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    let pid = std::fs::read_to_string(pidfile).unwrap();
+    let pid = wait_pid(&pidfile).await;
     f.service.stop_http_entry("server-id");
     let started = Instant::now();
     loop {
@@ -1040,4 +1047,199 @@ async fn 后台任务在无握手请求间保留并在入口关闭后结束() {
         assert!(started.elapsed() < Duration::from_secs(5));
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn 内存http旧式会话无进度令牌长调用超过一分钟仍返回结果() {
+    let f = Fixture::new();
+    let entry = MemoryEntry::new(&f.service, "test-entry-token", Duration::from_secs(60));
+    let mut client = HttpClient::memory(&entry);
+    let id = client.initialize().await;
+    client.send("POST", &legacy_headers(&id), &json!({"jsonrpc":"2.0","id":93,"method":"tools/call","params":{"name":"run_command","arguments":{"target":"windows","command":"sleep 90; printf finished","timeout_secs":120}}}).to_string()).await;
+    let reply = client.headers().await;
+    assert_eq!(reply.status, 200);
+    let mut body = String::new();
+    loop {
+        let chunk = tokio::time::timeout(Duration::from_secs(100), client.chunk())
+            .await
+            .unwrap();
+        if chunk.is_empty() {
+            break;
+        }
+        body.push_str(&String::from_utf8(chunk).unwrap());
+    }
+    let result: Value = body
+        .lines()
+        .filter_map(|line| line.strip_prefix("data: "))
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .find(|v| v["id"] == 93)
+        .unwrap();
+    assert_eq!(result["result"]["structuredContent"]["stdout"], "finished");
+    assert_eq!(result["result"]["structuredContent"]["exit_code"], 0);
+    assert!(!body.contains("notifications/progress"));
+    assert_eq!(
+        client
+            .request("POST", &legacy_headers(&id), &call(None))
+            .await
+            .status,
+        200
+    );
+}
+
+#[tokio::test]
+async fn 内存http空闲连接结束后旧式会话仍可使用() {
+    let f = Fixture::new();
+    let entry = MemoryEntry::new(&f.service, "test-entry-token", Duration::from_millis(180));
+    let mut client = HttpClient::memory(&entry);
+    let id = client.initialize().await;
+    client.closed().await;
+    let mut resumed = HttpClient::memory(&entry);
+    assert_eq!(
+        resumed
+            .request("POST", &legacy_headers(&id), &call(None))
+            .await
+            .status,
+        200
+    );
+}
+
+#[tokio::test]
+async fn 内存http同代令牌确认无人回应后再次询问() {
+    let f = Fixture::new();
+    let entry = MemoryEntry::new(&f.service, "test-entry-token", Duration::from_secs(60));
+    *lock(&f.host.decision) = Confirmation::NoAnswer;
+    let mut first = HttpClient::memory(&entry);
+    assert!(error_text(&first.run_command("test-entry-token").await).contains("60 秒内没人回应"));
+    *lock(&f.host.decision) = Confirmation::Allow;
+    let mut second = HttpClient::memory(&entry);
+    assert_eq!(
+        second.run_command("test-entry-token").await["result"]["isError"],
+        false
+    );
+    assert_eq!(f.host.confirmations.load(Ordering::Acquire), 2);
+}
+
+#[tokio::test]
+async fn 空闲会话满额时新连接淘汰最后请求最早的会话() {
+    let f = Fixture::new();
+    let entry = MemoryEntry::new(&f.service, "test-entry-token", Duration::from_secs(60));
+    let mut client = HttpClient::memory(&entry);
+    let mut ids = Vec::new();
+    for _ in 0..8 {
+        ids.push(client.initialize().await);
+    }
+    // 最早建立的会话收到新请求后，应保留它而淘汰第二个。
+    let ping = json!({"jsonrpc":"2.0","id":2,"method":"ping"}).to_string();
+    assert_eq!(
+        client
+            .request("POST", &legacy_headers(&ids[0]), &ping)
+            .await
+            .status,
+        200
+    );
+    drop(client);
+    let mut client = HttpClient::memory(&entry);
+    let ninth = client.initialize().await;
+    assert_eq!(f.service.sessions().len(), 8);
+    assert_eq!(
+        client
+            .request("POST", &legacy_headers(&ids[1]), &ping)
+            .await
+            .status,
+        404
+    );
+    for id in ids
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| *i != 1)
+        .map(|(_, id)| id)
+        .chain([&ninth])
+    {
+        let reply = client.request("POST", &legacy_headers(id), &ping).await;
+        assert_eq!(reply.status, 200);
+        assert!(reply.json()["result"].is_object());
+    }
+}
+
+#[tokio::test]
+async fn 全部会话忙时拒绝新握手且空闲后可以接入() {
+    let f = Fixture::new();
+    let entry = MemoryEntry::new(&f.service, "test-entry-token", Duration::from_secs(60));
+    f.host.block.store(true, Ordering::Release);
+    let mut busy = Vec::new();
+    let command = json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"run_command","arguments":{"target":"server-id","command":"sleep"}}}).to_string();
+    for _ in 0..8 {
+        let mut client = HttpClient::memory(&entry);
+        let id = client.initialize().await;
+        client.send("POST", &legacy_headers(&id), &command).await;
+        assert_eq!(client.headers().await.status, 200);
+        busy.push(client);
+    }
+    until(|| f.host.started.load(Ordering::Acquire) == 8).await;
+    let mut client = HttpClient::memory(&entry);
+    let reply = client.request("POST", &format!("{AUTH}{ACCEPT}"), &json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","clientInfo":{"name":"新客户端","version":"1"},"capabilities":{}}}).to_string()).await;
+    assert!(
+        reply
+            .body
+            .contains("这个入口同时连着的 AI 太多（最多 8 个），请在 Pierlink 里点全部停止后重试"),
+        "{}",
+        reply.body
+    );
+    assert_eq!(f.service.sessions().len(), 8);
+    assert_eq!(f.host.cancelled.load(Ordering::Acquire), 0);
+    // 只释放一个调用，其余七个即便更早收到请求也不能被淘汰。
+    busy.pop();
+    until(|| f.host.cancelled.load(Ordering::Acquire) == 1).await;
+    until(|| {
+        lock(&f.service.shared.sessions)
+            .values()
+            .any(|s| s.idle_since().is_some())
+    })
+    .await;
+    client.initialize().await;
+    assert_eq!(f.service.sessions().len(), 8);
+    assert_eq!(f.host.cancelled.load(Ordering::Acquire), 1);
+    entry.close();
+    until(|| f.host.cancelled.load(Ordering::Acquire) == 8).await;
+}
+
+#[tokio::test]
+async fn 报告列表隐藏过期空闲会话并保留长调用且请求刷新活动() {
+    let f = Fixture::new();
+    let entry = MemoryEntry::new(&f.service, "test-entry-token", Duration::from_secs(60));
+    let mut client = HttpClient::memory(&entry);
+    let id = client.initialize().await;
+    let session = lock(&f.service.shared.sessions)
+        .values()
+        .next()
+        .unwrap()
+        .clone();
+    *lock(&session.last_request) = Instant::now() - Duration::from_secs(301);
+    assert!(f.service.sessions().is_empty());
+    let call = session.call_flag();
+    assert_eq!(f.service.sessions().len(), 1);
+    drop(call);
+    assert!(f.service.sessions().is_empty());
+    let ping = json!({"jsonrpc":"2.0","id":2,"method":"ping"}).to_string();
+    assert_eq!(
+        client
+            .request("POST", &legacy_headers(&id), &ping)
+            .await
+            .status,
+        200
+    );
+    assert_eq!(f.service.sessions().len(), 1);
+    *lock(&session.last_request) = Instant::now() - Duration::from_secs(301);
+    let notification = json!({"jsonrpc":"2.0","method":"notifications/initialized"}).to_string();
+    assert_eq!(
+        client
+            .request("POST", &legacy_headers(&id), &notification)
+            .await
+            .status,
+        202
+    );
+    assert_eq!(f.service.sessions().len(), 1);
+    session.cancel();
+    assert!(f.service.sessions().is_empty());
 }

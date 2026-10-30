@@ -274,7 +274,8 @@ impl McpHost for TauriHost {
             },
             cancelled,
         );
-        let answer = answer.unwrap_or(Confirmation::Deny);
+        // 60 秒没人点或客户端取消：算“没人回应”，下次再问；只有用户点“拒绝”才记住
+        let answer = answer.unwrap_or(Confirmation::NoAnswer);
         if answer == Confirmation::AllowAlways
             && let Err(e) = settings::set_remembered(&self.app, &session.entry, true)
         {
@@ -309,8 +310,8 @@ impl McpHost for TauriHost {
             },
             cancelled,
         );
-        // 60 秒不答、窗口关了都按拒绝
-        Ok(answer.unwrap_or(Confirmation::Deny))
+        // 60 秒不答、窗口关了都算没人回应：这次不执行，下次再问
+        Ok(answer.unwrap_or(Confirmation::NoAnswer))
     }
 
     fn run_server_command(
@@ -329,6 +330,9 @@ impl McpHost for TauriHost {
         request: TerminalOpenRequest,
         cancelled: &AtomicBool,
     ) -> Result<String, AppError> {
+        if let Some(cwd) = request.cwd.as_deref() {
+            super::validate_cwd(cwd)?;
+        }
         crate::app_shell::show_main(&self.app);
         let app = self.app.clone();
         let (kind, server_id) = match request.target.kind {
@@ -354,7 +358,7 @@ impl McpHost for TauriHost {
         let id = answer.unwrap_or_else(|| {
             Err(AppError::new("mcp.ui_timeout").with_reason(
                 "mcp.ui_did_not_open_the_terminal",
-                "Pierlink 界面没有打开终端（可能还在等你确认指纹或输入密码）",
+                "Pierlink 没有及时打开终端：可能在等用户确认指纹或输入密码，请让用户处理后重试",
             ))
         })?;
         if let Some(cwd) = request.cwd.as_deref() {

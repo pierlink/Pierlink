@@ -12,7 +12,7 @@ pub use platform::{pipe_name, run_bridge, serve};
 
 /// 连不上 Pierlink 时回给 agent 的说明
 pub const UNAVAILABLE: &str =
-    "Pierlink 没有运行：请先打开 Pierlink，并在 设置 → AI 接入 里打开 Windows 入口";
+    "Pierlink 没有运行：请先打开 Pierlink，并在 Pierlink 顶部的 MCP 页里打开 Windows 入口";
 
 /// 在 agent 的标准输入输出和已连上的管道之间双向转发。任一方向结束（agent 关了标准输入，
 /// 或 Pierlink 断开管道）就返回；管道到标准输出每写一块就刷新，保证消息及时送到 agent。

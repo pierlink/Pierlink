@@ -163,11 +163,19 @@ impl McpService {
         let (read, write) = tokio::io::split(stream);
         self.serve_stream(entry, read, write)
     }
-    /// 无参数；返回当前接纳的会话及其建立时权限快照。
+    /// 无参数；返回已接受且未停止的会话及其建立时权限快照。
+    /// 服务器入口另要求最近五分钟有请求或仍有调用；本机管道连接期间始终显示。
     pub fn sessions(&self) -> Vec<SessionInfo> {
+        let now = Instant::now();
         let mut sessions: Vec<_> = lock(&self.shared.sessions)
             .values()
-            .filter(|session| session.accepted)
+            .filter(|session| {
+                if matches!(lock(&session.info).entry, Entry::Server { .. }) {
+                    session.is_recent(now)
+                } else {
+                    session.accepted && !session.stopped.load(Ordering::Acquire)
+                }
+            })
             .map(|session| session.snapshot())
             .collect();
         sessions.sort_by(|a, b| a.id.cmp(&b.id));
@@ -416,6 +424,19 @@ impl ServerHandler for Handler {
                         if tokio::time::Instant::now() >= next_progress {
                             if let Some(token) = &progress {
                                 let _ = context.peer.notify_progress(rmcp::model::ProgressNotificationParam::new(token.clone(), started.elapsed().as_secs_f64())).await;
+                            } else if http_call.is_some() {
+                                // 无进度令牌的旧式调用也保持协议会话活跃；不依赖客户端回答 ping。
+                                tokio::select! {
+                                    _ = context.ct.cancelled() => break,
+                                    _ = async {
+                                        let options = rmcp::service::PeerRequestOptions::with_timeout(Duration::from_secs(1));
+                                        if let Ok(request) = context.peer.send_request_with_option(
+                                            rmcp::model::ServerRequest::PingRequest(Default::default()), options,
+                                        ).await {
+                                            let _ = request.await_response().await;
+                                        }
+                                    } => {}
+                                }
                             }
                             next_progress += Duration::from_secs(15);
                         }
@@ -472,7 +493,7 @@ read_file defaults to numbered lines: file_path, offset (1-based), limit (defaul
 
 search uses Rust regex and supports path, glob, type, output_mode, -i, -n, -A/-B/-C, multiline, head_limit and offset. It defaults to files_with_matches. find_files uses glob patterns and sorts newest files first. Both respect .gitignore and do not follow links. Inspect truncated and narrow the search when a resource limit is reached.
 
-Use run_command for noninteractive work; inspect exit_code, timed_out, stdout and stderr. Windows defaults to powershell and the user home directory; provide cwd explicitly when appropriate and select only a shell listed by list_targets. Long commands can use background:true, then job_output with a since cursor, list_jobs and job_stop. Jobs belong to this entry, survive HTTP request sessions, and have bounded output: lost means older bytes were discarded. Background jobs currently support Windows only: the server execution channel cannot guarantee remote process-tree cancellation. Use a server AI terminal for long-running server work. For interactive or visible long-running work, use an AI terminal. terminal_send only queues input: use terminal_wait to observe completion. Never send passwords, private-key passphrases or verification codes; ask the user to enter them in Pierlink.
+Use run_command for noninteractive work; inspect exit_code, timed_out, stdout and stderr. Windows defaults to powershell and the user home directory; provide cwd explicitly when appropriate and select only a shell listed by list_targets. Long commands can use background:true, then job_output with a since cursor, list_jobs and job_stop. Jobs belong to this entry and survive HTTP request sessions. Restarting the entry, rotating its token, or stopping all activity terminates its background jobs. Output is bounded: lost means older bytes were discarded, more means another page is available (at most 64 KiB per read). Background jobs currently support Windows only: the server execution channel cannot guarantee remote process-tree cancellation. Use a server AI terminal for long-running server work. For interactive or visible long-running work, use an AI terminal. terminal_send only queues input: use terminal_wait to observe completion. Never send passwords, private-key passphrases or verification codes; ask the user to enter them in Pierlink.
 
 For synchronized projects, sync_status reports local_path and each server's remote_path. After changing Windows files, consider sync_wait before building on a server so the build sees the changes. This is a recommendation: you decide when to wait and where to run commands. Review paused/offline status and all errors before continuing. Approval can be required for commands and writes; denied or cancelled operations must not be retried to bypass the user's choice."#;
 struct CallGuard {
@@ -647,6 +668,13 @@ impl Shared {
                 ) {
                     error =
                         error.with_reason("mcp.login_required", "需要在 Pierlink 里登录这台服务器");
+                } else if error.code == "ssh.host_key_rejected" {
+                    error = error.with_reason(
+                        "mcp.host_key_rejected",
+                        "用户拒绝了这台服务器的指纹，不要立即重试",
+                    );
+                } else if error.code == "terminal.shell_not_found" {
+                    error = error.with_reason("mcp.terminal_shell_not_found", "找不到终端 shell：请让用户在 Pierlink 里检查本机 shell 或服务器登录 shell 配置后重试");
                 } else if !error.params.contains_key("reason") {
                     let code = error.code.clone();
                     error = error

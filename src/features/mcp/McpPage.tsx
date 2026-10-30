@@ -255,6 +255,8 @@ function EntryDetail({ id, settings, servers, status, info, serverName, sessions
           <OneClickAdd serverId={windows ? null : id} serverName={serverName(id)} />
           <h3>{windows ? t("mcp.connectCommands") : t("mcp.serverCommands")}</h3>
           {commands.map((c) => <CommandLine key={c} text={c} />)}
+          {/* 手动命令从服务器上的 ~/.pierlink/mcp.json 取令牌：入口连上之前这个文件还没写 */}
+          {server && st && <p className="set-row__hint">{st.fileWritten ? t("mcp.fileWritten") : t("mcp.fileNotWritten")}</p>}
           {server && (
             <div className="mcp-detail__row">
               <PortInput label={t("mcp.port")} value={server.port} onCommit={(port) => onSave({ ...settings, servers: settings.servers.map((s, j) => (j === index ? { ...s, port } : s)) })} />

@@ -85,6 +85,8 @@ pub enum Confirmation {
     /// 首次连接：以后这个入口都允许；操作审批：这次连接的操作不再询问
     AllowAlways,
     Deny,
+    /// 没人回应、超时或取消；不得记住为拒绝
+    NoAnswer,
 }
 
 /// 一个已连上的客户端会话
@@ -168,6 +170,8 @@ pub struct SyncTaskState {
     pub folder_id: String,
     /// Syncthing 文件夹状态（idle、scanning、syncing……）
     pub state: String,
+    /// 同步引擎报告的错误列表；无错误时为空，宿主不得包含凭据。
+    pub errors: Vec<String>,
     pub paused: bool,
     pub need_bytes: u64,
     pub servers: Vec<SyncServerState>,
@@ -246,7 +250,7 @@ pub trait McpHost: Send + Sync + 'static {
     fn targets(&self, entry: &Entry, permissions: &Permissions) -> Result<Vec<Target>, AppError>;
     /// 这个入口是否已被用户“总是允许”
     fn remembered(&self, entry: &Entry) -> bool;
-    /// 第一次工具调用前请用户确认；AllowAlways 由宿主自己记住。60 秒不答由宿主按 Deny 返回
+    /// 第一次工具调用前请用户确认；AllowAlways 由宿主自己记住。60 秒不答由宿主按 NoAnswer 返回
     fn confirm_connect(
         &self,
         session: &SessionInfo,
@@ -254,7 +258,7 @@ pub trait McpHost: Send + Sync + 'static {
         cancelled: &AtomicBool,
     ) -> Result<Confirmation, AppError>;
     /// 请用户审批 session 对 target 的 action；dangerous 区分危险操作和普通操作。
-    /// 返回单次允许、这次连接不再询问或拒绝；宿主在 60 秒未答时返回 Deny，并响应 cancelled。
+    /// 返回单次允许、这次连接不再询问或拒绝；宿主在 60 秒未答时返回 NoAnswer，并响应 cancelled。
     fn confirm_action(
         &self,
         session: &SessionInfo,

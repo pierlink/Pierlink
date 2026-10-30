@@ -11,7 +11,7 @@ use std::{
 };
 
 /// 按 command、cwd 和 limits 执行本机命令；返回原始退出码和双流头尾，超时或 cancelled 时清理进程树。
-/// Windows 用无窗口 PowerShell，其他平台用 /bin/sh；取消也设置 timed_out，并保留已读输出。
+/// Windows 用无窗口 PowerShell，其他平台用 /bin/sh；取消时保留已读输出，timed_out 仅表示期限已到。
 pub fn run_local(
     command: &str,
     cwd: Option<&Path>,
@@ -166,7 +166,7 @@ pub(super) fn run_prepared(
     let started = Instant::now();
     if cancelled.load(Ordering::Acquire) || limits.timeout.is_zero() {
         return Ok(RunOutput {
-            timed_out: true,
+            timed_out: !cancelled.load(Ordering::Acquire) && limits.timeout.is_zero(),
             ..Default::default()
         });
     }
@@ -190,6 +190,7 @@ pub(super) fn run_prepared(
         )?
         .0
     };
+    output.timed_out &= !cancelled.load(Ordering::Acquire);
     output.duration_ms = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
     Ok(output)
 }
@@ -197,7 +198,7 @@ pub(super) fn run_prepared(
 fn powershell(command: &str) -> Vec<String> {
     use ssh_key::encoding::base64::{Base64, Encoding};
     let script = format!(
-        "[Console]::InputEncoding=[Text.UTF8Encoding]::new($false); [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); $OutputEncoding=[Console]::OutputEncoding; {command}"
+        "[Console]::InputEncoding=[Text.UTF8Encoding]::new($false); [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); $OutputEncoding=[Console]::OutputEncoding; $LASTEXITCODE=0; {command}\n$pierlinkSucceeded=$?; $pierlinkExitCode=$LASTEXITCODE; if ($pierlinkSucceeded) {{ exit 0 }} elseif ($null -ne $pierlinkExitCode -and $pierlinkExitCode -ne 0) {{ exit $pierlinkExitCode }} else {{ exit 1 }}"
     );
     let bytes: Vec<_> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
     vec![
@@ -279,7 +280,10 @@ fn stream(
         let mut output = RunOutput::default();
         let mut exited = None;
         loop {
-            if cancelled.load(Ordering::Acquire) || started.elapsed() >= limits.timeout {
+            if cancelled.load(Ordering::Acquire) {
+                break;
+            }
+            if started.elapsed() >= limits.timeout {
                 output.timed_out = true;
                 break;
             }
@@ -394,7 +398,7 @@ mod tests {
             });
             let before = Instant::now();
             assert!(
-                run_local("sleep 30", None, limits(), &cancelled)
+                !run_local("sleep 30", None, limits(), &cancelled)
                     .unwrap()
                     .timed_out
             );
@@ -476,6 +480,35 @@ mod shell_tests {
             let stderr = String::from_utf8(output.stderr).unwrap();
             assert!(stdout.contains("中文甲") && stdout.contains("中文乙"));
             assert!(stderr.contains("中文错"));
+        }
+    }
+}
+
+#[cfg(all(test, windows))]
+mod exit_tests {
+    use super::*;
+    use std::time::Duration;
+    #[test]
+    fn 原生命令和显式退出码以及脚本失败均保留() {
+        for (command, expected) in [
+            ("cmd /c exit 3", 3),
+            ("cmd /c exit 101", 101),
+            ("Write-Error 'failed'", 1),
+            ("exit 7", 7),
+            ("cmd /c exit 3; Write-Output ok", 0),
+            ("Write-Output ok # 注释", 0),
+        ] {
+            let result = run_local(
+                command,
+                None,
+                RunLimits {
+                    timeout: Duration::from_secs(15),
+                    output_bytes: 4096,
+                },
+                &AtomicBool::new(false),
+            )
+            .unwrap();
+            assert_eq!(result.exit_code, Some(expected), "{command}");
         }
     }
 }

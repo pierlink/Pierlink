@@ -13,7 +13,7 @@ use super::{
     Approval, Confirmation, HostEvent, Permissions, RunLimits, Target, TargetKind,
     TerminalOpenRequest, lock, safety,
     service::Shared,
-    session::{Session, cancelled_error},
+    session::{Session, cancelled_error, no_answer_error},
     text,
 };
 use crate::error::AppError;
@@ -114,6 +114,7 @@ impl ActionApproval<'_> {
                     self.session.actions_allowed.store(true, Ordering::Release);
                     *self.source = "session";
                 }
+                Confirmation::NoAnswer => return Err(no_answer_error()),
                 Confirmation::Deny => {
                     *self.source = "";
                     // action 只进本机的审计记录（发给 agent 的只有 reason）
@@ -141,7 +142,7 @@ pub(super) fn execute(
     let permissions = shared.host.permissions(&info.entry)?.ok_or_else(|| {
         AppError::new("mcp.entry_disabled").with_reason(
             "mcp.enable_this_entry_in_pierlink_settings_ai_access",
-            "Pierlink 没有打开这个入口：在 Pierlink 设置 → AI 接入里打开",
+            "Pierlink 没有打开这个入口：在 Pierlink 顶部的 MCP 页里打开",
         )
     })?;
     let targets = shared.host.targets(&info.entry, &permissions)?;
@@ -440,6 +441,7 @@ fn run_command(
                 target: target.clone(),
                 cwd: cwd.clone(),
                 shell: shell.clone(),
+                command: command.into(),
             },
             &cancelled,
             // 后台任务（开发服务器等）不受 timeout_secs 限制：只由 job_stop、入口关闭或 Pierlink 退出结束
@@ -512,7 +514,8 @@ fn terminal_call(
             Ok(json!({"closed":true}))
         }
         "terminal_send" => {
-            let text = string(args, "text");
+            let normalized = string(args, "text").map(terminal::normalize_text);
+            let text = normalized.as_deref();
             let keys: Vec<String> = args
                 .get("keys")
                 .and_then(Value::as_array)
@@ -582,6 +585,8 @@ fn terminal_call(
                     }
                 }
                 Ok::<(), AppError>(())
+            }).map_err(|error| {
+                registered.check().err().unwrap_or(error)
             })?;
             check_cancel(cancelled)?;
             registered.check()?;
@@ -605,25 +610,30 @@ fn terminal_call(
         "terminal_read" => Ok(json!(terminal::terminal_read(
             &shared.terminals,
             id,
-            args.get("since").and_then(Value::as_u64)
+            args.get("since").and_then(Value::as_u64),
+            args.get("tail_bytes").and_then(Value::as_u64)
         )?)),
         "terminal_screen" => Ok(json!({"text": terminal::terminal_screen(&shared.terminals, id)?})),
         "terminal_wait" => {
             let pattern = string(args, "pattern")
-                .map(regex::Regex::new)
+                .map(|pattern| regex::RegexBuilder::new(pattern).multi_line(true).build())
                 .transpose()
                 .map_err(|_| schema::invalid("mcp.invalid_regular_expression", "正则表达式无效"))?;
-            Ok(json!(terminal::wait_cancellable(
-                &shared.terminals,
-                id,
-                pattern.as_ref(),
-                args.get("quiet_ms")
-                    .and_then(Value::as_u64)
-                    .map(Duration::from_millis),
-                args.get("since").and_then(Value::as_u64),
-                Duration::from_secs(number(args, "timeout_secs", 60)),
-                || cancelled.load(Ordering::Acquire) || registered.revoked.load(Ordering::Acquire)
-            )?))
+            Ok(json!(
+                terminal::wait_cancellable(
+                    &shared.terminals,
+                    id,
+                    pattern.as_ref(),
+                    args.get("quiet_ms")
+                        .and_then(Value::as_u64)
+                        .map(Duration::from_millis),
+                    args.get("since").and_then(Value::as_u64),
+                    Duration::from_secs(number(args, "timeout_secs", 60)),
+                    || cancelled.load(Ordering::Acquire)
+                        || registered.revoked.load(Ordering::Acquire)
+                )
+                .map_err(|error| registered.check().err().unwrap_or(error))?
+            ))
         }
         _ => Err(schema::invalid("mcp.unknown_terminal_tool", "未知终端工具").into()),
     };
@@ -731,6 +741,11 @@ pub(super) fn summary(name: &str, args: &JsonObject, password_denied: bool) -> S
     }
     match name {
         "run_command" => required(args, "command").into(),
+        "open_terminal" => format!(
+            "{} cwd={}",
+            required(args, "target"),
+            string(args, "cwd").unwrap_or_default()
+        ),
         "terminal_send" => {
             let keys: Vec<&str> = args
                 .get("keys")

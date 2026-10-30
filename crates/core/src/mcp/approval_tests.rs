@@ -448,3 +448,30 @@ async fn 每次都问时翻历史后回车也要问() {
     );
     client.close().await;
 }
+
+#[tokio::test]
+async fn 开发源码写入不触发危险审批而每次询问仍确认() {
+    for mode in [Approval::Dangerous, Approval::AskAll] {
+        let fixture = Fixture::new();
+        {
+            let mut permissions = lock(&fixture.host.permissions);
+            permissions.approval = mode;
+            permissions.folders = vec![fixture._dir.path().into()];
+        }
+        let mut client = fixture.legacy().await;
+        for ext in ["js", "py", "sh", "ts", "mjs", "jsx"] {
+            let path = fixture._dir.path().join(format!("source.{ext}"));
+            assert_eq!(
+                client
+                    .call("write_file", json!({"file_path":path,"content":"example"}))
+                    .await["result"]["isError"],
+                false
+            );
+        }
+        assert_eq!(
+            lock(&fixture.host.dangers).len(),
+            if mode == Approval::AskAll { 6 } else { 0 }
+        );
+        client.close().await;
+    }
+}

@@ -443,7 +443,10 @@ async fn 收回取消等待且重新交出不会恢复旧调用() {
     .await;
     fixture.service.take_back(&id).unwrap();
     hand_over(&fixture, &id, Entry::Windows, TargetKind::Windows);
-    assert_eq!(error_text(&client.receive().await), "操作已取消");
+    assert_eq!(
+        error_text(&client.receive().await),
+        "用户已收回这个终端：用 list_terminals 查看，或 open_terminal 新开"
+    );
     assert_eq!(
         client
             .call("terminal_screen", json!({"terminal_id":id}))
@@ -466,7 +469,10 @@ async fn 收回后迟到的审批不能向重新交出的终端输入() {
     fixture.service.take_back(&id).unwrap();
     hand_over(&fixture, &id, Entry::Windows, TargetKind::Windows);
     fixture.host.action_blocked.store(false, Ordering::Release);
-    assert_eq!(error_text(&client.receive().await), "操作已取消");
+    assert_eq!(
+        error_text(&client.receive().await),
+        "用户已收回这个终端：用 list_terminals 查看，或 open_terminal 新开"
+    );
     client.close().await;
 }
 
@@ -485,7 +491,10 @@ async fn 收回时正在等的确认立即结束() {
     let reply = tokio::time::timeout(Duration::from_secs(5), client.receive())
         .await
         .expect("收回后确认没有结束");
-    assert_eq!(error_text(&reply), "操作已取消");
+    assert_eq!(
+        error_text(&reply),
+        "用户已收回这个终端：用 list_terminals 查看，或 open_terminal 新开"
+    );
     fixture.host.action_blocked.store(false, Ordering::Release);
     client.close().await;
 }

@@ -367,6 +367,33 @@ pub(crate) fn run_server_command(
     )
 }
 
+/// AI 要打开终端的目录能不能用：给终端的输入等于打字，路径里的换行会提前回车，把后半截当命令执行。
+/// 在请界面开终端之前检查，免得开出一个用不了的终端。
+pub(crate) fn validate_cwd(cwd: &str) -> Result<(), AppError> {
+    if cwd.chars().any(char::is_control) {
+        return Err(AppError::new("mcp.invalid_cwd").with_reason(
+            "mcp.folder_has_control_characters",
+            "目录里不能有换行等控制字符",
+        ));
+    }
+    Ok(())
+}
+
+/// 放进 PowerShell 单引号字符串：PowerShell 把 ' 和弯引号 ‘ ’ ‚ ‛ 都当单引号，每个都要写两遍，
+/// 否则目录名里的弯引号会提前结束字符串，后半截被当成命令执行
+fn ps_single_quoted(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() + 2);
+    out.push('\'');
+    for c in text.chars() {
+        if matches!(c, '\'' | '\u{2018}' | '\u{2019}' | '\u{201a}' | '\u{201b}') {
+            out.push(c);
+        }
+        out.push(c);
+    }
+    out.push('\'');
+    out
+}
+
 /// AI 终端打开后切到 cwd：以自动化输入发一行切换目录的命令（会回显，用户按键优先）
 pub(crate) fn change_directory(
     app: &AppHandle,
@@ -374,15 +401,9 @@ pub(crate) fn change_directory(
     kind: TargetKind,
     cwd: &str,
 ) -> Result<(), AppError> {
-    // 给终端的输入等于打字：路径里的换行会提前回车，把后半截当命令执行
-    if cwd.chars().any(char::is_control) {
-        return Err(AppError::new("mcp.invalid_cwd").with_reason(
-            "mcp.folder_has_control_characters",
-            "目录里不能有换行等控制字符",
-        ));
-    }
+    validate_cwd(cwd)?;
     let line = match kind {
-        TargetKind::Windows => format!("Set-Location -LiteralPath '{}'\r", cwd.replace('\'', "''")),
+        TargetKind::Windows => format!("Set-Location -LiteralPath {}\r", ps_single_quoted(cwd)),
         TargetKind::Server => format!("cd -- {}\r", pierlink_core::ssh::quote::sh_quote(cwd)?),
     };
     app.state::<TerminalState>().manager.write_from(
@@ -440,7 +461,7 @@ pub async fn mcp_connect_info(app: AppHandle) -> Result<McpConnectInfoDto, AppEr
     let windows = vec![
         McpCommandDto {
             client: "claude".into(),
-            text: format!("claude mcp add pierlink -- \"{exe}\" --mcp"),
+            text: format!("claude mcp add --scope user pierlink -- \"{exe}\" --mcp"),
         },
         McpCommandDto {
             client: "codex".into(),
@@ -543,6 +564,7 @@ pub async fn mcp_terminal_opened(
     terminal_id: Option<String>,
     error: Option<McpErrorInput>,
 ) -> Result<bool, AppError> {
+    let opened = terminal_id.clone();
     let result = match (terminal_id, error) {
         (Some(terminal), _) => {
             // AI 自己开的终端不算用户终端，不出现在“交给 AI”的列表里
@@ -554,7 +576,13 @@ pub async fn mcp_terminal_opened(
         (None, None) => Err(AppError::new("mcp.terminal_failed")
             .with_reason("mcp.terminal_not_open", "终端没有打开")),
     };
-    Ok(state(&app)?.host.terminals.answer(id as u64, result))
+    let delivered = state(&app)?.host.terminals.answer(id as u64, result);
+    // AI 已经等不及走了（比如用户过了很久才确认指纹）：这个终端交还给用户，能在“交给 AI”里重新交出去
+    if !delivered && let Some(terminal) = opened {
+        app.state::<TerminalState>()
+            .update_meta(&terminal, |m| m.ai_opened = false);
+    }
+    Ok(delivered)
 }
 
 /// 可以接手某个终端的入口
@@ -768,4 +796,27 @@ pub async fn terminal_set_user_control(
     app.state::<TerminalState>()
         .manager
         .set_user_control(&id, taken_over)
+}
+
+#[cfg(test)]
+mod quote_tests {
+    use super::ps_single_quoted;
+
+    #[test]
+    fn 弯引号和直引号都写两遍不会提前结束字符串() {
+        assert_eq!(ps_single_quoted(r"C:\Users\a"), r"'C:\Users\a'");
+        assert_eq!(ps_single_quoted("it's"), "'it''s'");
+        assert_eq!(
+            ps_single_quoted("Bob\u{2019}s Files"),
+            "'Bob\u{2019}\u{2019}s Files'"
+        );
+        assert_eq!(
+            ps_single_quoted("a\u{2019}; Start-Process calc; \u{2018}"),
+            "'a\u{2019}\u{2019}; Start-Process calc; \u{2018}\u{2018}'"
+        );
+        assert_eq!(
+            ps_single_quoted("\u{201a}\u{201b}"),
+            "'\u{201a}\u{201a}\u{201b}\u{201b}'"
+        );
+    }
 }

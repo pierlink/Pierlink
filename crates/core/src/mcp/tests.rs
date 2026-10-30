@@ -26,6 +26,7 @@ struct Host {
     action_decision: Mutex<Confirmation>,
     confirmations: AtomicUsize,
     confirmation_blocked: AtomicBool,
+    cancel_on_no_answer: AtomicBool,
     dangers: Mutex<Vec<String>>,
     danger_flags: Mutex<Vec<bool>>,
     commands: Mutex<Vec<String>>,
@@ -51,6 +52,7 @@ impl Host {
             action_decision: Mutex::new(Confirmation::Allow),
             confirmations: AtomicUsize::new(0),
             confirmation_blocked: AtomicBool::new(false),
+            cancel_on_no_answer: AtomicBool::new(false),
             dangers: Mutex::new(Vec::new()),
             danger_flags: Mutex::new(Vec::new()),
             commands: Mutex::new(Vec::new()),
@@ -81,14 +83,15 @@ impl Host {
     }
     fn user_terminal(&self) -> String {
         #[cfg(unix)]
-        let program = "/bin/cat";
+        let program = std::path::PathBuf::from("/bin/cat");
         #[cfg(windows)]
-        let program = "cmd.exe";
+        let program = std::path::PathBuf::from(std::env::var_os("SystemRoot").unwrap())
+            .join("System32/cmd.exe");
         self.terminals
             .open(
                 crate::terminal::TerminalSpec {
                     kind: crate::terminal::TerminalKind::Local {
-                        program: program.into(),
+                        program,
                         args: vec![],
                         cwd: None,
                         env: vec![],
@@ -158,6 +161,9 @@ impl McpHost for Host {
             return Err(session::cancelled_error());
         }
         let decision = *lock(&self.decision);
+        if decision == Confirmation::NoAnswer && self.cancel_on_no_answer.load(Ordering::Acquire) {
+            cancelled.store(true, Ordering::Release);
+        }
         if decision == Confirmation::AllowAlways {
             self.remembered.store(true, Ordering::Release);
         }
@@ -183,7 +189,11 @@ impl McpHost for Host {
             }
             std::thread::sleep(Duration::from_millis(5));
         }
-        Ok(*lock(&self.action_decision))
+        let decision = *lock(&self.action_decision);
+        if decision == Confirmation::NoAnswer && self.cancel_on_no_answer.load(Ordering::Acquire) {
+            cancelled.store(true, Ordering::Release);
+        }
+        Ok(decision)
     }
     fn run_server_command(
         &self,
@@ -207,6 +217,12 @@ impl McpHost for Host {
                 return Err(session::cancelled_error());
             }
             std::thread::sleep(Duration::from_millis(5));
+        }
+        if matches!(
+            command,
+            "ssh.host_key_rejected" | "terminal.shell_not_found"
+        ) {
+            return Err(AppError::new(command));
         }
         if command == "auth-limit" {
             return Err(AppError::new("ssh.too_many_auth_attempts"));
@@ -240,6 +256,7 @@ impl McpHost for Host {
             name: "同步".into(),
             folder_id: "folder".into(),
             state: "idle".into(),
+            errors: vec![],
             paused: false,
             need_bytes: 10,
             servers: ["server-id", "hidden"]
@@ -1239,6 +1256,17 @@ async fn 后台任务跨会话读取且撤权和关闭入口时清理() {
         client.call("job_output", json!({"job_id":id})).await["result"]["isError"],
         true
     );
+    lock(&fixture.host.permissions).windows_commands = true;
+    let result = client.call("job_output", json!({"job_id":id})).await;
+    let output = &result["result"]["structuredContent"];
+    assert_eq!(output["stop_reason"], "permission_revoked");
+    assert_eq!(output["running"], false);
+    assert_eq!(output["timed_out"], false);
+    let jobs = client.call("list_jobs", json!({})).await;
+    assert_eq!(
+        jobs["result"]["structuredContent"][0]["stop_reason"],
+        "permission_revoked"
+    );
     client.close().await;
 }
 #[cfg(unix)]
@@ -1381,5 +1409,198 @@ async fn 服务器后台运行明确说明通道限制且不执行命令() {
         "mcp.background_unsupported"
     );
     assert!(lock(&fixture.host.commands).is_empty());
+    client.close().await;
+}
+
+#[tokio::test]
+async fn 首次确认无人回应不记住且下一次重新询问() {
+    let fixture = Fixture::new();
+    *lock(&fixture.host.decision) = Confirmation::NoAnswer;
+    let mut client = fixture.legacy().await;
+    let result = client.call("list_targets", json!({})).await;
+    assert!(error_text(&result).contains("60 秒内没人回应"));
+    *lock(&fixture.host.decision) = Confirmation::Allow;
+    assert_eq!(
+        client.call("list_targets", json!({})).await["result"]["isError"],
+        false
+    );
+    assert_eq!(fixture.host.confirmations.load(Ordering::Acquire), 2);
+    client.close().await;
+}
+
+#[tokio::test]
+async fn 操作确认无人回应不记为拒绝且可以重试() {
+    let fixture = Fixture::new();
+    *lock(&fixture.host.action_decision) = Confirmation::NoAnswer;
+    let mut client = fixture.legacy().await;
+    let args = json!({"target":"server-id","command":"rm -rf /example"});
+    assert!(
+        error_text(&client.call("run_command", args.clone()).await).contains("60 秒内没人回应")
+    );
+    assert_eq!(fixture.service.activity(1)[0].outcome, "mcp.no_answer");
+    *lock(&fixture.host.action_decision) = Confirmation::Allow;
+    assert_eq!(
+        client.call("run_command", args).await["result"]["isError"],
+        false
+    );
+    assert_eq!(lock(&fixture.host.dangers).len(), 2);
+    client.close().await;
+}
+
+#[tokio::test]
+async fn 确认返回无人回应时优先报告已取消且不记住决定() {
+    let fixture = Fixture::new();
+    fixture
+        .host
+        .cancel_on_no_answer
+        .store(true, Ordering::Release);
+    let mut client = fixture.legacy().await;
+    *lock(&fixture.host.decision) = Confirmation::NoAnswer;
+    let result = client.call("list_targets", json!({})).await;
+    assert_eq!(
+        result["result"]["structuredContent"]["code"],
+        "mcp.cancelled"
+    );
+    assert!(error_text(&result).contains("操作已取消"));
+    *lock(&fixture.host.decision) = Confirmation::Allow;
+    assert_eq!(
+        client.call("list_targets", json!({})).await["result"]["isError"],
+        false
+    );
+    assert_eq!(fixture.host.confirmations.load(Ordering::Acquire), 2);
+
+    *lock(&fixture.host.action_decision) = Confirmation::NoAnswer;
+    let args = json!({"target":"server-id","command":"rm -rf /example"});
+    let result = client.call("run_command", args.clone()).await;
+    assert_eq!(
+        result["result"]["structuredContent"]["code"],
+        "mcp.cancelled"
+    );
+    assert!(error_text(&result).contains("操作已取消"));
+    assert!(lock(&fixture.host.commands).is_empty());
+    *lock(&fixture.host.action_decision) = Confirmation::Allow;
+    assert_eq!(
+        client.call("run_command", args).await["result"]["isError"],
+        false
+    );
+    assert_eq!(lock(&fixture.host.dangers).len(), 2);
+    client.close().await;
+}
+
+#[tokio::test]
+async fn 本机连接空闲超过五分钟仍显示且断开即移除() {
+    let fixture = Fixture::new();
+    let client = fixture.legacy().await;
+    let session = client.handle.as_ref().unwrap().session.clone();
+    *lock(&session.last_request) = Instant::now() - Duration::from_secs(1800);
+    assert_eq!(fixture.service.sessions().len(), 1);
+    client.close().await;
+    assert!(fixture.service.sessions().is_empty());
+}
+
+#[test]
+fn 会话报告排除未接受和已停止连接且仅服务器入口检查活动时间() {
+    let fixture = Fixture::new();
+    let mut expected = Vec::new();
+    let mut calls = Vec::new();
+    for entry in [
+        Entry::Windows,
+        Entry::Server {
+            server_id: "server-id".into(),
+        },
+    ] {
+        for (accepted, stopped, busy) in [
+            (false, false, true),
+            (true, true, true),
+            (true, false, false),
+            (true, false, true),
+        ] {
+            let session = Arc::new(session::Session::new(entry.clone(), accepted));
+            *lock(&session.last_request) = Instant::now() - Duration::from_secs(1800);
+            if busy {
+                calls.push(session.call_flag());
+            }
+            if stopped {
+                session.cancel();
+            }
+            let id = session.snapshot().id;
+            if accepted && !stopped && (entry == Entry::Windows || busy) {
+                expected.push(id.clone());
+            }
+            lock(&fixture.service.shared.sessions).insert(id, session);
+        }
+    }
+    expected.sort();
+    assert_eq!(
+        fixture
+            .service
+            .sessions()
+            .into_iter()
+            .map(|s| s.id)
+            .collect::<Vec<_>>(),
+        expected
+    );
+}
+
+#[tokio::test]
+async fn 宿主指纹拒绝和缺少终端程序给出明确原因() {
+    let fixture = Fixture::new();
+    let mut client = fixture.legacy().await;
+    for (code, reason) in [
+        (
+            "ssh.host_key_rejected",
+            "用户拒绝了这台服务器的指纹，不要立即重试",
+        ),
+        ("terminal.shell_not_found", "找不到终端 shell"),
+    ] {
+        assert!(
+            error_text(
+                &client
+                    .call("run_command", json!({"target":"server-id","command":code}))
+                    .await
+            )
+            .contains(reason)
+        );
+    }
+    client.close().await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn 终端发送游标可用于多行正则并记录打开目录() {
+    let fixture = Fixture::new();
+    let mut client = fixture.legacy().await;
+    let opened = client
+        .call(
+            "open_terminal",
+            json!({"target":"server-id","cwd":"/work/project"}),
+        )
+        .await;
+    let id = opened["result"]["structuredContent"]["terminal_id"]
+        .as_str()
+        .unwrap();
+    assert!(
+        fixture.service.activity(1)[0]
+            .summary
+            .contains("cwd=/work/project")
+    );
+    let sent = client
+        .call(
+            "terminal_send",
+            json!({"terminal_id":id,"text":"first\nREADY\r\nlast\n"}),
+        )
+        .await;
+    let sent = &sent["result"]["structuredContent"];
+    assert_eq!(sent["submitted"], json!(["first", "READY", "last"]));
+    let wait = client
+        .call(
+            "terminal_wait",
+            json!({"terminal_id":id,"pattern":"^READY$","since":sent["cursor"],"timeout_secs":3}),
+        )
+        .await;
+    assert_eq!(
+        wait["result"]["structuredContent"]["matched"], true,
+        "{wait}"
+    );
     client.close().await;
 }
