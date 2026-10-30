@@ -1,0 +1,12 @@
+/* 本机断网的全局提示：浮在窗口底部中间，不挡标签栏 */
+.net-banner {
+  display: flex; align-items: center; gap: 10px; max-width: min(640px, calc(100vw - 32px)); padding: 10px 14px;
+  border-radius: var(--r-lg); border: 1px solid color-mix(in srgb, var(--warn) 45%, var(--border));
+  background: color-mix(in srgb, var(--panel-solid) 88%, var(--warn)); color: var(--text); box-shadow: var(--shadow-pop);
+  animation: pl-pop-in var(--dur) ease-out;
+}
+.net-banner > svg { flex: none; color: var(--warn); }
+.net-banner--ok { border-color: color-mix(in srgb, var(--ok) 45%, var(--border)); background: color-mix(in srgb, var(--panel-solid) 90%, var(--ok)); }
+.net-banner--ok > svg { color: var(--ok); }
+.net-banner__text { display: flex; flex-direction: column; gap: 2px; font-size: var(--fs-sm); line-height: 1.5; }
+.net-banner__text span { color: var(--text-muted); font-size: var(--fs-xs); }

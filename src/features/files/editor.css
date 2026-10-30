@@ -1,0 +1,24 @@
+/* 软件内文本编辑器 */
+.editor-overlay { padding: 24px; }
+.editor {
+  width: min(1100px, 100%); height: min(820px, 100%); display: flex; flex-direction: column; overflow: hidden;
+  border-radius: var(--r-lg); background: var(--panel-solid); border: 1px solid var(--border-strong); box-shadow: var(--shadow-pop);
+}
+.editor__head { flex: none; display: flex; align-items: center; gap: 8px; height: 44px; padding: 0 8px 0 14px; border-bottom: 1px solid var(--border); }
+.editor__name { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 8px; }
+.editor__file { font-weight: 600; flex: none; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.editor__dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--warn); align-self: center; }
+.editor__path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-dim); font-size: var(--fs-xs); }
+.editor__body { flex: 1; min-height: 0; display: flex; background: var(--term-bg, var(--field-solid)); }
+.editor__gutter {
+  flex: none; margin: 0; padding: 10px 10px 10px 14px; min-width: 48px; overflow: hidden; text-align: right; user-select: none;
+  color: var(--text-dim); font-size: 13px; line-height: 20px; border-right: 1px solid var(--border);
+}
+.editor__text {
+  flex: 1; min-width: 0; margin: 0; padding: 10px 14px; border: 0; outline: none; resize: none; tab-size: 4;
+  background: transparent; color: var(--text); font-size: 13px; line-height: 20px; white-space: pre; overflow: auto;
+}
+.editor__msg { margin: auto; max-width: 520px; padding: 24px; text-align: center; color: var(--text-muted); overflow-wrap: anywhere; }
+.editor__msg--bad { color: var(--danger); }
+.editor__foot { flex: none; display: flex; justify-content: space-between; gap: 12px; padding: 6px 14px; border-top: 1px solid var(--border); color: var(--text-dim); font-size: var(--fs-xs); white-space: nowrap; overflow: hidden; }
+.editor__status { flex: none; }
