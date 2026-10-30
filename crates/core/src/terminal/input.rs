@@ -350,7 +350,7 @@ mod tests {
     }
 }
 
-/// data 必须全部由焦点、设备属性、光标位置、键盘协议或颜色应答组成。
+/// data 必须全部由焦点、设备属性、状态、光标位置、键盘协议、版本或颜色应答组成。
 fn is_terminal_report(mut data: &[u8]) -> bool {
     if data.is_empty() {
         return false;
@@ -373,38 +373,68 @@ fn terminal_report_len(data: &[u8]) -> Option<usize> {
                 .split(|b| *b == b';')
                 .all(|part| !part.is_empty() && part.iter().all(u8::is_ascii_digit))
         };
+        let pair =
+            |bytes: &[u8]| bytes.iter().filter(|b| **b == b';').count() == 1 && numbers(bytes);
         let valid = match body[end] {
             b'I' | b'O' => params.is_empty(),
             b'c' => {
                 params.first().is_some_and(|b| matches!(b, b'?' | b'>')) && numbers(&params[1..])
             }
             b'u' => params.starts_with(b"?") && numbers(&params[1..]),
-            b'R' => params.iter().filter(|b| **b == b';').count() == 1 && numbers(params),
+            b'R' => pair(params.strip_prefix(b"?").unwrap_or(params)),
+            b'n' => params == b"0",
+            b'y' => params
+                .strip_prefix(b"?")
+                .and_then(|p| p.strip_suffix(b"$"))
+                .is_some_and(pair),
             _ => false,
         };
         return valid.then_some(end + 3);
     }
-    let body = data.strip_prefix(b"\x1b]")?;
-    let payload = body
-        .strip_prefix(b"10;rgb:")
-        .or_else(|| body.strip_prefix(b"11;rgb:"))?;
-    let end = payload.iter().position(|b| matches!(b, 7 | 0x1b))?;
-    let color = &payload[..end];
-    if color.split(|b| *b == b'/').count() != 3
-        || !color
-            .split(|b| *b == b'/')
-            .all(|part| (1..=4).contains(&part.len()) && part.iter().all(u8::is_ascii_hexdigit))
-    {
-        return None;
+    if let Some(version) = data.strip_prefix(b"\x1bP>|") {
+        let end = version.iter().position(|b| *b == 0x1b)?;
+        return (!version[..end].is_empty()
+            && version[..end].iter().all(|b| (0x20..=0x7e).contains(b))
+            && version[end..].starts_with(b"\x1b\\"))
+        .then_some(4 + end + 2);
     }
-    let terminator = if payload[end] == 7 {
+    let body = data.strip_prefix(b"\x1b]")?;
+    let end = body.iter().position(|b| matches!(b, 7 | 0x1b))?;
+    let terminator = if body[end] == 7 {
         1
-    } else if payload[end..].starts_with(b"\x1b\\") {
+    } else if body[end..].starts_with(b"\x1b\\") {
         2
     } else {
         return None;
     };
-    Some(9 + end + terminator)
+    let mut fields = body[..end].split(|b| *b == b';');
+    let valid = match fields.next()? {
+        b"10" | b"11" | b"12" => fields.next().is_some_and(is_rgb) && fields.next().is_none(),
+        b"4" => {
+            let mut count = 0;
+            while let Some(index) = fields.next() {
+                if index.is_empty()
+                    || !index.iter().all(u8::is_ascii_digit)
+                    || !fields.next().is_some_and(is_rgb)
+                {
+                    return None;
+                }
+                count += 1;
+            }
+            count > 0
+        }
+        _ => false,
+    };
+    valid.then_some(2 + end + terminator)
+}
+
+fn is_rgb(data: &[u8]) -> bool {
+    data.strip_prefix(b"rgb:").is_some_and(|color| {
+        color.split(|b| *b == b'/').count() == 3
+            && color
+                .split(|b| *b == b'/')
+                .all(|part| (1..=4).contains(&part.len()) && part.iter().all(u8::is_ascii_hexdigit))
+    })
 }
 
 #[cfg(test)]
@@ -431,9 +461,17 @@ mod report_tests {
             b"\x1b[?1;2c",
             b"\x1b[>0;276;0c",
             b"\x1b[12;40R",
+            b"\x1b[?12;40R",
+            b"\x1b[?2026;2$y",
+            b"\x1b[0n",
+            b"\x1bP>|XTerm(390)\x1b\\",
             b"\x1b[?1u",
             b"\x1b]10;rgb:ffff/eeee/dddd\x07",
             b"\x1b]11;rgb:00/01/02\x1b\\",
+            b"\x1b]12;rgb:ffff/eeee/dddd\x07",
+            b"\x1b]12;rgb:00/01/02\x1b\\",
+            b"\x1b]4;255;rgb:aa/bb/cc\x07",
+            b"\x1b]4;0;rgb:0000/1111/2222;15;rgb:f/e/d\x1b\\",
             b"\x1b[I",
             b"\x1b[O",
         ]
@@ -452,8 +490,27 @@ mod report_tests {
             b"\x1b[?c".as_slice(),
             b"\x1b[1R",
             b"\x1b[1;2;3R",
+            b"\x1b[?1R",
+            b"\x1b[?1;2;3R",
+            b"\x1b[?;2R",
+            b"\x1b[?1;2y",
+            b"\x1b[1;2$y",
+            b"\x1b[?1;$y",
+            b"\x1b[?1;2;3$y",
+            b"\x1b[5n",
+            b"\x1bP>|\x1b\\",
+            b"\x1bP>|version\rcommand\x1b\\",
+            b"\x1bP>|version\x07",
+            b"\x1bP>version\x1b\\",
             b"\x1b[>1u",
             b"\x1b]10;rgb:gg/00/00\x07",
+            b"\x1b]12;rgb:gg/00/00\x07",
+            b"\x1b]12;rgb:00/00/00;extra\x07",
+            b"\x1b]4;rgb:00/00/00\x07",
+            b"\x1b]4;;rgb:00/00/00\x07",
+            b"\x1b]4;x;rgb:00/00/00\x07",
+            b"\x1b]4;0;rgb:00/00/00;1\x07",
+            b"\x1b]4;0;rgb:00/00/00\x1bx",
         ] {
             assert!(!is_terminal_report(invalid));
         }

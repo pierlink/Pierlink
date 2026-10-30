@@ -185,6 +185,16 @@ impl Output {
         Ok(OutputSubscription { subscriber })
     }
     fn since(&self, position: u64) -> Result<OutputRead, AppError> {
+        self.window(position, None, 0, usize::MAX)
+            .map(|(output, _)| output)
+    }
+    fn window(
+        &self,
+        position: u64,
+        tail_bytes: Option<usize>,
+        lookbehind: usize,
+        limit: usize,
+    ) -> Result<(OutputRead, u64), AppError> {
         if position > self.position {
             return Err(error(
                 "invalid_position",
@@ -194,19 +204,26 @@ impl Output {
             .with("position", position)
             .with("end", self.position));
         }
+        let position = tail_bytes.map_or(position, |tail| {
+            position.max(self.position.saturating_sub(tail as u64))
+        });
         let oldest = self.position - self.history.len() as u64;
-        let start = position.max(oldest);
-        Ok(OutputRead {
-            start,
-            next: self.position,
-            lost: position < oldest,
-            data: self
-                .history
-                .iter()
-                .skip((start - oldest) as usize)
-                .copied()
-                .collect(),
-        })
+        let requested = position.max(oldest);
+        let start = requested.saturating_sub(lookbehind as u64).max(oldest);
+        let end = requested.saturating_add(limit as u64).min(self.position);
+        Ok((
+            OutputRead {
+                start,
+                next: self.position,
+                lost: position < oldest,
+                data: self
+                    .history
+                    .range((start - oldest) as usize..(end - oldest) as usize)
+                    .copied()
+                    .collect(),
+            },
+            position,
+        ))
     }
     fn recent(&self, count: usize) -> Vec<String> {
         if count == 0 {
@@ -259,6 +276,25 @@ impl TerminalManager {
     /// 返回 id 最近 count 行已渲染文字（回滚加当前屏幕），最多 10000 行；不包含末尾空屏行。
     pub fn recent_lines(&self, id: &str, count: usize) -> Result<Vec<String>, AppError> {
         Ok(lock(&self.get(id)?.output).recent(count))
+    }
+
+    /// 返回 id 当前累计输出字节数；不复制历史，不存在的终端返回错误。
+    pub(crate) fn output_position(&self, id: &str) -> Result<u64, AppError> {
+        Ok(lock(&self.get(id)?.output).position)
+    }
+
+    /// 从 position 或 tail_bytes 限定的尾部起点读取 id 的历史窗口。
+    /// 起点前最多附带 lookbehind 字节、起点后最多 limit 字节；返回窗口和实际请求位置。
+    /// next 仍是完整历史的末尾，lost 仅表示请求位置已过期，未来位置返回错误。
+    pub(crate) fn output_window(
+        &self,
+        id: &str,
+        position: u64,
+        tail_bytes: Option<usize>,
+        lookbehind: usize,
+        limit: usize,
+    ) -> Result<(OutputRead, u64), AppError> {
+        lock(&self.get(id)?.output).window(position, tail_bytes, lookbehind, limit)
     }
 
     /// 从 position 字节偏移读取 id 的新输出；返回原始字节及下次位置，过期位置通过 lost 标记。
@@ -372,5 +408,30 @@ mod tests {
         assert!(output.subscribe(1).is_err());
         drop(subscriptions);
         assert!(output.subscribe(1).is_ok());
+    }
+    #[test]
+    fn 历史窗口限制复制范围并区分过期和分页() {
+        let mut output = Output::new(80, 24);
+        feed(&mut output, b"0123456789");
+        let (window, requested) = output.window(5, None, 2, 3).unwrap();
+        assert_eq!(requested, 5);
+        assert_eq!(window.start, 3);
+        assert_eq!(window.next, 10);
+        assert_eq!(window.data, b"34567");
+        assert!(!window.lost);
+        let (window, requested) = output.window(0, Some(2), 1, 4).unwrap();
+        assert_eq!(requested, 8);
+        assert_eq!(window.data, b"789");
+        assert!(output.window(11, Some(0), 0, 1).is_err());
+        // 模拟滚动窗口已经丢弃前五个字节，校验附带上下文不掩盖 lost。
+        output.history.drain(..5);
+        let (window, requested) = output.window(0, None, 4, 2).unwrap();
+        assert_eq!(requested, 0);
+        assert_eq!(window.start, 5);
+        assert_eq!(window.data, b"56");
+        assert!(window.lost);
+        let (window, _) = output.window(7, None, 4, 2).unwrap();
+        assert!(!window.lost);
+        assert_eq!(window.data, b"5678");
     }
 }

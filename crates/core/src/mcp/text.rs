@@ -1,6 +1,23 @@
 //! 工具输出的控制序列清理和头尾截断。
 
+/// 字符串类控制序列最多占 4 KiB（含引导符），缺少终止符也必须推进读取。
+pub(super) const STRING_SEQUENCE_LIMIT: usize = 4 * 1024;
+
+fn string_sequence_len(bytes: &[u8]) -> Option<usize> {
+    let window = &bytes[..bytes.len().min(STRING_SEQUENCE_LIMIT)];
+    for end in 2..window.len() {
+        if bytes[1] == b']' && window[end] == 7 {
+            return Some(end + 1);
+        }
+        if window[end..].starts_with(b"\x1b\\") {
+            return Some(end + 2);
+        }
+    }
+    (bytes.len() >= STRING_SEQUENCE_LIMIT).then_some(STRING_SEQUENCE_LIMIT)
+}
+
 /// 清理 bytes 中的 CSI、OSC 和其他 ESC 序列，宽松解码 UTF-8，并将 CRLF 转成 LF。
+/// 字符串类序列最多清理 4 KiB，防止缺失终止符吞掉后续输出；返回清理后的文字。
 pub fn strip_ansi(bytes: &[u8]) -> String {
     let mut plain = Vec::with_capacity(bytes.len());
     let mut i = 0;
@@ -23,17 +40,8 @@ pub fn strip_ansi(bytes: &[u8]) -> String {
                 }
             }
             b']' | b'P' | b'X' | b'^' | b'_' => {
-                while i < bytes.len() {
-                    if kind == b']' && bytes[i] == 7 {
-                        i += 1;
-                        break;
-                    }
-                    if bytes[i..].starts_with(b"\x1b\\") {
-                        i += 2;
-                        break;
-                    }
-                    i += 1;
-                }
+                let start = i - 2;
+                i = start + string_sequence_len(&bytes[start..]).unwrap_or(bytes.len() - start);
             }
             b'O' | b'N' => {
                 if i < bytes.len() {
@@ -88,19 +96,7 @@ pub(super) fn token_len(bytes: &[u8]) -> Option<usize> {
             .iter()
             .position(|b| (0x40..=0x7e).contains(b))
             .map(|end| end + 3),
-        b']' | b'P' | b'X' | b'^' | b'_' => {
-            let mut end = 2;
-            while end < bytes.len() {
-                if kind == b']' && bytes[end] == 7 {
-                    return Some(end + 1);
-                }
-                if bytes[end..].starts_with(b"\x1b\\") {
-                    return Some(end + 2);
-                }
-                end += 1;
-            }
-            None
-        }
+        b']' | b'P' | b'X' | b'^' | b'_' => string_sequence_len(bytes),
         b'O' | b'N' => (bytes.len() >= 3).then_some(3),
         0x20..=0x2f => bytes[2..]
             .iter()
@@ -110,10 +106,18 @@ pub(super) fn token_len(bytes: &[u8]) -> Option<usize> {
     }
 }
 
-/// 把请求的字节起点向后移到完整字符或控制序列的边界；缓冲开头残留的续字节跳过。
+/// 对齐时最多回看 4 KiB，避免大段终端历史使每次增量读取线性变慢。
+pub(super) const ALIGN_LOOKBEHIND: usize = 4 * 1024;
+
+/// 把请求起点向后移到字符或控制序列边界；只从起点前最多 4 KiB 开始解析。
 pub(super) fn aligned_start(bytes: &[u8], requested: usize) -> usize {
-    let mut offset = bytes.iter().take_while(|b| **b & 0xc0 == 0x80).count();
-    while offset < requested.min(bytes.len()) {
+    let requested = requested.min(bytes.len());
+    let mut offset = requested.saturating_sub(ALIGN_LOOKBEHIND);
+    offset += bytes[offset..]
+        .iter()
+        .take_while(|b| **b & 0xc0 == 0x80)
+        .count();
+    while offset < requested {
         match token_len(&bytes[offset..]) {
             Some(size) => offset += size,
             None => return bytes.len(),
@@ -145,6 +149,33 @@ pub fn truncate_head_tail(bytes: &[u8], limit: usize) -> (Vec<u8>, bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn 字符串控制序列到达上限后继续读取且清理规则一致() {
+        for kind in *b"]PX^_" {
+            let mut bytes = vec![0x1b, kind];
+            bytes.resize(STRING_SEQUENCE_LIMIT - 1, b'x');
+            assert_eq!(token_len(&bytes), None);
+            assert_eq!(strip_ansi(&bytes), "");
+            bytes.push(b'x');
+            assert_eq!(token_len(&bytes), Some(STRING_SEQUENCE_LIMIT));
+            bytes.extend_from_slice("后续输出".as_bytes());
+            assert_eq!(token_len(&bytes), Some(STRING_SEQUENCE_LIMIT));
+            assert_eq!(strip_ansi(&bytes), "后续输出");
+            assert_eq!(aligned_start(&bytes, 1), STRING_SEQUENCE_LIMIT);
+            for terminator in [b"\x1b\\".as_slice(), b"\x07"] {
+                if kind != b']' && terminator == b"\x07" {
+                    continue;
+                }
+                let mut terminated = vec![0x1b, kind];
+                terminated.resize(STRING_SEQUENCE_LIMIT - terminator.len(), b'x');
+                terminated.extend_from_slice(terminator);
+                terminated.extend_from_slice(b"tail");
+                assert_eq!(token_len(&terminated), Some(STRING_SEQUENCE_LIMIT));
+                assert_eq!(strip_ansi(&terminated), "tail");
+            }
+        }
+    }
+
     #[test]
     fn 清理控制序列并宽松解码() {
         assert_eq!(

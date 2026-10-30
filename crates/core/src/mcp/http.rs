@@ -205,27 +205,29 @@ impl Generation {
         timeout: Duration,
         runtime: tokio::runtime::Handle,
     ) -> Arc<Self> {
+        let mut manager = LocalSessionManager::default();
+        manager.session_config.keep_alive = Some(SESSION_KEEP_ALIVE);
+        manager.session_config.init_timeout = Some(timeout);
+        let manager = Arc::new(manager);
         let group = Arc::new(SessionGroup {
             shared,
             entry: Entry::Server {
                 server_id: server_id.into(),
             },
             sessions: Mutex::new(Some(HashMap::new())),
+            admission: tokio::sync::Mutex::new(()),
+            manager: manager.clone(),
             stop: watch::channel(false).0,
             confirmation: Arc::default(),
             actions_allowed: Arc::default(),
         });
         let factory = group.clone();
-        let mut manager = LocalSessionManager::default();
-        manager.session_config.keep_alive = Some(SESSION_KEEP_ALIVE);
-        manager.session_config.init_timeout = Some(timeout);
         let config = StreamableHttpServerConfig::default()
             .with_legacy_session_mode(true)
             .with_json_response(false)
             .with_max_request_body_bytes(MAX_BODY)
             .with_sse_keep_alive(Some(Duration::from_secs(15)))
             .enforce_origin_validation();
-        let manager = Arc::new(manager);
         let http = StreamableHttpService::new(
             move || {
                 Ok(HttpHandler {
@@ -249,7 +251,7 @@ impl Generation {
         if let Some(sessions) = sessions {
             let mut shared_sessions = lock(&self.group.shared.sessions);
             for (id, session) in sessions {
-                session.cancel();
+                session.session.cancel();
                 shared_sessions.remove(&id);
             }
             let manager = self.manager.clone();
@@ -291,14 +293,42 @@ impl Generation {
         if request.uri().path() != "/mcp" {
             return response(StatusCode::NOT_FOUND);
         }
+        // GET 和通知也属于客户端活动；服务端的 SSE 心跳不刷新这个时间。
+        if let Some(id) = request
+            .headers()
+            .get("mcp-session-id")
+            .and_then(|id| id.to_str().ok())
+            && let Some(sessions) = lock(&self.group.sessions).as_ref()
+            && let Some(session) = sessions
+                .values()
+                .find(|s| s.protocol_id.as_deref() == Some(id))
+        {
+            session.session.touch();
+        }
         let (ready, mut started) = watch::channel(false);
         let signal = HttpCall {
             ready,
             cancelled: Arc::new(AtomicBool::new(false)),
+            session_id: Arc::new(OnceLock::new()),
         };
         request.extensions_mut().insert(signal.clone());
         let generation = self.clone();
-        let mut response = Box::pin(async move { generation.http.handle(request).await });
+        let binding = signal.clone();
+        let mut response = Box::pin(async move {
+            let response = generation.http.handle(request).await;
+            // initialize 的请求头还没有 SDK 会话 ID，需从响应头绑定到业务会话。
+            if let Some(id) = binding.session_id.get()
+                && let Some(protocol_id) = response
+                    .headers()
+                    .get("mcp-session-id")
+                    .and_then(|v| v.to_str().ok())
+                && let Some(sessions) = lock(&generation.group.sessions).as_mut()
+                && let Some(session) = sessions.get_mut(id)
+            {
+                session.protocol_id = Some(protocol_id.to_owned());
+            }
+            response
+        });
         tokio::select! {
             result = &mut response => result.map(|body| DeferredSse { response:None,body:Some(body),signal,first:false,heartbeat:tokio::time::interval(Duration::from_secs(15)) }.boxed()),
             changed = started.changed() => {
@@ -325,6 +355,7 @@ impl Generation {
 pub(super) struct HttpCall {
     ready: watch::Sender<bool>,
     pub cancelled: Arc<AtomicBool>,
+    session_id: Arc<OnceLock<String>>,
 }
 impl HttpCall {
     pub(super) fn start(&self) {
@@ -397,7 +428,10 @@ fn response(status: StatusCode) -> HttpResponse {
 struct SessionGroup {
     shared: Arc<Shared>,
     entry: Entry,
-    sessions: Mutex<Option<HashMap<String, Arc<Session>>>>,
+    sessions: Mutex<Option<HashMap<String, HttpSession>>>,
+    // 串行处理接纳和请求登记，淘汰候选与开始新调用不能交错。
+    admission: tokio::sync::Mutex<()>,
+    manager: Arc<LocalSessionManager>,
     stop: watch::Sender<bool>,
     /// 这一代令牌上第一次连接的确认结果，组里所有会话共用（入口重启或换令牌后重新问）
     confirmation: Arc<Mutex<Option<bool>>>,
@@ -405,12 +439,78 @@ struct SessionGroup {
     actions_allowed: Arc<AtomicBool>,
 }
 
+struct HttpSession {
+    session: Arc<Session>,
+    protocol_id: Option<String>,
+}
+impl SessionGroup {
+    async fn make_room(&self) -> Result<(), ErrorData> {
+        let evicted = {
+            let mut sessions = lock(&self.sessions);
+            let Some(sessions) = sessions.as_mut() else {
+                return Ok(());
+            };
+            if sessions.len() < 8 {
+                return Ok(());
+            }
+            let candidate = sessions
+                .iter()
+                // 未完成 initialize 响应绑定的会话暂不淘汰，避免遗留 SDK 会话。
+                .filter(|(_, s)| s.protocol_id.is_some())
+                .filter_map(|(id, s)| s.session.idle_since().map(|last| (id.clone(), last)))
+                .min_by_key(|(_, last)| *last)
+                .map(|(id, _)| id);
+            let Some(id) = candidate else {
+                let reason =
+                    "这个入口同时连着的 AI 太多（最多 8 个），请在 Pierlink 里点全部停止后重试";
+                return Err(ErrorData::invalid_request(
+                    reason,
+                    Some(serde_json::json!(
+                        AppError::new("mcp.session_failed")
+                            .with_reason("mcp.session_limit", reason)
+                    )),
+                ));
+            };
+            let removed = sessions.remove(&id);
+            if let Some(session) = &removed {
+                session.session.cancel();
+                lock(&self.shared.sessions).remove(&id);
+            }
+            removed
+        };
+        if let Some(HttpSession {
+            protocol_id: Some(id),
+            ..
+        }) = evicted
+        {
+            self.manager.close_session(&id.into()).await.map_err(|_| {
+                ErrorData::internal_error(
+                    "无法关闭空闲会话",
+                    Some(serde_json::json!(
+                        AppError::new("mcp.session_failed")
+                            .with_reason("mcp.session_stopped", "无法关闭空闲会话")
+                    )),
+                )
+            })?;
+        }
+        Ok(())
+    }
+}
+
 struct HttpHandler {
     group: Arc<SessionGroup>,
     handler: OnceLock<Result<Handler, ErrorData>>,
 }
 impl HttpHandler {
-    fn handler(&self, client: Option<Implementation>) -> Result<&Handler, ErrorData> {
+    async fn handler(
+        &self,
+        client: Option<Implementation>,
+        context: &RequestContext<RoleServer>,
+    ) -> Result<(&Handler, Arc<AtomicBool>), ErrorData> {
+        let _admission = self.group.admission.lock().await;
+        if self.handler.get().is_none() {
+            self.group.make_room().await?;
+        }
         let handler = self
             .handler
             .get_or_init(|| {
@@ -425,22 +525,6 @@ impl HttpHandler {
                     )
                 })?;
                 let mut all = lock(&self.group.shared.sessions);
-                if all
-                    .values()
-                    .filter(|s| s.accepted && s.snapshot().entry == self.group.entry)
-                    .count()
-                    >= 8
-                {
-                    return Err(ErrorData::invalid_request(
-                        "这个入口的会话太多，最多允许 8 个",
-                        Some(serde_json::json!(
-                            AppError::new("mcp.session_failed").with_reason(
-                                "mcp.session_limit",
-                                "这个入口的会话太多，最多允许 8 个"
-                            )
-                        )),
-                    ));
-                }
                 let session = Arc::new(Session::with_confirmation(
                     self.group.entry.clone(),
                     true,
@@ -450,7 +534,13 @@ impl HttpHandler {
                 session.observe(client.clone());
                 let id = session.snapshot().id;
                 all.insert(id.clone(), session.clone());
-                group.insert(id, session.clone());
+                group.insert(
+                    id,
+                    HttpSession {
+                        session: session.clone(),
+                        protocol_id: None,
+                    },
+                );
                 let announced = session.clone();
                 let shared = self.group.shared.clone();
                 tokio::task::spawn_blocking(move || announced.announce(shared.host.as_ref()));
@@ -475,7 +565,16 @@ impl HttpHandler {
                 )),
             ));
         }
-        Ok(handler)
+        if let Some(call) = context
+            .extensions
+            .get::<http::request::Parts>()
+            .and_then(|parts| parts.extensions.get::<HttpCall>())
+        {
+            let _ = call.session_id.set(handler.session.snapshot().id);
+        }
+        // 标记覆盖整个协议请求；工具自己的标记会继续保护尚未退出的阻塞工作。
+        let active = handler.session.call_flag();
+        Ok((handler, active))
     }
 }
 impl Drop for HttpHandler {
@@ -507,40 +606,37 @@ impl ServerHandler for HttpHandler {
         request: InitializeRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<InitializeResult, ErrorData> {
-        self.handler(Some(request.client_info.clone()))?
-            .initialize(request, context)
-            .await
+        let (handler, _active) = self
+            .handler(Some(request.client_info.clone()), &context)
+            .await?;
+        handler.initialize(request, context).await
     }
     async fn discover(
         &self,
         context: RequestContext<RoleServer>,
     ) -> Result<DiscoverResult, ErrorData> {
-        self.handler(context.meta.client_info())?
-            .discover(context)
-            .await
+        let (handler, _active) = self.handler(context.meta.client_info(), &context).await?;
+        handler.discover(context).await
     }
     async fn ping(&self, context: RequestContext<RoleServer>) -> Result<(), ErrorData> {
-        self.handler(context.meta.client_info())?
-            .ping(context)
-            .await
+        let (handler, _active) = self.handler(context.meta.client_info(), &context).await?;
+        handler.ping(context).await
     }
     async fn list_tools(
         &self,
         request: Option<PaginatedRequestParams>,
         context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, ErrorData> {
-        self.handler(context.meta.client_info())?
-            .list_tools(request, context)
-            .await
+        let (handler, _active) = self.handler(context.meta.client_info(), &context).await?;
+        handler.list_tools(request, context).await
     }
     async fn call_tool(
         &self,
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
-        self.handler(context.meta.client_info())?
-            .call_tool(request, context)
-            .await
+        let (handler, _active) = self.handler(context.meta.client_info(), &context).await?;
+        handler.call_tool(request, context).await
     }
 }
 

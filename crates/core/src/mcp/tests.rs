@@ -26,6 +26,7 @@ struct Host {
     action_decision: Mutex<Confirmation>,
     confirmations: AtomicUsize,
     confirmation_blocked: AtomicBool,
+    cancel_on_no_answer: AtomicBool,
     dangers: Mutex<Vec<String>>,
     danger_flags: Mutex<Vec<bool>>,
     commands: Mutex<Vec<String>>,
@@ -51,6 +52,7 @@ impl Host {
             action_decision: Mutex::new(Confirmation::Allow),
             confirmations: AtomicUsize::new(0),
             confirmation_blocked: AtomicBool::new(false),
+            cancel_on_no_answer: AtomicBool::new(false),
             dangers: Mutex::new(Vec::new()),
             danger_flags: Mutex::new(Vec::new()),
             commands: Mutex::new(Vec::new()),
@@ -81,14 +83,15 @@ impl Host {
     }
     fn user_terminal(&self) -> String {
         #[cfg(unix)]
-        let program = "/bin/cat";
+        let program = std::path::PathBuf::from("/bin/cat");
         #[cfg(windows)]
-        let program = "cmd.exe";
+        let program = std::path::PathBuf::from(std::env::var_os("SystemRoot").unwrap())
+            .join("System32/cmd.exe");
         self.terminals
             .open(
                 crate::terminal::TerminalSpec {
                     kind: crate::terminal::TerminalKind::Local {
-                        program: program.into(),
+                        program,
                         args: vec![],
                         cwd: None,
                         env: vec![],
@@ -158,6 +161,9 @@ impl McpHost for Host {
             return Err(session::cancelled_error());
         }
         let decision = *lock(&self.decision);
+        if decision == Confirmation::NoAnswer && self.cancel_on_no_answer.load(Ordering::Acquire) {
+            cancelled.store(true, Ordering::Release);
+        }
         if decision == Confirmation::AllowAlways {
             self.remembered.store(true, Ordering::Release);
         }
@@ -183,7 +189,11 @@ impl McpHost for Host {
             }
             std::thread::sleep(Duration::from_millis(5));
         }
-        Ok(*lock(&self.action_decision))
+        let decision = *lock(&self.action_decision);
+        if decision == Confirmation::NoAnswer && self.cancel_on_no_answer.load(Ordering::Acquire) {
+            cancelled.store(true, Ordering::Release);
+        }
+        Ok(decision)
     }
     fn run_server_command(
         &self,
@@ -1246,6 +1256,17 @@ async fn 后台任务跨会话读取且撤权和关闭入口时清理() {
         client.call("job_output", json!({"job_id":id})).await["result"]["isError"],
         true
     );
+    lock(&fixture.host.permissions).windows_commands = true;
+    let result = client.call("job_output", json!({"job_id":id})).await;
+    let output = &result["result"]["structuredContent"];
+    assert_eq!(output["stop_reason"], "permission_revoked");
+    assert_eq!(output["running"], false);
+    assert_eq!(output["timed_out"], false);
+    let jobs = client.call("list_jobs", json!({})).await;
+    assert_eq!(
+        jobs["result"]["structuredContent"][0]["stop_reason"],
+        "permission_revoked"
+    );
     client.close().await;
 }
 #[cfg(unix)]
@@ -1424,6 +1445,101 @@ async fn 操作确认无人回应不记为拒绝且可以重试() {
     );
     assert_eq!(lock(&fixture.host.dangers).len(), 2);
     client.close().await;
+}
+
+#[tokio::test]
+async fn 确认返回无人回应时优先报告已取消且不记住决定() {
+    let fixture = Fixture::new();
+    fixture
+        .host
+        .cancel_on_no_answer
+        .store(true, Ordering::Release);
+    let mut client = fixture.legacy().await;
+    *lock(&fixture.host.decision) = Confirmation::NoAnswer;
+    let result = client.call("list_targets", json!({})).await;
+    assert_eq!(
+        result["result"]["structuredContent"]["code"],
+        "mcp.cancelled"
+    );
+    assert!(error_text(&result).contains("操作已取消"));
+    *lock(&fixture.host.decision) = Confirmation::Allow;
+    assert_eq!(
+        client.call("list_targets", json!({})).await["result"]["isError"],
+        false
+    );
+    assert_eq!(fixture.host.confirmations.load(Ordering::Acquire), 2);
+
+    *lock(&fixture.host.action_decision) = Confirmation::NoAnswer;
+    let args = json!({"target":"server-id","command":"rm -rf /example"});
+    let result = client.call("run_command", args.clone()).await;
+    assert_eq!(
+        result["result"]["structuredContent"]["code"],
+        "mcp.cancelled"
+    );
+    assert!(error_text(&result).contains("操作已取消"));
+    assert!(lock(&fixture.host.commands).is_empty());
+    *lock(&fixture.host.action_decision) = Confirmation::Allow;
+    assert_eq!(
+        client.call("run_command", args).await["result"]["isError"],
+        false
+    );
+    assert_eq!(lock(&fixture.host.dangers).len(), 2);
+    client.close().await;
+}
+
+#[tokio::test]
+async fn 本机连接空闲超过五分钟仍显示且断开即移除() {
+    let fixture = Fixture::new();
+    let client = fixture.legacy().await;
+    let session = client.handle.as_ref().unwrap().session.clone();
+    *lock(&session.last_request) = Instant::now() - Duration::from_secs(1800);
+    assert_eq!(fixture.service.sessions().len(), 1);
+    client.close().await;
+    assert!(fixture.service.sessions().is_empty());
+}
+
+#[test]
+fn 会话报告排除未接受和已停止连接且仅服务器入口检查活动时间() {
+    let fixture = Fixture::new();
+    let mut expected = Vec::new();
+    let mut calls = Vec::new();
+    for entry in [
+        Entry::Windows,
+        Entry::Server {
+            server_id: "server-id".into(),
+        },
+    ] {
+        for (accepted, stopped, busy) in [
+            (false, false, true),
+            (true, true, true),
+            (true, false, false),
+            (true, false, true),
+        ] {
+            let session = Arc::new(session::Session::new(entry.clone(), accepted));
+            *lock(&session.last_request) = Instant::now() - Duration::from_secs(1800);
+            if busy {
+                calls.push(session.call_flag());
+            }
+            if stopped {
+                session.cancel();
+            }
+            let id = session.snapshot().id;
+            if accepted && !stopped && (entry == Entry::Windows || busy) {
+                expected.push(id.clone());
+            }
+            lock(&fixture.service.shared.sessions).insert(id, session);
+        }
+    }
+    expected.sort();
+    assert_eq!(
+        fixture
+            .service
+            .sessions()
+            .into_iter()
+            .map(|s| s.id)
+            .collect::<Vec<_>>(),
+        expected
+    );
 }
 
 #[tokio::test]

@@ -347,16 +347,17 @@ impl Jobs {
             if lock(&job.state).finished.is_some() {
                 continue;
             }
-            let allowed = host
-                .permissions(&job.entry)
-                .ok()
-                .flatten()
-                .is_some_and(|p| match job.target.kind {
-                    TargetKind::Windows => p.windows_commands,
-                    TargetKind::Server => p.servers.contains(&job.target.id),
-                });
-            if !allowed {
-                job.cancel("entry_closed");
+            match host.permissions(&job.entry) {
+                Ok(Some(permissions)) => {
+                    let allowed = match job.target.kind {
+                        TargetKind::Windows => permissions.windows_commands,
+                        TargetKind::Server => permissions.servers.contains(&job.target.id),
+                    };
+                    if !allowed {
+                        job.cancel("permission_revoked");
+                    }
+                }
+                _ => job.cancel("entry_closed"),
             }
         }
     }
@@ -575,6 +576,41 @@ mod tests {
 #[cfg(test)]
 mod page_tests {
     use super::*;
+    #[test]
+    fn 运行中字符串控制序列封顶后边界和双流分页继续推进() {
+        for kind in *b"]PX^_" {
+            let mut bytes = vec![0x1b, kind];
+            bytes.resize(text::STRING_SEQUENCE_LIMIT - 1, b'x');
+            let mut stream = StreamPage {
+                positions: (100..100 + bytes.len() as u64).collect(),
+                bytes,
+            };
+            assert_eq!(stream.boundary(100, u64::MAX, false), 100);
+            stream.bytes.extend_from_slice(b"xREADY");
+            stream.positions = (100..100 + stream.bytes.len() as u64).collect();
+            let end = 100 + stream.bytes.len() as u64;
+            assert_eq!(stream.boundary(100, end, false), end);
+            assert_eq!(stream.read(100, end), "READY");
+            assert_eq!(stream.boundary(100, 101, false), 100);
+
+            let mut state = State::default();
+            state.push(false, &stream.bytes[..2]);
+            state.push(true, b"err");
+            state.push(false, &stream.bytes[2..]);
+            let page = state.output(0);
+            assert_eq!(page["stdout"], "READY");
+            assert_eq!(page["stderr"], "err");
+            assert_eq!(page["cursor"], state.cursor);
+            assert_eq!(page["more"], false);
+            assert_eq!(page["running"], true);
+            state.push(false, b"NEXT");
+            assert_eq!(
+                state.output(page["cursor"].as_u64().unwrap())["stdout"],
+                "NEXT"
+            );
+        }
+    }
+
     #[test]
     fn 输出分页不切中文或跨流拆开的控制序列() {
         let mut state = State::default();

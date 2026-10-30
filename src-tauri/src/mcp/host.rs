@@ -310,7 +310,7 @@ impl McpHost for TauriHost {
             },
             cancelled,
         );
-        // 60 秒不答、窗口关了都按拒绝
+        // 60 秒不答、窗口关了都算没人回应：这次不执行，下次再问
         Ok(answer.unwrap_or(Confirmation::NoAnswer))
     }
 

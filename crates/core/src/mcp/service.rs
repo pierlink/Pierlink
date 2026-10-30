@@ -163,11 +163,19 @@ impl McpService {
         let (read, write) = tokio::io::split(stream);
         self.serve_stream(entry, read, write)
     }
-    /// 无参数；返回当前接纳的会话及其建立时权限快照。
+    /// 无参数；返回已接受且未停止的会话及其建立时权限快照。
+    /// 服务器入口另要求最近五分钟有请求或仍有调用；本机管道连接期间始终显示。
     pub fn sessions(&self) -> Vec<SessionInfo> {
+        let now = Instant::now();
         let mut sessions: Vec<_> = lock(&self.shared.sessions)
             .values()
-            .filter(|session| session.accepted)
+            .filter(|session| {
+                if matches!(lock(&session.info).entry, Entry::Server { .. }) {
+                    session.is_recent(now)
+                } else {
+                    session.accepted && !session.stopped.load(Ordering::Acquire)
+                }
+            })
             .map(|session| session.snapshot())
             .collect();
         sessions.sort_by(|a, b| a.id.cmp(&b.id));

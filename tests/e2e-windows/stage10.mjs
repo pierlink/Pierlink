@@ -326,8 +326,8 @@ await rec.step(p, "Windows AI 终端：换行结尾的命令会执行；第一�
   ok(await call(agent, "terminal_wait", { terminal_id: id, quiet_ms: 2000, timeout_secs: 30 }));
   const sent = ok(await callNoDialog(agent, "terminal_send", { terminal_id: id, text: "Write-Output \"pl-lf-$(6*7)\"\n" }));
   if (typeof sent.cursor !== "number") throw new Error(`terminal_send 没有返回 cursor：${JSON.stringify(sent)}`);
-  // ^ 按行匹配（多行模式）：只匹配输出那一行，不匹配回显的命令
-  const waited = ok(await call(agent, "terminal_wait", { terminal_id: id, pattern: "^pl-lf-42", since: sent.cursor, timeout_secs: 30 }));
+  // 回显的命令里是 $(6*7)，只有真的执行了才会出现 pl-lf-42
+  const waited = ok(await call(agent, "terminal_wait", { terminal_id: id, pattern: "pl-lf-42", since: sent.cursor, timeout_secs: 30 }));
   if (!waited.matched) throw new Error(`换行结尾的命令没有执行：${JSON.stringify(waited).slice(0, 300)}`);
   ok(await call(agent, "close_terminal", { terminal_id: id }));
   return `终端 ${id.slice(0, 8)}…：命令已执行`;

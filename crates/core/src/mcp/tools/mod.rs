@@ -107,9 +107,7 @@ impl ActionApproval<'_> {
                 dangerous,
                 cancelled,
             )?;
-            if decision != Confirmation::NoAnswer {
-                check_cancel(cancelled)?;
-            }
+            check_cancel(cancelled)?;
             match decision {
                 Confirmation::Allow => *self.source = "user",
                 Confirmation::AllowAlways => {
