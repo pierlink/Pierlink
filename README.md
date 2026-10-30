@@ -1,8 +1,8 @@
 <div align="center">
 
-<img src="app-icon.svg" alt="Pierlink" width="96" height="96">
+<img src="app-icon.svg" alt="Pierlink 栈桥" width="96" height="96">
 
-# Pierlink
+# Pierlink 栈桥
 
 **Windows 上的多服务器远程开发工作台**
 

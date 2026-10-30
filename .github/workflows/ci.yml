@@ -503,7 +503,7 @@ jobs:
         with:
           distribution: Ubuntu-24.04
           wsl-version: 2
-          additional-packages: openssh-server libpam-google-authenticator tigervnc-standalone-server tigervnc-tools x11-xserver-utils xauth openbox dbus-bin xclip
+          additional-packages: openssh-server libpam-google-authenticator tigervnc-standalone-server tigervnc-tools x11-xserver-utils xauth openbox dbus-bin xclip nodejs npm
       - name: 在 WSL 里启动 sshd（localhost:2222，密钥登录和密码登录各一个用户）
         if: ${{ !cancelled() }}
         shell: pwsh
@@ -586,6 +586,20 @@ jobs:
         env:
           E2E_OUT: ${{ runner.temp }}\e2e-out
         run: node tests/e2e-windows/stage9.mjs
+      - name: 装 AI 客户端（检查 MCP 一键添加用）：Windows 和 WSL 里的 Claude Code、Codex
+        # 装不上不算失败：下一步会跳过没装上的客户端
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          npm install -g --no-fund --no-audit @anthropic-ai/claude-code @openai/codex
+          wsl.exe -d $env:PIERLINK_TEST_LINUX_WSL -u root -- npm install -g --no-fund --no-audit @anthropic-ai/claude-code @openai/codex
+      - name: MCP 逐个工具：改几行、搜索、找文件、后台任务、终端读屏；服务器上的 AI 操作 Windows 文件；一键添加到真实客户端
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        env:
+          E2E_OUT: ${{ runner.temp }}\e2e-out
+        run: node tests/e2e-windows/stage10.mjs
       - name: 静默卸载（不删数据）：程序没了、数据还在
         if: ${{ !cancelled() }}
         shell: pwsh
