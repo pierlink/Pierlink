@@ -492,7 +492,9 @@ fn zsh转发保留用户目录及命令原文() {
     };
     for configured in [false, true] {
         let root = home("");
-        let zdotdir = root.path().join("配置 目录");
+        // zsh 读启动文件时会把 ZDOTDIR 的值原地解码，值里有 0x83–0x9f 的字节（如“配置 目录”）时之后再读就是乱码，
+        // 不用包装也一样（zsh 自身的问题）；这里选 UTF-8 字节不落在这一段的汉字
+        let zdotdir = root.path().join("中 设置");
         fs::create_dir(&zdotdir).unwrap();
         let userdir = if configured { &zdotdir } else { root.path() };
         for name in [".zshenv", ".zprofile", ".zshrc", ".zlogin"] {
