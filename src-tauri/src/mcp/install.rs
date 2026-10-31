@@ -28,6 +28,16 @@ pub struct McpInstallDto {
     pub detail: String,
 }
 
+/// 移除的结果
+#[derive(Serialize, Type, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct McpRemoveDto {
+    /// claude / codex / cursor / gemini
+    pub client: String,
+    /// false 表示本来就没有添加过
+    pub removed: bool,
+}
+
 /// 客户端的显示名（错误提示里用）
 fn display(client: &str) -> &str {
     match client {
@@ -50,6 +60,40 @@ fn failed_text(client: &str, key: &'static str, text: &str) -> AppError {
     AppError::new("mcp.install_failed")
         .with("client", display(client))
         .with_reason(key, text)
+}
+
+fn remove_failed(client: &str, reason: impl Into<String>) -> AppError {
+    AppError::new("mcp.remove_failed")
+        .with("client", display(client))
+        .with("reason", reason.into())
+}
+
+/// 固定原因的移除失败（同 failed_text）
+fn remove_failed_text(client: &str, key: &'static str, text: &str) -> AppError {
+    AppError::new("mcp.remove_failed")
+        .with("client", display(client))
+        .with_reason(key, text)
+}
+
+/// 客户端说“没有这个名字”的输出（不同客户端、不同版本措辞不同，如
+/// “No MCP server named "pierlink" in user scope”“No user-scoped MCP server found with name: pierlink”
+/// “server 'pierlink' not found”）。
+/// 必须说到 pierlink 或 server：“node: No such file or directory”这类别的错误不算
+fn says_not_found(text: &str) -> bool {
+    let t = text.to_ascii_lowercase();
+    let about_entry = t.contains(NAME) || t.contains("server");
+    let missing = [
+        "not found",
+        "does not exist",
+        "doesn't exist",
+        "no mcp server",
+        "no server named",
+        "not configured",
+    ]
+    .iter()
+    .any(|k| t.contains(k))
+        || t.find("no ").is_some_and(|i| t[i..].contains(" found"));
+    about_entry && missing
 }
 
 /// 在目录列表里找第一个存在的程序
@@ -278,6 +322,19 @@ fn merge_cursor(existing: Option<&str>, exe: &str) -> Result<String, AppError> {
     serde_json::to_string_pretty(&root).map_err(|e| failed("cursor", e.to_string()))
 }
 
+/// 写回 Cursor 的 mcp.json：普通文件先写临时文件再替换，写到一半出错不会弄坏原来的配置；
+/// 符号链接（dotfiles 管理的）直接写到它指向的文件，不把链接换成普通文件
+fn write_cursor_config(dir: &Path, path: &Path, text: &str) -> std::io::Result<()> {
+    if path.is_symlink() {
+        return std::fs::write(path, text);
+    }
+    let part = dir.join("mcp.json.pierlink-part");
+    std::fs::write(&part, text)?;
+    std::fs::rename(&part, path).inspect_err(|_| {
+        let _ = std::fs::remove_file(&part);
+    })
+}
+
 fn install_cursor(exe: &str) -> Result<McpInstallDto, AppError> {
     let home = home_dir()
         .ok_or_else(|| failed_text("cursor", "mcp.home_folder_not_found", "找不到用户目录"))?;
@@ -291,18 +348,102 @@ fn install_cursor(exe: &str) -> Result<McpInstallDto, AppError> {
     let text = merge_cursor(existing.as_deref(), exe)
         .map_err(|e| e.with("path", path.to_string_lossy()))?;
     std::fs::create_dir_all(&dir).map_err(|e| failed("cursor", e.to_string()))?;
-    // 先写临时文件再替换，写到一半出错不会弄坏原来的配置
-    let part = dir.join("mcp.json.pierlink-part");
-    std::fs::write(&part, text).map_err(|e| failed("cursor", e.to_string()))?;
-    std::fs::rename(&part, &path).map_err(|e| {
-        let _ = std::fs::remove_file(&part);
-        failed("cursor", e.to_string())
-    })?;
+    write_cursor_config(&dir, &path, &text).map_err(|e| failed("cursor", e.to_string()))?;
     eprintln!("已把 Pierlink 加进 Cursor: 文件={}", path.to_string_lossy());
     Ok(McpInstallDto {
         client: "cursor".into(),
         detail: path.to_string_lossy().into_owned(),
     })
+}
+
+/// 用客户端自己的命令行删掉 pierlink（Claude Code 删用户级的，和添加时一致）
+fn remove_cli(client: &str) -> Result<McpRemoveDto, AppError> {
+    let program = find_client(client)
+        .ok_or_else(|| AppError::new("mcp.client_not_found").with("client", display(client)))?;
+    let args: Vec<&str> = match client {
+        "claude" => vec!["mcp", "remove", NAME, "--scope", "user"],
+        _ => vec!["mcp", "remove", NAME],
+    };
+    let (ok, out) = run_client(&program, &args)?;
+    let missing = says_not_found(&out);
+    if !ok && !missing {
+        return Err(remove_failed(client, out));
+    }
+    let removed = ok && !missing;
+    eprintln!("已从 {client} 移除 Pierlink: 原来有={removed}");
+    Ok(McpRemoveDto {
+        client: client.into(),
+        removed,
+    })
+}
+
+/// 从 Cursor 的 mcp.json 里去掉 pierlink
+///
+/// :param existing: 原来的文件内容
+/// :return: 去掉后的文本；没有这一项时为 None；文件读不懂时返回错误
+fn unmerge_cursor(existing: &str) -> Result<Option<String>, AppError> {
+    if existing.trim().is_empty() {
+        return Ok(None);
+    }
+    let mut root: serde_json::Value = serde_json::from_str(existing.trim())
+        .map_err(|_| AppError::new("mcp.cursor_config_invalid"))?;
+    let removed = root
+        .get_mut("mcpServers")
+        .and_then(|s| s.as_object_mut())
+        .and_then(|s| s.remove(NAME))
+        .is_some();
+    if !removed {
+        return Ok(None);
+    }
+    serde_json::to_string_pretty(&root)
+        .map(Some)
+        .map_err(|e| remove_failed("cursor", e.to_string()))
+}
+
+fn remove_cursor() -> Result<McpRemoveDto, AppError> {
+    let not_added = || {
+        Ok(McpRemoveDto {
+            client: "cursor".into(),
+            removed: false,
+        })
+    };
+    let home = home_dir().ok_or_else(|| {
+        remove_failed_text("cursor", "mcp.home_folder_not_found", "找不到用户目录")
+    })?;
+    let dir = home.join(".cursor");
+    let path = dir.join("mcp.json");
+    let existing = match std::fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return not_added(),
+        Err(e) => return Err(remove_failed("cursor", e.to_string())),
+    };
+    let Some(text) =
+        unmerge_cursor(&existing).map_err(|e| e.with("path", path.to_string_lossy()))?
+    else {
+        return not_added();
+    };
+    write_cursor_config(&dir, &path, &text).map_err(|e| remove_failed("cursor", e.to_string()))?;
+    eprintln!("已从 Cursor 移除 Pierlink: 文件={}", path.to_string_lossy());
+    Ok(McpRemoveDto {
+        client: "cursor".into(),
+        removed: true,
+    })
+}
+
+/// 把本机入口从 Claude Code、Codex 或 Cursor 里移除
+///
+/// :param client: claude / codex / cursor
+/// :return: 结果（removed=false 表示本来就没有）；没装这个客户端返回 mcp.client_not_found
+#[tauri::command]
+#[specta::specta]
+pub async fn mcp_remove_local(client: String) -> Result<McpRemoveDto, AppError> {
+    tauri::async_runtime::spawn_blocking(move || match client.as_str() {
+        "claude" | "codex" => remove_cli(&client),
+        "cursor" => remove_cursor(),
+        _ => Err(AppError::new("mcp.client_not_found").with("client", &client)),
+    })
+    .await
+    .map_err(|e| AppError::new("mcp.task_failed").with("reason", e.to_string()))?
 }
 
 /// 把本机入口加进 Claude Code、Codex 或 Cursor
@@ -432,6 +573,76 @@ printf '%s\n' '{{"ok":true}}'
     ))
 }
 
+/// 手动命令开头：读令牌，读不到就说明并停下（放在子 shell 里，不会关掉用户的 shell）；之后新建的文件只有自己能读
+const MANUAL_HEAD: &str = r#"t=$(sed -n 's/.*"token"[[:space:]]*:[[:space:]]*"\([A-Za-z0-9_-]*\)".*/\1/p' "$HOME/.pierlink/mcp.json"); [ -n "$t" ] || { echo 'Pierlink: no token in ~/.pierlink/mcp.json' >&2; exit 1; }; umask 077"#;
+
+/// 在服务器上手动添加到 Gemini CLI 的命令：令牌从 ~/.pierlink/mcp.json 读，不出现在界面上
+pub(crate) fn gemini_manual_command(url: &str) -> Result<String, AppError> {
+    let url = pierlink_core::ssh::quote::sh_quote(url)?;
+    Ok(format!(
+        r#"({MANUAL_HEAD}; cd "$HOME" && gemini mcp remove --scope user {NAME} >/dev/null 2>&1; gemini mcp add --scope user --transport http --header "Authorization: Bearer $t" {NAME} {url} && chmod 700 "$HOME/.gemini" && chmod 600 "$HOME/.gemini/settings.json")"#
+    ))
+}
+
+/// 在服务器上手动添加到 Codex 的命令：去掉 ~/.codex/config.toml 里原来的 pierlink 段，再追加新的；
+/// 配置文件是符号链接时写到它指向的文件
+pub(crate) fn codex_manual_command(url: &str) -> Result<String, AppError> {
+    let url = pierlink_core::ssh::quote::sh_quote(url)?;
+    Ok(format!(
+        r#"({MANUAL_HEAD}; f="$HOME/.codex/config.toml"; mkdir -p "$HOME/.codex" && touch "$f" && awk '/^[[:space:]]*\[/ {{ skip = ($0 ~ /^[[:space:]]*\[mcp_servers\.{NAME}(\]|\.)/) }} !skip' "$f" > "$f.new" && printf '\n[mcp_servers.{NAME}]\nurl = "%s"\nhttp_headers = {{ "Authorization" = "Bearer %s" }}\ntool_timeout_sec = 1800\nstartup_timeout_sec = 20\n' {url} "$t" >> "$f.new" && if [ -L "$f" ]; then cat "$f.new" > "$f" && rm -f "$f.new"; else mv "$f.new" "$f"; fi && chmod 600 "$f")"#
+    ))
+}
+
+/// 移除脚本里 `if out=$(客户端 mcp remove …); then r=true` 的后半段：客户端的输出明确说没有这个名字才算本来就没有，
+/// 其他失败以 5 退出。客户端的输出不打印（可能带配置内容）。
+const NOT_ADDED: &str = r#"elif printf '%s' "$out" | grep -qiE 'pierlink|server' && printf '%s' "$out" | grep -qiE 'not found|does not exist|doesn.t exist|no .* found|no mcp server|no server named|not configured'; then r=false
+else exit 5
+fi"#;
+
+/// 在服务器上把 pierlink 从客户端配置里删掉的脚本。成功时输出 {"removed":true|false}（false 表示本来就没有）；
+/// 找不到客户端程序以 3 退出（Codex 直接改配置文件，不需要程序），写失败以 4 退出，客户端的移除命令出错以 5 退出。
+pub(crate) fn server_remove_script(client: &str) -> Result<String, AppError> {
+    match client {
+        "claude" => Ok(format!(
+            r#"{find}if out=$("$c" mcp remove {NAME} --scope user 2>&1); then r=true
+{NOT_ADDED}
+printf '{{"removed":%s}}\n' "$r"
+"#,
+            find = find_on_server("claude"),
+        )),
+        "gemini" => Ok(format!(
+            r#"{find}cd "$HOME" || exit 4
+if out=$("$c" mcp remove --scope user {NAME} 2>&1) || out=$("$c" mcp remove {NAME} 2>&1); then r=true
+{NOT_ADDED}
+printf '{{"removed":%s}}\n' "$r"
+"#,
+            find = find_on_server("gemini"),
+        )),
+        "codex" => Ok(format!(
+            r#"f="$HOME/.codex/config.toml"
+if [ ! -f "$f" ] || ! grep -Eq '^[[:space:]]*\[mcp_servers\.{NAME}(\]|\.)' "$f"; then
+  printf '%s\n' '{{"removed":false}}'
+  exit 0
+fi
+umask 077
+tmp=$(mktemp "$HOME/.codex/.config.toml.XXXXXX") || exit 4
+trap 'rm -f "$tmp"' EXIT
+awk '/^[[:space:]]*\[/ {{ skip = ($0 ~ /^[[:space:]]*\[mcp_servers\.{NAME}(\]|\.)/) }} !skip' "$f" > "$tmp" || exit 4
+# 配置文件是符号链接（dotfiles 管理的）时写到链接指向的文件里，不把链接换成普通文件
+if [ -L "$f" ]; then
+  cat "$tmp" > "$f" || exit 4
+  rm -f "$tmp"
+else
+  mv -f "$tmp" "$f" || exit 4
+fi
+trap - EXIT
+printf '%s\n' '{{"removed":true}}'
+"#
+        )),
+        _ => Err(AppError::new("mcp.client_not_found").with("client", client)),
+    }
+}
+
 fn installed_path(app: &AppHandle) -> Result<PathBuf, AppError> {
     Ok(crate::data::data_dir(app)?.join(INSTALLED_FILE))
 }
@@ -460,8 +671,22 @@ fn set_installed(app: &AppHandle, key: &str) {
         return;
     }
     list.push(key.to_owned());
+    write_installed(app, &list, key);
+}
+
+/// 移除后不再记着（换令牌时不会再自动加回去）
+fn unset_installed(app: &AppHandle, key: &str) {
+    let mut list = installed(app);
+    let before = list.len();
+    list.retain(|x| x != key);
+    if list.len() != before {
+        write_installed(app, &list, key);
+    }
+}
+
+fn write_installed(app: &AppHandle, list: &[String], key: &str) {
     let result = installed_path(app).and_then(|p| {
-        std::fs::write(p, serde_json::to_string(&list).unwrap_or_default())
+        std::fs::write(p, serde_json::to_string(list).unwrap_or_default())
             .map_err(|e| AppError::new("mcp.install_failed").with("reason", e.to_string()))
     });
     if let Err(e) = result {
@@ -560,6 +785,80 @@ pub async fn mcp_install_server(
     client: String,
 ) -> Result<McpInstallDto, AppError> {
     tauri::async_runtime::spawn_blocking(move || install_on_server(&app, &server_id, &client))
+        .await
+        .map_err(|e| AppError::new("mcp.task_failed").with("reason", e.to_string()))?
+}
+
+/// 在服务器上执行移除脚本
+fn remove_on_server(
+    app: &AppHandle,
+    server_id: &str,
+    client: &str,
+) -> Result<McpRemoveDto, AppError> {
+    let script = server_remove_script(client)?;
+    let (program, cmd, name) = crate::deploy::background_command(
+        app,
+        server_id,
+        crate::keys::Access::Background("AI 接入"),
+    )?;
+    let out = pierlink_core::remote::run::run_script(
+        &program,
+        &cmd,
+        &script,
+        pierlink_core::remote::run::RunLimits {
+            timeout: CLIENT_TIMEOUT,
+            stdout_bytes: 4096,
+            stderr_bytes: 4096,
+        },
+    );
+    match out {
+        Ok(v) => {
+            unset_installed(app, &installed_key(server_id, client));
+            let removed = v["removed"].as_bool().unwrap_or(true);
+            eprintln!(
+                "已在服务器上从 {} 移除 Pierlink: 服务器={name}, 原来有={removed}",
+                display(client)
+            );
+            Ok(McpRemoveDto {
+                client: client.into(),
+                removed,
+            })
+        }
+        Err(e) if e.code == "remote.script_failed" => {
+            match e.params.get("exit_code").map(String::as_str) {
+                Some("3") => Err(AppError::new("mcp.server_client_not_found")
+                    .with("server", &name)
+                    .with("client", display(client))),
+                Some("4") => Err(remove_failed_text(
+                    client,
+                    "mcp.couldn_t_write_the_config_on_the_server",
+                    "在服务器上写配置没有成功",
+                )),
+                Some("5") => Err(remove_failed_text(
+                    client,
+                    "mcp.client_remove_command_failed",
+                    "客户端自己的移除命令出错了",
+                )),
+                _ => Err(e),
+            }
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// 在服务器上把这台服务器的入口从 Claude Code、Codex 或 Gemini CLI 里移除（之后换令牌也不会再加回去）
+///
+/// :param server_id: 服务器 ID
+/// :param client: claude / codex / gemini
+/// :return: 结果（removed=false 表示本来就没有）；服务器上没装这个客户端返回 mcp.server_client_not_found
+#[tauri::command]
+#[specta::specta]
+pub async fn mcp_remove_server(
+    app: AppHandle,
+    server_id: String,
+    client: String,
+) -> Result<McpRemoveDto, AppError> {
+    tauri::async_runtime::spawn_blocking(move || remove_on_server(&app, &server_id, &client))
         .await
         .map_err(|e| AppError::new("mcp.task_failed").with("reason", e.to_string()))?
 }
@@ -882,6 +1181,224 @@ mod tests {
         assert_eq!(
             lines[1],
             "mcp add --transport http --scope user pierlink http://127.0.0.1:1/mcp --header Authorization: Bearer tok"
+        );
+    }
+
+    #[test]
+    fn cursor配置移除时只去掉pierlink() {
+        let existing = r#"{"mcpServers":{"other":{"command":"x"},"pierlink":{"command":"p","args":["--mcp"]}},"theme":"dark"}"#;
+        let text = unmerge_cursor(existing).unwrap().unwrap();
+        let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert!(v["mcpServers"]["pierlink"].is_null());
+        assert_eq!(v["mcpServers"]["other"]["command"], "x");
+        assert_eq!(v["theme"], "dark");
+        // 没有这一项、文件为空：不用改
+        assert!(
+            unmerge_cursor(r#"{"mcpServers":{"other":{}}}"#)
+                .unwrap()
+                .is_none()
+        );
+        assert!(unmerge_cursor("  ").unwrap().is_none());
+        assert!(unmerge_cursor("{}").unwrap().is_none());
+        // 读不懂：报错，不改
+        assert_eq!(
+            unmerge_cursor("{ 坏的").unwrap_err().code,
+            "mcp.cursor_config_invalid"
+        );
+    }
+
+    #[test]
+    fn 认出客户端说没有这个名字() {
+        assert!(says_not_found("No MCP server found with name: pierlink"));
+        assert!(says_not_found(
+            "No user-scoped MCP server found with name: pierlink"
+        ));
+        assert!(says_not_found("Error: server 'pierlink' not found"));
+        assert!(says_not_found(
+            "No MCP server named \"pierlink\" in user scope"
+        ));
+        assert!(!says_not_found(
+            "/usr/bin/env: 'node': No such file or directory"
+        ));
+        assert!(!says_not_found(
+            "ENOENT: no such file or directory, open '.claude.json'"
+        ));
+        assert!(says_not_found("MCP server pierlink does not exist"));
+        assert!(!says_not_found("Removed MCP server pierlink"));
+        assert!(!says_not_found("permission denied"));
+    }
+
+    /// 在临时家目录里用 /bin/sh 跑脚本，返回 (退出码, 标准输出)
+    #[cfg(unix)]
+    fn run_in(home: &Path, script: &str) -> (Option<i32>, String) {
+        let out = Command::new("/bin/sh")
+            .arg("-c")
+            .arg(script)
+            .env("HOME", home)
+            .env("PATH", "/usr/bin:/bin")
+            .output()
+            .unwrap();
+        (
+            out.status.code(),
+            String::from_utf8_lossy(&out.stdout).trim().to_owned(),
+        )
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn 服务器上从codex移除时只删pierlink段() {
+        let dir = tempfile::tempdir().unwrap();
+        let codex = dir.path().join(".codex");
+        std::fs::create_dir_all(&codex).unwrap();
+        let file = codex.join("config.toml");
+        std::fs::write(
+            &file,
+            "model = \"o4\"\n\n[mcp_servers.pierlink]\nurl = \"http://127.0.0.1:1/mcp\"\n\n[mcp_servers.pierlink.env]\nA = \"1\"\n\n[mcp_servers.other]\ncommand = \"x\"\n",
+        )
+        .unwrap();
+        let script = server_remove_script("codex").unwrap();
+        assert_eq!(
+            run_in(dir.path(), &script),
+            (Some(0), r#"{"removed":true}"#.into())
+        );
+        let text = std::fs::read_to_string(&file).unwrap();
+        assert!(text.contains("model = \"o4\""));
+        assert!(text.contains("[mcp_servers.other]\ncommand = \"x\""));
+        assert!(!text.contains("pierlink"));
+        // 再删一次：本来就没有
+        assert_eq!(
+            run_in(dir.path(), &script),
+            (Some(0), r#"{"removed":false}"#.into())
+        );
+        // 没有配置文件也算没有
+        let empty = tempfile::tempdir().unwrap();
+        assert_eq!(
+            run_in(empty.path(), &script),
+            (Some(0), r#"{"removed":false}"#.into())
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn 服务器上从claude和gemini移除() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join(".local/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let log = dir.path().join("log");
+        // 假的客户端：记下参数；remove 时按 FAIL 文件决定成败（模拟“本来就没有”）
+        for name in ["claude", "gemini"] {
+            let fake = bin.join(name);
+            std::fs::write(
+                &fake,
+                format!(
+                    "#!/bin/sh\necho \"{name} $@\" >> {log}\n[ -e {fail} ] && {{ echo 'No MCP server named pierlink in user scope'; exit 1; }}\n[ -e {broken} ] && {{ echo 'node: No such file or directory' >&2; exit 127; }}\nexit 0\n",
+                    log = log.display(),
+                    fail = dir.path().join("FAIL").display(),
+                    broken = dir.path().join("BROKEN").display()
+                ),
+            )
+            .unwrap();
+            std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let claude = server_remove_script("claude").unwrap();
+        let gemini = server_remove_script("gemini").unwrap();
+        assert_eq!(
+            run_in(dir.path(), &claude),
+            (Some(0), r#"{"removed":true}"#.into())
+        );
+        assert_eq!(
+            run_in(dir.path(), &gemini),
+            (Some(0), r#"{"removed":true}"#.into())
+        );
+        let calls = std::fs::read_to_string(&log).unwrap();
+        assert!(calls.contains("claude mcp remove pierlink --scope user"));
+        assert!(calls.contains("gemini mcp remove --scope user pierlink"));
+        std::fs::write(dir.path().join("FAIL"), "").unwrap();
+        assert_eq!(
+            run_in(dir.path(), &claude),
+            (Some(0), r#"{"removed":false}"#.into())
+        );
+        assert_eq!(
+            run_in(dir.path(), &gemini),
+            (Some(0), r#"{"removed":false}"#.into())
+        );
+        // 客户端自己出错（不是“没有这个名字”）：以 5 退出，不说成本来就没有
+        std::fs::remove_file(dir.path().join("FAIL")).unwrap();
+        std::fs::write(dir.path().join("BROKEN"), "").unwrap();
+        assert_eq!(run_in(dir.path(), &claude).0, Some(5));
+        assert_eq!(run_in(dir.path(), &gemini).0, Some(5));
+        // 找不到程序：以 3 退出
+        let none = tempfile::tempdir().unwrap();
+        assert_eq!(run_in(none.path(), &gemini).0, Some(3));
+        assert!(server_remove_script("cursor").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn 服务器上手动添加到codex的命令可以重复运行() {
+        let dir = tempfile::tempdir().unwrap();
+        let pier = dir.path().join(".pierlink");
+        std::fs::create_dir_all(&pier).unwrap();
+        std::fs::write(pier.join("mcp.json"), r#"{"url":"x","token":"tok-1_A"}"#).unwrap();
+        let codex = dir.path().join(".codex");
+        std::fs::create_dir_all(&codex).unwrap();
+        std::fs::write(codex.join("config.toml"), "model = \"o4\"\n").unwrap();
+        let command = codex_manual_command("http://127.0.0.1:47821/mcp").unwrap();
+        for _ in 0..2 {
+            assert_eq!(run_in(dir.path(), &command).0, Some(0));
+        }
+        let text = std::fs::read_to_string(codex.join("config.toml")).unwrap();
+        assert!(text.contains("model = \"o4\""));
+        assert_eq!(text.matches("[mcp_servers.pierlink]").count(), 1);
+        assert!(text.contains("url = \"http://127.0.0.1:47821/mcp\""));
+        assert!(text.contains("\"Authorization\" = \"Bearer tok-1_A\""));
+        assert!(
+            gemini_manual_command("http://127.0.0.1:47821/mcp")
+                .unwrap()
+                .contains("gemini mcp add --scope user --transport http")
+        );
+        // 文件只有自己能读
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(codex.join("config.toml"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o077, 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn 手动命令找不到令牌时只说明不改配置_符号链接照样是链接() {
+        let dir = tempfile::tempdir().unwrap();
+        let codex = dir.path().join(".codex");
+        std::fs::create_dir_all(&codex).unwrap();
+        // 没有 ~/.pierlink/mcp.json：子 shell 以 1 退出，配置文件不动
+        std::fs::write(codex.join("config.toml"), "model = \"o4\"\n").unwrap();
+        let command = codex_manual_command("http://127.0.0.1:47821/mcp").unwrap();
+        assert_eq!(run_in(dir.path(), &command).0, Some(1));
+        assert_eq!(
+            std::fs::read_to_string(codex.join("config.toml")).unwrap(),
+            "model = \"o4\"\n"
+        );
+        // 有令牌、配置是符号链接：写到链接指向的文件
+        let pier = dir.path().join(".pierlink");
+        std::fs::create_dir_all(&pier).unwrap();
+        std::fs::write(pier.join("mcp.json"), r#"{"token":"tok-2"}"#).unwrap();
+        let real = dir.path().join("dotfiles-codex.toml");
+        std::fs::rename(codex.join("config.toml"), &real).unwrap();
+        std::os::unix::fs::symlink(&real, codex.join("config.toml")).unwrap();
+        assert_eq!(run_in(dir.path(), &command).0, Some(0));
+        assert!(
+            std::fs::symlink_metadata(codex.join("config.toml"))
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert!(
+            std::fs::read_to_string(&real)
+                .unwrap()
+                .contains("Bearer tok-2")
         );
     }
 }

@@ -264,6 +264,7 @@ impl Sshd {
         let command = crate::remote::command::background(
             &manager,
             ConnectionRequest {
+                progress: None,
                 server: &server,
                 class: ConnectionClass::Main,
                 vault: Arc::new(PasswordVault::default()),

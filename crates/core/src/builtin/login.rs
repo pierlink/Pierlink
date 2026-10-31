@@ -69,7 +69,7 @@ impl Login {
                         return Err(AppError::new("ssh.password_load_failed"));
                     }
                 };
-                // 密码框等待发生在建连前；晚到的有效密码依然存入库，再处理取消。
+                // 晚到的有效密码依然存入库，再处理取消。
                 let secret = secret.ok_or_else(cancelled)?;
                 let generation = self.vault.set(&self.server, secret.clone())?;
                 Password { secret, generation }
@@ -328,6 +328,16 @@ impl ConnectionManager {
             Authentication,
         ) -> pierlink_ssh_engine::Result<Connection>,
     ) -> Result<Connection, AppError> {
+        if let Some(progress) = request.progress.clone() {
+            options.progress = Some(Arc::new(move |stage| {
+                use pierlink_ssh_engine::ConnectStage as Stage;
+                progress(match stage {
+                    Stage::Resolve => crate::terminal::ConnectStage::Resolve,
+                    Stage::Connect => crate::terminal::ConnectStage::Connect,
+                    Stage::Auth => crate::terminal::ConnectStage::Auth,
+                });
+            }));
+        }
         let gate = self.gate(&request.server.id);
         let _guard = loop {
             if request.cancelled.load(Ordering::Acquire) {
@@ -356,6 +366,7 @@ impl ConnectionManager {
         {
             return Err(AppError::new("ssh.two_factor_required"));
         }
+        // 先取得密码再开始连接，避免用户输入时间占用客户端和服务器的认证时限。
         if method == AuthMethod::Password {
             login.password()?;
         }

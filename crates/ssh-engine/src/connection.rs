@@ -42,9 +42,24 @@ pub enum HostKeyCheck {
     Callback(Arc<dyn Fn(HostKey) -> bool + Send + Sync>),
 }
 
+/// 建立传输连接时进入的阶段；会话阶段由调用方报告。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConnectStage {
+    Resolve,
+    Connect,
+    Auth,
+}
+
+/// 阶段通知；回调必须快速返回，不得阻塞引擎线程。
+pub type ConnectProgress = Arc<dyn Fn(ConnectStage) + Send + Sync>;
+
 /// 连接参数；host 使用不带方括号的 IPv6 字面量，认证由 connect 单独指定。
 #[derive(Clone)]
 pub struct ConnectionOptions {
+    /// 第一跳使用的出站代理；connect_via 的后续跳忽略此字段。
+    pub proxy: Option<crate::proxy::ProxyServer>,
+    /// 可选的建连阶段回调；不含主机或认证材料。
+    pub progress: Option<ConnectProgress>,
     pub host: String,
     pub port: u16,
     pub username: String,
@@ -71,6 +86,8 @@ impl ConnectionOptions {
         host_key: HostKeyCheck,
     ) -> Self {
         Self {
+            proxy: None,
+            progress: None,
             host: host.into(),
             port,
             username: username.into(),
@@ -82,6 +99,17 @@ impl ConnectionOptions {
             legacy_algorithms: false,
             preferred_host_key_algorithms: Vec::new(),
             cancelled: None,
+        }
+    }
+
+    fn report(&self, stage: ConnectStage) {
+        if !self
+            .cancelled
+            .as_ref()
+            .is_some_and(|c| c.load(Ordering::Acquire))
+            && let Some(progress) = &self.progress
+        {
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| progress(stage)));
         }
     }
 
@@ -359,12 +387,18 @@ impl Engine {
     /// 按参数连接并只执行指定认证；返回共享连接，不读取 ssh config 或 known_hosts。
     pub fn connect(&self, options: ConnectionOptions, auth: Authentication) -> Result<Connection> {
         options.validate()?;
-        let stream = self.executor.run_cancellable(
-            options.connect_timeout,
-            "TCP 连接",
-            options.cancelled.clone(),
-            tcp_connect(&options),
-        )?;
+        let stream = self
+            .executor
+            .run_cancellable(
+                options.connect_timeout,
+                "TCP 连接",
+                options.cancelled.clone(),
+                tcp_connect(&options),
+            )
+            .map_err(|error| match (&options.proxy, error) {
+                (Some(_), Error::Timeout(_)) => Error::Proxy(crate::proxy::ProxyError::Timeout),
+                (_, error) => error,
+            })?;
         self.connect_stream(options, auth, stream, None)
     }
 
@@ -376,6 +410,7 @@ impl Engine {
         auth: Authentication,
     ) -> Result<Connection> {
         options.validate()?;
+        options.report(ConnectStage::Connect);
         let channel = parent.inner.executor.run_cancellable(
             options.connect_timeout,
             "跳板通道",
@@ -401,11 +436,16 @@ impl Engine {
 
     pub(crate) fn connect_stream<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
         &self,
-        options: ConnectionOptions,
+        mut options: ConnectionOptions,
         auth: Authentication,
         stream: S,
         parent: Option<Connection>,
     ) -> Result<Connection> {
+        options.report(ConnectStage::Auth);
+        // 登录后主连接可能长期复用，不让连接持有已经关闭的终端进度回调。
+        options.progress = None;
+        // 代理握手已完成，后续通道复用现有连接，不再需要保存出站代理设置。
+        options.proxy = None;
         let counters = Arc::new(Counters::default());
         let remote_sshid = Arc::new(OnceLock::new());
         let allowed_ports = Arc::new(Mutex::new(HashSet::new()));
@@ -491,9 +531,22 @@ impl Engine {
 }
 
 async fn tcp_connect(options: &ConnectionOptions) -> Result<tokio::net::TcpStream> {
+    options.report(ConnectStage::Resolve);
+    if let Some(proxy) = &options.proxy {
+        options.report(ConnectStage::Connect);
+        return crate::proxy::connect_async(
+            proxy,
+            &options.host,
+            options.port,
+            options.connect_timeout,
+        )
+        .await
+        .map_err(Error::from);
+    }
     let addresses = lookup_host((options.host.as_str(), options.port))
         .await
         .map_err(|_| Error::Dns)?;
+    options.report(ConnectStage::Connect);
     let mut last = Error::Dns;
     for address in addresses {
         let socket = if address.is_ipv6() {
@@ -1121,5 +1174,98 @@ mod tests {
         assert_eq!(opts.validate(), Err(Error::InvalidInput));
         assert_eq!(Pty::default().columns, 80);
         assert!(Engine::new().is_ok());
+    }
+}
+
+#[cfg(test)]
+mod progress_tests {
+    use super::*;
+
+    fn options(stages: Arc<Mutex<Vec<ConnectStage>>>) -> ConnectionOptions {
+        let mut options = ConnectionOptions::new(
+            "127.0.0.1",
+            1,
+            "测试",
+            HostKeyCheck::Callback(Arc::new(|_| true)),
+        );
+        options.progress = Some(Arc::new(move |stage| stages.lock().unwrap().push(stage)));
+        options
+    }
+
+    #[test]
+    fn 已登录主连接不再持有终端阶段回调() {
+        let engine = Engine::new().unwrap();
+        let stages = Arc::new(Mutex::new(Vec::new()));
+        let weak = Arc::downgrade(&stages);
+        let options = options(stages.clone());
+        let connection = crate::test_support::connect_sessions(
+            &engine,
+            options,
+            Authentication::Password("测试密码".into()),
+        )
+        .unwrap();
+        assert_eq!(*stages.lock().unwrap(), [ConnectStage::Auth]);
+        drop(stages);
+        assert!(weak.upgrade().is_none());
+        connection.ping().unwrap();
+    }
+
+    #[test]
+    fn 解析失败停在解析且预先取消不报告后续阶段() {
+        let engine = Engine::new().unwrap();
+        let stages = Arc::new(Mutex::new(Vec::new()));
+        let mut options = options(stages.clone());
+        // 含 NUL 的主机被参数校验拒绝；空格名称由本机解析器直接拒绝，不请求外部 DNS。
+        options.host = " ".into();
+        assert!(matches!(
+            engine.connect(options.clone(), Authentication::Password("测试".into())),
+            Err(Error::Dns)
+        ));
+        assert_eq!(*stages.lock().unwrap(), [ConnectStage::Resolve]);
+        stages.lock().unwrap().clear();
+        options.cancelled = Some(Arc::new(AtomicBool::new(true)));
+        assert!(matches!(
+            engine.connect(options, Authentication::Password("测试".into())),
+            Err(Error::Callback)
+        ));
+        assert!(stages.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn 握手失败或握手中取消都停在认证阶段() {
+        for cancel in [false, true] {
+            let engine = Engine::new().unwrap();
+            let stages = Arc::new(Mutex::new(Vec::new()));
+            let mut options = options(stages.clone());
+            options.connect_timeout = Duration::from_millis(50);
+            let cancelled = Arc::new(AtomicBool::new(false));
+            options.cancelled = Some(cancelled.clone());
+            if cancel {
+                let observed = stages.clone();
+                options.progress = Some(Arc::new(move |stage| {
+                    observed.lock().unwrap().push(stage);
+                    cancelled.store(true, Ordering::Release);
+                }));
+            }
+            let (stream, _peer) = tokio::io::duplex(1024);
+            let error = engine
+                .connect_stream(
+                    options,
+                    Authentication::Password("测试".into()),
+                    stream,
+                    None,
+                )
+                .err()
+                .unwrap();
+            assert_eq!(
+                error,
+                if cancel {
+                    Error::Callback
+                } else {
+                    Error::Timeout("SSH 握手")
+                }
+            );
+            assert_eq!(*stages.lock().unwrap(), [ConnectStage::Auth]);
+        }
     }
 }

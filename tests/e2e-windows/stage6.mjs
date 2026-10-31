@@ -361,25 +361,61 @@ await rec.step(conn, "服务器概况：Linux 服务器终端右上角显示运�
   return `${info.summary}｜CPU ${cpu.now}%（${cpu.detail}）｜内存 ${mem.now}%（${mem.detail}）｜${disk.label} ${disk.now}%（${disk.detail}）`;
 });
 
-await rec.step(conn, "服务器终端的连接 / 断开按钮：断开后内容留着、最下面写一行；点连接或按 Enter 清屏重新连接", async () => {
+await rec.step(conn, "服务器终端的连接 / 断开按钮：断开后内容留着、最下面写一行，右下角有“关闭”“重新连接”；点工具栏、右下角的按钮或按 Enter 都清屏重新连接，光标回来、焦点在终端里", async () => {
   if (!HAVE_LINUX) throw new Error("没有 WSL Linux 服务器");
-  const term = `([...document.querySelectorAll('.pane-slot')].filter(s=>s.style.display!=='none')[0]?.querySelector('.xterm-rows')?.innerText||'')`;
+  const pane = `[...document.querySelectorAll('.pane-slot')].filter(s=>s.style.display!=='none')[0]`;
+  const term = `(${pane}?.querySelector('.xterm-rows')?.innerText||'')`;
+  // 光标显示着（没被藏起来），焦点在这个终端的输入框里
+  const cursorBack = `(()=>{const s=${pane}; const a=document.activeElement; return !!s?.querySelector('.xterm-rows .xterm-cursor') && !!a && s.contains(a) && a.classList.contains('xterm-helper-textarea');})()`;
+  const disconnect = async (what) => {
+    await clickVisible('[aria-label="Disconnect"]');
+    return await u.waitFor(`(()=>{const t=${term}; return /Disconnected\\. Press Enter to reconnect\\./.test(t) ? t : null;})()`, what, 15000);
+  };
+  const reconnected = async (what) => {
+    await u.waitFor(`${bashPanes} >= 1 && !/PL-KEEP-42|Disconnected/.test(${term})`, what, 30000);
+    await u.waitFor(cursorBack, `${what}：光标显示、焦点在终端里`, 10000);
+    if (await p.js(`!!${pane}?.querySelector('.term-endbar')`)) throw new Error(`${what}：右下角的按钮还在`);
+  };
   await clickVisible(".xterm-screen", 0);
   await u.typeLine("echo PL-KEEP-$((40+2))");
   await u.waitFor(`/^PL-KEEP-42\\s*$/m.test(${term})`, "echo 的输出", 10000);
-  await clickVisible('[aria-label="Disconnect"]');
-  const text = await u.waitFor(`(()=>{const t=${term}; return /Disconnected\\. Press Enter to reconnect\\./.test(t) ? t : null;})()`, "终端最下面写了“已断开”", 15000);
+  const text = await disconnect("终端最下面写了“已断开”");
   if (!/^PL-KEEP-42\s*$/m.test(text)) throw new Error(`断开后原来的内容没了：${text}`);
   if (await p.js(`[...document.querySelectorAll('.pane-slot')].filter(s=>s.style.display!=='none').some(s=>s.querySelector('.term-ended'))`)) throw new Error("断开后不该盖提示块");
+  const bar = await p.js(`[...(${pane}?.querySelectorAll('.term-endbar button')||[])].map(b=>b.textContent.trim())`);
+  if (bar.length !== 2 || !/^Close (tab|pane)$/.test(bar[0]) || bar[1] !== "Reconnect") throw new Error(`右下角的按钮不对：${JSON.stringify(bar)}`);
+  // 工具栏的“连接”
   await clickVisible('[aria-label="Connect"]');
-  await u.waitFor(`${bashPanes} >= 1 && !/PL-KEEP-42|Disconnected/.test(${term})`, "清屏后重新出现 bash 提示符", 30000);
-  // 再断开一次，在终端里按 Enter 重新连接
-  await clickVisible('[aria-label="Disconnect"]');
-  await u.waitFor(`/Disconnected\\./.test(${term})`, "第二次断开", 15000);
+  await reconnected("点工具栏的“连接”重新连接");
+  // 右下角的“重新连接”
+  await disconnect("第二次断开");
+  await clickVisible(".term-endbar .pl-btn--primary");
+  await reconnected("点右下角的“重新连接”");
+  // 在终端里按 Enter
+  await disconnect("第三次断开");
   await clickVisible(".xterm-screen", 0);
   await u.enter();
-  await u.waitFor(`${bashPanes} >= 1 && !/Disconnected/.test(${term})`, "按 Enter 重新连接", 30000);
+  await reconnected("按 Enter 重新连接");
   return text.split("\n").filter(Boolean).slice(-2).join(" / ");
+});
+
+await rec.step(conn, "前台是程序时粘贴多行不提醒：bash 里运行 cat，粘贴两行直接进 cat", async () => {
+  if (!HAVE_LINUX) throw new Error("没有 WSL Linux 服务器");
+  const term = `([...document.querySelectorAll('.pane-slot')].filter(s=>s.style.display!=='none')[0]?.querySelector('.xterm-rows')?.innerText||'')`;
+  await clickVisible(".xterm-screen", 0);
+  await u.typeLine("cat");
+  await sleep(800);
+  execFileSync("powershell.exe", ["-NoProfile", "-Command", 'Set-Clipboard -Value "PL-PASTE-A`nPL-PASTE-B"']);
+  await clickVisible(".xterm-screen", 0);
+  await u.key("v", "KeyV", 86, 2);
+  await sleep(1500);
+  if (await p.js(`/Paste multiple lines/.test(document.querySelector('.pl-dialog')?.innerText||'')`)) throw new Error("前台是 cat 时不该弹多行粘贴确认");
+  await u.waitFor(`/PL-PASTE-A[\\s\\S]*PL-PASTE-B/.test(${term})`, "cat 收到粘贴的两行", 10000);
+  // 结束 cat：先把最后一行送出去，再 Ctrl+D
+  await u.enter();
+  await u.key("d", "KeyD", 68, 2);
+  await u.waitFor(`${bashPanes} >= 1 && /PL-PASTE-B\\s*\\n[\\s\\S]*\\$\\s*$/.test(${term})`, "cat 结束、回到 bash 提示符", 10000);
+  return "cat 里粘贴两行没有提醒";
 });
 
 await rec.step(conn, "bash 下的广播：两格同时收到；片段发到两个窗格各执行一次；sudo 密码提示让窗格退出广播", async () => {
@@ -474,6 +510,9 @@ await rec.step(conn, "密码服务器：输错密码会提示并重新问；输�
   await answerPassword("pl-wrong-password", false);
   const ended = await u.waitFor(`(()=>{const e=[...document.querySelectorAll('.term-ended')].find(x=>x.offsetParent); return e ? e.innerText : null;})()`, "登录失败的提示", 30000);
   if (!/Login failed/.test(ended) || !/wrong or has changed/.test(ended)) throw new Error(`输错密码后的提示不对：${ended}`);
+  // 提示块上标出连接停在哪一步：解析、连接走完了，认证这一步标红
+  const steps = await p.js(`(()=>{const e=[...document.querySelectorAll('.term-ended')].find(x=>x.offsetParent); return e ? [...e.querySelectorAll('.conn-step')].map(s=>s.className.replace('conn-step conn-step--','')+':'+s.innerText.trim()) : null;})()`);
+  if (JSON.stringify(steps) !== JSON.stringify(["done:Resolve", "done:Connect", "failed:Auth", "todo:Session"])) throw new Error(`提示块上的连接进度不对：${JSON.stringify(steps)}`);
   // 重新连接：会再问（错的密码已作废，不会被再用一次）
   await u.clickText("Reconnect", ".term-ended");
   await waitPasswordDialog();

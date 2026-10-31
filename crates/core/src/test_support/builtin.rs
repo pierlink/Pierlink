@@ -84,6 +84,7 @@ impl Fixture {
         crate::remote::command::background(
             &self.manager,
             ConnectionRequest {
+                progress: None,
                 server: &self.server,
                 class: ConnectionClass::Main,
                 vault: Arc::new(PasswordVault::default()),

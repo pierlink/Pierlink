@@ -330,7 +330,8 @@ impl Client {
     }
     async fn receive(&mut self) -> Value {
         let mut text = String::new();
-        tokio::time::timeout(Duration::from_secs(5), self.read.read_line(&mut text))
+        // 本机工具会真的启动 shell：CI 的 Windows 上 PowerShell 冷启动偶尔要五秒以上
+        tokio::time::timeout(Duration::from_secs(30), self.read.read_line(&mut text))
             .await
             .unwrap()
             .unwrap();

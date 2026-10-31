@@ -116,7 +116,8 @@ fn probe_with_limits(
     timeout: Duration,
     answer_timeout: Duration,
 ) -> Result<HostKeyPrompt, AppError> {
-    let cmd = probe_command(target_cmd)?;
+    let prepared = crate::proxy::openssh::prepare(program, &probe_command(target_cmd)?)?;
+    let cmd = prepared.command;
     let program = program.clone();
     let (answers_tx, answers_rx) = mpsc::channel();
     let (updates_tx, updates_rx) = mpsc::channel();
@@ -129,6 +130,7 @@ fn probe_with_limits(
     let worker = thread::Builder::new()
         .name("ssh指纹确认".into())
         .spawn(move || {
+            let _proxy_config = prepared.config;
             let mut state = ProbeState {
                 accepted: false,
                 level: 0,

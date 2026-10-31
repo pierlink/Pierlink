@@ -129,7 +129,8 @@ pub struct McpCommandDto {
 pub struct McpServerConnectDto {
     pub server_id: String,
     pub url: String,
-    pub commands: Vec<String>,
+    /// 在那台服务器上手动添加的命令，client 是 claude / gemini / codex
+    pub commands: Vec<McpCommandDto>,
 }
 
 /// 界面回报的打开失败原因（后端错误原样带回来）
@@ -354,6 +355,7 @@ pub(crate) fn run_server_command(
         callbacks: builtin.callbacks.clone(),
         interactive: false,
         cancelled: cancelled.clone(),
+        progress: None,
     };
     pierlink_core::remote::raw::run_raw(
         &builtin.manager,
@@ -479,12 +481,32 @@ pub async fn mcp_connect_info(app: AppHandle) -> Result<McpConnectInfoDto, AppEr
             let url = entries::url(s.port);
             McpServerConnectDto {
                 server_id: s.server_id,
-                commands: pierlink_core::mcp::token::connect_commands(&url),
+                commands: server_commands(&url),
                 url,
             }
         })
         .collect();
     Ok(McpConnectInfoDto { windows, servers })
+}
+
+/// 在服务器上手动添加的命令，按客户端标好：Claude Code（有 jq 和没有 jq 两种写法）、Gemini CLI、Codex
+fn server_commands(url: &str) -> Vec<McpCommandDto> {
+    let tagged = |client: &str, text: String| McpCommandDto {
+        client: client.into(),
+        text,
+    };
+    let mut commands: Vec<McpCommandDto> = pierlink_core::mcp::token::connect_commands(url)
+        .into_iter()
+        .map(|text| tagged("claude", text))
+        .collect();
+    // 地址是 http://127.0.0.1:端口/mcp，不会转义失败；万一失败就不给这两条手动命令
+    if let Ok(text) = install::gemini_manual_command(url) {
+        commands.push(tagged("gemini", text));
+    }
+    if let Ok(text) = install::codex_manual_command(url) {
+        commands.push(tagged("codex", text));
+    }
+    commands
 }
 
 /// 换一个服务器入口的令牌（旧令牌立即失效，服务器上的文件随后重写）

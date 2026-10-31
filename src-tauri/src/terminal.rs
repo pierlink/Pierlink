@@ -184,10 +184,38 @@ impl TerminalState {
     }
 }
 
+/// 连接服务器的一步：解析地址、建立连接、认证（握手和登录）、打开会话；Ready 表示会话可以用了
+#[derive(Clone, Copy, Serialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum ConnectStageDto {
+    Resolve,
+    Connect,
+    Auth,
+    Session,
+    Ready,
+}
+
+impl From<pierlink_core::terminal::ConnectStage> for ConnectStageDto {
+    fn from(stage: pierlink_core::terminal::ConnectStage) -> Self {
+        use pierlink_core::terminal::ConnectStage as S;
+        match stage {
+            S::Resolve => Self::Resolve,
+            S::Connect => Self::Connect,
+            S::Auth => Self::Auth,
+            S::Session => Self::Session,
+            S::Ready => Self::Ready,
+        }
+    }
+}
+
 /// 推给前端的终端事件。输出按 base64 传输，避免多字节字符在分块处被拆坏。
 #[derive(Clone, Serialize, Type)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum TerminalEventDto {
+    /// 连接走到了哪一步（只有服务器终端有；可能跳过前面的，不会倒退）
+    Stage {
+        stage: ConnectStageDto,
+    },
     Output {
         data: String,
     },
@@ -304,6 +332,9 @@ fn forward(
             }
         }
         let dto = match event {
+            TerminalEvent::Stage(stage) => TerminalEventDto::Stage {
+                stage: stage.into(),
+            },
             TerminalEvent::Output(bytes) => {
                 if let Some(w) = &watch {
                     w.record(&bytes);
@@ -543,12 +574,14 @@ pub async fn terminal_open_server(
     .await
 }
 
-/// 本机终端的环境变量：Git Bash 打开命令预测时加上 PIERLINK_PREDICT=1（包装脚本据此装上提示符标记）。
+/// 本机终端的环境变量：Git Bash 打开命令预测时加上 PIERLINK_PREDICT=1（包装脚本据此装上提示符标记）；
+/// 设置了代理时加上代理环境变量（HTTP_PROXY 等）。
 fn local_env(shell: &LocalShell, prediction: bool) -> Vec<(String, String)> {
     let mut env = shell.env.clone();
     if prediction && shell.kind == shells::ShellKind::GitBash {
         env.push(("PIERLINK_PREDICT".into(), "1".into()));
     }
+    env.extend(crate::proxy::terminal_env(shell));
     env
 }
 
@@ -585,6 +618,13 @@ async fn open_remote(
 ) -> Result<String, AppError> {
     let owner = webview.label().to_owned();
     let generation = app.state::<PageGenerations>().current(&owner);
+    // 内置 SSH 连接、登录时的进度直接经同一个通道推给界面（这时还没有会话）
+    let stages = on_event.clone();
+    let progress: pierlink_core::terminal::ConnectProgress = Arc::new(move |stage| {
+        let _ = stages.send(TerminalEventDto::Stage {
+            stage: stage.into(),
+        });
+    });
     blocking(app, move |app, state| {
         // 给这个终端一个标记，文件面板据此在服务器上找到它的 shell、查当前目录
         let marker = crate::files::new_marker();
@@ -621,6 +661,7 @@ async fn open_remote(
                             callbacks: builtin.callbacks.clone(),
                             interactive: true,
                             cancelled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                            progress: Some(progress),
                         },
                         Some(marker.clone()),
                         prediction,

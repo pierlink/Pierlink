@@ -46,6 +46,7 @@ fn 本机终端多订阅及屏幕增量查询() {
             .event
         {
             TerminalEvent::Exited { closed_by_user, .. } => break closed_by_user,
+            TerminalEvent::Stage(_) => {}
             TerminalEvent::Output(_) => continue,
         }
     };
@@ -129,6 +130,7 @@ fn until_exit(rx: &mpsc::Receiver<TerminalEvent>) -> (Vec<u8>, Option<i32>, bool
     loop {
         // 全量并行跑测试时机器较忙，给足 10 秒
         match rx.recv_timeout(Duration::from_secs(10)).unwrap() {
+            TerminalEvent::Stage(_) => {}
             TerminalEvent::Output(chunk) => bytes.extend(chunk),
             TerminalEvent::Exited {
                 code,
@@ -143,6 +145,10 @@ fn until_exit(rx: &mpsc::Receiver<TerminalEvent>) -> (Vec<u8>, Option<i32>, bool
 }
 #[test]
 fn 事件序列化和尺寸校验() {
+    assert_eq!(
+        serde_json::to_value(TerminalEvent::Stage(ConnectStage::Ready)).unwrap(),
+        serde_json::json!({"Stage": "ready"})
+    );
     assert_eq!(
         serde_json::to_value(TerminalEvent::Output(vec![0, 255])).unwrap(),
         serde_json::json!({"Output":[0,255]})
@@ -222,7 +228,7 @@ fn 远程会话本机进程状态返回未知() {
         &manager,
         TerminalSpec {
             kind: TerminalKind::Remote {
-                ssh: "/bin/sh".into(),
+                ssh: fake_ssh(),
                 command: SshCommand {
                     args: vec!["-i".into()],
                     env: vec![],
@@ -284,6 +290,7 @@ fn r3_背压暂停恢复且总量有界() {
     let mut total = 0;
     while total < WINDOW {
         match rx.recv_timeout(Duration::from_secs(5)).unwrap() {
+            TerminalEvent::Stage(_) => {}
             TerminalEvent::Output(b) => {
                 assert!(b.len() <= CHUNK);
                 total += b.len();
@@ -329,7 +336,11 @@ fn 远程配置唯一并在所有结束路径删除() {
     let manager = TerminalManager::new();
     let remote = |program: &str| TerminalSpec {
         kind: TerminalKind::Remote {
-            ssh: program.into(),
+            ssh: if program == "/bin/sh" {
+                fake_ssh()
+            } else {
+                program.into()
+            },
             command: SshCommand {
                 args: vec![
                     "-c".into(),
@@ -355,9 +366,13 @@ fn 远程配置唯一并在所有结束路径删除() {
         command.args[1] = "test -f \"$2\" && printf 配置存在; read line".into();
     }
     let (id, rx) = start(&manager, input);
+    assert_eq!(
+        rx.recv_timeout(Duration::from_secs(2)).unwrap(),
+        TerminalEvent::Stage(ConnectStage::Resolve)
+    );
     let event = rx.recv_timeout(Duration::from_secs(2)).unwrap();
     assert_eq!(event, TerminalEvent::Output("配置存在".as_bytes().to_vec()));
-    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 2);
     manager.close(&id).unwrap();
     until_exit(&rx);
     assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
@@ -431,6 +446,7 @@ fn r3_大文件确认后完整排空才退出() {
     let mut total = 0;
     loop {
         match rx.recv_timeout(Duration::from_secs(5)).unwrap() {
+            TerminalEvent::Stage(_) => {}
             TerminalEvent::Output(bytes) => {
                 assert!(bytes.iter().all(|&b| b == 0));
                 total += bytes.len();
@@ -504,7 +520,7 @@ fn 远程配置并发唯一及自然结束清理() {
     let manager = TerminalManager::new();
     let input = || TerminalSpec {
         kind: TerminalKind::Remote {
-            ssh: "/bin/sh".into(),
+            ssh: fake_ssh(),
             command: SshCommand {
                 args: vec![
                     "-c".into(),
@@ -527,10 +543,10 @@ fn 远程配置并发唯一及自然结束清理() {
     let (a, first) = start(&manager, input());
     let (b, second) = start(&manager, input());
     assert_ne!(a, b);
-    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 2);
+    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 4);
     manager.write(&a, b"\n").unwrap();
     until_exit(&first);
-    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 2);
     manager.write(&b, b"\n").unwrap();
     until_exit(&second);
     assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
@@ -565,6 +581,7 @@ fn windows_conpty输出与关闭() {
     let mut output = Vec::new();
     loop {
         match rx.recv_timeout(Duration::from_secs(10)).unwrap() {
+            TerminalEvent::Stage(_) => {}
             TerminalEvent::Output(bytes) => {
                 let _ = manager.ack(&id, bytes.len());
                 output.extend(bytes);
@@ -699,13 +716,14 @@ fn 清理残留配置不递归且缺目录成功() {
     for name in [
         "terminal-a.conf",
         "terminal-b.conf",
+        "terminal-old.log",
         "保留.conf",
         "terminal-a.txt",
     ] {
         std::fs::write(dir.path().join(name), "").unwrap();
     }
     std::fs::create_dir(dir.path().join("terminal-dir.conf")).unwrap();
-    assert_eq!(cleanup_stale_configs(dir.path()).unwrap(), 2);
+    assert_eq!(cleanup_stale_configs(dir.path()).unwrap(), 3);
     assert_eq!(cleanup_stale_configs(dir.path()).unwrap(), 0);
     assert!(cleanup_stale_configs(&dir.path().join("保留.conf")).is_err());
 }
@@ -719,7 +737,7 @@ fn 远程创建目录并强制term() {
         &manager,
         TerminalSpec {
             kind: TerminalKind::Remote {
-                ssh: "/bin/sh".into(),
+                ssh: fake_ssh(),
                 config_dir: config_dir.clone(),
                 command: SshCommand {
                     args: vec![
@@ -822,7 +840,7 @@ fn 终端返回实际登记_退出后可检查代数并保护新密码() {
         .open_with_registration(
             TerminalSpec {
                 kind: TerminalKind::Remote {
-                    ssh: "/bin/sh".into(),
+                    ssh: fake_ssh(),
                     command: SshCommand {
                         args: vec!["-c".into(), "exit 255".into()],
                         env: vec![],
@@ -970,4 +988,25 @@ fn 系统ssh退出事件保留命令生成的实际钩子状态() {
             }
         }
     }
+}
+
+#[cfg(unix)]
+fn fake_ssh() -> PathBuf {
+    use std::sync::OnceLock;
+    static SCRIPT: OnceLock<(tempfile::TempDir, PathBuf)> = OnceLock::new();
+    SCRIPT
+        .get_or_init(|| {
+            use std::os::unix::fs::PermissionsExt;
+            let dir = crate::test_support::tempdir();
+            let path = dir.path().join("ssh");
+            std::fs::write(
+                &path,
+                "#!/bin/sh\nif [ \"$1\" = -o ]; then shift 4; fi\nexec /bin/sh \"$@\"\n",
+            )
+            .unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+            (dir, path)
+        })
+        .1
+        .clone()
 }

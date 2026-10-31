@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
-import { X } from "lucide-react";
+import { Copy, X } from "lucide-react";
 import { IconButton, Segmented, StatusDot } from "../../components";
 import type { ServerView } from "./types";
 
@@ -11,12 +11,14 @@ export type ToolPage = "server" | "snippets";
  * 服务器页跟随当前窗格所在的服务器；当前窗格不是服务器终端时，跟随左侧列表里选中的服务器。
  * 窗口较窄时面板浮在终端上面（样式见 workspace.css）。
  */
-export function ToolPanel({ page, onPage, onClose, server, follow, serverPage, snippetsPage }: {
+export function ToolPanel({ page, onPage, onClose, server, onCopyIp, follow, serverPage, snippetsPage }: {
   page: ToolPage;
   onPage: (p: ToolPage) => void;
   onClose: () => void;
   /** 服务器页显示的服务器；没有服务器时为 null */
   server: ServerView | null;
+  /** 复制这台服务器的 IP（或主机名） */
+  onCopyIp?: (id: string) => void;
   /** 服务器从哪里来：当前窗格 / 左侧列表选中 */
   follow: "pane" | "sidebar";
   /** 端口转发页的内容，server 不为 null 时显示 */
@@ -46,7 +48,14 @@ export function ToolPanel({ page, onPage, onClose, server, follow, serverPage, s
               <StatusDot tone={server.status === "online" ? "ok" : server.status === "connecting" ? "warn" : "neutral"} label={t(`workspace.status.${server.status}`)} />
               <span className="ws__tool-follow">{follow === "pane" ? t("panel.followPane") : t("panel.followSidebar")}</span>
             </div>
-            <span className="mono ws__tool-addr pl-ellipsis">{server.address}</span>
+            <div className="ws__tool-addr">
+              <span className="mono pl-ellipsis">{server.address}</span>
+              {onCopyIp && (
+                <IconButton size="sm" label={t("menu.copyIp")} title={t("menu.copyIp")} onClick={() => onCopyIp(server.id)}>
+                  <Copy size={13} />
+                </IconButton>
+              )}
+            </div>
             {serverPage}
           </>
         ) : (

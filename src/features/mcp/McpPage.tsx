@@ -220,7 +220,7 @@ function EntryDetail({ id, settings, servers, status, info, serverName, sessions
     ? { ...settings, windows: next }
     : { ...settings, servers: settings.servers.map((s, j) => (j === index ? { ...s, entry: next } : s)) });
   const st = server ? status?.entries.find((x) => x.serverId === id) : undefined;
-  const commands = windows ? info?.windows.map((c) => c.text) ?? [] : info?.servers.find((x) => x.serverId === id)?.commands ?? [];
+  const commands = windows ? info?.windows ?? [] : info?.servers.find((x) => x.serverId === id)?.commands ?? [];
   const [rotated, setRotated] = useState<{ ok: boolean; text: string } | null>(null);
   useEffect(() => { setRotated(null); }, [id]);
   const rotate = async () => {
@@ -251,12 +251,11 @@ function EntryDetail({ id, settings, servers, status, info, serverName, sessions
 
       <div className="mcp-detail__grid">
         <div className="mcp-detail__card">
-          <h3>{t("mcp.oneClick")}</h3>
-          <OneClickAdd serverId={windows ? null : id} serverName={serverName(id)} />
-          <h3>{windows ? t("mcp.connectCommands") : t("mcp.serverCommands")}</h3>
-          {commands.map((c) => <CommandLine key={c} text={c} />)}
-          {/* 手动命令从服务器上的 ~/.pierlink/mcp.json 取令牌：入口连上之前这个文件还没写 */}
-          {server && st && <p className="set-row__hint">{st.fileWritten ? t("mcp.fileWritten") : t("mcp.fileNotWritten")}</p>}
+          <h3>{t("mcp.clientsTitle")}</h3>
+          {/* 服务器上的手动命令从 ~/.pierlink/mcp.json 取令牌：入口连上之前这个文件还没写 */}
+          {/* 换了入口就重建：上一个入口还在添加、移除时，结果不会显示到新入口上 */}
+          <ClientSetup key={id} serverId={windows ? null : id} serverName={serverName(id)} commands={commands}
+            fileHint={server && st ? (st.fileWritten ? t("mcp.fileWritten") : t("mcp.fileNotWritten")) : undefined} />
           {server && (
             <div className="mcp-detail__row">
               <PortInput label={t("mcp.port")} value={server.port} onCommit={(port) => onSave({ ...settings, servers: settings.servers.map((s, j) => (j === index ? { ...s, port } : s)) })} />
@@ -285,31 +284,52 @@ function EntryDetail({ id, settings, servers, status, info, serverName, sessions
 
 /** 客户端的显示名 */
 const CLIENT_NAMES = { claude: "Claude Code", codex: "Codex", cursor: "Cursor", gemini: "Gemini CLI" } as const;
+type ClientKey = keyof typeof CLIENT_NAMES;
 /** 本机能一键添加的；服务器上能一键添加的 */
-const LOCAL_CLIENTS = ["claude", "codex", "cursor"] as const;
-const SERVER_CLIENTS = ["claude", "codex", "gemini"] as const;
+const LOCAL_CLIENTS: readonly ClientKey[] = ["claude", "codex", "cursor"];
+const SERVER_CLIENTS: readonly ClientKey[] = ["claude", "codex", "gemini"];
 
 /**
- * 一键添加：本机入口加进 Claude Code / Codex / Cursor；服务器入口在那台服务器上加进 Claude Code / Codex / Gemini CLI。
- * 结果写在按钮下面固定高度的一行里，不挤动下面的内容
+ * 添加到 AI 客户端：上面一排标签选客户端（没装的也能选），下面是这个客户端的手动命令、“一键添加”和“移除”。
+ * 点标签只切换，不会添加；没装的客户端两个按钮灰掉。结果写在按钮下面固定高度的一行里，不挤动下面的内容
  */
-function OneClickAdd({ serverId, serverName }: { serverId: string | null; serverName: string }) {
+function ClientSetup({ serverId, serverName, commands, fileHint }: {
+  serverId: string | null; serverName: string; commands: { client: string; text: string }[]; fileHint?: string;
+}) {
   const { t } = useTranslation();
-  const [busy, setBusy] = useState<string | null>(null);
+  const clients = serverId === null ? LOCAL_CLIENTS : SERVER_CLIENTS;
+  const [client, setClient] = useState<ClientKey>(clients[0]);
+  // 用户自己点过标签后，检测结果回来也不再自动换到装了的那个
+  const picked = useRef(false);
+  const [busy, setBusy] = useState<"add" | "remove" | null>(null);
   const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null);
   // 装了哪些客户端：本机直接查，服务器要连过去查；没装的按钮灰掉并说明。查不到（服务器连不上）时不限制
-  const [installed, setInstalled] = useState<Record<keyof typeof CLIENT_NAMES, boolean> | null>(null);
+  const [installed, setInstalled] = useState<Record<ClientKey, boolean> | null>(null);
   useEffect(() => {
     let alive = true;
+    picked.current = false;
+    setClient(clients[0]);
+    setResult(null);
     setInstalled(null);
     void getMcpApi().then((api) => (serverId === null ? api.detectClients() : api.detectServerClients(serverId))).then(
-      (c) => { if (alive) setInstalled(c); },
+      (c) => {
+        if (!alive) return;
+        setInstalled(c);
+        // 默认选第一个装了的
+        if (!picked.current) setClient(clients.find((x) => c[x]) ?? clients[0]);
+      },
       () => { if (alive) setInstalled({ claude: true, codex: true, cursor: true, gemini: true }); },
     );
     return () => { alive = false; };
+    // clients 只由 serverId 决定
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [serverId]);
-  const run = async (key: string, f: () => Promise<string>) => {
-    setBusy(key);
+
+  const name = CLIENT_NAMES[client];
+  const missing = installed !== null && !installed[client];
+  const shown = commands.filter((c) => c.client === (client === "cursor" ? "json" : client));
+  const run = async (kind: "add" | "remove", f: () => Promise<string>) => {
+    setBusy(kind);
     setResult(null);
     try {
       setResult({ ok: true, text: await f() });
@@ -319,36 +339,49 @@ function OneClickAdd({ serverId, serverName }: { serverId: string | null; server
       setBusy(null);
     }
   };
-  const local = (client: (typeof LOCAL_CLIENTS)[number]) => run(client, async () => {
-    const detail = await (await getMcpApi()).installLocal(client);
-    return client === "cursor" ? t("mcp.addedCursor", { path: detail }) : t("mcp.added", { client: CLIENT_NAMES[client] });
+  const add = () => run("add", async () => {
+    const api = await getMcpApi();
+    if (serverId !== null) {
+      await api.installServer(serverId, client as "claude" | "codex" | "gemini");
+      return t("mcp.addedServer", { server: serverName, client: name });
+    }
+    const detail = await api.installLocal(client as "claude" | "codex" | "cursor");
+    return client === "cursor" ? t("mcp.addedCursor", { path: detail }) : t("mcp.added", { client: name });
   });
-  const remote = (id: string, client: (typeof SERVER_CLIENTS)[number]) => run(client, async () => {
-    await (await getMcpApi()).installServer(id, client);
-    return t("mcp.addedServer", { server: serverName, client: CLIENT_NAMES[client] });
+  const remove = () => run("remove", async () => {
+    const api = await getMcpApi();
+    const removed = serverId !== null
+      ? await api.removeServer(serverId, client as "claude" | "codex" | "gemini")
+      : await api.removeLocal(client as "claude" | "codex" | "cursor");
+    if (!removed) return t("mcp.notAdded", { client: name });
+    return serverId !== null ? t("mcp.removedServer", { server: serverName, client: name }) : t("mcp.removed", { client: name });
   });
+  const manual = serverId === null
+    ? (client === "cursor" ? t("mcp.manualCursor") : t("mcp.manualLocal"))
+    : shown.length > 1 ? t("mcp.manualServerJq") : t("mcp.manualServer");
   return (
     <div className="mcp-oneclick">
+      <Segmented<ClientKey>
+        label={t("mcp.clientsTitle")}
+        value={client}
+        options={clients.map((c) => ({ value: c, label: CLIENT_NAMES[c] }))}
+        onChange={(c) => { if (busy) return; picked.current = true; setClient(c); setResult(null); }}
+      />
+      {missing && (
+        <p className="set-row__hint">
+          {serverId === null ? t("mcp.clientMissing", { client: name }) : t("mcp.serverClientMissing", { client: name, server: serverName })}
+        </p>
+      )}
+      {shown.length > 0 && <p className="set-row__hint">{manual}</p>}
+      {shown.map((c) => <CommandLine key={c.text} text={c.text} />)}
+      {fileHint && shown.length > 0 && <p className="set-row__hint">{fileHint}</p>}
       <div className="mcp-oneclick__buttons">
-        {serverId === null
-          ? LOCAL_CLIENTS.map((c) => {
-              const missing = installed !== null && !installed[c];
-              return (
-                <Button key={c} size="sm" disabled={busy !== null || installed === null || missing}
-                  title={missing ? t("mcp.clientMissing", { client: CLIENT_NAMES[c] }) : undefined} onClick={() => void local(c)}>
-                  {busy === c ? t("mcp.adding") : missing ? t("mcp.addToMissing", { client: CLIENT_NAMES[c] }) : t("mcp.addTo", { client: CLIENT_NAMES[c] })}
-                </Button>
-              );
-            })
-          : SERVER_CLIENTS.map((c) => {
-              const missing = installed !== null && !installed[c];
-              return (
-                <Button key={c} size="sm" disabled={busy !== null || installed === null || missing}
-                  title={missing ? (c === "claude" ? t("mcp.serverClientMissing", { client: CLIENT_NAMES[c], server: serverName }) : t("mcp.serverClientMissingOther", { client: CLIENT_NAMES[c], server: serverName })) : undefined} onClick={() => void remote(serverId, c)}>
-                  {busy === c ? t("mcp.adding") : missing ? t("mcp.addOnServerMissing", { client: CLIENT_NAMES[c] }) : t("mcp.addOnServerTo", { client: CLIENT_NAMES[c] })}
-                </Button>
-              );
-            })}
+        <Button size="sm" variant="primary" disabled={busy !== null || installed === null || missing} onClick={() => void add()}>
+          {busy === "add" ? t("mcp.adding") : t("mcp.addOneClick")}
+        </Button>
+        <Button size="sm" disabled={busy !== null || installed === null || missing} onClick={() => void remove()}>
+          {busy === "remove" ? t("mcp.removing") : t("mcp.remove")}
+        </Button>
       </div>
       <span className={`mcp-oneclick__result pl-ellipsis${result ? (result.ok ? " mcp-oneclick__result--ok" : " mcp-oneclick__result--error") : ""}`} role="status" title={result?.text}>
         {result?.text ?? ""}

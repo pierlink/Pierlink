@@ -60,7 +60,8 @@
       "about": "关于",
       "backup": "备份和迁移",
       "phone": "手机",
-      "desktop": "服务器桌面"
+      "desktop": "服务器桌面",
+      "network": "网络"
     },
     "term": {
       "defaultShell": "默认本机终端",
@@ -73,7 +74,7 @@
         "block": "方块",
         "underline": "下划线"
       },
-      "cursorWidth": "光标粗细",
+      "cursorWidth": "光标宽度",
       "cursorWidthOption": {
         "1": "细",
         "2": "中",
@@ -122,6 +123,31 @@
     "desktop": {
       "openInWindow": "在独立窗口打开",
       "openInWindowHint": "打开桌面时直接用单独的窗口"
+    },
+    "proxy": {
+      "mode": "代理",
+      "modeHint": "服务器连接、检查更新和本机终端都用它",
+      "modes": {
+        "off": "不使用",
+        "system": "跟随系统",
+        "custom": "自定义"
+      },
+      "system": "系统代理",
+      "systemNone": "未设置",
+      "systemPac": "PAC 脚本（不支持）",
+      "protocol": "协议",
+      "address": "地址",
+      "addressHint": "不支持带用户名密码的代理",
+      "host": "主机",
+      "port": "端口",
+      "bypass": "不走代理的地址（{{count}} 条）",
+      "bypassHint": "一行一个，支持 *.example.com 和 10.0.0.0/8",
+      "bypassReset": "恢复默认",
+      "test": "测试代理",
+      "testing": "测试中…",
+      "testOk": "可用，{{ms}} 毫秒",
+      "saved": "已保存",
+      "unsaved": "未保存"
     }
   },
   "workspace": {
@@ -186,6 +212,7 @@
     "openInSplit": "在右侧分屏中打开",
     "edit": "编辑…",
     "copyAddress": "复制地址",
+    "copyIp": "复制 IP",
     "copySshCommand": "复制 ssh 命令",
     "testConnection": "测试连接",
     "favorite": "加入收藏",
@@ -571,7 +598,8 @@
         "sync_task": "同步任务",
         "home_folder_not_found": "找不到用户目录",
         "address_or_token_has_unsupported_characters": "地址或令牌含有不支持的字符",
-        "couldn_t_write_the_config_on_the_server": "在服务器上写配置没有成功"
+        "couldn_t_write_the_config_on_the_server": "在服务器上写配置没有成功",
+        "client_remove_command_failed": "客户端自己的移除命令出错了"
       },
       "mobile": {
         "web_asset_reader_task_failed": "网页资源读取任务失败",
@@ -1204,6 +1232,22 @@
         "invalid_window_address": "窗口地址不合法",
         "setsid_or_xauth_missing": "setsid 或 xauth",
         "dbus_launcher_missing": "dbus-run-session 或 dbus-launch"
+      },
+      "proxy": {
+        "connection_unavailable": "无法取得代理连接",
+        "connection_setup_failed": "无法设置代理连接",
+        "request_write_failed": "写入代理请求失败",
+        "response_incomplete": "代理响应不完整",
+        "response_header_too_large": "代理响应头过大",
+        "invalid_http_status_line": "代理 HTTP 状态行无效",
+        "invalid_http_status": "代理 HTTP 状态码无效",
+        "http_status": "HTTP 状态码 {{status}}",
+        "socks_handshake_interrupted": "SOCKS5 握手中断",
+        "invalid_socks_version": "SOCKS5 协议版本无效",
+        "invalid_socks_auth_method": "SOCKS5 认证方式无效",
+        "invalid_socks_response": "SOCKS5 响应格式无效",
+        "socks_reply": "SOCKS5 回复码 {{reply}}",
+        "invalid_socks_address_type": "SOCKS5 地址类型无效"
       }
     },
     "ssh": {
@@ -1428,7 +1472,8 @@
       "file_too_large": "文件太大（上限 {{max_bytes}} 字节）",
       "not_found": "文件或文件夹不存在：{{path}}",
       "path_outside": "不在允许的文件夹里：{{path}}",
-      "no_answer": "确认框 60 秒内没人回应，下次会再问"
+      "no_answer": "确认框 60 秒内没人回应，下次会再问",
+      "remove_failed": "从 {{client}} 移除没成功：{{reason}}"
     },
     "tunnel": {
       "port_unavailable": "本机没有可用的端口",
@@ -1504,7 +1549,8 @@
       "read_failed": "读取剪贴板失败",
       "unsupported": "这个系统上不能直接读取剪贴板",
       "too_large": "要复制的内容太大（上限 {{limit}} 字节）",
-      "write_failed": "写入剪贴板失败"
+      "write_failed": "写入剪贴板失败",
+      "no_image": "剪贴板里没有图片"
     },
     "link": {
       "invalid_url": "这个链接不能打开：{{reason}}",
@@ -1601,6 +1647,27 @@
     "desktop": {
       "task_failed": "操作意外中断：{{reason}}",
       "invalid_data": "发给桌面的数据格式不对"
+    },
+    "proxy": {
+      "unreachable": "连不上代理 {{proxy}}",
+      "auth_required": "代理要求用户名和密码，Pierlink 不支持带密码的代理",
+      "refused": "代理拒绝连接 {{target}}：{{reason}}",
+      "timeout": "代理没有响应",
+      "invalid_argument": "代理设置无效",
+      "io_failed": "经代理传输数据失败",
+      "invalid_host": "代理主机无效：只填主机名或 IP",
+      "invalid_port": "代理端口无效",
+      "invalid_bypass": "不走代理的地址有误：{{rule}}",
+      "bypass_too_many": "不走代理的地址最多 {{max}} 条",
+      "pac_unsupported": "系统用的是 PAC 脚本，不支持",
+      "system_none": "系统没有设置代理",
+      "not_enabled": "没有启用代理"
+    },
+    "paste": {
+      "image_too_large": "图片太大，最大 20 MB",
+      "image_unsupported": "剪贴板里的图片格式不支持",
+      "upload_timeout": "上传图片超时",
+      "save_failed": "保存图片失败"
     }
   },
   "terminal": {
@@ -1715,7 +1782,19 @@
     "splitCol": "上下分屏",
     "copyLink": "复制链接",
     "fileDrop": "松开填入路径",
-    "cmdName": "命令提示符"
+    "cmdName": "命令提示符",
+    "stages": {
+      "label": "连接进度",
+      "resolve": "解析",
+      "connect": "连接",
+      "auth": "认证",
+      "session": "会话",
+      "connecting": "正在连接",
+      "seconds": "{{s}} 秒"
+    },
+    "pasteImageUploading": "正在上传图片…",
+    "pasteImageBusy": "上一张图片还在上传",
+    "pasteImageExpired": "终端已继续，图片没有粘贴"
   },
   "hostKey": {
     "title": "确认服务器身份",
@@ -2229,7 +2308,8 @@
     "builtinNeedsUsername": "内置 SSH 要填用户名；不填的话，这台服务器会改用系统 OpenSSH 连接（用本电脑的 Windows 用户名登录）。",
     "engineNote": "说明：{{note}}",
     "engineSwitchHint": "保存后，这台服务器已打开的内置 SSH 终端会断开，需要重新连接。",
-    "login": "登录"
+    "login": "登录",
+    "copyIpFailed": "没能取得这台服务器的地址"
   },
   "versions": {
     "title": "{{name}} 的旧版本与已删除文件",
@@ -2741,9 +2821,8 @@
     "enable": "打开 AI 接入",
     "enableHint": "关掉后所有入口都不能用，已连着的 AI 下一次操作会被拒绝",
     "windowsEntry": "本机入口（AI 在这台电脑上）",
-    "windowsEntryHint": "点“一键添加”，或在终端里运行一次下面的命令；使用时 Pierlink 要开着。",
+    "windowsEntryHint": "选好客户端后点“一键添加”，或在终端里运行一次下面的命令；使用时 Pierlink 要开着。",
     "pipeUnavailable": "本机入口暂时用不了",
-    "connectCommands": "接入命令（在这台电脑上运行）",
     "remembered": "这个入口已设为“总是允许”",
     "forget": "改回每次询问",
     "serverEntries": "服务器入口（AI 在服务器上）",
@@ -2762,7 +2841,6 @@
     "removeEntry": "删除",
     "port": "服务器上的端口",
     "portInvalid": "端口要在 1024 到 65535 之间",
-    "serverCommands": "接入命令（在那台服务器上运行）",
     "rotateToken": "换令牌",
     "addServerEntry": "添加服务器入口",
     "chooseServer": "选择服务器",
@@ -2826,9 +2904,6 @@
     },
     "serverRiskShort": "这台服务器上的 root 能拿到令牌并操作你勾选的目标，建议只对信任的服务器打开。",
     "resizeColumn": "拖动调整列宽",
-    "oneClick": "一键添加",
-    "addTo": "添加到 {{client}}",
-    "addOnServer": "在服务器上添加到 Claude Code",
     "adding": "正在添加…",
     "added": "已添加到 {{client}}，重新打开它后生效",
     "addedCursor": "已写入 {{path}}，Cursor 会自动加载",
@@ -2837,16 +2912,22 @@
     "rotateTokenHint": "旧令牌立即失效，已连着的 AI 会断开，它们的后台任务也会结束",
     "rotated": "已换新令牌，旧的已失效；一键添加过的会自动重加，客户端重新连接后生效（如 Claude Code 里输入 /mcp）",
     "clientMissing": "这台电脑上没检测到 {{client}}。装好后重新打开这一页；也可以复制下面的命令手动添加",
-    "addToMissing": "{{client}}（未安装）",
-    "addOnServerTo": "在服务器上添加到 {{client}}",
     "serverClientMissing": "{{server}} 上没检测到 {{client}}。在服务器上装好后重新打开这一页；也可以复制下面的命令手动添加",
-    "addOnServerMissing": "服务器上的 {{client}}（未安装）",
-    "detecting": "正在检测…",
-    "serverClientMissingOther": "{{server}} 上没检测到 {{client}}。在服务器上装好后重新打开这一页",
     "showOutput": "点开看输出",
     "stderr": "错误输出：",
     "fileWritten": "服务器上的 ~/.pierlink/mcp.json 已写好",
-    "fileNotWritten": "入口连上后才会写 ~/.pierlink/mcp.json，在这之前复制的命令拿不到令牌"
+    "fileNotWritten": "入口连上后才会写 ~/.pierlink/mcp.json，在这之前复制的命令拿不到令牌",
+    "clientsTitle": "添加到 AI 客户端",
+    "manualLocal": "手动添加：在这台电脑的终端里运行",
+    "manualCursor": "手动添加：把这段合并进 ~/.cursor/mcp.json；其他支持 MCP 的客户端也能用这段配置",
+    "manualServer": "手动添加：在这台服务器上运行",
+    "manualServerJq": "手动添加：在这台服务器上运行下面任一条（没装 jq 的用第二条）",
+    "addOneClick": "一键添加",
+    "remove": "移除",
+    "removing": "正在移除…",
+    "removed": "已从 {{client}} 移除，重新打开它后生效",
+    "removedServer": "已从 {{server}} 上的 {{client}} 移除",
+    "notAdded": "{{client}} 里本来就没有 Pierlink"
   },
   "backup": {
     "export": "导出到文件",

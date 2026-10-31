@@ -60,7 +60,8 @@
       "about": "About",
       "backup": "Backup & transfer",
       "phone": "Phone",
-      "desktop": "Server desktop"
+      "desktop": "Server desktop",
+      "network": "Network"
     },
     "term": {
       "defaultShell": "Default local terminal",
@@ -73,7 +74,7 @@
         "block": "Block",
         "underline": "Underline"
       },
-      "cursorWidth": "Cursor thickness",
+      "cursorWidth": "Cursor width",
       "cursorWidthOption": {
         "1": "Thin",
         "2": "Medium",
@@ -123,6 +124,31 @@
     "desktop": {
       "openInWindow": "Open in a separate window",
       "openInWindowHint": "Open desktops straight in their own window"
+    },
+    "proxy": {
+      "mode": "Proxy",
+      "modeHint": "Used for server connections, updates and local terminals",
+      "modes": {
+        "off": "Off",
+        "system": "System",
+        "custom": "Custom"
+      },
+      "system": "System proxy",
+      "systemNone": "Not set",
+      "systemPac": "PAC script (not supported)",
+      "protocol": "Protocol",
+      "address": "Address",
+      "addressHint": "Proxies with a username and password aren't supported",
+      "host": "Host",
+      "port": "Port",
+      "bypass": "Bypass ({{count}})",
+      "bypassHint": "One per line; *.example.com and 10.0.0.0/8 work",
+      "bypassReset": "Restore defaults",
+      "test": "Test proxy",
+      "testing": "Testing…",
+      "testOk": "Works, {{ms}} ms",
+      "saved": "Saved",
+      "unsaved": "Unsaved"
     }
   },
   "workspace": {
@@ -187,6 +213,7 @@
     "openInSplit": "Open in split",
     "edit": "Edit…",
     "copyAddress": "Copy address",
+    "copyIp": "Copy IP",
     "copySshCommand": "Copy ssh command",
     "testConnection": "Test connection",
     "favorite": "Add to favorites",
@@ -572,7 +599,8 @@
         "sync_task": "sync task",
         "home_folder_not_found": "couldn't find the user folder",
         "address_or_token_has_unsupported_characters": "the address or token has unsupported characters",
-        "couldn_t_write_the_config_on_the_server": "couldn't write the config on the server"
+        "couldn_t_write_the_config_on_the_server": "couldn't write the config on the server",
+        "client_remove_command_failed": "the client's own remove command failed"
       },
       "mobile": {
         "web_asset_reader_task_failed": "web asset reader task failed",
@@ -1205,6 +1233,22 @@
         "invalid_window_address": "invalid window address",
         "setsid_or_xauth_missing": "setsid or xauth",
         "dbus_launcher_missing": "dbus-run-session or dbus-launch"
+      },
+      "proxy": {
+        "connection_unavailable": "couldn't get a connection to the proxy",
+        "connection_setup_failed": "couldn't set up the proxy connection",
+        "request_write_failed": "couldn't send the request to the proxy",
+        "response_incomplete": "incomplete response from the proxy",
+        "response_header_too_large": "the proxy's response header is too large",
+        "invalid_http_status_line": "invalid HTTP status line from the proxy",
+        "invalid_http_status": "invalid HTTP status code from the proxy",
+        "http_status": "HTTP status {{status}}",
+        "socks_handshake_interrupted": "the SOCKS5 handshake was interrupted",
+        "invalid_socks_version": "invalid SOCKS5 version",
+        "invalid_socks_auth_method": "invalid SOCKS5 authentication method",
+        "invalid_socks_response": "invalid SOCKS5 response",
+        "socks_reply": "SOCKS5 reply code {{reply}}",
+        "invalid_socks_address_type": "invalid SOCKS5 address type"
       }
     },
     "ssh": {
@@ -1429,7 +1473,8 @@
       "file_too_large": "The file is too large (limit {{max_bytes}} bytes)",
       "not_found": "The file or folder doesn't exist: {{path}}",
       "path_outside": "Not inside an allowed folder: {{path}}",
-      "no_answer": "Nobody answered the confirmation within 60 seconds; it will ask again next time"
+      "no_answer": "Nobody answered the confirmation within 60 seconds; it will ask again next time",
+      "remove_failed": "Couldn't remove from {{client}}: {{reason}}"
     },
     "tunnel": {
       "port_unavailable": "No local port is available",
@@ -1505,7 +1550,8 @@
       "read_failed": "Couldn't read the clipboard",
       "unsupported": "Reading the clipboard directly isn't supported on this system",
       "too_large": "Too much to copy (limit {{limit}} bytes)",
-      "write_failed": "Couldn't write to the clipboard"
+      "write_failed": "Couldn't write to the clipboard",
+      "no_image": "No image in the clipboard"
     },
     "link": {
       "invalid_url": "This link can't be opened: {{reason}}",
@@ -1602,6 +1648,27 @@
     "desktop": {
       "task_failed": "The operation stopped unexpectedly: {{reason}}",
       "invalid_data": "Invalid data for the desktop"
+    },
+    "proxy": {
+      "unreachable": "Can't reach the proxy {{proxy}}",
+      "auth_required": "The proxy requires a username and password, which Pierlink doesn't support",
+      "refused": "The proxy refused {{target}}: {{reason}}",
+      "timeout": "The proxy didn't respond",
+      "invalid_argument": "Invalid proxy settings",
+      "io_failed": "Data transfer through the proxy failed",
+      "invalid_host": "Invalid proxy host: enter a host name or IP only",
+      "invalid_port": "Invalid proxy port",
+      "invalid_bypass": "Invalid bypass entry: {{rule}}",
+      "bypass_too_many": "At most {{max}} bypass entries",
+      "pac_unsupported": "The system uses a PAC script, which isn't supported",
+      "system_none": "No system proxy is set",
+      "not_enabled": "No proxy is enabled"
+    },
+    "paste": {
+      "image_too_large": "The image is too large (max 20 MB)",
+      "image_unsupported": "Unsupported image format in the clipboard",
+      "upload_timeout": "Image upload timed out",
+      "save_failed": "Couldn't save the image"
     }
   },
   "terminal": {
@@ -1717,7 +1784,19 @@
     "splitCol": "Split top and bottom",
     "copyLink": "Copy link",
     "fileDrop": "Drop to insert the path",
-    "cmdName": "Command Prompt"
+    "cmdName": "Command Prompt",
+    "stages": {
+      "label": "Connection progress",
+      "resolve": "Resolve",
+      "connect": "Connect",
+      "auth": "Auth",
+      "session": "Session",
+      "connecting": "Connecting",
+      "seconds": "{{s}}s"
+    },
+    "pasteImageUploading": "Uploading image…",
+    "pasteImageBusy": "Still uploading the previous image",
+    "pasteImageExpired": "The terminal moved on; image not pasted"
   },
   "hostKey": {
     "title": "Verify the server's identity",
@@ -2244,7 +2323,8 @@
     "builtinNeedsUsername": "Built-in SSH needs a user name. If you leave it empty, this server connects through system OpenSSH instead (signing in with your Windows user name).",
     "engineNote": "Note: {{note}}",
     "engineSwitchHint": "After saving, open built-in SSH terminals to this server disconnect and need reconnecting.",
-    "login": "Log in"
+    "login": "Log in",
+    "copyIpFailed": "Couldn't get this server's address"
   },
   "versions": {
     "title": "Old versions and deleted files of {{name}}",
@@ -2779,9 +2859,8 @@
     "enable": "Turn on AI access",
     "enableHint": "When off, every entry is closed and connected AI is refused on its next action",
     "windowsEntry": "Local entry (AI on this PC)",
-    "windowsEntryHint": "Use one-click add, or run the command below once in a terminal; Pierlink must be running.",
+    "windowsEntryHint": "Pick a client and click Add, or run its command below once in a terminal; Pierlink must be running.",
     "pipeUnavailable": "The local entry isn't available right now",
-    "connectCommands": "Setup command (run on this PC)",
     "remembered": "This entry is set to \"Always allow\"",
     "forget": "Ask every time again",
     "serverEntries": "Server entries (AI on a server)",
@@ -2800,7 +2879,6 @@
     "removeEntry": "Remove",
     "port": "Port on the server",
     "portInvalid": "The port must be between 1024 and 65535",
-    "serverCommands": "Setup command (run on that server)",
     "rotateToken": "New token",
     "addServerEntry": "Add server entry",
     "chooseServer": "Choose a server",
@@ -2864,9 +2942,6 @@
     },
     "serverRiskShort": "Root on this server can get the token and use the targets you tick; we recommend turning this on only for servers you trust.",
     "resizeColumn": "Drag to resize the column",
-    "oneClick": "One-click add",
-    "addTo": "Add to {{client}}",
-    "addOnServer": "Add to Claude Code on the server",
     "adding": "Adding…",
     "added": "Added to {{client}}. Restart it to take effect",
     "addedCursor": "Written to {{path}}; Cursor loads it automatically",
@@ -2875,16 +2950,22 @@
     "rotateTokenHint": "The old token stops working immediately; connected AIs disconnect and their background jobs end",
     "rotated": "Token rotated; the old one no longer works. One-click setups are redone and take effect once the client reconnects (for example /mcp in Claude Code)",
     "clientMissing": "{{client}} wasn't found on this PC. Reopen this page after installing it, or copy a command below to add it manually",
-    "addToMissing": "{{client}} (not installed)",
-    "addOnServerTo": "Add to {{client}} on the server",
     "serverClientMissing": "{{client}} wasn't found on {{server}}. Reopen this page after installing it there, or copy a command below",
-    "addOnServerMissing": "{{client}} on the server (not installed)",
-    "detecting": "Checking…",
-    "serverClientMissingOther": "{{client}} wasn't found on {{server}}. Reopen this page after installing it there",
     "showOutput": "Show output",
     "stderr": "Error output:",
     "fileWritten": "~/.pierlink/mcp.json on the server is ready",
-    "fileNotWritten": "~/.pierlink/mcp.json is written once the entry connects; commands copied before that get no token"
+    "fileNotWritten": "~/.pierlink/mcp.json is written once the entry connects; commands copied before that get no token",
+    "clientsTitle": "Add to AI clients",
+    "manualLocal": "To add it yourself, run this in a terminal on this computer:",
+    "manualCursor": "To add it yourself, merge this into ~/.cursor/mcp.json. Other MCP clients can use the same config.",
+    "manualServer": "To add it yourself, run this on the server:",
+    "manualServerJq": "To add it yourself, run one of these on the server (use the second if jq isn't installed):",
+    "addOneClick": "Add",
+    "remove": "Remove",
+    "removing": "Removing…",
+    "removed": "Removed from {{client}}. Restart it to take effect",
+    "removedServer": "Removed from {{client}} on {{server}}",
+    "notAdded": "Pierlink wasn't in {{client}}"
   },
   "backup": {
     "export": "Export to file",

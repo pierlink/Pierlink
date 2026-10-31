@@ -117,7 +117,8 @@ export interface McpHandoverEntry {
 /** 给用户复制的接入命令 */
 export interface McpConnectInfo {
   windows: { client: string; text: string }[];
-  servers: { serverId: string; url: string; commands: string[] }[];
+  /** 每个服务器入口：在那台服务器上手动添加的命令，client 是 claude / gemini / codex */
+  servers: { serverId: string; url: string; commands: { client: string; text: string }[] }[];
 }
 
 export type McpAnswer = "allow" | "allow_always" | "deny";
@@ -151,8 +152,12 @@ export interface McpApi {
   takeBack(terminalId: string): Promise<void>;
   /** 一键把本机入口加进 claude / codex / cursor；返回用的程序或改的文件 */
   installLocal(client: "claude" | "codex" | "cursor"): Promise<string>;
-  /** 在服务器上把这台服务器的入口加进 Claude Code 或 Codex */
+  /** 在服务器上把这台服务器的入口加进 Claude Code、Codex 或 Gemini CLI */
   installServer(serverId: string, client: "claude" | "codex" | "gemini"): Promise<void>;
+  /** 把本机入口从 claude / codex / cursor 里移除；返回 false 表示本来就没有 */
+  removeLocal(client: "claude" | "codex" | "cursor"): Promise<boolean>;
+  /** 在服务器上把这台服务器的入口从客户端里移除；返回 false 表示本来就没有 */
+  removeServer(serverId: string, client: "claude" | "codex" | "gemini"): Promise<boolean>;
   /** 这台电脑上装了哪些客户端 */
   detectClients(): Promise<{ claude: boolean; codex: boolean; cursor: boolean; gemini: boolean }>;
   /** 服务器上装了哪些客户端（要连过去查；连不上时抛错） */
@@ -229,8 +234,15 @@ function previewApi(): McpApi {
       entries: sample ? [{ serverId: "s1", state: "running", port: 47821, error: null, fileWritten: true }] : [],
     }),
     connectInfo: async () => ({
-      windows: [{ client: "claude", text: "claude mcp add pierlink -- \"C:\\Users\\you\\AppData\\Local\\Pierlink\\Pierlink.exe\" --mcp" }],
-      servers: settings.servers.map((s) => ({ serverId: s.serverId, url: `http://127.0.0.1:${s.port}/mcp`, commands: [`claude mcp remove --scope user pierlink >/dev/null 2>&1; claude mcp add --transport http --scope user pierlink http://127.0.0.1:${s.port}/mcp --header "Authorization: Bearer $(jq -r .token ~/.pierlink/mcp.json)"`] })),
+      windows: [
+        { client: "claude", text: "claude mcp add --scope user pierlink -- \"C:\\Users\\you\\AppData\\Local\\Pierlink\\Pierlink.exe\" --mcp" },
+        { client: "codex", text: "codex mcp add pierlink -- \"C:\\Users\\you\\AppData\\Local\\Pierlink\\Pierlink.exe\" --mcp" },
+        { client: "json", text: '{\n  "mcpServers": {\n    "pierlink": {\n      "command": "C:\\\\Users\\\\you\\\\AppData\\\\Local\\\\Pierlink\\\\Pierlink.exe",\n      "args": ["--mcp"]\n    }\n  }\n}' },
+      ],
+      servers: settings.servers.map((s) => ({ serverId: s.serverId, url: `http://127.0.0.1:${s.port}/mcp`, commands: [
+        { client: "claude", text: `claude mcp remove --scope user pierlink >/dev/null 2>&1; claude mcp add --transport http --scope user pierlink http://127.0.0.1:${s.port}/mcp --header "Authorization: Bearer $(jq -r .token ~/.pierlink/mcp.json)"` },
+        { client: "gemini", text: `cd "$HOME" && gemini mcp add --scope user --transport http --header "Authorization: Bearer $(jq -r .token ~/.pierlink/mcp.json)" pierlink http://127.0.0.1:${s.port}/mcp` },
+      ] })),
     }),
     rotateToken: async () => {},
     activity: async () => (sample ? sampleActivity() : []),
@@ -247,6 +259,8 @@ function previewApi(): McpApi {
     reportCwd: async () => {},
     installLocal: async (client) => { await new Promise((r) => setTimeout(r, 600)); if (client === "codex") throw { code: "mcp.client_not_found", params: { client: "codex" } }; return client === "cursor" ? "C:\\Users\\you\\.cursor\\mcp.json" : "C:\\Users\\you\\.local\\bin\\claude.exe"; },
     installServer: async () => { await new Promise((r) => setTimeout(r, 900)); },
+    removeLocal: async (client) => { await new Promise((r) => setTimeout(r, 500)); return client !== "cursor"; },
+    removeServer: async () => { await new Promise((r) => setTimeout(r, 800)); return true; },
     detectClients: async () => ({ claude: true, codex: false, cursor: true, gemini: false }),
     detectServerClients: async () => { await new Promise((r) => setTimeout(r, 500)); return { claude: true, codex: false, cursor: false, gemini: true }; },
     onSessions: noop,

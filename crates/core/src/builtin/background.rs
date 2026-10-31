@@ -172,6 +172,7 @@ impl ConnectionManager {
                         manager.publish(&server.id, ConnectionState::Reconnecting, None);
                     }
                     let result = manager.get_connection(ConnectionRequest {
+                        progress: None,
                         server: &server,
                         class,
                         vault: vault.clone(),

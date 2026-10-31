@@ -69,6 +69,7 @@ impl Session {
         loop {
             if let Ok(event) = self.rx.recv_timeout(Duration::from_millis(100)) {
                 match event {
+                    TerminalEvent::Stage(_) => {}
                     TerminalEvent::Output(bytes) => {
                         let _ = self.manager.ack(&self.id, bytes.len());
                         output.extend(bytes);

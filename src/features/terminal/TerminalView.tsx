@@ -8,6 +8,8 @@ import "@xterm/xterm/css/xterm.css";
 import "./terminal.css";
 import { currentTerminalTheme } from "./theme";
 import { needsPasteConfirm, parseOsc7, parseOsc99 } from "./util";
+import { ConnectProgress, ConnectSteps, stageIndex, type Step } from "./ConnectProgress";
+import { findFakeCursor } from "./imeAnchor";
 import { useSettings } from "../settings/store";
 import { useContextMenu } from "../../components";
 import { formatError, isAppError } from "../../errors";
@@ -18,7 +20,7 @@ import { Button } from "../../components";
 import { readClipboardText, writeClipboardText } from "../shell/clipboard";
 import { commands } from "../../bindings/commands";
 import { inTauri } from "../shell/TitleBar";
-import { explorerFolder } from "./localPaths";
+import { droppedText, explorerFolder } from "./localPaths";
 import { passwordBus } from "../passwords/bus";
 import { KittyKeyboard, localShellFamily, newlineKey, parseOsc52 } from "./kittyKeys";
 import { Prediction } from "./prediction";
@@ -106,6 +108,11 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
   // 输入发送失败等短暂提示，显示在终端顶部，几秒后自动消失（不写进终端内容，避免打乱程序输出）
   const [notice, setNotice] = useState<string | null>(null);
   const [ended, setEnded] = useState<Ended | null>(null);
+  /**
+   * 连接服务器的进度：当前一步（后端还没报过时为 null，只显示秒数）和开始时间；
+   * failed 表示连接停在这一步（显示在失败提示块上）
+   */
+  const [steps, setSteps] = useState<{ stage: Step | null; start: number; failed: boolean } | null>(null);
   /** 内置 SSH 连不上或密钥没通过：提供“改用系统 OpenSSH 重试”（只对保存过的服务器） */
   const offerOpenSsh = spec.kind === "server" && (ended?.kind === "failed" || ended?.kind === "authFailed") && !!ended.builtin;
   /** 把这台服务器改成系统 OpenSSH（原因写进服务器设置），再重新连接 */
@@ -115,8 +122,9 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
     try {
       await (await getServersApi()).setEngine(spec.serverId, "openssh", t("terminal.openSshNote", { reason }));
       notifyServersChanged();
-      reopenRef.current();
+      reopenRef.current(true);
     } catch (e) {
+      setSteps(null);
       setEnded({ kind: "failed", text: formatError(e) });
     }
   };
@@ -126,14 +134,16 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
     const serverId = spec.serverId;
     return passwordBus.onSaved((id) => { if (id === serverId) reopenRef.current(); });
   }, [ended, spec]);
-  // 提示块上的“重新连接”要调用终端创建时生成的打开函数
-  const reopenRef = useRef<() => void>(() => {});
+  // 提示块上的“重新连接”要调用终端创建时生成的打开函数；focus：点按钮重新连接时把焦点放回终端
+  const reopenRef = useRef<(focus?: boolean) => void>(() => {});
   const noticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const showNotice = useRef((text: string, ms = 4000) => {
     setNotice(text);
     if (noticeTimer.current) clearTimeout(noticeTimer.current);
     noticeTimer.current = setTimeout(() => setNotice(null), ms);
   });
+  /** 收起提示：只收起还在显示的这一条（期间换成了别的提示就不动） */
+  const hideNotice = useRef((text: string) => setNotice((cur) => (cur === text ? null : cur)));
   /** 复制到系统剪贴板；失败时在终端顶部提示原因 */
   const copyText = useRef((text: string) => {
     if (text) void writeClipboardText(text).catch((e: unknown) => showNotice.current(formatError(e)));
@@ -204,12 +214,79 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
     term.parser.registerCsiHandler({ prefix: "=", final: "u" }, (p) => { kitty.set(num(p[0], 0), num(p[1], 1)); return true; });
     term.parser.registerCsiHandler({ prefix: "?", final: "u" }, () => { reply(kitty.query()); return true; });
     term.buffer.onBufferChange((b) => kitty.setScreen(b.type === "alternate"));
+    // 程序有没有把光标藏起来、自己画光标（Claude Code 这类 CLI）：粘贴时据此判断前台是程序。只记录，照常交给 xterm 处理
+    let cursorHidden = false;
+    const watchCursor = (show: boolean) => (params: (number | number[])[]) => {
+      if (params.includes(25)) cursorHidden = !show;
+      return false;
+    };
+    term.parser.registerCsiHandler({ prefix: "?", final: "h" }, watchCursor(true));
+    term.parser.registerCsiHandler({ prefix: "?", final: "l" }, watchCursor(false));
+    // 软复位会把光标显示出来
+    term.parser.registerCsiHandler({ intermediates: "!", final: "p" }, () => { cursorHidden = false; return false; });
+    /**
+     * 前台是程序而不是 shell 提示符（粘贴多行时据此决定要不要提醒）。装了提示符钩子时只信钩子：
+     * 有命令在运行，并且不是 ssh、sudo -i、tmux 这类会进到另一个 shell 的命令。没装钩子时，主屏上藏了光标
+     * 自己画、或开了鼠标上报的程序才算（如 Claude Code）；全屏的 vim、tmux、screen 不算，仍按 shell 提醒。
+     */
+    const inProgram = () =>
+      prediction.integrated
+        ? prediction.programRunning
+        : term.buffer.active.type !== "alternate" && (cursorHidden || term.modes.mouseTrackingMode !== "none");
+
+    // 输入法：程序藏了真实光标、自己画一个反色格当光标（Claude Code 等）时，组字框和候选框放到这一格。
+    // xterm 按真实光标摆放它们；Windows 自带的 ConPTY 在光标隐藏时不报光标位置，真实光标会停在别处，
+    // 拼音就画到了另一行。只在屏幕上恰好有一个单独的反色格时才挪，否则照 xterm 原样。
+    let want: { left: string; top: string } | null = null;
+    const applyIme = () => {
+      if (!want) return;
+      for (const node of [term.textarea, el.querySelector<HTMLElement>(".composition-view")]) {
+        if (node && (node.style.left !== want.left || node.style.top !== want.top)) {
+          node.style.left = want.left;
+          node.style.top = want.top;
+        }
+      }
+    };
+    const anchorIme = () => {
+      want = null;
+      const area = term.textarea;
+      if (!cursorHidden || !area || document.activeElement !== area) return;
+      const at = findFakeCursor(term.buffer.active, term.cols, term.rows);
+      const screen = el.querySelector<HTMLElement>(".xterm-screen");
+      if (!at || !screen) return;
+      // 取到两位小数：浏览器读回 style 时会截短位数，取整后读回的值和写入的一样，才能比较出“没变”
+      const px = (v: number) => `${Math.round(v * 100) / 100}px`;
+      want = { left: px((at.x * screen.clientWidth) / term.cols), top: px((at.y * screen.clientHeight) / term.rows) };
+      applyIme();
+    };
+    // xterm 在渲染、光标移动、组字更新时会把它们放回真实光标处（组字时还会在下一轮事件循环再放一次）：
+    // 渲染、光标移动时紧跟着重新找；它一改这两个元素的位置，就在同一轮任务里改回来，不会画出错位的一帧
+    const keepIme = new MutationObserver(applyIme);
+    for (const node of [term.textarea, el.querySelector<HTMLElement>(".composition-view")]) {
+      if (node) keepIme.observe(node, { attributes: true, attributeFilter: ["style"] });
+    }
+    // 渲染、光标移动很频繁：合并到下一帧扫一次屏（期间 xterm 挪回去的位置由上面的观察者立即改回）
+    let imeFrame = 0;
+    const scanSoon = () => {
+      if (!imeFrame) imeFrame = requestAnimationFrame(() => { imeFrame = 0; anchorIme(); });
+    };
+    term.onRender(scanSoon);
+    term.onCursorMove(scanSoon);
+    const imeEvents = ["focus", "compositionstart", "compositionupdate"] as const;
+    for (const name of imeEvents) term.textarea?.addEventListener(name, anchorIme);
+    const dropIme = () => { want = null; };
+    term.textarea?.addEventListener("blur", dropIme);
 
     let id: string | null = null;
     // 会话 ID 返回之前就到达的输出，先累计字节数，拿到 ID 后再一并确认（否则流量控制会少算）
     let earlyBytes = 0;
     let exited = false;
     let disposed = false;
+    // 这次连接走到的最后一步（会话可以用了以后为 null）；连接中进度还盖在终端上时 covering 为 true；
+    // stageSeen：收到过后端报的阶段（系统 OpenSSH 建不了日志时一个都不报，失败时就不标停在哪一步）
+    let lastStage: Step | null = null;
+    let covering = false;
+    let stageSeen = false;
     // 用户点了“断开”：结束后写“已断开”，不当成断网；连接过程中点的，连上后马上关掉
     let manual = false;
     // 这次连接收到多少输出、按了几次回车（带钩子连上就退出时判断是不是钩子的问题）
@@ -224,6 +301,10 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
     const end = (e: Ended) => {
       prediction.reset();
       kitty.reset();
+      covering = false;
+      // 连接没成功（还没到会话可用）：失败提示块上标出停在哪一步
+      setSteps(lastStage && stageSeen && (e.kind === "failed" || e.kind === "authFailed") ? { stage: lastStage, start: 0, failed: true } : null);
+      lastStage = null;
       setEnded(e);
       if (!endsInline(e)) return;
       const tr = cb.current.t;
@@ -247,11 +328,40 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
       tail = "";
       setEnded(null);
       earlyBytes = 0;
+      lastStage = spec.kind === "local" ? null : "resolve";
+      covering = lastStage !== null;
+      stageSeen = false;
+      delete el.dataset.stage;
+      setSteps(lastStage ? { stage: null, start: performance.now(), failed: false } : null);
       cb.current.onStatus?.("running");
       try {
         const newId = await backend.open(spec, term.cols, term.rows, (e) => {
           if (disposed) return;
+          if (e.kind === "stage") {
+            if (!lastStage) return;
+            // 走到哪一步也写在宿主元素上（端到端测试据此确认后端的阶段送到了界面）
+            el.dataset.stage = e.stage;
+            // 秒数从第一次报阶段算起：密码框（在连接前弹）开着的时间不算
+            const first = !stageSeen;
+            stageSeen = true;
+            if (e.stage === "ready") {
+              lastStage = null;
+              covering = false;
+              setSteps(null);
+              return;
+            }
+            if (!first && stageIndex(e.stage) <= stageIndex(lastStage)) return;
+            const next: Step = e.stage;
+            lastStage = next;
+            if (covering) setSteps((cur) => (cur && !cur.failed ? { ...cur, stage: next, start: first ? performance.now() : cur.start } : cur));
+            return;
+          }
           if (e.kind === "output") {
+            // 终端里有了输出（密码提示、警告等）：进度让开，不挡住内容；停在哪一步仍记着，失败时用
+            if (covering) {
+              covering = false;
+              setSteps(null);
+            }
             const n = e.data.length;
             sessionBytes += n;
             tail = (tail + decoder.decode(e.data, { stream: true })).slice(-2048);
@@ -340,13 +450,58 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
       if (id) void backend.close(id).catch((err: unknown) => { if (!disposed) showNotice.current(formatError(err)); });
     };
 
+    // 粘贴图片：服务器终端把图片传到那台服务器的 /tmp，本机终端存到本机，再把路径粘贴进去
+    // （Claude Code 等会把图片路径当成图片）。同一个终端同时只传一张；传的时候按了回车、Ctrl+C，
+    // 或会话换了，传完就不粘贴
+    let imagePending = false;
+    let imageGeneration = 0;
+    const pasteImage = async () => {
+      if (exited || !id) return;
+      const tr = cb.current.t;
+      if (imagePending) { showNotice.current(tr("terminal.pasteImageBusy")); return; }
+      imagePending = true;
+      const session = id;
+      const generation = imageGeneration;
+      // 传得慢才提示；传完就收起
+      const uploading = tr("terminal.pasteImageUploading");
+      const slow = setTimeout(() => { if (!disposed) showNotice.current(uploading, 35_000); }, 400);
+      try {
+        const path = await backend.pasteImage(spec);
+        if (path === null || disposed) return;
+        if (exited || id !== session || generation !== imageGeneration) {
+          showNotice.current(tr("terminal.pasteImageExpired"));
+          return;
+        }
+        // 本机终端按 shell 改写路径（WSL、Git Bash 的写法，带空格时加引号）
+        const text = spec.kind === "local" ? droppedText(spec.shellId, [path]) : path;
+        // 路径只对这台机器有效：只发给这个窗格，不参与广播；程序开了括号粘贴就按粘贴发
+        await backend.write(session, term.modes.bracketedPasteMode ? `\x1b[200~${text}\x1b[201~` : text);
+      } catch (err) {
+        if (!disposed) showNotice.current(formatError(err));
+      } finally {
+        clearTimeout(slow);
+        if (!disposed) hideNotice.current(uploading);
+        imagePending = false;
+      }
+    };
+
     // 终端对程序查询的回答：只发给这个会话（不走广播）
     const reply = (data: string) => {
       if (id && !exited) void backend.write(id, data).catch(() => undefined);
     };
-    const reopen = () => { term.reset(); kitty.reset(); prediction.reset(); void open(); };
+    // 结束时把光标藏了，term.reset() 又不会把它显示回来（xterm 的 reset 不清光标隐藏状态），这里显示回来
+    const reopen = (focus = false) => {
+      term.reset();
+      term.write("\x1b[?25h");
+      kitty.reset();
+      prediction.reset();
+      if (focus) term.focus();
+      void open();
+    };
     reopenRef.current = reopen;
     term.onData((data) => {
+      // 图片还在上传时按了回车、Ctrl+C、Ctrl+Z：传完就不粘贴了（终端已经往下走，路径会粘到别的地方）
+      if (imagePending && !data.startsWith("\x1b[200~") && /[\r\n\x03\x1a]/.test(data)) imageGeneration++;
       prediction.onUserData(data);
       // 会话已结束：按 Enter 等于点“重新连接”
       if (exited) {
@@ -367,10 +522,12 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
     });
 
     const doPaste = async (text: string) => {
-      if (!text) return;
+      // 剪贴板里没有文字：看看有没有图片
+      if (!text) { void pasteImage(); return; }
       // 广播时多行粘贴一律确认（会同时进入多个窗格），不受“多行粘贴前确认”设置影响
       const broadcast = !!cb.current.broadcasting;
-      if ((broadcast || cb.current.opts.confirmMultilinePaste) && needsPasteConfirm(text, term.modes.bracketedPasteMode, broadcast) && !(await cb.current.confirmPaste(text))) return;
+      const where = { bracketed: term.modes.bracketedPasteMode, broadcast, program: inProgram() };
+      if ((broadcast || cb.current.opts.confirmMultilinePaste) && needsPasteConfirm(text, where) && !(await cb.current.confirmPaste(text))) return;
       term.paste(text);
     };
     pasteRef.current = doPaste;
@@ -379,6 +536,8 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
     // 没有选中时 Ctrl+C 照常发给程序（中断）；Ctrl+V、Ctrl+Shift+V 粘贴；Ctrl+Shift+B 开关广播输入。
     // 拦下的按键要阻止浏览器默认动作：Ctrl+V 在浏览器里本身就是粘贴，不阻止会再粘贴一次（粘贴两份）
     term.attachCustomKeyEventHandler((ev) => {
+      // 会话结束后 Tab 交给浏览器：焦点能移到右下角的“关闭”“重新连接”
+      if (exited && ev.key === "Tab") return false;
       // 正在显示命令预测时，→ 补全整条、Ctrl+→ 补一个词
       const predicted = prediction.handleKey(ev);
       if (predicted !== null) return predicted;
@@ -459,7 +618,7 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
       input: (data) => term.input(data, true),
       focus: () => term.focus(),
       disconnect,
-      reconnect: () => { if (exited) reopen(); },
+      reconnect: () => { if (exited) reopen(true); },
     });
 
     return () => {
@@ -469,6 +628,10 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
       ro.disconnect();
       mo.disconnect();
       term.textarea?.removeEventListener("paste", onPaste, true);
+      for (const name of imeEvents) term.textarea?.removeEventListener(name, anchorIme);
+      term.textarea?.removeEventListener("blur", dropIme);
+      keepIme.disconnect();
+      if (imeFrame) cancelAnimationFrame(imeFrame);
       el.removeEventListener("mousedown", onRightButton, true);
       el.removeEventListener("mouseup", onRightButton, true);
       if (id) void backend.close(id);
@@ -550,10 +713,12 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
       }}
     >
       <div ref={host} className="term-host" />
+      {steps && !steps.failed && !ended && <ConnectProgress stage={steps.stage} start={steps.start} />}
       {ended && !endsInline(ended) && (
         // 登录失败、没能打开：盖住终端内容，说明原因并提供按钮
         <div className={`term-ended term-ended--${ended.kind}`} role="alert">
           <div className="term-ended__box">
+            {steps?.failed && steps.stage && <ConnectSteps stage={steps.stage} failed />}
             <div className="term-ended__title">
               {ended.kind === "passwordNeeded" ? t("terminal.endedPasswordNeeded")
                 : ended.kind === "authFailed" ? t("terminal.endedAuth")
@@ -568,12 +733,21 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
             <div className="term-ended__actions">
               <Button onClick={() => onCloseTab?.()}>{closeLabel ?? t("terminal.closeTab")}</Button>
               {offerOpenSsh && <Button className="term-ended__openssh" onClick={() => void switchToOpenSsh()}>{t("terminal.useOpenSsh")}</Button>}
-              <Button variant="primary" autoFocus onClick={() => reopenRef.current()}>
+              <Button variant="primary" autoFocus onClick={() => reopenRef.current(true)}>
                 {spec.kind === "local" ? t("terminal.reopen") : t("terminal.reconnect")}
               </Button>
             </div>
             <div className="term-ended__hint">{t("terminal.endedEnterHint")}</div>
           </div>
+        </div>
+      )}
+      {ended && endsInline(ended) && (
+        // 断开、退出：内容留在终端里，右下角放“关闭”和“重新连接”（按 Enter 也能重新连接）
+        <div className="term-endbar">
+          {onCloseTab && <Button size="sm" onClick={() => onCloseTab()}>{closeLabel ?? t("terminal.closeTab")}</Button>}
+          <Button size="sm" variant="primary" onClick={() => reopenRef.current(true)}>
+            {spec.kind === "local" ? t("terminal.reopen") : t("terminal.reconnect")}
+          </Button>
         </div>
       )}
       {fileDrop && <div className="term-filedrop" aria-hidden="true"><span>{t("terminal.fileDrop")}</span></div>}

@@ -316,6 +316,7 @@ fn connect_link(app: &AppHandle, inner: &mut Inner, server_id: &str) -> Result<(
                 callbacks: builtin.callbacks.clone(),
                 interactive: false,
                 cancelled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                progress: None,
             },
         )?,
         _ => ServerLink::connect(tunnels, target, opts, &info, local, &computer_name())?,

@@ -24,9 +24,12 @@ mod builtin;
 mod busy;
 mod input;
 mod output;
+pub(crate) mod progress;
+mod ssh_log;
 pub use builtin::{BuiltinTerminal, remote};
 pub use input::InputSource;
 pub use output::{OutputRead, OutputSubscription, SubscriptionEvent};
+pub use progress::{ConnectProgress, ConnectStage};
 mod child;
 #[cfg(test)]
 mod tests;
@@ -52,6 +55,7 @@ pub struct TerminalSpec {
 }
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub enum TerminalEvent {
+    Stage(ConnectStage),
     Output(Vec<u8>),
     Exited {
         /// 远程退出码；内置 SSH 连接断开时为 255，与系统 SSH 一致。
@@ -83,6 +87,7 @@ impl Drop for SessionStore {
 }
 struct Flow {
     pending: usize,
+    reading: usize,
     stopped: bool,
     closed: bool,
     last_ack: Instant,
@@ -91,6 +96,7 @@ impl Default for Flow {
     fn default() -> Self {
         Self {
             pending: 0,
+            reading: 0,
             stopped: false,
             closed: false,
             last_ack: Instant::now(),
@@ -137,7 +143,7 @@ impl TerminalManager {
     pub fn new() -> Self {
         Self::default()
     }
-    /// 按 spec 打开会话并返回 UUID；on_event 在后台调用，必须快速返回，可重入管理器。
+    /// 按 spec 打开会话并返回 UUID；输出在后台回调，阶段也可能在打开期间同步回调，必须快速返回，可重入管理器。
     /// 输出保持字节及顺序；自然退出排空后发送 Exited，Linux 最多再排空两秒，背压期间仍须 ack。
     /// 主动关闭会放弃尚未读取的输出。回调可能早于 open 返回，调用方须先建立接收通道。
     /// 调用方在页面重载、窗口关闭时必须 close_all。满额输出超过五分钟没有 ack 将主动关闭。
@@ -154,7 +160,8 @@ impl TerminalManager {
     ) -> Result<(String, Option<Arc<crate::ssh::askpass_pipe::Registration>>), AppError> {
         let dimensions = size(spec.cols, spec.rows)?;
         if let TerminalKind::BuiltinRemote(terminal) = spec.kind {
-            let (mut channel, hooked) = terminal.open(spec.cols, spec.rows)?;
+            let progress = terminal.progress(on_event.clone());
+            let (mut channel, hooked) = terminal.open(spec.cols, spec.rows, progress.clone())?;
             let (writer, reader, stderr) = channel.take_io();
             drop(stderr);
             let session = Arc::new(Session {
@@ -166,9 +173,15 @@ impl TerminalManager {
                 output: Mutex::new(output::Output::new(spec.cols, spec.rows)),
                 child: Mutex::new(builtin::Process::Builtin(Box::new(channel))),
             });
-            return self
-                .start(session, Box::new(reader), Box::new(writer), on_event)
-                .map(|id| (id, None));
+            let id = self.start(
+                session,
+                Box::new(reader),
+                Box::new(writer),
+                on_event,
+                None,
+                Some(progress),
+            )?;
+            return Ok((id, None));
         }
         #[cfg(unix)]
         let pair = portable_pty::native_pty_system()
@@ -205,8 +218,9 @@ impl TerminalManager {
             .take_writer()
             .map_err(|_| error("spawn_failed", "terminal.open_input", "打开输入"))?;
         let hooked = matches!(&spec.kind, TerminalKind::Remote { command, .. } if command.hooked);
-        let process = child::spawn(spec.kind, &pair)?;
+        let mut process = child::spawn(spec.kind, &pair)?;
         let registration = process.askpass.clone();
+        let log = process.log.take();
         #[cfg(unix)]
         drop(pair.slave);
         let session = Arc::new(Session {
@@ -218,7 +232,7 @@ impl TerminalManager {
             output: Mutex::new(output::Output::new(spec.cols, spec.rows)),
             child: Mutex::new(builtin::Process::Local(process)),
         });
-        self.start(session, reader, writer, on_event)
+        self.start(session, reader, writer, on_event, log, None)
             .map(|id| (id, registration))
     }
     fn start(
@@ -227,6 +241,8 @@ impl TerminalManager {
         reader: Box<dyn Read + Send>,
         writer: Box<dyn Write + Send>,
         on_event: Callback,
+        log: Option<ssh_log::Log>,
+        ready: Option<ConnectProgress>,
     ) -> Result<String, AppError> {
         let writing = session.clone();
         if thread::Builder::new()
@@ -256,6 +272,7 @@ impl TerminalManager {
                     "创建读取线程",
                 )
             })?;
+        let (started, start) = mpsc::channel();
         let active = session.clone();
         let sessions = Arc::downgrade(&self.sessions);
         let key = id.clone();
@@ -263,7 +280,9 @@ impl TerminalManager {
         if thread::Builder::new()
             .name("终端事件".into())
             .spawn(move || {
-                dispatch(&active, rx, on_event);
+                // Ready 先于输出和退出；线程创建失败时不报告会话可用。
+                let _ = start.recv();
+                dispatch(&active, rx, on_event, log);
                 // 先清理资源再移除条目；不会保留已退出会话的历史。
                 lock(&active.child).finish();
                 if let Some(sessions) = sessions.upgrade() {
@@ -281,6 +300,10 @@ impl TerminalManager {
                 "创建事件线程",
             ));
         }
+        if let Some(ready) = ready {
+            ready(ConnectStage::Ready);
+        }
+        let _ = started.send(());
         Ok(id)
     }
     fn get(&self, id: &str) -> Result<Arc<Session>, AppError> {
@@ -363,7 +386,7 @@ impl Session {
     fn stop_if_stale(&self, now: Instant) {
         let stale = {
             let flow = lock(&self.flow);
-            flow.pending >= WINDOW
+            flow.pending + flow.reading >= WINDOW
                 && now.saturating_duration_since(flow.last_ack) >= Duration::from_secs(300)
         };
         if stale {
@@ -391,7 +414,7 @@ fn read_output(
     tx: mpsc::SyncSender<Vec<u8>>,
 ) {
     loop {
-        let capacity = {
+        {
             let mut flow = lock(&session.flow);
             while flow.pending >= WINDOW && !flow.stopped {
                 flow = session.wake.wait(flow).unwrap_or_else(|e| e.into_inner());
@@ -404,8 +427,7 @@ fn read_output(
                 }
                 break;
             }
-            (WINDOW - flow.pending).min(CHUNK)
-        };
+        }
         #[cfg(unix)]
         {
             let fd = lock(&session.master).0.as_ref().and_then(|m| m.as_raw_fd());
@@ -421,12 +443,29 @@ fn read_output(
                 }
             }
         }
+        let capacity = {
+            let mut flow = lock(&session.flow);
+            let capacity = WINDOW.saturating_sub(flow.pending).min(CHUNK);
+            if capacity == 0 || flow.stopped {
+                continue;
+            }
+            // 为即将读取的字节保留窗口，日志回显不能占用这部分容量。
+            flow.reading = capacity;
+            capacity
+        };
         let mut buffer = vec![0; capacity];
-        match reader.read(&mut buffer) {
+        let result = reader.read(&mut buffer);
+        {
+            let mut flow = lock(&session.flow);
+            flow.reading = 0;
+            if let Ok(n) = &result {
+                flow.pending += n;
+            }
+        }
+        match result {
             Ok(0) => break,
             Ok(n) => {
                 buffer.truncate(n);
-                lock(&session.flow).pending += n;
                 if tx.send(buffer).is_err() {
                     #[cfg(windows)]
                     let _ = std::io::copy(&mut reader, &mut std::io::sink());
@@ -444,12 +483,29 @@ fn read_output(
         }
     }
 }
-fn dispatch(session: &Session, rx: mpsc::Receiver<Vec<u8>>, callback: Callback) {
+fn dispatch(
+    session: &Session,
+    rx: mpsc::Receiver<Vec<u8>>,
+    callback: Callback,
+    mut log: Option<ssh_log::Log>,
+) {
+    if log.is_some() {
+        session.emit(&callback, TerminalEvent::Stage(ConnectStage::Resolve));
+    }
     let mut ended = false;
     let mut exited_at = None;
+    let mut log_state = ssh_log::Pump::Pending;
     loop {
+        // 退出后有日志可读就连续排空；正常空闲轮询在就绪后放宽间隔。
+        let wait = if exited_at.is_some() && log_state == ssh_log::Pump::Progress {
+            Duration::ZERO
+        } else {
+            log.as_ref()
+                .map_or(Duration::from_millis(200), ssh_log::Log::interval)
+        };
+        let mut outputs = Vec::new();
         let mut output = Vec::new();
-        match rx.recv_timeout(Duration::from_millis(200)) {
+        match rx.recv_timeout(wait) {
             Ok(chunk) => output = chunk,
             Err(mpsc::RecvTimeoutError::Disconnected) => ended = true,
             Err(mpsc::RecvTimeoutError::Timeout) => (),
@@ -463,10 +519,7 @@ fn dispatch(session: &Session, rx: mpsc::Receiver<Vec<u8>>, callback: Callback) 
             match rx.recv_timeout(Duration::from_millis(4).saturating_sub(start.elapsed())) {
                 Ok(chunk) => {
                     if output.len() + chunk.len() > CHUNK {
-                        session.emit(
-                            &callback,
-                            TerminalEvent::Output(std::mem::take(&mut output)),
-                        );
+                        outputs.push(std::mem::take(&mut output));
                     }
                     output.extend(chunk);
                 }
@@ -474,7 +527,7 @@ fn dispatch(session: &Session, rx: mpsc::Receiver<Vec<u8>>, callback: Callback) 
             }
         }
         if !output.is_empty() {
-            session.emit(&callback, TerminalEvent::Output(output));
+            outputs.push(output);
         }
         session.stop_if_stale(Instant::now());
         let status = lock(&session.child).poll();
@@ -490,7 +543,19 @@ fn dispatch(session: &Session, rx: mpsc::Receiver<Vec<u8>>, callback: Callback) 
             master.shutdown();
         }
         let closed = lock(&session.flow).closed;
-        if status.is_some() && (ended || closed || drain_expired) {
+        // ssh 先写诊断日志再写下一个终端提示，本轮日志必须先于所有已收集的终端块送达。
+        log_state = log.as_mut().map_or(ssh_log::Pump::Drained, |log| {
+            log.pump(session, &callback, status.is_some())
+        });
+        for output in outputs {
+            session.emit(&callback, TerminalEvent::Output(output));
+        }
+        if status.is_some()
+            && (ended || closed || drain_expired)
+            && log_state == ssh_log::Pump::Drained
+        {
+            // 进程已结束且日志已排空，先删除日志再通知退出。
+            drop(log.take());
             lock(&session.flow).stopped = true;
             session.wake.notify_all();
             lock(&session.child).finish();
@@ -508,8 +573,12 @@ fn dispatch(session: &Session, rx: mpsc::Receiver<Vec<u8>>, callback: Callback) 
             );
             break;
         }
-        if ended && status.is_none() {
-            thread::sleep(Duration::from_millis(200));
+        if ended && (status.is_none() || log_state == ssh_log::Pump::Pending) {
+            // 读取端已关闭时 recv 不再阻塞；日志背压或等待进程退出仍须让出线程。
+            thread::sleep(
+                log.as_ref()
+                    .map_or(Duration::from_millis(200), ssh_log::Log::interval),
+            );
         }
     }
 }
@@ -518,7 +587,7 @@ fn emit(callback: &Callback, event: TerminalEvent) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| callback(event)));
 }
 
-/// 应用启动、打开任何终端之前调用；删除 config_dir 内上次残留的 terminal-*.conf，返回删除数量。
+/// 应用启动、打开任何终端之前调用；删除 config_dir 内残留的 terminal-*.conf 和 terminal-*.log，返回删除数量。
 /// 目录不存在返回零；不会递归删除子目录，失败返回 config_failed。活动会话使用的目录不可调用。
 pub fn cleanup_stale_configs(config_dir: &std::path::Path) -> Result<usize, AppError> {
     let entries = match std::fs::read_dir(config_dir) {
@@ -544,7 +613,7 @@ pub fn cleanup_stale_configs(config_dir: &std::path::Path) -> Result<usize, AppE
         let name = entry.file_name();
         let name = name.to_string_lossy();
         if name.starts_with("terminal-")
-            && name.ends_with(".conf")
+            && (name.ends_with(".conf") || name.ends_with(".log"))
             && entry
                 .file_type()
                 .map_err(|_| {

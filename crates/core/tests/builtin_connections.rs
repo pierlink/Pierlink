@@ -93,6 +93,7 @@ fn 本机会话上限与命令的输入环境目录双输出状态() {
     let vault = Arc::new(PasswordVault::default());
     let manager = ConnectionManager::default();
     let request = || ConnectionRequest {
+        progress: None,
         server: &record,
         class: ConnectionClass::Main,
         vault: vault.clone(),
@@ -163,6 +164,7 @@ fn 本机三级跳板逐级核对不同主机密钥并共享跳板() {
     manager.set_server_resolver(Arc::new(move |id| Ok(records.get(id).cloned())));
     let vault = Arc::new(PasswordVault::default());
     let request = || ConnectionRequest {
+        progress: None,
         server: &target,
         class: ConnectionClass::Main,
         vault: vault.clone(),

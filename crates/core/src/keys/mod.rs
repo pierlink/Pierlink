@@ -3,4 +3,4 @@ pub mod local;
 mod public;
 pub mod remote;
 #[cfg(windows)]
-mod windows;
+pub(crate) mod windows;

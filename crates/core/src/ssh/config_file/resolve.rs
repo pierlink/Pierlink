@@ -24,6 +24,18 @@ pub fn resolve_alias(
 ) -> Result<ResolvedConfig, AppError> {
     resolve(program, alias, timeout, &AtomicBool::new(false))
 }
+
+/// 按本次连接的完整参数执行 ssh -G，返回包含用户代理选项的有效配置；不建立网络连接。
+pub(crate) fn resolve_command(
+    program: &SshProgram,
+    args: &[String],
+    timeout: Duration,
+) -> Result<ResolvedConfig, AppError> {
+    let mut arguments = vec!["-G".into()];
+    arguments.extend_from_slice(args);
+    let (output, _) = capture(program, arguments, timeout, &AtomicBool::new(false))?;
+    parse_ssh_g(&output)
+}
 fn failed(text_key: &'static str, reason: &str) -> AppError {
     AppError::new("ssh.resolve_failed").with_reason(text_key, reason)
 }

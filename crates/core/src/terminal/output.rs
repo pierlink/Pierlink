@@ -56,7 +56,7 @@ impl Subscriber {
 fn weight(event: &TerminalEvent) -> usize {
     match event {
         TerminalEvent::Output(bytes) => bytes.len().max(1),
-        TerminalEvent::Exited { .. } => 1,
+        TerminalEvent::Exited { .. } | TerminalEvent::Stage(_) => 1,
     }
 }
 

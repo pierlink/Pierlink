@@ -127,6 +127,7 @@ impl Fixture {
 
     fn request(&self, interactive: bool) -> ConnectionRequest<'_> {
         ConnectionRequest {
+            progress: None,
             server: &self.server,
             class: ConnectionClass::Main,
             vault: self.vault.clone(),

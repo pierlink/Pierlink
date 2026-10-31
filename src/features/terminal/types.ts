@@ -8,9 +8,14 @@ export type OpenSpec =
 /** 远程连接的目标（快速连接或已保存的服务器） */
 export type RemoteSpec = Exclude<OpenSpec, { kind: "local" }>;
 
+/** 连接服务器的一步：解析地址、建立连接、认证（握手和登录）、打开会话；ready 表示会话可以用了 */
+export type ConnectStage = "resolve" | "connect" | "auth" | "session" | "ready";
+
 /** 后端推送给终端的事件 */
 export type TerminalEvent =
   | { kind: "output"; data: Uint8Array }
+  /** 连接走到了哪一步（只有服务器终端有；可能跳过前面的，不会倒退） */
+  | { kind: "stage"; stage: ConnectStage }
   /**
    * auth：远程终端因为密码没登录上时的原因（ssh.auth_failed 输的密码不对 / ssh.password_needed 没输或等太久 /
    * ssh.two_factor_required），其他退出为 null。
@@ -42,4 +47,9 @@ export interface TerminalBackend {
   answerHostKey(probeId: string, accept: boolean): Promise<HostKeyStep>;
   /** 放弃确认，结束后台的 ssh 进程 */
   cancelHostKey(probeId: string): Promise<void>;
+  /**
+   * 剪贴板里的图片：服务器终端传到那台服务器的 /tmp，本机终端存到本机；返回路径（本机是 Windows 路径）。
+   * 剪贴板里没有图片时返回 null
+   */
+  pasteImage(spec: OpenSpec): Promise<string | null>;
 }

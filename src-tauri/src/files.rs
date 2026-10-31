@@ -50,7 +50,7 @@ pub enum LocDto {
 
 impl LocDto {
     /// 缓存会话用的键
-    fn key(&self) -> String {
+    pub(crate) fn key(&self) -> String {
         match self {
             LocDto::Local => "local".into(),
             LocDto::Server { server_id } => format!("server:{server_id}"),
@@ -176,7 +176,7 @@ fn open_session(app: &AppHandle, loc: &LocDto) -> Result<SftpSession, AppError> 
 }
 
 /// 用缓存的浏览会话执行操作；连接已断开时重新建立一次再试
-fn with_session<T>(
+pub(crate) fn with_session<T>(
     app: &AppHandle,
     loc: &LocDto,
     f: impl Fn(&mut SftpSession) -> Result<T, AppError>,

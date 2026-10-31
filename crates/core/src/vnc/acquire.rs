@@ -245,6 +245,21 @@ fn download(
     };
     let agent = ureq::Agent::new_with_config(
         ureq::Agent::config_builder()
+            .tls_config(
+                ureq::tls::TlsConfig::builder()
+                    .root_certs(ureq::tls::RootCerts::PlatformVerifier)
+                    .build(),
+            )
+            .proxy(
+                crate::proxy::for_target("downloads.sourceforge.net")
+                    .map(|proxy| ureq::Proxy::new(&crate::proxy::url(&proxy)))
+                    .transpose()
+                    .map_err(|_| {
+                        crate::proxy::map_error(
+                            &pierlink_ssh_engine::proxy::ProxyError::InvalidInput,
+                        )
+                    })?,
+            )
             .https_only(true)
             .timeout_connect(Some(Duration::from_secs(15)))
             .timeout_global(Some(Duration::from_secs(120)))

@@ -177,13 +177,19 @@ await rec.step(p, "新建服务器：连接方式默认是内置 SSH；升级说
   return selected;
 });
 
-await rec.step(p, "改成系统 OpenSSH：新开的终端由 ssh.exe 连接，照常能用", async () => {
+await rec.step(p, "改成系统 OpenSSH：新开的终端由 ssh.exe 连接，照常能用；终端里没有调试信息", async () => {
   if (!HAVE_LINUX) throw new Error("没有 WSL Linux 服务器");
   await setEngine(LX_NAME, "System OpenSSH");
   const before = sshProcesses();
   await openTerminal(LX_NAME, "pl-openssh");
   const after = sshProcesses();
   if (!(after > before)) throw new Error(`系统 OpenSSH 模式下没有新的 ssh.exe 进程：之前 ${before}，之后 ${after}`);
+  // Windows 版 OpenSSH 写日志文件时不许别人同时读，所以 Windows 上不让 ssh 写调试日志（错误照常打在终端里）
+  const logged = Number(pwsh(`@(Get-CimInstance Win32_Process -Filter "Name='ssh.exe'" | Where-Object { $_.CommandLine -match '-p ${LX.port} -l ${LX.user}\\b' -and $_.CommandLine -match 'LogLevel=DEBUG1' }).Count`).split("\n")[0].trim());
+  if (logged !== 0) throw new Error("Windows 上的 ssh.exe 不该带 -o LogLevel=DEBUG1");
+  const text = await p.js(`[...document.querySelectorAll('.pane-slot')].filter(s=>s.style.display!=='none').map(s=>s.querySelector('.xterm-rows')?.innerText||'').join('\\n')`);
+  if (/debug\d:/.test(text)) throw new Error(`终端里出现了 ssh 的调试信息：${text.slice(0, 400)}`);
+  if (/^(Authenticated to|Transferred: sent|Bytes per second:)/m.test(text)) throw new Error(`终端里出现了 ssh 的 VERBOSE 信息：${text.slice(0, 400)}`);
   return `ssh.exe 进程 ${before} → ${after}`;
 });
 

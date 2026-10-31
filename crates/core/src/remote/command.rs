@@ -26,6 +26,7 @@ pub struct BuiltinCommand {
 impl BuiltinCommand {
     pub(crate) fn request(&self) -> ConnectionRequest<'_> {
         ConnectionRequest {
+            progress: None,
             server: &self.server,
             class: self.class,
             vault: self.vault.clone(),

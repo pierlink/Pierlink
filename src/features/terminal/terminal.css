@@ -104,7 +104,57 @@
 .term-ended__detail { color: var(--text-muted); font-size: var(--fs-sm); overflow-wrap: anywhere; }
 .term-ended__actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-top: 6px; }
 .term-ended__hint { color: var(--text-dim); font-size: var(--fs-xs); }
+/* 断开、退出后右下角的按钮：不盖住终端内容，右上角留给服务器概况 */
+.term-endbar {
+  position: absolute;
+  right: 14px;
+  bottom: 10px;
+  z-index: 6;
+  display: flex;
+  gap: 6px;
+  padding: 6px;
+  border-radius: var(--r-md);
+  background: var(--card);
+  border: 1px solid var(--border);
+  box-shadow: 0 2px 10px rgb(0 0 0 / 0.18);
+  animation: pl-fade-in 160ms ease-out;
+}
 @keyframes pl-fade-in { from { opacity: 0; } to { opacity: 1; } }
+
+/* ---------- 连接进度：解析、连接、认证、会话 ---------- */
+.conn-progress {
+  position: absolute; inset: 0; z-index: 4; display: grid; place-content: center;
+  pointer-events: none;
+}
+/* 淡入放在内容上：外层一挂上就在（给读屏播报），内容 250 毫秒后才出来 */
+.conn-progress__body { display: grid; justify-items: center; gap: 12px; animation: pl-fade-in 160ms ease-out; }
+.conn-steps { display: flex; align-items: flex-start; margin: 0; padding: 0; list-style: none; }
+.conn-step { position: relative; display: flex; flex-direction: column; align-items: center; gap: 6px; width: 72px; }
+/* 节点之间的连线画在后一个节点的左边；前一步走完了，线就亮起来 */
+.conn-step + .conn-step::before {
+  content: ""; position: absolute; top: 9px; right: calc(50% + 12px); width: calc(100% - 24px); height: 2px;
+  border-radius: 1px; background: var(--border-strong);
+}
+.conn-step--done + .conn-step::before { background: var(--accent); }
+.conn-step__dot {
+  display: grid; place-items: center; box-sizing: border-box; width: 20px; height: 20px; border-radius: 50%;
+  border: 2px solid var(--border-strong); background: var(--bg-solid); color: #fff;
+}
+.conn-step--done .conn-step__dot { border-color: var(--accent); background: var(--accent); }
+.conn-step--now .conn-step__dot {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 22%, transparent);
+  animation: conn-pulse 1.2s ease-in-out infinite;
+}
+.conn-step--failed .conn-step__dot { border-color: var(--danger); background: var(--danger); }
+.conn-step__label { font-size: var(--fs-xs); color: var(--text-dim); white-space: nowrap; }
+.conn-step--done .conn-step__label, .conn-step--now .conn-step__label { color: var(--text); }
+.conn-step--failed .conn-step__label { color: var(--danger); }
+.conn-progress__time { display: flex; gap: 8px; font-size: var(--fs-sm); color: var(--text-muted); }
+.conn-progress__secs { min-width: 4.5ch; font-variant-numeric: tabular-nums; }
+/* 失败提示块上的进度：和标题之间留点空 */
+.term-ended__box .conn-steps { margin-bottom: 4px; }
+@keyframes conn-pulse { 50% { box-shadow: 0 0 0 7px color-mix(in srgb, var(--accent) 8%, transparent); } }
 
 /* ---------- 分屏 ---------- */
 .pane-grid { position: relative; flex: 1; min-height: 0; }

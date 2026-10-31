@@ -174,6 +174,7 @@ mod tests {
         let mut server = f.server.clone();
         server.connection_engine = crate::storage::Engine::OpenSsh;
         let request = || ConnectionRequest {
+            progress: None,
             server: &server,
             ..context.request()
         };

@@ -29,6 +29,7 @@ flate2 = "=1.1.10"
 tar = "=0.4.46"
 quick-xml.workspace = true
 zeroize = "1.9.1"
+url = "2.5.8"
 tempfile.workspace = true
 hmac = "0.13.0"
 sha1 = "0.11.0"

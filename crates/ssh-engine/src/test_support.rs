@@ -1,4 +1,5 @@
 //! 仅供协议测试启用的内存对端，跨 core 与引擎验证真实登录流程。
+pub mod proxy;
 use crate::{Authentication, Connection, ConnectionOptions, Engine, Error, Result};
 use russh::{
     MethodKind, MethodSet,

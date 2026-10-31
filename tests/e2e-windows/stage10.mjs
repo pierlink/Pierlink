@@ -420,15 +420,26 @@ function windowsCli(command) {
   const r = spawnSync("cmd.exe", ["/d", "/s", "/c", command], { encoding: "utf8", timeout: 120000, windowsHide: true });
   return { code: r.status, out: `${r.stdout ?? ""}${r.stderr ?? ""}` };
 }
-/** 点 MCP 页上的按钮（文字完全等于 label），等出现这个客户端的结果提示 */
-async function clickAdd(label, client) {
-  const found = await p.js(`(()=>{const b=[...document.querySelectorAll('.mcp-detail button')].find(b=>b.textContent.trim()===${JSON.stringify(label)}); if(!b) return false; if(b.disabled) return 'disabled'; b.click(); return true;})()`);
-  if (found !== true) return found === "disabled" ? "按钮是灰的" : "没有这个按钮";
-  const re = `(Added to ${client}|Couldn't add to ${client}|${client} wasn't found)[^\\n]*`;
-  return await u.waitFor(`(()=>{const m=(document.querySelector('.mcp-detail')?.innerText||'').match(new RegExp(${JSON.stringify(re)})); return m ? m[0] : null;})()`, `点“${label}”后的结果`, 120000);
+/** 在“添加到 AI 客户端”里点这个客户端的标签（只切换，不添加），再点按钮（Add / Remove），等出现结果提示 */
+async function clickClient(client, button) {
+  const picked = await p.js(`(()=>{const t=[...document.querySelectorAll('.mcp-detail .pl-seg [role=tab]')].find(b=>b.textContent.trim().startsWith(${JSON.stringify(client)})); if(!t) return false; t.click(); return true;})()`);
+  if (!picked) return "没有这个客户端的标签";
+  await u.waitFor(`[...document.querySelectorAll('.mcp-detail .pl-seg [role=tab]')].some(b=>b.getAttribute('aria-selected')==='true' && b.textContent.trim().startsWith(${JSON.stringify(client)}))`, `选中 ${client} 的标签`);
+  // 只是切换标签，不能添加任何东西
+  if (await p.js(`!!(document.querySelector('.mcp-oneclick__result')?.innerText||'').trim()`)) return "切换标签就出了结果";
+  // 检测客户端（服务器要连过去查）期间按钮是灰的：等它能点，最多 60 秒
+  const btn = `[...document.querySelectorAll('.mcp-oneclick__buttons button')].find(b=>b.textContent.trim()===${JSON.stringify(button)})`;
+  try {
+    await u.waitFor(`!!${btn} && !${btn}.disabled`, `${client} 的“${button}”能点`, 60000);
+  } catch {
+    return (await p.js(`!!${btn}`)) ? "按钮是灰的" : "没有这个按钮";
+  }
+  await p.js(`${btn}.click()`);
+  const re = `(Added to ${client}|Couldn't add to ${client}|${client} wasn't found|Removed from ${client}|Couldn't remove from ${client}|Pierlink wasn't in ${client})[^\\n]*`;
+  return await u.waitFor(`(()=>{const m=(document.querySelector('.mcp-oneclick__result')?.innerText||'').match(new RegExp(${JSON.stringify(re)})); return m ? m[0] : null;})()`, `点 ${client} 的“${button}”后的结果`, 120000);
 }
 
-await rec.step(p, "一键添加到本机 Claude Code、Codex：它们自己的命令能看到 pierlink 并连上", async () => {
+await rec.step(p, "一键添加到本机 Claude Code、Codex：点标签只切换不添加；添加后它们自己的命令能看到 pierlink 并连上；移除后没有了", async () => {
   const have = (cmd) => windowsCli(`where ${cmd}`).code === 0;
   const clients = [["claude", "Claude Code"], ["codex", "Codex"]].filter(([cmd]) => have(cmd));
   if (!clients.length) return "跳过：这台机器上没装 Claude Code、Codex";
@@ -440,8 +451,8 @@ await rec.step(p, "一键添加到本机 Claude Code、Codex：它们自己的�
   await selectEntry("This PC");
   const results = [];
   for (const [cmd, name] of clients) {
-    const shown = await clickAdd(`Add to ${name}`, name);
-    if (!/Added to/.test(shown)) throw new Error(`点“Add to ${name}”的结果不对：${shown}`);
+    const shown = await clickClient(name, "Add");
+    if (!/Added to/.test(shown)) throw new Error(`${name} 点“Add”的结果不对：${shown}`);
     const listed = windowsCli(`${cmd} mcp list`);
     if (listed.code !== 0 || !/pierlink/i.test(listed.out)) throw new Error(`${cmd} mcp list 里没有 pierlink（${listed.code}）：${listed.out.slice(-600)}`);
     // 能连上的客户端会把它标成已连接（Claude Code：✓ Connected）；只记录，连接检查的输出各版本写法不同
@@ -450,11 +461,18 @@ await rec.step(p, "一键添加到本机 Claude Code、Codex：它们自己的�
       const config = readFileSync(join(process.env.USERPROFILE, ".codex", "config.toml"), "utf8");
       if (!/\[mcp_servers\.pierlink\][^[]*tool_timeout_sec = 1800/.test(config)) throw new Error(`本机 Codex 配置里没有 30 分钟的工具超时：${config.slice(-400)}`);
     }
+    // 移除：客户端自己的列表里没有 pierlink 了；再移除一次说本来就没有
+    const removed = await clickClient(name, "Remove");
+    if (!/Removed from/.test(removed)) throw new Error(`${name} 点“Remove”的结果不对：${removed}`);
+    const after = windowsCli(`${cmd} mcp list`);
+    if (/pierlink/i.test(after.out)) throw new Error(`移除后 ${cmd} mcp list 里还有 pierlink：${after.out.slice(-400)}`);
+    const again = await clickClient(name, "Remove");
+    if (!/wasn't in/.test(again)) throw new Error(`${name} 再移除一次的结果不对：${again}`);
   }
   return results.join("｜");
 });
 
-await rec.step(p, "一键添加到服务器上的 Claude Code、Codex：服务器上的客户端读到配置并连上服务器入口", async () => {
+await rec.step(p, "一键添加到服务器上的 Claude Code、Codex：服务器上的客户端读到配置并连上服务器入口；移除后没有了", async () => {
   if (!HAVE_LINUX) throw new Error("没有 WSL 里的 Linux 服务器");
   const has = (cmd) => wslPython(`import shutil, sys; sys.exit(0 if shutil.which(${JSON.stringify(cmd)}) else 1)`).code === 0;
   const clients = [["claude", "Claude Code"], ["codex", "Codex"]].filter(([cmd]) => has(cmd));
@@ -464,9 +482,8 @@ await rec.step(p, "一键添加到服务器上的 Claude Code、Codex：服务�
   await selectEntry(LX_NAME);
   const results = [];
   for (const [cmd, name] of clients) {
-    const label = name === "Claude Code" ? "Add to Claude Code on the server" : `Add to ${name} on the server`;
-    const shown = await clickAdd(label, name);
-    if (!/Added to/.test(shown)) throw new Error(`点“${label}”的结果不对：${shown}`);
+    const shown = await clickClient(name, "Add");
+    if (!/Added to/.test(shown)) throw new Error(`服务器上的 ${name} 点“Add”的结果不对：${shown}`);
     const r = wslPython(`import subprocess, shutil; r = subprocess.run([shutil.which(${JSON.stringify(cmd)}), 'mcp', 'list'], capture_output=True, text=True, timeout=120); print(r.returncode); print(r.stdout + r.stderr)`);
     const [rc, ...rest] = r.out.split("\n");
     const text = rest.join("\n");
@@ -478,6 +495,13 @@ await rec.step(p, "一键添加到服务器上的 Claude Code、Codex：服务�
     // 令牌会不会被客户端自己的列表命令打印出来，只记录（那是客户端的行为）
     const leaked = /Bearer\s+[A-Za-z0-9_-]{8,}/.test(text) ? "（列表里显示了令牌）" : "";
     results.push(`${name}：${text.split("\n").find((l) => /pierlink/i.test(l))?.trim()}${leaked}`);
+    // 移除：服务器上的客户端列表里没有 pierlink 了；再移除一次说本来就没有
+    const removed = await clickClient(name, "Remove");
+    if (!/Removed from/.test(removed)) throw new Error(`服务器上的 ${name} 点“Remove”的结果不对：${removed}`);
+    const r2 = wslPython(`import subprocess, shutil; r = subprocess.run([shutil.which(${JSON.stringify(cmd)}), 'mcp', 'list'], capture_output=True, text=True, timeout=120); print(r.stdout + r.stderr)`);
+    if (/pierlink/i.test(r2.out)) throw new Error(`移除后服务器上 ${cmd} mcp list 里还有 pierlink：${r2.out.slice(-400)}`);
+    const again = await clickClient(name, "Remove");
+    if (!/wasn't in/.test(again)) throw new Error(`服务器上的 ${name} 再移除一次的结果不对：${again}`);
   }
   return results.join("｜");
 });

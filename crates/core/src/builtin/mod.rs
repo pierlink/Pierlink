@@ -87,6 +87,8 @@ pub struct DedicatedCredential {
 /// interactive 与连接类别无关，文件面板的 Bulk 连接也可以由用户主动发起。
 #[derive(Clone)]
 pub struct ConnectionRequest<'a> {
+    /// 可选的终端连接进度；后台调用传 None，回调必须快速返回。
+    pub progress: Option<crate::terminal::ConnectProgress>,
     pub server: &'a Server,
     pub class: ConnectionClass,
     pub vault: Arc<PasswordVault>,

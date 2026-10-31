@@ -35,11 +35,13 @@
 - Shift+Enter 换行不执行（shell、Claude Code、Codex 里都能用）；选中文字时 Ctrl+C 复制，Ctrl+V 粘贴；可以打开“右键复制粘贴”
 - Claude Code、vim 等复制的内容直接进本机剪贴板（在 tmux 里也行）；点终端里的链接用 Windows 的浏览器打开
 - 从资源管理器把文件拖进本机终端，自动填上路径（PowerShell、命令提示符、WSL 各按自己的写法）
+- 在服务器终端里粘贴图片：图片传到服务器、粘贴路径，Claude Code 里显示成 [Image #1]
 - 服务器概况常驻在终端右上角：CPU、内存、交换、GPU、各挂载点磁盘、网速
 
 ### 连接
 - 内置 SSH（CentOS 7 这样的老服务器也能连）；也可以按 `~/.ssh/config` 用系统 OpenSSH 连接，并一键导入
 - 端口转发：本地、远程、SOCKS 代理，断线后自动恢复
+- 代理：跟随系统或自定义 HTTP / SOCKS5，连接服务器、检查更新和本机终端都用它
 - 文件面板：浏览、上传、下载、重命名、删除、在线编辑文本文件；窗格之间拖动即可传文件
 
 ### 文件同步
@@ -143,6 +145,7 @@ MCP 默认关闭。打开后默认“只问危险操作”：删除文件、强�
 ## 隐私和安全
 
 - 不收集任何使用数据。Pierlink 只会访问 GitHub 检查更新，以及你自己添加的服务器。
+- 在服务器终端里粘贴的图片放在那台服务器的 /tmp，只有你的账号能读，7 天后在下次粘贴时删除。
 - 同步组件只监听本机，关闭了全局发现、中继和使用数据上报，数据只经 SSH 隧道传输。
 - AI 接入和手机连接都需要你手动打开，权限可以随时收回。
 - 发现安全问题请按 [SECURITY.md](SECURITY.md) 私下报告。
@@ -176,3 +179,7 @@ Pierlink 按 [Functional Source License 1.1（Apache 2.0 未来许可）](LICENS
 ## 致谢
 
 Pierlink 建立在这些优秀的开源项目之上：[Tauri](https://github.com/tauri-apps/tauri)、[Syncthing](https://github.com/syncthing/syncthing)、[russh](https://github.com/Eugeny/russh)、[xterm.js](https://github.com/xtermjs/xterm.js)、[Win32-OpenSSH](https://github.com/PowerShell/Win32-OpenSSH)、[LibreSSL](https://github.com/libressl/portable)、[React](https://github.com/react/react)。
+
+## 友情链接
+
+- [LINUX DO](https://linux.do/)

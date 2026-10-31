@@ -60,3 +60,14 @@
 .backup__notes { margin: 0; padding-left: 18px; max-height: 240px; overflow: auto; font-size: var(--fs-xs); color: var(--text-muted); }
 .backup__apply { display: flex; align-items: center; gap: 10px; }
 .backup__result p { margin: 0; }
+
+/* 网络：代理 */
+.proxy-addr { gap: 4px; }
+.proxy-addr__host { width: 180px; min-width: 0; }
+.proxy-addr__port { width: 72px; }
+.proxy-addr__sep { color: var(--text-muted); }
+.proxy-system { color: var(--text-muted); font-size: var(--fs-sm); }
+.proxy-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
+.proxy-status { flex: 1; min-width: 0; text-align: right; font-size: var(--fs-sm); color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.proxy-status--ok { color: var(--ok); font-weight: 500; }
+.proxy-status--danger { color: var(--danger); white-space: normal; }

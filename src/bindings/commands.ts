@@ -98,6 +98,21 @@ export const commands = {
 	 *  :return: 结果；服务器上没装这个客户端返回 mcp.server_client_not_found
 	 */
 	mcpInstallServer: (serverId: string, client: string) => typedError<McpInstallDto, AppError>(__TAURI_INVOKE("mcp_install_server", { serverId, client })),
+	/**
+	 *  把本机入口从 Claude Code、Codex 或 Cursor 里移除
+	 * 
+	 *  :param client: claude / codex / cursor
+	 *  :return: 结果（removed=false 表示本来就没有）；没装这个客户端返回 mcp.client_not_found
+	 */
+	mcpRemoveLocal: (client: string) => typedError<McpRemoveDto, AppError>(__TAURI_INVOKE("mcp_remove_local", { client })),
+	/**
+	 *  在服务器上把这台服务器的入口从 Claude Code、Codex 或 Gemini CLI 里移除（之后换令牌也不会再加回去）
+	 * 
+	 *  :param server_id: 服务器 ID
+	 *  :param client: claude / codex / gemini
+	 *  :return: 结果（removed=false 表示本来就没有）；服务器上没装这个客户端返回 mcp.server_client_not_found
+	 */
+	mcpRemoveServer: (serverId: string, client: string) => typedError<McpRemoveDto, AppError>(__TAURI_INVOKE("mcp_remove_server", { serverId, client })),
 	/**  检测这台电脑上装了 Claude Code、Codex、Cursor 中的哪些 */
 	mcpDetectClients: () => typedError<McpClientsDto, AppError>(__TAURI_INVOKE("mcp_detect_clients")),
 	/**
@@ -161,6 +176,37 @@ export const commands = {
 	 *  返回写完时剪贴板的变化序号（Windows）：远程桌面据此认出“这次变化是我们自己写的”，不把它发回远程
 	 */
 	clipboardWriteText: (text: string) => typedError<number | null, AppError>(__TAURI_INVOKE("clipboard_write_text", { text })),
+	/**
+	 *  把剪贴板里的图片传到服务器终端所在的服务器，返回路径。
+	 * 
+	 *  :param loc: 终端所在的服务器（保存过的服务器或快速连接）
+	 *  :return: 服务器上的绝对路径；剪贴板里没有图片返回 clipboard.no_image；上传超过 30 秒返回 paste.upload_timeout
+	 */
+	terminalPasteImageRemote: (loc: LocDto_Deserialize) => typedError<string, AppError>(__TAURI_INVOKE("terminal_paste_image_remote", { loc })),
+	/**
+	 *  把剪贴板里的图片存到本机，返回 Windows 路径（界面再按终端的 shell 改写成它认的写法）。
+	 * 
+	 *  :return: 本机绝对路径；剪贴板里没有图片返回 clipboard.no_image
+	 */
+	terminalPasteImageLocal: () => typedError<string, AppError>(__TAURI_INVOKE("terminal_paste_image_local")),
+	/**  读代理设置 */
+	proxyGet: () => __TAURI_INVOKE<ProxySettingsDto_Serialize>("proxy_get"),
+	/**
+	 *  保存代理设置并马上生效（已经连上的不受影响，之后新建的连接按新设置走）
+	 * 
+	 *  :param settings: 界面提交的设置
+	 *  :return: 保存后的设置（整理过的地址和名单）
+	 */
+	proxySet: (settings: ProxySettingsDto_Deserialize) => typedError<ProxySettingsDto_Serialize, AppError>(__TAURI_INVOKE("proxy_set", { settings })),
+	/**  Windows 当前的代理设置（每次现读） */
+	proxySystem: () => __TAURI_INVOKE<SystemProxyDto>("proxy_system"),
+	/**
+	 *  测试代理：经代理连一下 github.com:443（不保存设置）
+	 * 
+	 *  :param settings: 界面上当前填的设置
+	 *  :return: 用了多少毫秒；连不上时返回 proxy.* 错误（如 proxy.unreachable、proxy.refused、proxy.timeout）
+	 */
+	proxyTest: (settings: ProxySettingsDto_Deserialize) => typedError<number, AppError>(__TAURI_INVOKE("proxy_test", { settings })),
 	/**  用系统默认浏览器打开网址（只允许 http 和 https） */
 	openInBrowser: (url: string) => typedError<null, AppError>(__TAURI_INVOKE("open_in_browser", { url })),
 	/**  家目录：本机为用户目录，服务器为登录后的初始目录。 */
@@ -735,6 +781,9 @@ export type ConflictDto_Serialize = {
 	conflictMtimeMs: number | null,
 	currentMtimeMs: number | null,
 };
+
+/**  连接服务器的一步：解析地址、建立连接、认证（握手和登录）、打开会话；Ready 表示会话可以用了 */
+export type ConnectStageDto = "resolve" | "connect" | "auth" | "session" | "ready";
 
 /**  一级跳板；existing_server_id 为空表示转换时新建一台内置的手动服务器 */
 export type ConversionJumpDto = ConversionJumpDto_Serialize | ConversionJumpDto_Deserialize;
@@ -1770,10 +1819,19 @@ export type McpOutputPreviewDto = {
 	stderr: string,
 };
 
+/**  移除的结果 */
+export type McpRemoveDto = {
+	/**  claude / codex / cursor / gemini */
+	client: string,
+	/**  false 表示本来就没有添加过 */
+	removed: boolean,
+};
+
 export type McpServerConnectDto = {
 	serverId: string,
 	url: string,
-	commands: string[],
+	/**  在那台服务器上手动添加的命令，client 是 claude / gemini / codex */
+	commands: McpCommandDto[],
 };
 
 /**  一个连着的客户端 */
@@ -1968,6 +2026,43 @@ export type PasswordRequestDto_Serialize = {
 };
 
 export type PathIssueDto = { kind: "dangerous"; side: string; path: string } | { kind: "overlap"; side: string; task: string } | { kind: "cloudFolder"; provider: string } | { kind: "otherSyncthing"; side: string } | { kind: "ignoreFile"; side: string } | { kind: "gitRepository"; side: string } | { kind: "unreadable"; side: string };
+
+/**  代理协议 */
+export type ProxyKindDto = "http" | "socks5";
+
+/**  代理方式 */
+export type ProxyModeDto = 
+/**  不使用代理（默认） */
+"off" | 
+/**  跟随 Windows 的代理设置（每次连接时现读） */
+"system" | 
+/**  自定义 */
+"custom";
+
+/**  代理设置 */
+export type ProxySettingsDto = ProxySettingsDto_Serialize | ProxySettingsDto_Deserialize;
+
+/**  代理设置 */
+export type ProxySettingsDto_Deserialize = {
+	mode?: ProxyModeDto,
+	/**  自定义代理的协议、地址、端口（选别的方式时也保留，切回自定义不用重填） */
+	kind?: ProxyKindDto,
+	host?: string,
+	port?: number | null,
+	/**  自定义代理时不走代理的地址（跟随系统时用 Windows 设置里的例外） */
+	bypass?: string[],
+};
+
+/**  代理设置 */
+export type ProxySettingsDto_Serialize = {
+	mode: ProxyModeDto,
+	/**  自定义代理的协议、地址、端口（选别的方式时也保留，切回自定义不用重填） */
+	kind: ProxyKindDto,
+	host: string,
+	port: number | null,
+	/**  自定义代理时不走代理的地址（跟随系统时用 Windows 设置里的例外） */
+	bypass: string[],
+};
 
 export type RenamedDto = {
 	from: string,
@@ -2374,6 +2469,15 @@ export type SyncTaskDto = {
 	localMode: string,
 };
 
+/**  Windows 当前的代理设置（界面显示用） */
+export type SystemProxyDto = 
+/**  没有设置代理 */
+{ kind: "none" } | 
+/**  手动设置的代理 */
+{ kind: "server"; protocol: ProxyKindDto; host: string; port: number } | 
+/**  用的是 PAC 脚本（不支持，按不使用代理处理） */
+{ kind: "pac"; url: string };
+
 /**  编辑任务：可修改的设置 */
 export type TaskSettingsInput = {
 	/**  本机一侧：sendReceive / receiveOnly */
@@ -2391,7 +2495,9 @@ export type TaskSettingsInput = {
 export type TerminalEventDto = TerminalEventDto_Serialize | TerminalEventDto_Deserialize;
 
 /**  推给前端的终端事件。输出按 base64 传输，避免多字节字符在分块处被拆坏。 */
-export type TerminalEventDto_Deserialize = { kind: "output"; data: string } | { kind: "exited"; code?: number | null; closedByUser: boolean; 
+export type TerminalEventDto_Deserialize = 
+/**  连接走到了哪一步（只有服务器终端有；可能跳过前面的，不会倒退） */
+{ kind: "stage"; stage: ConnectStageDto } | { kind: "output"; data: string } | { kind: "exited"; code?: number | null; closedByUser: boolean; 
 /**
  *  远程终端因为密码没登录上：ssh.auth_failed（输的密码不对，已作废）/
  *  ssh.password_needed（没输密码、取消或等太久）/ ssh.two_factor_required；其他退出为空
@@ -2404,7 +2510,9 @@ auth?: string | null;
 hooked: boolean };
 
 /**  推给前端的终端事件。输出按 base64 传输，避免多字节字符在分块处被拆坏。 */
-export type TerminalEventDto_Serialize = { kind: "output"; data: string } | { kind: "exited"; code: number | null; closedByUser: boolean; 
+export type TerminalEventDto_Serialize = 
+/**  连接走到了哪一步（只有服务器终端有；可能跳过前面的，不会倒退） */
+{ kind: "stage"; stage: ConnectStageDto } | { kind: "output"; data: string } | { kind: "exited"; code: number | null; closedByUser: boolean; 
 /**
  *  远程终端因为密码没登录上：ssh.auth_failed（输的密码不对，已作废）/
  *  ssh.password_needed（没输密码、取消或等太久）/ ssh.two_factor_required；其他退出为空

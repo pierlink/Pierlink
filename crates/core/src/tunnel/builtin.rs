@@ -176,6 +176,7 @@ impl Attempt {
             .spawn(move || {
                 let result = (|| {
                     let connection = context.manager.get_connection(ConnectionRequest {
+                        progress: None,
                         server: &context.server,
                         class: context.class,
                         vault: context.vault.clone(),

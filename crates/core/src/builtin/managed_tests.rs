@@ -1101,3 +1101,47 @@ fn 登录上限在改了服务器设置关闭旧连接后清除() {
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     f.manager.close_all().unwrap();
 }
+
+#[test]
+fn 跳板认证始终属于连接阶段且失败不报目标认证() {
+    use crate::terminal::ConnectStage;
+    for denied in [false, true] {
+        let mut f = Fixture::new(AuthMethod::Password);
+        memory(&f);
+        let mut jump = f.server.clone();
+        jump.id = "jump".into();
+        jump.host = Some("hop1".into());
+        f.server.jump_server_id = Some(jump.id.clone());
+        f.server.host = Some("hop2".into());
+        f.manager
+            .set_server_resolver(Arc::new(move |_| Ok(Some(jump.clone()))));
+        f.vault
+            .set(
+                "jump",
+                Zeroizing::new(
+                    if denied {
+                        "错误密码"
+                    } else {
+                        "测试密码"
+                    }
+                    .into(),
+                ),
+            )
+            .unwrap();
+        let stages = Arc::new(Mutex::new(Vec::new()));
+        let observed = stages.clone();
+        let mut request = f.request(true);
+        request.progress = Some(Arc::new(move |stage| observed.lock().unwrap().push(stage)));
+        let result = f.manager.get_connection(request);
+        if denied {
+            assert_eq!(result.err().unwrap().code, "ssh.auth_failed");
+            assert_eq!(*stages.lock().unwrap(), [ConnectStage::Connect]);
+        } else {
+            result.unwrap().ping().unwrap();
+            assert_eq!(
+                *stages.lock().unwrap(),
+                [ConnectStage::Connect, ConnectStage::Auth]
+            );
+        }
+    }
+}

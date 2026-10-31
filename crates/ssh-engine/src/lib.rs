@@ -17,6 +17,7 @@ mod forwarding;
 mod memory_peer;
 #[cfg(test)]
 mod protocol_tests;
+pub mod proxy;
 mod runtime;
 #[cfg(test)]
 #[path = "../tests/support/mod.rs"]
@@ -31,7 +32,8 @@ pub use channel::{
     ChannelCloser, ExitStatus, Forwarded, Input, Output, Session, SftpHandshake, Tunnel,
 };
 pub use connection::{
-    Connection, ConnectionOptions, Engine, HostKey, HostKeyCheck, Pty, Statistics,
+    ConnectProgress, ConnectStage, Connection, ConnectionOptions, Engine, HostKey, HostKeyCheck,
+    Pty, Statistics,
 };
 pub use error::{ChannelFailure, Error, Result};
 pub use forwarding::{Forwarding, ForwardingRule, ForwardingTarget};

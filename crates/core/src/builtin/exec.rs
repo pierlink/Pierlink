@@ -177,6 +177,7 @@ impl ConnectionManager {
                     .collect();
                 let session = self.open_session(
                     ConnectionRequest {
+                        progress: None,
                         server: request.server,
                         class: request.class,
                         vault: request.vault,
@@ -459,6 +460,7 @@ mod raw_tests {
             crate::server_input::build_alias_server("系统", None, "system", 0).unwrap();
         server.connection_engine = crate::storage::Engine::OpenSsh;
         let request = || ConnectionRequest {
+            progress: None,
             server: &server,
             class: ConnectionClass::Main,
             vault: Arc::new(PasswordVault::default()),
@@ -580,6 +582,7 @@ mod raw_tests {
             peer.connect(&engine, options, auth)
         }));
         let request = || ConnectionRequest {
+            progress: None,
             server: &server,
             class: ConnectionClass::Bulk,
             vault: vault.clone(),

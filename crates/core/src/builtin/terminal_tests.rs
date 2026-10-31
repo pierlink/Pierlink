@@ -37,6 +37,7 @@ fn open_with_integration(
     let (tx, rx) = mpsc::channel();
     let mut request = f.request(false);
     request.class = ConnectionClass::Bulk;
+    request.progress = Some(Arc::new(|_| {}));
     let kind = terminal::remote(
         &f.manager,
         request,
@@ -401,4 +402,149 @@ fn 指定登录shell安全转义且系统模式原样回退() {
         assert!(called);
         assert!(matches!(kind, TerminalKind::Local { args, .. } if args == ["原参数"]));
     }
+}
+
+#[test]
+fn 内置终端阶段回调与事件支持复用且就绪先于退出() {
+    use terminal::ConnectStage::*;
+    let (f, _) = fixture();
+    let manager = TerminalManager::new();
+    for expected in [vec![Auth, Session, Ready], vec![Session, Ready]] {
+        let (tx, rx) = mpsc::channel();
+        let kind = terminal::remote(&f.manager, f.request(true), None, false, || panic!()).unwrap();
+        let (id, _) = manager
+            .open_with_registration(
+                TerminalSpec {
+                    kind,
+                    cols: 80,
+                    rows: 24,
+                },
+                Arc::new(move |e| {
+                    let _ = tx.send(e);
+                }),
+            )
+            .unwrap();
+        let stages: Vec<_> = rx
+            .try_iter()
+            .map(|event| match event {
+                TerminalEvent::Stage(stage) => stage,
+                event => panic!("意外事件：{event:?}"),
+            })
+            .collect();
+        // 内存对端跳过 DNS 和 TCP，但真实握手仍进入认证。
+        assert_eq!(stages, expected);
+        manager.close(&id).unwrap();
+        assert!(exited(&rx).1);
+    }
+    let observed = Arc::new(Mutex::new(Vec::new()));
+    let stages = observed.clone();
+    let mut request = f.request(true);
+    request.progress = Some(Arc::new(move |stage| stages.lock().unwrap().push(stage)));
+    let kind = terminal::remote(&f.manager, request, None, false, || panic!()).unwrap();
+    let id = manager
+        .open(
+            TerminalSpec {
+                kind,
+                cols: 80,
+                rows: 24,
+            },
+            Arc::new(|event| assert!(!matches!(event, TerminalEvent::Stage(_)))),
+        )
+        .unwrap();
+    assert_eq!(*observed.lock().unwrap(), [Session, Ready]);
+    manager.close(&id).unwrap();
+}
+
+#[test]
+fn 内置终端取得密码后才开始建立连接() {
+    let (f, requests) = fixture();
+    let engine = Engine::new().unwrap();
+    let callbacks = f.callbacks.clone();
+    *f.manager.pool.connector.lock().unwrap() = Some(Arc::new(move |_, _, options, auth| {
+        assert_eq!(callbacks.passwords.load(Ordering::SeqCst), 1);
+        connect_terminal(&engine, options, auth, requests.clone(), None)
+    }));
+    let manager = TerminalManager::new();
+    let (id, rx) = open(&f, &manager);
+    assert_eq!(f.callbacks.passwords.load(Ordering::SeqCst), 1);
+    manager.close(&id).unwrap();
+    assert!(exited(&rx).1);
+}
+
+#[test]
+fn 内置终端密码错误停在认证且取消密码不报告阶段() {
+    use terminal::ConnectStage::*;
+    for cancel in [false, true] {
+        let (mut f, _) = fixture();
+        if cancel {
+            f.callbacks = Arc::new(Callbacks {
+                cancel: true,
+                ..Default::default()
+            });
+        } else {
+            *f.callbacks.password.lock().unwrap() = Some("错误密码".into());
+        }
+        let (tx, rx) = mpsc::channel();
+        let kind = terminal::remote(&f.manager, f.request(true), None, false, || panic!()).unwrap();
+        let result = TerminalManager::new().open(
+            TerminalSpec {
+                kind,
+                cols: 80,
+                rows: 24,
+            },
+            Arc::new(move |e| {
+                let _ = tx.send(e);
+            }),
+        );
+        assert_eq!(
+            result.unwrap_err().code,
+            if cancel {
+                "ssh.auth_cancelled"
+            } else {
+                "ssh.auth_failed"
+            }
+        );
+        let expected = if cancel {
+            vec![]
+        } else {
+            vec![TerminalEvent::Stage(Auth)]
+        };
+        assert_eq!(rx.try_iter().collect::<Vec<_>>(), expected);
+        if cancel {
+            assert!(f.callbacks.host_keys.lock().unwrap().is_empty());
+        }
+    }
+}
+
+#[test]
+fn 打开通道时取消停在会话阶段并保留共享连接() {
+    use terminal::ConnectStage::*;
+    let (f, _) = fixture();
+    let mut request = f.request(true);
+    let cancelled = request.cancelled.clone();
+    let stages = Arc::new(Mutex::new(Vec::new()));
+    let observed = stages.clone();
+    request.progress = Some(Arc::new(move |stage| {
+        observed.lock().unwrap().push(stage);
+        if stage == Session {
+            cancelled.store(true, Ordering::Release);
+        }
+    }));
+    let kind = terminal::remote(&f.manager, request, None, false, || panic!()).unwrap();
+    let result = TerminalManager::new().open(
+        TerminalSpec {
+            kind,
+            cols: 80,
+            rows: 24,
+        },
+        Arc::new(|_| {}),
+    );
+    assert_eq!(result.unwrap_err().code, "ssh.auth_cancelled");
+    assert_eq!(*stages.lock().unwrap(), [Auth, Session]);
+    f.cancelled.store(false, Ordering::Release);
+    f.manager
+        .get_connection(f.request(false))
+        .unwrap()
+        .ping()
+        .unwrap();
 }

@@ -42,7 +42,7 @@ impl Server {
         };
         let path = server.root.path();
         fs::write(path.join("sshd_config"), format!(
-            "Port {}\nListenAddress 127.0.0.1\nHostKey {}\nPidFile {}\nAuthorizedKeysFile {}\nStrictModes no\nPasswordAuthentication no\nKbdInteractiveAuthentication no\nUsePAM no\nAllowTcpForwarding {}\nGatewayPorts no\nLogLevel ERROR\nPermitOpen {}\n",
+            "Port {}\nListenAddress 127.0.0.1\nHostKey {}\nPidFile {}\nAuthorizedKeysFile {}\nStrictModes no\nPasswordAuthentication no\nKbdInteractiveAuthentication no\nUsePAM no\nAllowTcpForwarding {}\nGatewayPorts no\nLogLevel ERROR\nSetEnv HISTFILE=/dev/null\nPermitOpen {}\n",
             server.port, path.join("host").display(), path.join("sshd.pid").display(), path.join("client.pub").display(), if forwarding { "yes" } else { "no" }, permit_open.map_or_else(|| "any".into(), |port| format!("127.0.0.1:{port}"))
         )).unwrap();
         fs::write(

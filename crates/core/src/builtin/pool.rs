@@ -400,10 +400,25 @@ impl ConnectionManager {
                     .register(self.pool.slot(&server.id), &request.cancelled)
             })
             .collect::<Result<Vec<_>, _>>()?;
+        let progress = request
+            .progress
+            .clone()
+            .map(crate::terminal::progress::ordered);
         let mut parent = None;
         for (index, server) in chain.iter().enumerate() {
             let target = index + 1 == chain.len();
+            let progress = progress.clone().map(|progress| {
+                Arc::new(move |stage| {
+                    // 跳板的握手与认证都属于到目标服务器的连接过程。
+                    progress(if !target && stage == crate::terminal::ConnectStage::Auth {
+                        crate::terminal::ConnectStage::Connect
+                    } else {
+                        stage
+                    });
+                }) as crate::terminal::ConnectProgress
+            });
             let current = ConnectionRequest {
+                progress,
                 server,
                 class: if target {
                     request.class
@@ -518,6 +533,7 @@ impl ConnectionManager {
             };
             let result = self.connect_with(
                 ConnectionRequest {
+                    progress: request.progress.clone(),
                     server: request.server,
                     class,
                     vault: request.vault.clone(),
@@ -571,9 +587,14 @@ impl ConnectionManager {
         &self,
         _server: &Server,
         parent: Option<&Connection>,
-        options: ConnectionOptions,
+        mut options: ConnectionOptions,
         auth: Authentication,
     ) -> pierlink_ssh_engine::Result<Connection> {
+        options.proxy = if parent.is_none() {
+            crate::proxy::for_target(&options.host)
+        } else {
+            None
+        };
         #[cfg(test)]
         if let Some(connect) = self
             .pool
@@ -603,6 +624,7 @@ impl ConnectionManager {
         open: impl Fn(&Connection) -> pierlink_ssh_engine::Result<T>,
     ) -> Result<T, AppError> {
         let copy_request = || ConnectionRequest {
+            progress: request.progress.clone(),
             server: request.server,
             class: request.class,
             vault: request.vault.clone(),

@@ -11,6 +11,7 @@ struct Terminal {
 impl Terminal {
     fn open(connections: &ConnectionManager, record: &Server, sshd: &support::Server) -> Self {
         let request = ConnectionRequest {
+            progress: None,
             server: record,
             class: ConnectionClass::Main,
             vault: Arc::new(PasswordVault::default()),
@@ -58,6 +59,7 @@ impl Terminal {
                 .recv_timeout(deadline.saturating_duration_since(Instant::now()))
                 .unwrap()
             {
+                TerminalEvent::Stage(_) => {}
                 TerminalEvent::Output(bytes) => {
                     self.manager.ack(&self.id, bytes.len()).unwrap();
                     output.extend(bytes);
@@ -79,6 +81,7 @@ impl Terminal {
             }
             assert!(Instant::now() < deadline, "屏幕缺少：{expected}");
             match self.events.recv_timeout(Duration::from_millis(50)) {
+                Ok(TerminalEvent::Stage(_)) => {}
                 Ok(TerminalEvent::Output(bytes)) => {
                     self.manager.ack(&self.id, bytes.len()).unwrap()
                 }
@@ -91,6 +94,7 @@ impl Terminal {
     fn exit(&self) -> (Option<i32>, bool) {
         loop {
             match self.events.recv_timeout(Duration::from_secs(10)).unwrap() {
+                TerminalEvent::Stage(_) => {}
                 TerminalEvent::Output(bytes) => self.manager.ack(&self.id, bytes.len()).unwrap(),
                 TerminalEvent::Exited {
                     code,
@@ -215,6 +219,7 @@ fn 服务器拒绝pty时保留通用请求拒绝说明() {
     let connections = ConnectionManager::default();
     for integration in [true, false] {
         let request = ConnectionRequest {
+            progress: None,
             server: &record,
             class: ConnectionClass::Main,
             vault: Arc::new(PasswordVault::default()),

@@ -1,7 +1,7 @@
 import type { IDecoration, IDisposable, IMarker, Terminal } from "@xterm/xterm";
 import { historyOf, onHistoryLoaded, remember } from "./history";
 import { nextWord, suggest } from "./predict";
-import { parse133, parseMark, PIERLINK_OSC, ShellTracker, type Mark } from "./shellMarks";
+import { launchesShell, parse133, parseMark, PIERLINK_OSC, ShellTracker, type Mark } from "./shellMarks";
 
 /** 东亚宽字符（占两格）；只用来排预测文字，不影响终端本身 */
 const WIDE = /[ᄀ-ᅟ⺀-〾ぁ-㏿㐀-䶿一-鿿ꀀ-꓏가-힣豈-﫿︰-﹏＀-｠￠-￦]|[\u{1f300}-\u{1f64f}\u{1f900}-\u{1f9ff}\u{20000}-\u{3fffd}]/u;
@@ -75,6 +75,14 @@ export class Prediction {
     return this.tracker.integrated;
   }
 
+  /**
+   * 钩子显示前台在运行一个程序（在提示符下按了回车、还没回到提示符，并且这条命令不会进到另一个 shell，
+   * 如 claude、python、cat）；没装钩子时为 false
+   */
+  get programRunning(): boolean {
+    return this.tracker.integrated && this.tracker.running && !launchesShell(this.tracker.command);
+  }
+
   private onMark(mark: Mark | null): void {
     if (!mark || !this.opts.scope) return;
     const entry = this.tracker.onMark(mark, this.term, this.opts.cwd());
@@ -86,7 +94,7 @@ export class Prediction {
   /** 用户输入了一段（键盘、粘贴、命令片段）：有回车就离开提示符，等下一个 B 标记 */
   onUserData(data: string): void {
     if (/[\r\n]/.test(data)) {
-      this.tracker.leave();
+      this.tracker.enter(this.term);
       this.hide();
     }
   }

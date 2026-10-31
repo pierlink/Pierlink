@@ -161,7 +161,7 @@ fn restricted(path: &Path, directory: bool, sid: &str) -> Result<bool, AppError>
 }
 
 /// 检查 path 的用户 ACL；directory 决定子项继承方式，必要时修复，失败返回脱敏错误。
-pub(super) fn permissions(path: &Path, directory: bool) -> Result<(), AppError> {
+pub(crate) fn permissions(path: &Path, directory: bool) -> Result<(), AppError> {
     let sid = current_sid()?;
     if restricted(path, directory, sid)? {
         return Ok(());

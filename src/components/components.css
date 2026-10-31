@@ -83,7 +83,11 @@
   position: fixed; z-index: 1000; min-width: 220px; max-width: 360px; padding: 6px; border-radius: var(--r-lg);
   background: var(--menu-bg); border: 1px solid var(--border-strong); box-shadow: var(--shadow-pop);
   display: flex; flex-direction: column; gap: 1px; font-size: var(--fs-sm);
+  /* 服务器很多时不占满屏幕，超出部分滚动 */
+  max-height: min(70vh, 560px); overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin;
 }
+/* 滚动时每一项保持原高度，不被压扁 */
+.pl-menu > * { flex: none; }
 .pl-menu__item {
   display: flex; align-items: center; gap: 8px; height: 30px; padding: 0 10px 0 6px; border: 0; border-radius: var(--r-sm);
   background: transparent; color: var(--text); text-align: left; cursor: pointer;

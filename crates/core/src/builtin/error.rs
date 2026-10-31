@@ -43,6 +43,7 @@ pub fn login_disconnected() -> AppError {
 /// ConnectFailed 只提示可能的会话限制或转发限制，不能断言服务器的具体配置。
 pub fn map_engine_error(error: &Error, operation: Operation) -> AppError {
     match error {
+        Error::Proxy(error) => crate::proxy::map_error(error),
         Error::InvalidInput => AppError::new("ssh.invalid_argument").with_text(
             "field",
             "builtin.connection_parameters",

@@ -10,6 +10,7 @@ use std::sync::atomic::AtomicBool;
 
 /// 延迟到打开终端时取主连接的上下文；不保存明文凭据。
 pub struct BuiltinTerminal {
+    progress: Option<ConnectProgress>,
     manager: ConnectionManager,
     server: Server,
     vault: Arc<PasswordVault>,
@@ -21,6 +22,7 @@ pub struct BuiltinTerminal {
 
 /// 按 request.server 的终端功能选择引擎，返回供 TerminalSpec 使用的终端类型。
 /// cwd_marker 为可选目录跟随标记，integration 控制 shell 集成；内置连接固定使用 Main 并允许交互认证。
+/// 内置阶段优先发给 request.progress；未提供时通过 TerminalEvent::Stage 发出，二者不会重复通知。
 /// 仅系统模式调用 openssh，完整保留原有参数、askpass 和配置行为；此函数不登录。
 pub fn remote(
     manager: &ConnectionManager,
@@ -39,6 +41,7 @@ pub fn remote(
     // 先校验登录 shell；集成命令在握手后按服务器类型生成。
     crate::ssh::args::terminal_command(&request.server.login_shell, false)?;
     Ok(TerminalKind::BuiltinRemote(Box::new(BuiltinTerminal {
+        progress: request.progress,
         manager: manager.clone(),
         server: request.server.clone(),
         vault: request.vault,
@@ -50,10 +53,19 @@ pub fn remote(
 }
 
 impl BuiltinTerminal {
+    pub(super) fn progress(&self, callback: Callback) -> ConnectProgress {
+        progress::ordered(
+            self.progress.clone().unwrap_or_else(|| {
+                Arc::new(move |stage| emit(&callback, TerminalEvent::Stage(stage)))
+            }),
+        )
+    }
+
     pub(super) fn open(
         self,
         cols: u16,
         rows: u16,
+        progress: ConnectProgress,
     ) -> Result<(pierlink_ssh_engine::Session, bool), AppError> {
         let env: Vec<_> = self
             .marker
@@ -63,6 +75,7 @@ impl BuiltinTerminal {
             .collect();
         self.manager.open_session(
             ConnectionRequest {
+                progress: Some(progress.clone()),
                 server: &self.server,
                 class: ConnectionClass::Main,
                 vault: self.vault,
@@ -71,6 +84,7 @@ impl BuiltinTerminal {
                 cancelled: self.cancelled.clone(),
             },
             |connection| {
+                progress(ConnectStage::Session);
                 let integration = self.integration
                     && !windows_server(connection.remote_sshid().unwrap_or_default());
                 let command =

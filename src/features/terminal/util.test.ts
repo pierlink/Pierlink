@@ -16,12 +16,16 @@ describe("快速连接解析", () => {
 });
 
 describe("粘贴确认", () => {
-  it("多行且未开括号粘贴时确认", () => {
-    expect(needsPasteConfirm("ls\nrm -rf x", false)).toBe(true);
-    expect(needsPasteConfirm("ls\nrm -rf x", true)).toBe(false);
-    expect(needsPasteConfirm("ls\n", false)).toBe(false);
-    expect(needsPasteConfirm("单行", false)).toBe(false);
-    expect(needsPasteConfirm("a\nb", true, true)).toBe(true);
+  it("shell 下多行且未开括号粘贴时确认", () => {
+    expect(needsPasteConfirm("ls\nrm -rf x", { bracketed: false })).toBe(true);
+    expect(needsPasteConfirm("ls\nrm -rf x", { bracketed: true })).toBe(false);
+    expect(needsPasteConfirm("ls\n", { bracketed: false })).toBe(false);
+    expect(needsPasteConfirm("单行", { bracketed: false })).toBe(false);
+  });
+  it("前台是程序时不确认，广播时一律确认", () => {
+    expect(needsPasteConfirm("第一行\n第二行", { bracketed: false, program: true })).toBe(false);
+    expect(needsPasteConfirm("a\nb", { bracketed: true, broadcast: true })).toBe(true);
+    expect(needsPasteConfirm("a\nb", { bracketed: false, broadcast: true, program: true })).toBe(true);
   });
 });
 

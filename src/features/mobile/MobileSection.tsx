@@ -171,6 +171,8 @@ export function MobileSection() {
 
   if (!status) return <div className="set-card"><p className="set-row__hint mobile-pad">{error ?? t("common.loading")}</p></div>;
   const options = status.addresses.map((a) => ({ value: a.ip, label: `${a.ip}  ·  ${t(`mobileSettings.kind.${a.kind}`, { defaultValue: a.name })}` }));
+  // 保存过的地址已经不在列表里（如以前选的 IPv6 地址、换了网络、Tailscale 没连）：下拉框显示“选择地址…”，不显示空白
+  const listed = status.bind && status.addresses.some((a) => a.ip === status.bind) ? status.bind : null;
   const active = invite && left > 0 ? invite : null;
   return (
     <div className="set-card mobile-set">
@@ -181,8 +183,7 @@ export function MobileSection() {
         </span>
         <span className="set-row__control">
           <Switch label={t("mobileSettings.enable")} checked={status.enabled} onChange={(v) => {
-            // 保存过的地址已经不在列表里（如以前选的 IPv6 地址、换了网络）：打开时改用 Tailscale 或第一个可用地址
-            const listed = status.bind && status.addresses.some((a) => a.ip === status.bind) ? status.bind : null;
+            // 保存过的地址不在列表里：打开时改用 Tailscale 或第一个可用地址
             void configure(v, v ? listed ?? status.addresses.find((a) => a.kind === "tailscale")?.ip ?? status.addresses[0]?.ip ?? null : status.bind);
           }} />
         </span>
@@ -194,7 +195,7 @@ export function MobileSection() {
         </span>
         <span className="set-row__control mobile-set__address">
           {/* 每次点开都重新读本机地址：刚连上 Tailscale 时也能马上选到 */}
-          <Select label={t("mobileSettings.address")} value={status.bind ?? ""} options={[{ value: "", label: t("mobileSettings.pick") }, ...options]}
+          <Select label={t("mobileSettings.address")} value={listed ?? ""} options={[{ value: "", label: t("mobileSettings.pick") }, ...options]}
             onOpen={reload} onChange={(v) => void configure(status.enabled, v || null)} />
         </span>
       </div>

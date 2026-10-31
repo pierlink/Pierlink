@@ -25,6 +25,9 @@ specta-typescript.workspace = true
 tauri-specta.workspace = true
 base64 = "0.23.1"
 uuid.workspace = true
+png = "0.18"
+# 检查更新、下载更新经 SOCKS5 代理时要用（和更新插件用的是同一个 reqwest）
+reqwest = { version = "0.13", default-features = false, features = ["socks"] }
 tauri-plugin-single-instance = "2"
 tauri-plugin-updater = "=2.13.2"
 # 系统的“选择文件夹”对话框（只在 Rust 命令里调用，不对页面开放插件权限）
@@ -37,7 +40,7 @@ if-addrs = "=0.15.0"
 tokio = { version = "1", features = ["rt-multi-thread"] }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { workspace = true, features = ["Win32_System_Console", "Win32_System_DataExchange"] }
+windows-sys = { workspace = true, features = ["Win32_System_Console", "Win32_System_DataExchange", "Win32_System_Memory"] }
 
 [dev-dependencies]
 tempfile.workspace = true

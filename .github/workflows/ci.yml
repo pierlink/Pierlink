@@ -24,7 +24,7 @@ on:
       old_release:
         description: "升级测试用的旧版：本仓库 Releases 里的版本标签（如 v0.9.5；只有公开仓库 pierlink/Pierlink 有 Release）；留空跳过升级测试"
         type: string
-        default: "v0.9.5"
+        default: "v0.9.6"
       engine:
         description: "内置 SSH 引擎试验：Linux 上多种 sshd 配置和老版本服务器、Windows 上编译和 ssh-agent"
         type: boolean
@@ -614,6 +614,12 @@ jobs:
         env:
           E2E_OUT: ${{ runner.temp }}\e2e-out
         run: node tests/e2e-windows/stage11.mjs
+      - name: 0.9.7：粘贴图片（服务器 /tmp、本机数据目录）、代理（HTTP / SOCKS5，内置 SSH 和系统 OpenSSH，本机终端的环境变量）
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        env:
+          E2E_OUT: ${{ runner.temp }}\e2e-out
+        run: node tests/e2e-windows/stage12.mjs
       - name: 静默卸载（不删数据）：程序没了、数据还在
         if: ${{ !cancelled() }}
         shell: pwsh

@@ -8,6 +8,7 @@ impl Drop for Config {
     }
 }
 pub(super) struct Process {
+    proxy_config: Option<tempfile::TempDir>,
     #[cfg(unix)]
     child: Box<dyn portable_pty::Child + Send + Sync>,
     #[cfg(windows)]
@@ -15,6 +16,7 @@ pub(super) struct Process {
     status: Option<Option<i32>>,
     config: Option<Config>,
     remote: bool,
+    pub(super) log: Option<ssh_log::Log>,
     pub(super) askpass: Option<Arc<crate::ssh::askpass_pipe::Registration>>,
 }
 impl Process {
@@ -22,10 +24,12 @@ impl Process {
     #[cfg(all(test, windows))]
     pub(super) fn from_test_child(child: super::windows::Child) -> Self {
         Self {
+            proxy_config: None,
             child,
             status: None,
             config: None,
             remote: false,
+            log: None,
             askpass: None,
         }
     }
@@ -75,12 +79,14 @@ impl Process {
             }));
         }
         self.config.take();
+        self.proxy_config.take();
     }
     pub(super) fn finish(&mut self) {
         if self.status.is_none() {
             self.terminate();
         }
         self.config.take();
+        self.proxy_config.take();
     }
 }
 impl Drop for Process {
@@ -116,6 +122,8 @@ pub(super) fn spawn(kind: TerminalKind, pair: &super::Pair) -> Result<Process, A
     let remote = matches!(&kind, TerminalKind::Remote { .. });
     let mut config = None;
     let mut askpass = None;
+    let mut proxy_config = None;
+    let mut log = None;
     let (program, args, cwd, mut env) = match kind {
         TerminalKind::BuiltinRemote(_) => {
             return Err(error(
@@ -136,6 +144,12 @@ pub(super) fn spawn(kind: TerminalKind, pair: &super::Pair) -> Result<Process, A
             config_dir,
         } => {
             command = command.prepare()?;
+            let prepared = crate::proxy::openssh::prepare(
+                &crate::process::SshProgram { path: ssh.clone() },
+                &command,
+            )?;
+            command = prepared.command;
+            proxy_config = prepared.config;
             askpass = command.askpass.clone();
             if let Some(text) = command.config_text.take().filter(|s| !s.is_empty()) {
                 fs::create_dir_all(&config_dir).map_err(|_| {
@@ -191,6 +205,7 @@ pub(super) fn spawn(kind: TerminalKind, pair: &super::Pair) -> Result<Process, A
                     command.args.splice(0..0, ["-F".into(), path]);
                 }
             }
+            log = ssh_log::Log::prepare(&mut command.args, &config_dir, cfg!(windows));
             (ssh, command.args, None, command.env)
         }
     };
@@ -262,7 +277,9 @@ pub(super) fn spawn(kind: TerminalKind, pair: &super::Pair) -> Result<Process, A
     #[cfg(windows)]
     let child = pair.master.spawn(&program, &args, cwd.as_deref(), &env)?;
     Ok(Process {
+        proxy_config,
         askpass,
+        log,
         child,
         status: None,
         config,

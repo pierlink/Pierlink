@@ -24,7 +24,15 @@ export function createPreviewBackend(banner: (spec: OpenSpec) => string, promptF
       const id = `preview-${++seq}`;
       const prompt = promptFor?.(spec) ?? defaultPrompt;
       sessions.set(id, { emit: onEvent, line: "", busy: false, prompt });
-      queueMicrotask(() => onEvent({ kind: "output", data: enc.encode(`${banner(spec)}\r\n${marked(prompt)}`) }));
+      const greet = () => onEvent({ kind: "output", data: enc.encode(`${banner(spec)}\r\n${marked(prompt)}`) });
+      if (spec.kind === "local") {
+        queueMicrotask(greet);
+        return id;
+      }
+      // 服务器终端：模拟连接的几步，预览里也能看到连接进度
+      const stages = ["resolve", "connect", "auth", "session", "ready"] as const;
+      stages.forEach((stage, i) => setTimeout(() => { if (sessions.has(id)) onEvent({ kind: "stage", stage }); }, 300 * (i + 1)));
+      setTimeout(() => { if (sessions.has(id)) greet(); }, 300 * (stages.length + 1));
       return id;
     },
     async write(id, data) {
@@ -75,6 +83,8 @@ export function createPreviewBackend(banner: (spec: OpenSpec) => string, promptF
       return { kind: "trusted" };
     },
     async cancelHostKey(probeId) { probes.delete(probeId); },
+    // 预览里不读剪贴板图片
+    async pasteImage() { return null; },
     async busy(id) { return sessions.get(id)?.busy ?? null; },
     async resize() {},
     async ack() {},

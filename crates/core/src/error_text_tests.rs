@@ -425,6 +425,14 @@ fn 固定错误参数不能绕过翻译且所有译文键双向对应() {
             used.extend(shell_keys(&source));
         }
     }
+    // 代理拒绝原因的键写在引擎的 RefuseReason::key() 里，core 经 with_reason(reason.key(), …) 使用
+    let engine_proxy = fs::read_to_string(root.join("../../ssh-engine/src/proxy.rs")).unwrap();
+    let proxy_key = regex::Regex::new(r#""(proxy\.[a-z0-9_]+)""#).unwrap();
+    used.extend(
+        proxy_key
+            .captures_iter(&engine_proxy)
+            .map(|m| m[1].to_owned()),
+    );
     let mut translations = Vec::new();
     for (language, source) in [
         ("zh-CN", include_str!("../../../src/locales/zh-CN.json")),

@@ -20,6 +20,7 @@ pub mod mobile;
 pub mod monitor;
 pub mod process;
 pub mod profile;
+pub mod proxy;
 pub mod remote;
 pub mod security;
 pub mod server_input;

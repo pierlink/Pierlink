@@ -29,14 +29,21 @@ export function parseQuickTarget(input: string): Extract<OpenSpec, { kind: "quic
 }
 
 /**
- * 是否需要在粘贴前确认：多行文本，并且远程程序没有开启括号粘贴模式（异常 R2）。
+ * 是否需要在粘贴前确认（异常 R2）：多行文本，并且会被 shell 逐行当命令执行。末尾的换行不算多行。
  * @param text 要粘贴的文本
- * @param bracketed 终端当前是否处于括号粘贴模式
- * @param broadcast 是否处于广播输入模式（广播时多行一律确认）
+ * @param where bracketed：终端当前处于括号粘贴模式；broadcast：处于广播输入模式（多行一律确认）；
+ *   program：前台是程序而不是 shell 提示符（多行不确认）
+ * @returns true 表示要先确认
  */
-export function needsPasteConfirm(text: string, bracketed: boolean, broadcast = false): boolean {
+export function needsPasteConfirm(text: string, where: { bracketed: boolean; broadcast?: boolean; program?: boolean }): boolean {
   const multiLine = /[\r\n]/.test(text.replace(/[\r\n]+$/, ""));
-  return multiLine && (broadcast || !bracketed);
+  if (!multiLine) return false;
+  // 广播会同时进入多个窗格，一律确认
+  if (where.broadcast) return true;
+  // 前台是程序（Claude Code 这类 CLI、vim、python 等）：多行就是普通的换行文字，交给程序处理
+  if (where.program) return false;
+  // 在 shell 下：没开括号粘贴时每一行都会马上当命令执行；开了的（较新的 bash、zsh）要再按回车才执行
+  return !where.bracketed;
 }
 
 /** base64 解码为字节（后端输出按 base64 传输，避免多字节字符被拆开） */

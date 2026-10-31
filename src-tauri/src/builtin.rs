@@ -121,6 +121,7 @@ pub(crate) fn background(
         callbacks: state.callbacks.clone(),
         interactive: matches!(access, crate::keys::Access::User(_)),
         cancelled: Arc::new(AtomicBool::new(false)),
+        progress: None,
     };
     pierlink_core::remote::command::background(&state.manager, request, openssh)
 }
@@ -145,6 +146,7 @@ pub(crate) fn sftp(
         callbacks: state.callbacks.clone(),
         interactive: true,
         cancelled: Arc::new(AtomicBool::new(false)),
+        progress: None,
     };
     pierlink_core::sftp::command(&state.manager, request, openssh)
 }
@@ -179,6 +181,7 @@ pub async fn server_login(app: AppHandle, server_id: String) -> Result<(), AppEr
             callbacks: state.callbacks.clone(),
             interactive: true,
             cancelled: Arc::new(AtomicBool::new(false)),
+            progress: None,
         };
         state.manager.get_connection(request)?;
         eprintln!("内置 SSH 登录成功: 服务器={}", server.name);
@@ -253,6 +256,7 @@ pub(crate) fn tunnel(
         callbacks: state.callbacks.clone(),
         interactive: false,
         cancelled: Arc::new(AtomicBool::new(false)),
+        progress: None,
     };
     pierlink_core::tunnel::builtin_spec(&state.manager, request, feature, spec)
 }
