@@ -614,6 +614,12 @@ jobs:
         env:
           E2E_OUT: ${{ runner.temp }}\e2e-out
         run: node tests/e2e-windows/stage11.mjs
+      - name: 0.9.7：粘贴图片（服务器 /tmp、本机数据目录）、代理（HTTP / SOCKS5，内置 SSH 和系统 OpenSSH，本机终端的环境变量）
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        env:
+          E2E_OUT: ${{ runner.temp }}\e2e-out
+        run: node tests/e2e-windows/stage12.mjs
       - name: 静默卸载（不删数据）：程序没了、数据还在
         if: ${{ !cancelled() }}
         shell: pwsh

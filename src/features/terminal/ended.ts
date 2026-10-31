@@ -55,7 +55,7 @@ export function endedFromOpenError(err: unknown): Ended {
 }
 
 /**
- * 断开、退出这几种不盖提示块：终端内容留着，只在最下面写一行说明（像 FinalShell）。
+ * 断开、退出这几种不盖提示块：终端内容留着，只在最下面写一行说明。
  * 登录失败、没能打开等要用户选择怎么办的，仍然盖上提示块。
  * @param ended 结束的情况
  * @returns true 表示写一行说明，不盖提示块

@@ -56,6 +56,8 @@ pub type ConnectProgress = Arc<dyn Fn(ConnectStage) + Send + Sync>;
 /// 连接参数；host 使用不带方括号的 IPv6 字面量，认证由 connect 单独指定。
 #[derive(Clone)]
 pub struct ConnectionOptions {
+    /// 第一跳使用的出站代理；connect_via 的后续跳忽略此字段。
+    pub proxy: Option<crate::proxy::ProxyServer>,
     /// 可选的建连阶段回调；不含主机或认证材料。
     pub progress: Option<ConnectProgress>,
     pub host: String,
@@ -84,6 +86,7 @@ impl ConnectionOptions {
         host_key: HostKeyCheck,
     ) -> Self {
         Self {
+            proxy: None,
             progress: None,
             host: host.into(),
             port,
@@ -384,12 +387,18 @@ impl Engine {
     /// 按参数连接并只执行指定认证；返回共享连接，不读取 ssh config 或 known_hosts。
     pub fn connect(&self, options: ConnectionOptions, auth: Authentication) -> Result<Connection> {
         options.validate()?;
-        let stream = self.executor.run_cancellable(
-            options.connect_timeout,
-            "TCP 连接",
-            options.cancelled.clone(),
-            tcp_connect(&options),
-        )?;
+        let stream = self
+            .executor
+            .run_cancellable(
+                options.connect_timeout,
+                "TCP 连接",
+                options.cancelled.clone(),
+                tcp_connect(&options),
+            )
+            .map_err(|error| match (&options.proxy, error) {
+                (Some(_), Error::Timeout(_)) => Error::Proxy(crate::proxy::ProxyError::Timeout),
+                (_, error) => error,
+            })?;
         self.connect_stream(options, auth, stream, None)
     }
 
@@ -435,6 +444,8 @@ impl Engine {
         options.report(ConnectStage::Auth);
         // 登录后主连接可能长期复用，不让连接持有已经关闭的终端进度回调。
         options.progress = None;
+        // 握手完成后不再持有代理凭据。
+        options.proxy = None;
         let counters = Arc::new(Counters::default());
         let remote_sshid = Arc::new(OnceLock::new());
         let allowed_ports = Arc::new(Mutex::new(HashSet::new()));
@@ -521,6 +532,17 @@ impl Engine {
 
 async fn tcp_connect(options: &ConnectionOptions) -> Result<tokio::net::TcpStream> {
     options.report(ConnectStage::Resolve);
+    if let Some(proxy) = &options.proxy {
+        options.report(ConnectStage::Connect);
+        return crate::proxy::connect_async(
+            proxy,
+            &options.host,
+            options.port,
+            options.connect_timeout,
+        )
+        .await
+        .map_err(Error::from);
+    }
     let addresses = lookup_host((options.host.as_str(), options.port))
         .await
         .map_err(|_| Error::Dns)?;

@@ -83,6 +83,8 @@ export function createPreviewBackend(banner: (spec: OpenSpec) => string, promptF
       return { kind: "trusted" };
     },
     async cancelHostKey(probeId) { probes.delete(probeId); },
+    // 预览里不读剪贴板图片
+    async pasteImage() { return null; },
     async busy(id) { return sessions.get(id)?.busy ?? null; },
     async resize() {},
     async ack() {},

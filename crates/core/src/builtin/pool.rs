@@ -587,9 +587,14 @@ impl ConnectionManager {
         &self,
         _server: &Server,
         parent: Option<&Connection>,
-        options: ConnectionOptions,
+        mut options: ConnectionOptions,
         auth: Authentication,
     ) -> pierlink_ssh_engine::Result<Connection> {
+        options.proxy = if parent.is_none() {
+            crate::proxy::for_target(&options.host)
+        } else {
+            None
+        };
         #[cfg(test)]
         if let Some(connect) = self
             .pool

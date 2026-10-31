@@ -59,6 +59,7 @@ pub(crate) fn io_error(text_key: &'static str, operation: &str) -> AppError {
 
 /// 持有进程树；释放时终止整个进程组或作业对象，并回收直接子进程。
 pub struct TreeProcess {
+    proxy_config: Option<tempfile::TempDir>,
     pub(crate) child: Child,
     terminated: bool,
     /// 本次启动的实际登记，进程结束前持续持有。
@@ -82,7 +83,11 @@ impl SshProgram {
                 ));
         }
         let cmd = cmd.prepare()?;
-        self.spawn_with_environment(&cmd, environment(&cmd))
+        let prepared = crate::proxy::openssh::prepare(self, &cmd)?;
+        let mut process =
+            self.spawn_with_environment(&prepared.command, environment(&prepared.command))?;
+        process.proxy_config = prepared.config;
+        Ok(process)
     }
     pub(crate) fn spawn_with_environment(
         &self,
@@ -189,6 +194,7 @@ fn spawn_tree_command(
         (child, job)
     };
     Ok(TreeProcess {
+        proxy_config: None,
         child,
         terminated: false,
         askpass: None,

@@ -123,9 +123,11 @@
 
 /* ---------- 连接进度：解析、连接、认证、会话 ---------- */
 .conn-progress {
-  position: absolute; inset: 0; z-index: 4; display: grid; place-content: center; justify-items: center; gap: 12px;
-  pointer-events: none; animation: pl-fade-in 160ms ease-out;
+  position: absolute; inset: 0; z-index: 4; display: grid; place-content: center;
+  pointer-events: none;
 }
+/* 淡入放在内容上：外层一挂上就在（给读屏播报），内容 250 毫秒后才出来 */
+.conn-progress__body { display: grid; justify-items: center; gap: 12px; animation: pl-fade-in 160ms ease-out; }
 .conn-steps { display: flex; align-items: flex-start; margin: 0; padding: 0; list-style: none; }
 .conn-step { position: relative; display: flex; flex-direction: column; align-items: center; gap: 6px; width: 72px; }
 /* 节点之间的连线画在后一个节点的左边；前一步走完了，线就亮起来 */

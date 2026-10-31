@@ -176,6 +176,37 @@ export const commands = {
 	 *  返回写完时剪贴板的变化序号（Windows）：远程桌面据此认出“这次变化是我们自己写的”，不把它发回远程
 	 */
 	clipboardWriteText: (text: string) => typedError<number | null, AppError>(__TAURI_INVOKE("clipboard_write_text", { text })),
+	/**
+	 *  把剪贴板里的图片传到服务器终端所在的服务器，返回路径。
+	 * 
+	 *  :param loc: 终端所在的服务器（保存过的服务器或快速连接）
+	 *  :return: 服务器上的绝对路径；剪贴板里没有图片返回 clipboard.no_image；上传超过 30 秒返回 paste.upload_timeout
+	 */
+	terminalPasteImageRemote: (loc: LocDto_Deserialize) => typedError<string, AppError>(__TAURI_INVOKE("terminal_paste_image_remote", { loc })),
+	/**
+	 *  把剪贴板里的图片存到本机，返回 Windows 路径（界面再按终端的 shell 改写成它认的写法）。
+	 * 
+	 *  :return: 本机绝对路径；剪贴板里没有图片返回 clipboard.no_image
+	 */
+	terminalPasteImageLocal: () => typedError<string, AppError>(__TAURI_INVOKE("terminal_paste_image_local")),
+	/**  读代理设置 */
+	proxyGet: () => __TAURI_INVOKE<ProxySettingsDto_Serialize>("proxy_get"),
+	/**
+	 *  保存代理设置并马上生效（已经连上的不受影响，之后新建的连接按新设置走）
+	 * 
+	 *  :param settings: 界面提交的设置
+	 *  :return: 保存后的设置（整理过的地址和名单）
+	 */
+	proxySet: (settings: ProxySettingsDto_Deserialize) => typedError<ProxySettingsDto_Serialize, AppError>(__TAURI_INVOKE("proxy_set", { settings })),
+	/**  Windows 当前的代理设置（每次现读） */
+	proxySystem: () => __TAURI_INVOKE<SystemProxyDto>("proxy_system"),
+	/**
+	 *  测试代理：经代理连一下 github.com:443（不保存设置）
+	 * 
+	 *  :param settings: 界面上当前填的设置
+	 *  :return: 用了多少毫秒；连不上时返回 proxy.* 错误（如 proxy.unreachable、proxy.refused、proxy.timeout）
+	 */
+	proxyTest: (settings: ProxySettingsDto_Deserialize) => typedError<number, AppError>(__TAURI_INVOKE("proxy_test", { settings })),
 	/**  用系统默认浏览器打开网址（只允许 http 和 https） */
 	openInBrowser: (url: string) => typedError<null, AppError>(__TAURI_INVOKE("open_in_browser", { url })),
 	/**  家目录：本机为用户目录，服务器为登录后的初始目录。 */
@@ -1996,6 +2027,43 @@ export type PasswordRequestDto_Serialize = {
 
 export type PathIssueDto = { kind: "dangerous"; side: string; path: string } | { kind: "overlap"; side: string; task: string } | { kind: "cloudFolder"; provider: string } | { kind: "otherSyncthing"; side: string } | { kind: "ignoreFile"; side: string } | { kind: "gitRepository"; side: string } | { kind: "unreadable"; side: string };
 
+/**  代理协议 */
+export type ProxyKindDto = "http" | "socks5";
+
+/**  代理方式 */
+export type ProxyModeDto = 
+/**  不使用代理（默认） */
+"off" | 
+/**  跟随 Windows 的代理设置（每次连接时现读） */
+"system" | 
+/**  自定义 */
+"custom";
+
+/**  代理设置 */
+export type ProxySettingsDto = ProxySettingsDto_Serialize | ProxySettingsDto_Deserialize;
+
+/**  代理设置 */
+export type ProxySettingsDto_Deserialize = {
+	mode?: ProxyModeDto,
+	/**  自定义代理的协议、地址、端口（选别的方式时也保留，切回自定义不用重填） */
+	kind?: ProxyKindDto,
+	host?: string,
+	port?: number | null,
+	/**  自定义代理时不走代理的地址（跟随系统时用 Windows 设置里的例外） */
+	bypass?: string[],
+};
+
+/**  代理设置 */
+export type ProxySettingsDto_Serialize = {
+	mode: ProxyModeDto,
+	/**  自定义代理的协议、地址、端口（选别的方式时也保留，切回自定义不用重填） */
+	kind: ProxyKindDto,
+	host: string,
+	port: number | null,
+	/**  自定义代理时不走代理的地址（跟随系统时用 Windows 设置里的例外） */
+	bypass: string[],
+};
+
 export type RenamedDto = {
 	from: string,
 	to: string,
@@ -2400,6 +2468,15 @@ export type SyncTaskDto = {
 	/**  本机一侧：sendReceive / receiveOnly（只接收服务器的变化） */
 	localMode: string,
 };
+
+/**  Windows 当前的代理设置（界面显示用） */
+export type SystemProxyDto = 
+/**  没有设置代理 */
+{ kind: "none" } | 
+/**  手动设置的代理 */
+{ kind: "server"; protocol: ProxyKindDto; host: string; port: number } | 
+/**  用的是 PAC 脚本（不支持，按不使用代理处理） */
+{ kind: "pac"; url: string };
 
 /**  编辑任务：可修改的设置 */
 export type TaskSettingsInput = {

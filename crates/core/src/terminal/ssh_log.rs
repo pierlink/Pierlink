@@ -26,6 +26,26 @@ pub(super) enum Pump {
 }
 
 impl Log {
+    /// 根据 windows 决定是否向 args 添加调试日志参数；返回日志所有者，禁用或创建失败返回 None。
+    pub(super) fn prepare(args: &mut Vec<String>, directory: &Path, windows: bool) -> Option<Self> {
+        // Win32-OpenSSH 写日志时不共享读取权限，运行期间无法取出阶段和错误。
+        // 不创建日志时，分发器也不会发送初始 Resolve，诊断仍由 SSH 直接写入终端。
+        if windows {
+            return None;
+        }
+        let log = Self::create(directory)?;
+        args.splice(
+            0..0,
+            [
+                "-o".into(),
+                "LogLevel=DEBUG1".into(),
+                "-E".into(),
+                log.path().to_string_lossy().into_owned(),
+            ],
+        );
+        Some(log)
+    }
+
     pub(super) fn create(directory: &Path) -> Option<Self> {
         std::fs::create_dir_all(directory).ok()?;
         let file = tempfile::Builder::new()
@@ -48,7 +68,7 @@ impl Log {
     }
 
     fn read(&mut self, finished: bool) -> bool {
-        // 每次重新打开，允许 Windows 启动初期文件暂时不存在，并及时释放共享句柄。
+        // 每次重新打开，容忍日志文件暂时不可用，并及时释放读取句柄。
         let mut bytes = [0; CHUNK];
         let read = File::open(&self.path).and_then(|mut file| {
             file.seek(SeekFrom::Start(self.offset))?;
@@ -206,6 +226,7 @@ impl Parser {
             hidden = [
                 b"Authenticated to ".as_slice(),
                 b"Authenticated with partial success",
+                b"Authenticated using ",
                 b"Transferred: sent ",
                 b"Bytes per second: ",
             ]

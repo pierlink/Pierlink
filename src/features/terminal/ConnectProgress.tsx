@@ -46,10 +46,11 @@ export function ConnectSteps({ stage, failed = false }: { stage: Step; failed?: 
 
 /**
  * 连接中：盖在空终端中间的四步进度和已用秒数（小数点后一位）。
- * @param stage 当前一步
+ * 后端还没报过阶段时只显示秒数（Windows 上的系统 OpenSSH 一直这样：它的日志在运行时读不到）。
+ * @param stage 当前一步；还不知道时为 null
  * @param start 开始连接的时间（performance.now()）
  */
-export function ConnectProgress({ stage, start }: { stage: Step; start: number }) {
+export function ConnectProgress({ stage, start }: { stage: Step | null; start: number }) {
   const { t } = useTranslation();
   const [now, setNow] = useState(() => performance.now());
   useEffect(() => {
@@ -61,13 +62,13 @@ export function ConnectProgress({ stage, start }: { stage: Step; start: number }
   return (
     <div className="conn-progress" role="status">
       {elapsed >= SHOW_AFTER && (
-        <>
-          <ConnectSteps stage={stage} />
+        <div className="conn-progress__body">
+          {stage && <ConnectSteps stage={stage} />}
           <div className="conn-progress__time">
             {t("terminal.stages.connecting")}
             <span className="conn-progress__secs mono" aria-hidden="true">{t("terminal.stages.seconds", { s: (elapsed / 1000).toFixed(1) })}</span>
           </div>
-        </>
+        </div>
       )}
     </div>
   );

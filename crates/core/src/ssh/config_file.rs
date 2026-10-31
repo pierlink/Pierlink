@@ -9,6 +9,7 @@ use std::{
 
 pub mod conversion;
 mod resolve;
+pub(crate) use resolve::resolve_command;
 pub use resolve::{ImportCandidate, preview, resolve_alias};
 
 #[derive(Debug, Clone, PartialEq, Eq)]

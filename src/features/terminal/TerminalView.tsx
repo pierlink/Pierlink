@@ -20,7 +20,7 @@ import { Button } from "../../components";
 import { readClipboardText, writeClipboardText } from "../shell/clipboard";
 import { commands } from "../../bindings/commands";
 import { inTauri } from "../shell/TitleBar";
-import { explorerFolder } from "./localPaths";
+import { droppedText, explorerFolder } from "./localPaths";
 import { passwordBus } from "../passwords/bus";
 import { KittyKeyboard, localShellFamily, newlineKey, parseOsc52 } from "./kittyKeys";
 import { Prediction } from "./prediction";
@@ -108,8 +108,11 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
   // 输入发送失败等短暂提示，显示在终端顶部，几秒后自动消失（不写进终端内容，避免打乱程序输出）
   const [notice, setNotice] = useState<string | null>(null);
   const [ended, setEnded] = useState<Ended | null>(null);
-  /** 连接服务器的进度：当前一步和开始时间；failed 表示连接停在这一步（显示在失败提示块上） */
-  const [steps, setSteps] = useState<{ stage: Step; start: number; failed: boolean } | null>(null);
+  /**
+   * 连接服务器的进度：当前一步（后端还没报过时为 null，只显示秒数）和开始时间；
+   * failed 表示连接停在这一步（显示在失败提示块上）
+   */
+  const [steps, setSteps] = useState<{ stage: Step | null; start: number; failed: boolean } | null>(null);
   /** 内置 SSH 连不上或密钥没通过：提供“改用系统 OpenSSH 重试”（只对保存过的服务器） */
   const offerOpenSsh = spec.kind === "server" && (ended?.kind === "failed" || ended?.kind === "authFailed") && !!ended.builtin;
   /** 把这台服务器改成系统 OpenSSH（原因写进服务器设置），再重新连接 */
@@ -139,6 +142,8 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
     if (noticeTimer.current) clearTimeout(noticeTimer.current);
     noticeTimer.current = setTimeout(() => setNotice(null), ms);
   });
+  /** 收起提示：只收起还在显示的这一条（期间换成了别的提示就不动） */
+  const hideNotice = useRef((text: string) => setNotice((cur) => (cur === text ? null : cur)));
   /** 复制到系统剪贴板；失败时在终端顶部提示原因 */
   const copyText = useRef((text: string) => {
     if (text) void writeClipboardText(text).catch((e: unknown) => showNotice.current(formatError(e)));
@@ -249,7 +254,9 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
       const at = findFakeCursor(term.buffer.active, term.cols, term.rows);
       const screen = el.querySelector<HTMLElement>(".xterm-screen");
       if (!at || !screen) return;
-      want = { left: `${(at.x * screen.clientWidth) / term.cols}px`, top: `${(at.y * screen.clientHeight) / term.rows}px` };
+      // 取到两位小数：浏览器读回 style 时会截短位数，取整后读回的值和写入的一样，才能比较出“没变”
+      const px = (v: number) => `${Math.round(v * 100) / 100}px`;
+      want = { left: px((at.x * screen.clientWidth) / term.cols), top: px((at.y * screen.clientHeight) / term.rows) };
       applyIme();
     };
     // xterm 在渲染、光标移动、组字更新时会把它们放回真实光标处（组字时还会在下一轮事件循环再放一次）：
@@ -258,8 +265,13 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
     for (const node of [term.textarea, el.querySelector<HTMLElement>(".composition-view")]) {
       if (node) keepIme.observe(node, { attributes: true, attributeFilter: ["style"] });
     }
-    term.onRender(anchorIme);
-    term.onCursorMove(anchorIme);
+    // 渲染、光标移动很频繁：合并到下一帧扫一次屏（期间 xterm 挪回去的位置由上面的观察者立即改回）
+    let imeFrame = 0;
+    const scanSoon = () => {
+      if (!imeFrame) imeFrame = requestAnimationFrame(() => { imeFrame = 0; anchorIme(); });
+    };
+    term.onRender(scanSoon);
+    term.onCursorMove(scanSoon);
     const imeEvents = ["focus", "compositionstart", "compositionupdate"] as const;
     for (const name of imeEvents) term.textarea?.addEventListener(name, anchorIme);
     const dropIme = () => { want = null; };
@@ -320,7 +332,7 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
       covering = lastStage !== null;
       stageSeen = false;
       delete el.dataset.stage;
-      setSteps(lastStage ? { stage: lastStage, start: performance.now(), failed: false } : null);
+      setSteps(lastStage ? { stage: null, start: performance.now(), failed: false } : null);
       cb.current.onStatus?.("running");
       try {
         const newId = await backend.open(spec, term.cols, term.rows, (e) => {
@@ -438,6 +450,41 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
       if (id) void backend.close(id).catch((err: unknown) => { if (!disposed) showNotice.current(formatError(err)); });
     };
 
+    // 粘贴图片：服务器终端把图片传到那台服务器的 /tmp，本机终端存到本机，再把路径粘贴进去
+    // （Claude Code 等会把图片路径当成图片）。同一个终端同时只传一张；传的时候按了回车、Ctrl+C，
+    // 或会话换了，传完就不粘贴
+    let imagePending = false;
+    let imageGeneration = 0;
+    const pasteImage = async () => {
+      if (exited || !id) return;
+      const tr = cb.current.t;
+      if (imagePending) { showNotice.current(tr("terminal.pasteImageBusy")); return; }
+      imagePending = true;
+      const session = id;
+      const generation = imageGeneration;
+      // 传得慢才提示；传完就收起
+      const uploading = tr("terminal.pasteImageUploading");
+      const slow = setTimeout(() => { if (!disposed) showNotice.current(uploading, 35_000); }, 400);
+      try {
+        const path = await backend.pasteImage(spec);
+        if (path === null || disposed) return;
+        if (exited || id !== session || generation !== imageGeneration) {
+          showNotice.current(tr("terminal.pasteImageExpired"));
+          return;
+        }
+        // 本机终端按 shell 改写路径（WSL、Git Bash 的写法，带空格时加引号）
+        const text = spec.kind === "local" ? droppedText(spec.shellId, [path]) : path;
+        // 路径只对这台机器有效：只发给这个窗格，不参与广播；程序开了括号粘贴就按粘贴发
+        await backend.write(session, term.modes.bracketedPasteMode ? `\x1b[200~${text}\x1b[201~` : text);
+      } catch (err) {
+        if (!disposed) showNotice.current(formatError(err));
+      } finally {
+        clearTimeout(slow);
+        if (!disposed) hideNotice.current(uploading);
+        imagePending = false;
+      }
+    };
+
     // 终端对程序查询的回答：只发给这个会话（不走广播）
     const reply = (data: string) => {
       if (id && !exited) void backend.write(id, data).catch(() => undefined);
@@ -453,6 +500,8 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
     };
     reopenRef.current = reopen;
     term.onData((data) => {
+      // 图片还在上传时按了回车、Ctrl+C、Ctrl+Z：传完就不粘贴了（终端已经往下走，路径会粘到别的地方）
+      if (imagePending && !data.startsWith("\x1b[200~") && /[\r\n\x03\x1a]/.test(data)) imageGeneration++;
       prediction.onUserData(data);
       // 会话已结束：按 Enter 等于点“重新连接”
       if (exited) {
@@ -473,7 +522,8 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
     });
 
     const doPaste = async (text: string) => {
-      if (!text) return;
+      // 剪贴板里没有文字：看看有没有图片
+      if (!text) { void pasteImage(); return; }
       // 广播时多行粘贴一律确认（会同时进入多个窗格），不受“多行粘贴前确认”设置影响
       const broadcast = !!cb.current.broadcasting;
       const where = { bracketed: term.modes.bracketedPasteMode, broadcast, program: inProgram() };
@@ -581,6 +631,7 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
       for (const name of imeEvents) term.textarea?.removeEventListener(name, anchorIme);
       term.textarea?.removeEventListener("blur", dropIme);
       keepIme.disconnect();
+      if (imeFrame) cancelAnimationFrame(imeFrame);
       el.removeEventListener("mousedown", onRightButton, true);
       el.removeEventListener("mouseup", onRightButton, true);
       if (id) void backend.close(id);
@@ -667,7 +718,7 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
         // 登录失败、没能打开：盖住终端内容，说明原因并提供按钮
         <div className={`term-ended term-ended--${ended.kind}`} role="alert">
           <div className="term-ended__box">
-            {steps?.failed && <ConnectSteps stage={steps.stage} failed />}
+            {steps?.failed && steps.stage && <ConnectSteps stage={steps.stage} failed />}
             <div className="term-ended__title">
               {ended.kind === "passwordNeeded" ? t("terminal.endedPasswordNeeded")
                 : ended.kind === "authFailed" ? t("terminal.endedAuth")

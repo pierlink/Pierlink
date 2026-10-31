@@ -36,11 +36,23 @@ fn fail(code: &str, e: impl std::fmt::Display) -> AppError {
     AppError::new(code).with("reason", reason)
 }
 
+/// 更新走的代理：按代理设置，github.com 不在不走代理的名单里时才用（新版本的说明和安装包都从 GitHub 下载）
+fn update_proxy() -> Option<tauri::Url> {
+    let proxy = pierlink_core::proxy::for_target("github.com")?;
+    tauri::Url::parse(&pierlink_core::proxy::url(&proxy)).ok()
+}
+
 /// 检查是否有新版本；没有返回 null
 #[tauri::command]
 #[specta::specta]
 pub async fn update_check(app: AppHandle) -> Result<Option<UpdateInfoDto>, AppError> {
-    let updater = app.updater().map_err(|e| fail("update.check_failed", e))?;
+    let mut builder = app.updater_builder();
+    if let Some(proxy) = update_proxy() {
+        builder = builder.proxy(proxy);
+    }
+    let updater = builder
+        .build()
+        .map_err(|e| fail("update.check_failed", e))?;
     let update = updater
         .check()
         .await
@@ -64,8 +76,11 @@ pub async fn update_install(
     on_progress: Channel<UpdateProgressDto>,
 ) -> Result<(), AppError> {
     let exit_app = app.clone();
-    let updater = app
-        .updater_builder()
+    let mut builder = app.updater_builder();
+    if let Some(proxy) = update_proxy() {
+        builder = builder.proxy(proxy);
+    }
+    let updater = builder
         .on_before_exit(move || {
             eprintln!("即将运行安装程序：先关闭同步、隧道和终端");
             // 这里在异步工作线程上，关闭要同步等几秒：让运行时先把这个线程上的其他任务挪走

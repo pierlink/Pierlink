@@ -21,6 +21,8 @@ pub enum ChannelFailure {
 /// 可由 core 确定性映射为 AppError 的错误分类。
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum Error {
+    #[error(transparent)]
+    Proxy(#[from] crate::proxy::ProxyError),
     #[error("参数无效")]
     InvalidInput,
     #[error("同步接口不能在异步运行时内直接调用")]

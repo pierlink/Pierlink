@@ -99,10 +99,12 @@ describe("提示符标记", () => {
 
   it("认出会进到另一个 shell 的命令；拿不准时按 shell 处理", () => {
     for (const c of ["ssh old-box", "sudo -i", "sudo apt update", "su -", "docker exec -it web bash", "kubectl exec -it p -- sh",
-      "tmux", "screen -r", "exec bash --norc", "env -i bash", "FOO=1 zsh", "/usr/bin/ssh h", "\\ssh h", "cd /srv && bash", "mosh h", "wsl"]) {
+      "tmux", "screen -r", "exec bash --norc", "env -i bash", "FOO=1 zsh", "/usr/bin/ssh h", "\\ssh h", "cd /srv && bash", "mosh h", "wsl",
+      "tailscale ssh u@box", "gcloud compute ssh vm", "timeout 100 bash", "exec -a name bash", "env -u VAR bash",
+      "(cd /x; bash)", "{ ssh h; }", "for h in a b; do ssh $h; done", "! ssh h", "proxychains4 ssh h", "docker-compose exec web bash"]) {
       expect(launchesShell(c), c).toBe(true);
     }
-    for (const c of ["claude", "codex --full-auto", "python3", "cat", "vim notes.md", "time make", "nohup node app.js", "less log"]) {
+    for (const c of ["claude", "codex --full-auto", "python3", "cat", "vim notes.md", "time make", "nohup node app.js", "less log", "timeout 30 make", "(cd web && npm test)"]) {
       expect(launchesShell(c), c).toBe(false);
     }
     expect(launchesShell(null)).toBe(true);

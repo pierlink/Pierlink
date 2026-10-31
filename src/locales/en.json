@@ -60,7 +60,8 @@
       "about": "About",
       "backup": "Backup & transfer",
       "phone": "Phone",
-      "desktop": "Server desktop"
+      "desktop": "Server desktop",
+      "network": "Network"
     },
     "term": {
       "defaultShell": "Default local terminal",
@@ -123,6 +124,31 @@
     "desktop": {
       "openInWindow": "Open in a separate window",
       "openInWindowHint": "Open desktops straight in their own window"
+    },
+    "proxy": {
+      "mode": "Proxy",
+      "modeHint": "Used for server connections, updates and local terminals",
+      "modes": {
+        "off": "Off",
+        "system": "System",
+        "custom": "Custom"
+      },
+      "system": "System proxy",
+      "systemNone": "Not set",
+      "systemPac": "PAC script (not supported)",
+      "protocol": "Protocol",
+      "address": "Address",
+      "addressHint": "Proxies with a username and password aren't supported",
+      "host": "Host",
+      "port": "Port",
+      "bypass": "Bypass ({{count}})",
+      "bypassHint": "One per line; *.example.com and 10.0.0.0/8 work",
+      "bypassReset": "Restore defaults",
+      "test": "Test proxy",
+      "testing": "Testing…",
+      "testOk": "Works, {{ms}} ms",
+      "saved": "Saved",
+      "unsaved": "Unsaved"
     }
   },
   "workspace": {
@@ -1508,7 +1534,8 @@
       "read_failed": "Couldn't read the clipboard",
       "unsupported": "Reading the clipboard directly isn't supported on this system",
       "too_large": "Too much to copy (limit {{limit}} bytes)",
-      "write_failed": "Couldn't write to the clipboard"
+      "write_failed": "Couldn't write to the clipboard",
+      "no_image": "No image in the clipboard"
     },
     "link": {
       "invalid_url": "This link can't be opened: {{reason}}",
@@ -1605,6 +1632,27 @@
     "desktop": {
       "task_failed": "The operation stopped unexpectedly: {{reason}}",
       "invalid_data": "Invalid data for the desktop"
+    },
+    "proxy": {
+      "unreachable": "Can't reach the proxy {{proxy}}",
+      "auth_required": "The proxy requires a username and password, which Pierlink doesn't support",
+      "refused": "The proxy refused {{target}}: {{reason}}",
+      "timeout": "The proxy didn't respond",
+      "invalid_argument": "Invalid proxy settings",
+      "io_failed": "Data transfer through the proxy failed",
+      "invalid_host": "Invalid proxy host: enter a host name or IP only",
+      "invalid_port": "Invalid proxy port",
+      "invalid_bypass": "Invalid bypass entry: {{rule}}",
+      "bypass_too_many": "At most {{max}} bypass entries",
+      "pac_unsupported": "The system uses a PAC script, which isn't supported",
+      "system_none": "No system proxy is set",
+      "not_enabled": "No proxy is enabled"
+    },
+    "paste": {
+      "image_too_large": "The image is too large (max 20 MB)",
+      "image_unsupported": "Unsupported image format in the clipboard",
+      "upload_timeout": "Image upload timed out",
+      "save_failed": "Couldn't save the image"
     }
   },
   "terminal": {
@@ -1729,7 +1777,10 @@
       "session": "Session",
       "connecting": "Connecting",
       "seconds": "{{s}}s"
-    }
+    },
+    "pasteImageUploading": "Uploading image…",
+    "pasteImageBusy": "Still uploading the previous image",
+    "pasteImageExpired": "The terminal moved on; image not pasted"
   },
   "hostKey": {
     "title": "Verify the server's identity",

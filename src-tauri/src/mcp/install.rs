@@ -76,14 +76,22 @@ fn remove_failed_text(client: &str, key: &'static str, text: &str) -> AppError {
 }
 
 /// 客户端说“没有这个名字”的输出（不同客户端、不同版本措辞不同，如
-/// “No user-scoped MCP server found with name: pierlink”“server 'pierlink' not found”）。
+/// “No MCP server named "pierlink" in user scope”“No user-scoped MCP server found with name: pierlink”
+/// “server 'pierlink' not found”）。
 /// 必须说到 pierlink 或 server：“node: No such file or directory”这类别的错误不算
 fn says_not_found(text: &str) -> bool {
     let t = text.to_ascii_lowercase();
     let about_entry = t.contains(NAME) || t.contains("server");
-    let missing = ["not found", "does not exist", "doesn't exist"]
-        .iter()
-        .any(|k| t.contains(k))
+    let missing = [
+        "not found",
+        "does not exist",
+        "doesn't exist",
+        "no mcp server",
+        "no server named",
+        "not configured",
+    ]
+    .iter()
+    .any(|k| t.contains(k))
         || t.find("no ").is_some_and(|i| t[i..].contains(" found"));
     about_entry && missing
 }
@@ -587,7 +595,7 @@ pub(crate) fn codex_manual_command(url: &str) -> Result<String, AppError> {
 
 /// 移除脚本里 `if out=$(客户端 mcp remove …); then r=true` 的后半段：客户端的输出明确说没有这个名字才算本来就没有，
 /// 其他失败以 5 退出。客户端的输出不打印（可能带配置内容）。
-const NOT_ADDED: &str = r#"elif printf '%s' "$out" | grep -qiE 'pierlink|server' && printf '%s' "$out" | grep -qiE 'not found|does not exist|doesn.t exist|no .* found'; then r=false
+const NOT_ADDED: &str = r#"elif printf '%s' "$out" | grep -qiE 'pierlink|server' && printf '%s' "$out" | grep -qiE 'not found|does not exist|doesn.t exist|no .* found|no mcp server|no server named|not configured'; then r=false
 else exit 5
 fi"#;
 
@@ -1206,6 +1214,9 @@ mod tests {
             "No user-scoped MCP server found with name: pierlink"
         ));
         assert!(says_not_found("Error: server 'pierlink' not found"));
+        assert!(says_not_found(
+            "No MCP server named \"pierlink\" in user scope"
+        ));
         assert!(!says_not_found(
             "/usr/bin/env: 'node': No such file or directory"
         ));
@@ -1281,7 +1292,7 @@ mod tests {
             std::fs::write(
                 &fake,
                 format!(
-                    "#!/bin/sh\necho \"{name} $@\" >> {log}\n[ -e {fail} ] && {{ echo 'No user-scoped MCP server found with name: pierlink'; exit 1; }}\n[ -e {broken} ] && {{ echo 'node: No such file or directory' >&2; exit 127; }}\nexit 0\n",
+                    "#!/bin/sh\necho \"{name} $@\" >> {log}\n[ -e {fail} ] && {{ echo 'No MCP server named pierlink in user scope'; exit 1; }}\n[ -e {broken} ] && {{ echo 'node: No such file or directory' >&2; exit 127; }}\nexit 0\n",
                     log = log.display(),
                     fail = dir.path().join("FAIL").display(),
                     broken = dir.path().join("BROKEN").display()

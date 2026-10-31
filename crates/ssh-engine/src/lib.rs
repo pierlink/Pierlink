@@ -17,6 +17,7 @@ mod forwarding;
 mod memory_peer;
 #[cfg(test)]
 mod protocol_tests;
+pub mod proxy;
 mod runtime;
 #[cfg(test)]
 #[path = "../tests/support/mod.rs"]

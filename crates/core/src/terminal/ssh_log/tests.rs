@@ -66,6 +66,7 @@ fn 日志阶段单向推进并保留就绪后的普通诊断() {
 fn 过滤详细状态与统计但保留警告错误和相似正文() {
     let events = parse(
         b"Authenticated with partial success.\r\n\
+        Authenticated using \"publickey\" with partial success.\r\n\
         Authenticated to host using password.\n\
         debug1: Entering interactive session.\n\
         Authenticated to jump using publickey.\n\
@@ -98,6 +99,7 @@ fn 详细日志跨块和无换行尾部均不泄漏() {
     for prefix in [
         "Authenticated to ",
         "Authenticated with partial success",
+        "Authenticated using ",
         "Transferred: sent ",
         "Bytes per second: ",
     ] {
@@ -303,7 +305,7 @@ fn finished_session(pending: usize) -> Arc<Session> {
 }
 
 #[cfg(unix)]
-fn dispatch_log(log: Log, chunks: Vec<Vec<u8>>) -> Vec<TerminalEvent> {
+fn dispatch_log(log: impl Into<Option<Log>>, chunks: Vec<Vec<u8>>) -> Vec<TerminalEvent> {
     let session = finished_session(chunks.iter().map(Vec::len).sum());
     let (tx, rx) = mpsc::channel();
     for chunk in chunks {
@@ -325,7 +327,7 @@ fn dispatch_log(log: Log, chunks: Vec<Vec<u8>>) -> Vec<TerminalEvent> {
             }
             lock(&observed).push(event);
         }),
-        Some(log),
+        log.into(),
     );
     assert_eq!(lock(&session.flow).pending, 0);
     let events = std::mem::take(&mut *lock(&events));
@@ -529,4 +531,66 @@ fn 建日志失败仍正常启动且不报告阶段() {
         }
     }
     assert_eq!(output, b"connected");
+}
+
+#[test]
+fn 平台分支决定是否创建日志及追加参数() {
+    let root = crate::test_support::tempdir();
+    for windows in [true, false] {
+        let directory = root.path().join(if windows { "windows" } else { "unix" });
+        let original = vec!["-tt".into(), "host".into()];
+        let mut args = original.clone();
+        let log = Log::prepare(&mut args, &directory, windows);
+        if windows {
+            assert!(log.is_none());
+            assert_eq!(args, original);
+            assert!(!directory.exists());
+        } else {
+            let log = log.unwrap();
+            let path = log.path().to_owned();
+            assert_eq!(&args[..3], ["-o", "LogLevel=DEBUG1", "-E"]);
+            assert_eq!(args[3], path.to_str().unwrap());
+            assert_eq!(&args[4..], original);
+            assert!(path.is_file());
+            drop(log);
+            assert!(!path.exists());
+        }
+    }
+    let blocker = root.path().join("file");
+    std::fs::write(&blocker, b"").unwrap();
+    let mut args = vec!["host".into()];
+    assert!(Log::prepare(&mut args, &blocker, false).is_none());
+    assert_eq!(args, ["host"]);
+}
+
+#[cfg(unix)]
+#[test]
+fn windows分支不报任何阶段且密码失败照常从终端输出() {
+    let root = crate::test_support::tempdir();
+    for windows in [true, false] {
+        let mut args = vec!["host".into()];
+        let log = Log::prepare(&mut args, root.path(), windows);
+        if let Some(log) = &log {
+            std::fs::write(log.path(), b"debug1: Connection established.\n").unwrap();
+        }
+        let diagnostic = b"Permission denied, please try again.\r\nuser@host's password: ";
+        let events = dispatch_log(log, vec![diagnostic.to_vec()]);
+        let stages: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                TerminalEvent::Stage(stage) => Some(*stage),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            stages,
+            if windows {
+                vec![]
+            } else {
+                vec![ConnectStage::Resolve, ConnectStage::Auth]
+            }
+        );
+        assert_eq!(output(events), diagnostic);
+        assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
+    }
 }

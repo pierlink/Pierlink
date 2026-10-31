@@ -1,6 +1,7 @@
 import { Channel } from "@tauri-apps/api/core";
 import { commands, type TerminalEventDto_Deserialize } from "../../bindings/commands";
 import { base64ToBytes } from "./util";
+import { isAppError } from "../../errors";
 import type { TerminalBackend } from "./types";
 import type { LocalShellView } from "./backend";
 
@@ -48,6 +49,15 @@ export function createTauriBackend(): TerminalBackend {
     },
     async answerHostKey(probeId, accept) { return unwrap(await commands.hostKeyAnswer(probeId, accept)); },
     async cancelHostKey(probeId) { await commands.hostKeyCancel(probeId); },
+    async pasteImage(spec) {
+      const r = spec.kind === "local" ? await commands.terminalPasteImageLocal() : await commands.terminalPasteImageRemote(spec);
+      if (r.status === "error") {
+        // 剪贴板里没有图片：什么都不做
+        if (isAppError(r.error) && r.error.code === "clipboard.no_image") return null;
+        throw r.error;
+      }
+      return r.data;
+    },
   };
 }
 

@@ -35,11 +35,13 @@ English · [简体中文](README.md)
 - Shift+Enter inserts a new line without running it (in shells, Claude Code and Codex); Ctrl+C copies selected text and Ctrl+V pastes; right-click copy and paste can be turned on
 - Text copied in Claude Code, vim and similar tools lands in your local clipboard (inside tmux too); links in the terminal open in your Windows browser
 - Drag files from File Explorer into a local terminal to insert their paths (written the way PowerShell, Command Prompt or WSL expects)
+- Paste images into server terminals: the image is uploaded to the server and its path pasted, which Claude Code shows as [Image #1]
 - Server overview pinned to the terminal: CPU, memory, swap, GPU, disk per mount point, network speed
 
 ### Connections
 - Built-in SSH (works with servers as old as CentOS 7); or connect with system OpenSSH using `~/.ssh/config`, with one-step import
 - Port forwarding: local, remote and SOCKS proxy, restored automatically after disconnects
+- Proxy: follow the system or set an HTTP / SOCKS5 proxy for server connections, updates and local terminals
 - File panel: browse, upload, download, rename, delete, and edit text files; drag between panes to transfer files
 
 ### File sync
@@ -143,6 +145,7 @@ Not yet — the desktop app runs on Windows 10 / 11. Servers can run any Linux.
 ## Privacy and security
 
 - No usage data is collected. Pierlink only contacts GitHub to check for updates, plus the servers you add.
+- Images you paste into a server terminal are stored in /tmp on that server, readable only by your account, and removed after 7 days the next time you paste one.
 - The sync component listens on this PC only, with global discovery, relays and usage reporting turned off; data travels only through SSH tunnels.
 - AI access and phone access are off until you turn them on, and you can revoke them any time.
 - Found a security issue? Please report it privately as described in [SECURITY.md](SECURITY.md).

@@ -12,11 +12,12 @@ import { announceUpdate } from "../updates/UpdateNotice";
 import { formatError } from "../../errors";
 import { BackupSection } from "./BackupSection";
 import { MobileSection } from "../mobile/MobileSection";
+import { ProxySection } from "./ProxySection";
 import { clearHistory } from "../terminal/history";
 import "./settings.css";
 
-type Section = "appearance" | "terminal" | "desktop" | "sync" | "phone" | "backup" | "about";
-const SECTIONS: Section[] = ["appearance", "terminal", "desktop", "sync", "phone", "backup", "about"];
+type Section = "appearance" | "terminal" | "desktop" | "sync" | "phone" | "network" | "backup" | "about";
+const SECTIONS: Section[] = ["appearance", "terminal", "desktop", "sync", "phone", "network", "backup", "about"];
 
 /** 一行设置：左边说明，右边控件 */
 function Row({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
@@ -80,7 +81,7 @@ export function SettingsPage({ version }: { version: string | null }) {
   const [shells, setShells] = useState<LocalShellView[]>([]);
   const [rulesText, setRulesText] = useState(settings.syncDefaults.ignoreRules.join("\n"));
   const [active, setActive] = useState<Section>("appearance");
-  const refs = useRef<Record<Section, HTMLElement | null>>({ appearance: null, terminal: null, desktop: null, sync: null, phone: null, backup: null, about: null });
+  const refs = useRef<Record<Section, HTMLElement | null>>({ appearance: null, terminal: null, desktop: null, sync: null, phone: null, network: null, backup: null, about: null });
   const term = settings.terminal;
   const sync = settings.syncDefaults;
 
@@ -282,6 +283,11 @@ export function SettingsPage({ version }: { version: string | null }) {
         <section ref={(el) => { refs.current.phone = el; }} className="set-section">
           <h2>{t("settings.section.phone")}</h2>
           <MobileSection />
+        </section>
+
+        <section ref={(el) => { refs.current.network = el; }} className="set-section">
+          <h2>{t("settings.section.network")}</h2>
+          <ProxySection />
         </section>
 
         <section ref={(el) => { refs.current.backup = el; }} className="set-section">

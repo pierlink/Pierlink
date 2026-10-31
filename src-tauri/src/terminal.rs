@@ -574,12 +574,14 @@ pub async fn terminal_open_server(
     .await
 }
 
-/// 本机终端的环境变量：Git Bash 打开命令预测时加上 PIERLINK_PREDICT=1（包装脚本据此装上提示符标记）。
+/// 本机终端的环境变量：Git Bash 打开命令预测时加上 PIERLINK_PREDICT=1（包装脚本据此装上提示符标记）；
+/// 设置了代理时加上代理环境变量（HTTP_PROXY 等）。
 fn local_env(shell: &LocalShell, prediction: bool) -> Vec<(String, String)> {
     let mut env = shell.env.clone();
     if prediction && shell.kind == shells::ShellKind::GitBash {
         env.push(("PIERLINK_PREDICT".into(), "1".into()));
     }
+    env.extend(crate::proxy::terminal_env(shell));
     env
 }
 

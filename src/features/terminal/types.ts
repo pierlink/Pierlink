@@ -47,4 +47,9 @@ export interface TerminalBackend {
   answerHostKey(probeId: string, accept: boolean): Promise<HostKeyStep>;
   /** 放弃确认，结束后台的 ssh 进程 */
   cancelHostKey(probeId: string): Promise<void>;
+  /**
+   * 剪贴板里的图片：服务器终端传到那台服务器的 /tmp，本机终端存到本机；返回路径（本机是 Windows 路径）。
+   * 剪贴板里没有图片时返回 null
+   */
+  pasteImage(spec: OpenSpec): Promise<string | null>;
 }

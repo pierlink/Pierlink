@@ -3,6 +3,7 @@
 
 mod app_shell;
 mod builtin;
+mod clipboard_image;
 mod convert;
 mod data;
 mod deploy;
@@ -18,7 +19,9 @@ mod monitor;
 mod network;
 mod pages;
 mod passwords;
+mod paste_image;
 mod profile;
+mod proxy;
 mod servers;
 mod snippets;
 mod ssh_import;
@@ -85,6 +88,12 @@ fn specta_builder() -> Builder<tauri::Wry> {
         terminal::clipboard_read_text,
         terminal::clipboard_sequence,
         terminal::clipboard_write_text,
+        paste_image::terminal_paste_image_remote,
+        paste_image::terminal_paste_image_local,
+        proxy::proxy_get,
+        proxy::proxy_set,
+        proxy::proxy_system,
+        proxy::proxy_test,
         terminal::open_in_browser,
         files::files_home,
         files::files_list,
@@ -279,6 +288,12 @@ fn restore_ctrl_c_for_children() {
 }
 
 pub fn run() {
+    // `Pierlink.exe --proxy-connect 主机 端口`：系统 OpenSSH 经代理连接时把本程序当作 ProxyCommand 启动，
+    // 只转发数据、不打开界面。和 --mcp 一样要在单实例插件之前
+    let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+    if args.first().is_some_and(|a| a == "--proxy-connect") {
+        std::process::exit(proxy::run_proxy_connect(&args[1..]));
+    }
     // `Pierlink.exe --mcp`：AI agent 启动的桥接程序，只在标准输入输出和运行中的 Pierlink 之间转发，
     // 不打开界面。要在单实例插件之前（否则参数被转给已运行的实例、本进程直接退出）和 askpass 判断之前
     #[cfg(windows)]
@@ -371,6 +386,8 @@ pub fn run() {
                 Err(e) => eprintln!("读取电脑短 ID 失败: 错误={e:?}"),
             }
             app.manage(db);
+            // 代理设置：要在任何连接（同步、转发、检查更新）之前生效
+            proxy::apply_saved(app.handle());
             // 密码服务器的内存密码库和 askpass 管道：要在任何连接（同步、转发自动开启）之前建立
             let passwords = passwords::PasswordState::start(app.handle());
             app.manage(passwords);

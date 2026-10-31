@@ -79,17 +79,26 @@ export interface InputAt {
 
 /** 会进到另一个 shell 的命令（嵌套 shell、远程登录、切用户、容器、终端复用器等） */
 const SHELL_LAUNCHERS = new Set([
-  "ssh", "mosh", "telnet", "rlogin", "su", "sudo", "doas", "pkexec", "runuser", "newgrp", "sg",
-  "bash", "sh", "zsh", "fish", "dash", "ksh", "mksh", "csh", "tcsh", "nu", "xonsh", "elvish", "pwsh", "powershell", "cmd",
+  "ssh", "mosh", "telnet", "rlogin", "sshpass", "autossh", "tailscale", "tsh", "gcloud", "aws", "az",
+  "su", "sudo", "doas", "pkexec", "runuser", "newgrp", "sg",
+  "bash", "sh", "zsh", "fish", "dash", "ksh", "mksh", "csh", "tcsh", "nu", "xonsh", "elvish", "pwsh", "powershell", "cmd", "busybox",
   "tmux", "screen", "byobu", "zellij", "abduco", "dtach",
-  "docker", "podman", "nerdctl", "kubectl", "oc", "lxc", "incus", "machinectl", "systemd-nspawn", "toolbox", "distrobox",
-  "nix-shell", "nix", "chroot", "wsl", "vagrant", "multipass", "script", "expect",
+  "docker", "docker-compose", "podman", "podman-compose", "nerdctl", "kubectl", "oc", "lxc", "lxc-attach", "incus", "pct", "virsh",
+  "machinectl", "systemd-nspawn", "nsenter", "unshare", "proot", "firejail", "bwrap", "toolbox", "distrobox", "chroot",
+  "nix-shell", "nix", "poetry", "pipenv", "wsl", "vagrant", "multipass", "script", "expect",
 ]);
 /** 写在命令前面、本身不决定跑什么的词 */
-const PREFIXES = new Set(["exec", "command", "builtin", "nohup", "time", "env", "nice", "ionice", "stdbuf"]);
+const PREFIXES = new Set([
+  "exec", "command", "builtin", "nohup", "time", "env", "nice", "ionice", "stdbuf", "timeout", "setsid", "unbuffer",
+  "strace", "ltrace", "proxychains", "proxychains4", "torsocks", "rlwrap",
+]);
+/** shell 语法里的关键字：跳过它们看后面的命令 */
+const KEYWORDS = new Set(["if", "then", "else", "elif", "do", "while", "until", "!"]);
+/** 前缀后面带参数的选项（如 exec -a 名字、env -u 变量）：连同参数一起跳过 */
+const OPTIONS_WITH_VALUE = new Set(["-a", "-u", "-n", "-s", "-k", "-c", "-o", "-e", "-p"]);
 
 /**
- * 这条命令会不会进到另一个 shell。拿不准时当成会（偏保守：粘贴多行时仍按 shell 的规则提醒）。
+ * 这条命令会不会进到另一个 shell。认识的这类命令按 shell 处理，其他按程序处理；取不到命令时按 shell 处理。
  * 用 ;、&&、|| 和管道连起来的几段，有一段会就算会。
  * @param command 提示符下输入的命令；取不到时为 null
  * @returns true 表示按 shell 处理
@@ -97,10 +106,18 @@ const PREFIXES = new Set(["exec", "command", "builtin", "nohup", "time", "env", 
 export function launchesShell(command: string | null): boolean {
   if (!command?.trim()) return true;
   return command.split(/[;&|]+/).some((part) => {
-    for (const raw of part.trim().split(/\s+/)) {
-      if (!raw || /^[A-Za-z_][A-Za-z0-9_]*=/.test(raw)) continue; // 环境变量赋值
-      const word = raw.replace(/^\\/, "").replace(/^.*\//, ""); // 去掉别名转义和路径
-      if (PREFIXES.has(word) || word.startsWith("-")) continue; // 前缀和它们的选项
+    const words = part.trim().split(/\s+/);
+    let afterPrefix = false;
+    for (let i = 0; i < words.length; i++) {
+      // 去掉子 shell、命令组两头的括号和别名转义，再去掉路径
+      const word = words[i].replace(/^[({]+/, "").replace(/[)}]+$/, "").replace(/^\\/, "").replace(/^.*\//, "");
+      if (!word || KEYWORDS.has(word) || /^[A-Za-z_][A-Za-z0-9_]*=/.test(word)) continue; // 关键字、环境变量赋值
+      if (PREFIXES.has(word)) { afterPrefix = true; continue; }
+      if (word.startsWith("-")) {
+        if (afterPrefix && OPTIONS_WITH_VALUE.has(word)) i++; // 选项的参数
+        continue;
+      }
+      if (afterPrefix && /^\d+(\.\d+)?[smhd]?$/.test(word)) continue; // timeout 100、nice 10 这类数字参数
       return SHELL_LAUNCHERS.has(word);
     }
     return false;
