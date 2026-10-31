@@ -47,7 +47,10 @@ interface CreateArgs {
 /** 官方包的下载地址（电脑上用浏览器下载后再“选择已下载的包”） */
 const OFFICIAL_URL = "https://sourceforge.net/projects/tigervnc/files/stable/1.16.2/tigervnc-1.16.2.x86_64.tar.gz";
 
-/** noVNC 1.7 的内部字段：恢复远程分辨率要用（公开接口只能“跟随窗口”，不能指定尺寸） */
+/**
+ * noVNC 1.7 的内部字段：恢复远程分辨率要用（公开接口只能“跟随窗口”，不能指定尺寸）；
+ * 扩展剪贴板的能力（服务器连上后才告诉我们，键是格式和动作的位）
+ */
 interface RfbInternals {
   _fbWidth: number;
   _fbHeight: number;
@@ -55,6 +58,8 @@ interface RfbInternals {
   _screenID: number;
   _screenFlags: number;
   _sock: unknown;
+  _clipboardServerCapabilitiesFormats?: Record<number, boolean>;
+  _clipboardServerCapabilitiesActions?: Record<number, boolean>;
 }
 const rfbMessages = (RFB as unknown as { messages: { setDesktopSize(sock: unknown, width: number, height: number, id: number, flags: number): void } }).messages;
 
@@ -67,6 +72,15 @@ function setRemoteSize(rfb: RFB, size: Size): "sent" | "same" | "unsupported" {
   rfbMessages.setDesktopSize(r._sock, size.w, size.h, r._screenID, r._screenFlags);
   return "sent";
 }
+/**
+ * 服务器说了支持扩展剪贴板（UTF-8 文字，远程粘贴时才来取）。说之前 noVNC 发剪贴板走老式的，
+ * 只能发 Latin-1，中文会变成问号
+ */
+function extendedClipboard(rfb: RFB): boolean {
+  const r = rfb as unknown as RfbInternals;
+  return !!r._clipboardServerCapabilitiesFormats?.[1] && !!r._clipboardServerCapabilitiesActions?.[1 << 27];
+}
+
 /** 把远程分辨率改回 size；发了返回 true */
 function restoreRemoteSize(rfb: RFB, size: Size | null): boolean {
   return !!size && setRemoteSize(rfb, size) === "sent";
@@ -213,7 +227,23 @@ export function DesktopPane({ serverId, visible, title, controls, windowTitle, s
       // 此时还是服务器原本的尺寸（跟随窗口的改尺寸请求在这之后才发）
       const r = rfb as unknown as RfbInternals;
       originalSize.current = r._fbWidth > 0 ? { w: r._fbWidth, h: r._fbHeight } : null;
-      linked.current = true;
+      // 剪贴板等服务器说清支不支持扩展剪贴板再发（早发中文会变成问号）。老式服务器不会说，最多等 1.5 秒；
+      // 网络慢、说得比这还晚的，说了以后再发一次
+      const since = Date.now();
+      const wait = setInterval(() => {
+        if (rfbRef.current !== rfb) { clearInterval(wait); return; }
+        const ext = extendedClipboard(rfb);
+        const waited = Date.now() - since;
+        if (!linked.current) {
+          if (!ext && waited < 1500) return;
+          linked.current = true;
+          void clip.check();
+        } else if (ext) {
+          clip.reset();
+          void clip.check();
+        }
+        if (ext || waited > 15000) clearInterval(wait);
+      }, 50);
       setPhase({ kind: "connected", session, noAuth: conn.probe.noAuth });
       try { localStorage.setItem(LAST_KEY + serverId, session.key); } catch { /* 不记也行 */ }
       if (typed.current && rememberRef.current) void api.savePassword(serverId, session.key, typed.current).catch(() => {});

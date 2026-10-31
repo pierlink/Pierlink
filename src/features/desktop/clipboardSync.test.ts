@@ -51,17 +51,46 @@ describe("远程桌面剪贴板自动同步", () => {
     expect(state.sent).toEqual(["local", "local"]);
   });
 
-  it("同样的文字这次连接发过就不再发（远程复制了文件之类时不冲掉）；重新连接后再发一次", async () => {
+  it("远程复制过的文字，本机发过别的之后再复制它，照样发过去", async () => {
+    const { state, io, set } = fake();
+    const sync = new ClipboardSync(io);
+    sync.fromRemote("X");
+    set("X");
+    await sync.check();
+    set("Y");
+    await sync.check();
+    set("X");
+    await sync.check();
+    expect(state.sent).toEqual(["Y", "X"]);
+  });
+
+  it("本机又复制了同样的文字也发（和远程桌面连接一样）；重新连接后连远程来的文字也再发一次", async () => {
     const { state, io, set } = fake();
     const sync = new ClipboardSync(io);
     set("x");
     await sync.check();
     set("x");
     await sync.check();
-    expect(state.sent).toEqual(["x"]);
-    sync.reset();
+    expect(state.sent).toEqual(["x", "x"]);
+    sync.fromRemote("r");
+    set("r");
     await sync.check();
     expect(state.sent).toEqual(["x", "x"]);
+    sync.reset();
+    await sync.check();
+    expect(state.sent).toEqual(["x", "x", "r"]);
+  });
+
+  it("没发出去（刚断开）时下次再试", async () => {
+    const { state, io, set } = fake();
+    let accept = false;
+    const sync = new ClipboardSync({ ...io, send: (text) => accept && io.send(text) });
+    set("a");
+    await sync.check();
+    expect(state.sent).toEqual([]);
+    accept = true;
+    await sync.check(true);
+    expect(state.sent).toEqual(["a"]);
   });
 
   it("没连上时不读不发；连上前读到的不算发过", async () => {

@@ -1,10 +1,11 @@
 /**
- * 远程桌面的剪贴板自动同步（和其他远程桌面软件一样）：本机剪贴板里有了新的文字，就发到远程剪贴板，
- * 远程里右键粘贴、Ctrl+V 都能用，不用先在画面里按 Ctrl+V。
+ * 远程桌面的剪贴板自动同步（和其他远程桌面软件一样）：本机剪贴板一变，就把里面的文字发到远程剪贴板，
+ * 远程里右键粘贴、Ctrl+V 都能用，不用先在画面里按 Ctrl+V。本机剪贴板没变时不发，
+ * 免得把远程自己复制的文件、图片冲掉。
  *
  * 不发的情况：
- * - 本机剪贴板里是从远程复制过来的文字：发回去会把远程剪贴板里的文件、图片换成文字；
- * - 这次连接已经发过同样的文字：远程之后复制了文件之类（不会通知过来），重复发会把它冲掉。
+ * - 本机剪贴板里是刚从远程复制过来的文字：发回去会把远程剪贴板里的文件、图片换成文字；
+ * - 拿不到变化序号（不是 Windows）时，和上次发过的文字一样。
  */
 
 /** 同步要用到的读写（测试里换成假的） */
@@ -20,9 +21,9 @@ export interface ClipboardIo {
 }
 
 export class ClipboardSync {
-  /** 最近一次从远程复制过来的文字 */
+  /** 最近一次从远程复制过来的文字（之后本机发过别的就作废） */
   private remote: string | null = null;
-  /** 这次连接已经发过去的文字 */
+  /** 最近一次发过去的文字（只在拿不到变化序号时用来判断变没变） */
   private sent: string | null = null;
   /** 上次看过的变化序号 */
   private seen: number | null = null;
@@ -32,6 +33,7 @@ export class ClipboardSync {
 
   /** 新的连接：远程剪贴板里有什么不知道，本机剪贴板里的文字再发一次 */
   reset(): void {
+    this.remote = null;
     this.sent = null;
     this.seen = null;
   }
@@ -68,8 +70,15 @@ export class ClipboardSync {
       return;
     }
     if (!this.io.ready()) return;
+    if (!text || text === this.remote || (seq === null && text === this.sent)) {
+      this.seen = seq;
+      return;
+    }
+    // 没发出去（刚断开）：不记下这个序号，下次再试
+    if (!this.io.send(text)) return;
     this.seen = seq;
-    if (!text || text === this.remote || text === this.sent) return;
-    if (this.io.send(text)) this.sent = text;
+    this.sent = text;
+    // 远程剪贴板现在是这段文字了：之后本机再复制之前从远程来的文字，也要发过去
+    this.remote = null;
   }
 }
