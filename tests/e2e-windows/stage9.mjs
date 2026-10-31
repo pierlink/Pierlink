@@ -145,11 +145,19 @@ const getWindowsClipboard = () => {
 };
 /**
  * 在 :5 桌面里复制一段文字：xclip 在后台一直占着剪贴板，直到别人换掉它。
- * 不能同步等 wsl.exe：后台的 xclip 让它一直不返回（execFileSync 的超时也拦不住），所以不等，过一会儿再看
+ * 不能同步等 wsl.exe（后台的 xclip 会让它一直不返回，execFileSync 的超时也拦不住）；
+ * xclip 用 setsid 完全脱离这次 wsl 会话，再反复读，直到远程剪贴板真的是这段内容（WSL 起会话可能要好几秒）
  */
 const copyOnRemote = async (text, target = "") => {
-  spawn("wsl.exe", ["-d", LX.wsl, "-u", "pl", "--", "sh", "-c", `printf %s '${text}' | DISPLAY=:5 XAUTHORITY="$HOME/.vnc-e2e/x5.auth" xclip -selection clipboard${target ? ` -t ${target}` : ""} -i >/dev/null 2>&1`], { stdio: "ignore" }).on("error", () => undefined);
-  await sleep(2000);
+  const file = `/tmp/pl-clip-${Date.now()}.txt`;
+  spawn("wsl.exe", ["-d", LX.wsl, "-u", "pl", "--", "sh", "-c", `printf %s '${text}' > ${file} && DISPLAY=:5 XAUTHORITY="$HOME/.vnc-e2e/x5.auth" setsid -f xclip -selection clipboard${target ? ` -t ${target}` : ""} -i ${file} </dev/null >/dev/null 2>&1`], { stdio: "ignore" }).on("error", () => undefined);
+  const deadline = Date.now() + 15000;
+  let got = "";
+  while (Date.now() < deadline) {
+    if ((got = remoteClipboard(target)) === text) return;
+    await sleep(500);
+  }
+  throw new Error(`没能在远程剪贴板里放进 ${JSON.stringify(text)}${target ? `（${target}）` : ""}：读到 ${JSON.stringify(got.slice(0, 80))}`);
 };
 
 await rec.step(p, "在桌面画面里按 Ctrl+V：远程剪贴板收到 Windows 剪贴板的文字；断开重连后同样的文字也能再发过去", async () => {
@@ -184,8 +192,6 @@ await rec.step(p, "剪贴板自动同步：Windows 复制后不按 Ctrl+V，点�
   }
   // 远程剪贴板里放一段非文字的内容（像在远程复制了文件）
   await copyOnRemote("PLRICH", "text/x-pierlink");
-  await sleep(1000);
-  if (remoteClipboard("text/x-pierlink") !== "PLRICH") throw new Error("没能在远程剪贴板里放进非文字的内容");
   await u.click(".desk__screen canvas");
   await sleep(300);
   await u.key("v", "KeyV", 86, 2);

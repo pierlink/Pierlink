@@ -31,6 +31,7 @@ English · [简体中文](README.md)
 ### Terminals
 - Server and local terminals with tabs, split panes and drag-to-rearrange; terminals keep running when you switch pages
 - Broadcast input to several panes; command snippets with variables
+- Command prediction: as you type in bash or zsh on a server or in local Git Bash, commands you have used appear in gray after the cursor; press → to accept. The history stays on this computer
 - Shift+Enter inserts a new line without running it (in shells, Claude Code and Codex); Ctrl+C copies selected text and Ctrl+V pastes; right-click copy and paste can be turned on
 - Text copied in Claude Code, vim and similar tools lands in your local clipboard (inside tmux too); links in the terminal open in your Windows browser
 - Drag files from File Explorer into a local terminal to insert their paths (written the way PowerShell, Command Prompt or WSL expects)
@@ -62,7 +63,7 @@ English · [简体中文](README.md)
 - Finds existing desktops on the server (TigerVNC and others); enter the password once and remember it
 - No desktop on the server? Create one in a click: only you can connect, and it keeps running after you close the tab; TigerVNC is fetched automatically, no admin rights needed
 - Quality, scaling, remote resolution that follows the window or a preset, full screen, separate window (optionally by default)
-- Copy and paste between Windows and the desktop with plain Ctrl+C and Ctrl+V; type the clipboard text (Chinese included) into the desktop
+- The clipboard syncs with Windows: text copied on Windows can be pasted in the desktop right away (right-click or Ctrl+V), and text copied in the desktop can be pasted back on Windows
 
 ### Phone access
 <img src="assets/readme/phone-en.png" alt="Answering an AI confirmation on a phone" width="240" align="right">
