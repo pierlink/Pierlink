@@ -1,0 +1,23 @@
+{
+  "name": "Pierlink",
+  "short_name": "Pierlink",
+  "description": "在手机上看终端、和 AI 对话、批准 AI 的操作",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#0f1117",
+  "theme_color": "#0f1117",
+  "icons": [
+    {
+      "src": "icon-256.png",
+      "sizes": "256x256",
+      "type": "image/png"
+    },
+    {
+      "src": "icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}

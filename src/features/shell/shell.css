@@ -1,0 +1,14 @@
+/* 退出确认框 */
+.exit-summary { display: flex; flex-direction: column; gap: 8px; }
+.exit-summary p { margin: 0; }
+.exit-summary__muted { color: var(--text-dim); font-size: var(--fs-xs); }
+.exit-summary__list { margin: 0; padding-left: 20px; max-height: 160px; overflow: auto; display: flex; flex-direction: column; gap: 2px; }
+
+/* 标题栏右侧：状态按钮（MCP、传输）一组；窗口按钮占满标题栏高度、贴住右边缘，样子和 Windows 自带的一致 */
+.titlebar__status { display: flex; align-items: center; gap: 4px; }
+.titlebar__caps { display: flex; align-self: stretch; margin-left: -8px; }
+.titlebar__cap { width: 46px; height: 100%; display: grid; place-items: center; border: 0; border-radius: 0; background: transparent; color: var(--text-muted); cursor: pointer; transition: background var(--dur-fast), color var(--dur-fast); }
+.titlebar__cap:hover { background: var(--hover); color: var(--text); }
+.titlebar__cap:active { background: var(--chip); }
+.titlebar__cap--close:hover, .titlebar__cap--close:active { background: #c42b1c; color: #fff; }
+.titlebar__cap:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }

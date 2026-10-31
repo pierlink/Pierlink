@@ -1,0 +1,46 @@
+[package]
+name = "pierlink"
+description = "Pierlink 桌面应用（Tauri 外壳）"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+default-run = "pierlink"
+
+[lib]
+name = "pierlink_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.7.4", features = [] }
+
+[dependencies]
+pierlink-core = { path = "../crates/core" }
+pierlink-ssh-engine = { path = "../crates/ssh-engine" }
+tauri = { version = "2.12.5", features = ["tray-icon"] }
+serde.workspace = true
+serde_json.workspace = true
+specta.workspace = true
+specta-typescript.workspace = true
+tauri-specta.workspace = true
+base64 = "0.23.1"
+uuid.workspace = true
+png = "0.18"
+# 检查更新、下载更新经 SOCKS5 代理时要用（和更新插件用的是同一个 reqwest）
+reqwest = { version = "0.13", default-features = false, features = ["socks"] }
+tauri-plugin-single-instance = "2"
+tauri-plugin-updater = "=2.13.2"
+# 系统的“选择文件夹”对话框（只在 Rust 命令里调用，不对页面开放插件权限）
+tauri-plugin-dialog = "=2.8.3"
+# 手机配对的二维码（只生成 SVG）
+qrcode = { version = "=0.14.1", default-features = false, features = ["svg"] }
+# 手机入口可以选的本机地址（Tailscale、局域网）
+if-addrs = "=0.15.0"
+# 只用 block_in_place（Tauri 本来就带着多线程的 tokio，不引入新包）
+tokio = { version = "1", features = ["rt-multi-thread"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = ["Win32_System_Console", "Win32_System_DataExchange", "Win32_System_Memory"] }
+
+[dev-dependencies]
+tempfile.workspace = true
