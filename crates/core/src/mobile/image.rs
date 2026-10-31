@@ -92,9 +92,9 @@ impl Shared {
             }
             lines.entry(id.into()).or_default().edited = true;
         }
-        self.host.terminal_image(id, bytes, ext).await.map_err(|_| {
-            error(
-                "mobile.host_failed",
+        self.host.terminal_image(id, bytes, ext).await.map_err(|e| {
+            super::http::host_error(
+                e,
                 "mobile.desktop_terminal_image_failed",
                 "桌面终端图片输入失败",
             )

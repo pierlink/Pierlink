@@ -114,7 +114,8 @@ export function handleError(e: unknown, onAuthLost: () => void): string | null {
   if (e instanceof ApiError) {
     // 设备被撤销或失效：回到配对
     if (e.status === 401) { onAuthLost(); return null; }
-    const known = e.code ? i18n.t(`mobile.error.${e.code.replace(/^mobile\./, "")}`, { defaultValue: "" }) : "";
+    const params = (e.body?.params ?? {}) as Record<string, string>;
+    const known = e.code ? i18n.t(`mobile.error.${e.code.replace(/^mobile\./, "")}`, { ...params, defaultValue: "" }) : "";
     if (known) return known;
     return e.message;
   }

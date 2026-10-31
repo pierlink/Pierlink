@@ -668,7 +668,10 @@
         "image_type_must_be_png_jpeg_webp_or_gif": "images must be PNG, JPEG, WebP or GIF",
         "paste_carriage_return_must_be_last": "a pasted carriage return may only come last",
         "screen_lines_must_be_an_integer_from_1_to_2000": "screen lines must be an integer from 1 to 2000",
-        "terminal_size_must_be_20_300_columns_and_5_100_rows": "the terminal size must be 20–300 columns and 5–100 rows"
+        "terminal_size_must_be_20_300_columns_and_5_100_rows": "the terminal size must be 20–300 columns and 5–100 rows",
+        "pc_did_not_open_the_terminal_in_time": "the PC didn't open the terminal in time; it may be waiting for a host key confirmation or a password on the PC",
+        "terminal_was_not_opened": "the terminal didn't open",
+        "server_id_is_invalid": "the server ID is invalid"
       },
       "monitor": {
         "create_built_in_sampling_thread": "create built-in sampling thread",
@@ -1624,7 +1627,10 @@
       "invalid_request": "The name must be 1 to 80 characters without control characters",
       "invalid_image": "Invalid image: {{reason}}",
       "unsupported_image_type": "Unsupported image: {{reason}}",
-      "not_found": "The terminal doesn't exist or was closed"
+      "not_found": "The terminal doesn't exist or was closed",
+      "open_timeout": "The PC didn't open the terminal in time",
+      "open_failed": "The terminal didn't open",
+      "server_not_found": "The server doesn't exist"
     },
     "vnc": {
       "probe_timeout": "The desktop did not respond",
@@ -1815,7 +1821,8 @@
     "pasteImageUploading": "Uploading image…",
     "pasteImageBusy": "Still uploading the previous image",
     "pasteImageExpired": "The terminal moved on; image not pasted",
-    "phoneView": "A phone is viewing this terminal at {{cols}} columns; type here to restore"
+    "phoneView": "A phone is viewing this terminal at {{cols}} columns; type here to restore",
+    "phoneOpenEnded": "The connection ended before the terminal was ready"
   },
   "hostKey": {
     "title": "Verify the server's identity",
@@ -3091,7 +3098,12 @@
       "sendHint": "Long-press: type without Enter",
       "fit": "Fit to phone",
       "fitBusy": "Someone is using this terminal on the PC, so it keeps the PC's width",
-      "jumpNew": "New output"
+      "jumpNew": "New output",
+      "new": "New terminal",
+      "newTitle": "Open a terminal on the PC",
+      "localShell": "Local terminal",
+      "offline": "Offline",
+      "opening": "Opening {{name}} on the PC…"
     },
     "error": {
       "forbidden": "This phone doesn't have that permission (turn it on in Settings → Phone on the PC)",
@@ -3106,7 +3118,10 @@
       "request_timeout": "The PC didn't answer in time; try again",
       "invalid_request": "Bad request (reload the page and try again)",
       "host_unavailable": "Pierlink on the PC isn't available right now",
-      "stopped": "Phone access was turned off"
+      "stopped": "Phone access was turned off",
+      "open_timeout": "The PC didn't open the terminal in time. It may be waiting for a host key confirmation or a password on the PC.",
+      "open_failed": "The PC couldn't open the terminal: {{message}}",
+      "server_not_found": "This server was removed on the PC"
     },
     "networkError": "Can't reach the PC. Make sure both the phone and the PC are on Tailscale (or the same LAN), then try again.",
     "signOut": "Sign out on this phone",

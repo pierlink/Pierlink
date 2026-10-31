@@ -24,6 +24,10 @@ pub const PAIR_EVENT: &str = "pierlink://mobile-pair";
 pub const PAIR_CLOSED_EVENT: &str = "pierlink://mobile-pair-closed";
 /// 手机入口状态或设备列表变了
 pub const CHANGED_EVENT: &str = "pierlink://mobile-changed";
+/// 手机请电脑打开终端：界面按正常流程打开（指纹、密码照常在电脑上处理），结果用 mobile_terminal_opened 回报
+pub const OPEN_TERMINAL_EVENT: &str = "pierlink://mobile-open-terminal";
+/// 等电脑打开终端最多多久（手机入口一个请求最多等 60 秒）
+const OPEN_TERMINAL_TIMEOUT: Duration = Duration::from_secs(45);
 /// 默认端口
 const DEFAULT_PORT: u16 = 48600;
 /// 批准框最多等多久（和 core 的配对期限一致）
@@ -35,6 +39,7 @@ const RETRY_INTERVAL: Duration = Duration::from_secs(30);
 /// 只记录会改变东西的手机操作；只读请求只在出错时记录
 const WRITE_ACTIONS: &[&str] = &[
     "pair",
+    "terminal_open",
     "terminal_input",
     "terminal_image",
     "answer_confirm",
@@ -51,6 +56,15 @@ struct MobileSettings {
 }
 
 /// 请电脑上批准的配对请求
+/// 手机请电脑打开的终端
+#[derive(Serialize, Type, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenTerminalRequestDto {
+    pub id: f64,
+    /// 服务器 ID；本机终端为 null
+    pub server_id: Option<String>,
+}
+
 #[derive(Serialize, Type, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct PairRequestDto {
@@ -119,6 +133,7 @@ pub struct MobileState {
     server: tokio::sync::Mutex<Option<MobileServer>>,
     events: broadcast::Sender<String>,
     pairs: Waiters<PairRequestDto, bool>,
+    opens: Waiters<OpenTerminalRequestDto, Result<String, AppError>>,
     error: Mutex<Option<AppError>>,
     log: OnceLock<Option<MobileLog>>,
 }
@@ -129,6 +144,7 @@ impl Default for MobileState {
             server: tokio::sync::Mutex::new(None),
             events: broadcast::channel(64).0,
             pairs: Waiters::default(),
+            opens: Waiters::default(),
             error: Mutex::new(None),
             log: OnceLock::new(),
         }
@@ -631,6 +647,29 @@ pub async fn mobile_pair_answer(app: AppHandle, id: f64, allow: bool) -> Result<
     Ok(app.state::<MobileState>().pairs.answer(id as u64, allow))
 }
 
+/// 界面回报手机要的终端打开了没有
+///
+/// :param id: 打开请求的编号
+/// :param terminal_id: 打开了的终端会话 ID
+/// :param error: 没打开的原因
+/// :return: 手机已经不等了（超时、断开）时返回 false
+#[tauri::command]
+#[specta::specta]
+pub async fn mobile_terminal_opened(
+    app: AppHandle,
+    id: f64,
+    terminal_id: Option<String>,
+    error: Option<crate::mcp::McpErrorInput>,
+) -> Result<bool, AppError> {
+    let result = match (terminal_id, error) {
+        (Some(terminal), _) => Ok(terminal),
+        (None, Some(error)) => Err(error.into()),
+        (None, None) => Err(AppError::new("mobile.open_failed")
+            .with_reason("mobile.terminal_was_not_opened", "终端没有打开")),
+    };
+    Ok(app.state::<MobileState>().opens.answer(id as u64, result))
+}
+
 /// 手机能看到和能做的事：都在电脑上执行，手机只发请求
 struct TauriMobileHost {
     app: AppHandle,
@@ -647,6 +686,34 @@ fn blocking<T: Send + 'static>(
             .await
             .map_err(failed)?
     })
+}
+
+/// 终端在电脑上已经关掉：换成写给手机的 mobile.not_found（其他错误原样，入口只告诉手机“失败了”）
+fn closed_as_missing<T: Send + 'static>(future: HostFuture<'static, T>) -> HostFuture<'static, T> {
+    Box::pin(async move {
+        future.await.map_err(|e| {
+            if e.code == "terminal.not_found" {
+                AppError::new("mobile.not_found")
+            } else {
+                e
+            }
+        })
+    })
+}
+
+/// 界面没打开手机要的终端：换成写给手机的 mobile.open_failed，带上原来的错误码和界面写好的说明
+fn open_failed(e: AppError) -> AppError {
+    if e.code.starts_with("mobile.") {
+        return e;
+    }
+    let message = e
+        .params
+        .get("message")
+        .cloned()
+        .unwrap_or_else(|| e.code.clone());
+    AppError::new("mobile.open_failed")
+        .with("code", &e.code)
+        .with("message", message)
 }
 
 /// 丢弃时把标记置为“已取消”
@@ -715,6 +782,57 @@ impl MobileHost for TauriMobileHost {
             );
             let _ = app.emit(CHANGED_EVENT, ());
             Ok(allowed)
+        });
+        Box::pin(async move {
+            let _guard = guard;
+            waiting.await
+        })
+    }
+
+    fn open_terminal<'a>(&'a self, server: Option<&'a str>) -> HostFuture<'a, Value> {
+        let server = server.map(str::to_owned);
+        // 手机中途断开时入口会丢弃这个等待：不再等界面回报（终端照样在电脑上打开）
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let guard = CancelOnDrop(cancelled.clone());
+        let waiting = blocking(&self.app, move |app| {
+            if let Some(id) = &server {
+                crate::servers::load(app, id).map_err(|e| {
+                    if e.code == "server.not_found" {
+                        AppError::new("mobile.server_not_found")
+                    } else {
+                        open_failed(e)
+                    }
+                })?;
+            }
+            // 窗口缩到托盘或最小化时网页不渲染，终端打不开：和 AI 打开终端一样先把主窗口显示出来
+            crate::app_shell::show_main(app);
+            let emitter = app.clone();
+            let (_, answer) = app.state::<MobileState>().opens.ask(
+                |id| OpenTerminalRequestDto {
+                    id: id as f64,
+                    server_id: server.clone(),
+                },
+                |dto| {
+                    if let Err(e) = emitter.emit(OPEN_TERMINAL_EVENT, dto) {
+                        eprintln!("请界面打开手机要的终端失败: 错误={e}");
+                    }
+                },
+                OPEN_TERMINAL_TIMEOUT,
+                &cancelled,
+            );
+            let id = answer
+                .unwrap_or_else(|| {
+                    Err(AppError::new("mobile.open_timeout").with_reason(
+                        "mobile.pc_did_not_open_the_terminal_in_time",
+                        "电脑上没有及时打开终端：可能在等确认主机指纹或输入密码，请到电脑上处理",
+                    ))
+                })
+                .map_err(open_failed)?;
+            eprintln!(
+                "手机打开终端: 服务器={}, 终端={id}",
+                server.as_deref().unwrap_or("本机")
+            );
+            Ok(json!({ "id": id }))
         });
         Box::pin(async move {
             let _guard = guard;
@@ -793,7 +911,7 @@ impl MobileHost for TauriMobileHost {
 
     fn terminal_screen<'a>(&'a self, id: &'a str, lines: usize) -> HostFuture<'a, Value> {
         let id = id.to_owned();
-        blocking(&self.app, move |app| {
+        closed_as_missing(blocking(&self.app, move |app| {
             let manager = &app.state::<TerminalState>().manager;
             let plain = manager.recent_lines(&id, lines)?;
             // 同样的行带颜色码（只有 SGR），手机按颜色显示
@@ -804,14 +922,14 @@ impl MobileHost for TauriMobileHost {
                 "lines": colored,
                 "password": pierlink_core::mcp::safety::looks_like_password_prompt(&screen),
             }))
-        })
+        }))
     }
 
     fn terminal_text<'a>(&'a self, id: &'a str) -> HostFuture<'a, String> {
         let id = id.to_owned();
-        blocking(&self.app, move |app| {
+        closed_as_missing(blocking(&self.app, move |app| {
             app.state::<TerminalState>().manager.screen_text(&id)
-        })
+        }))
     }
 
     fn terminal_input<'a>(&'a self, id: &'a str, input: TerminalInput) -> HostFuture<'a, Value> {
@@ -819,7 +937,7 @@ impl MobileHost for TauriMobileHost {
         let text = input.text.clone();
         let paste = input.paste;
         let keys = input.keys.clone().unwrap_or_default();
-        blocking(&self.app, move |app| {
+        closed_as_missing(blocking(&self.app, move |app| {
             let manager = &app.state::<TerminalState>().manager;
             // 写之前再看一次：屏幕在等密码时不发文字（密码只能在电脑上输入）
             if let Some(text) = text.as_deref().filter(|t| !t.is_empty()) {
@@ -839,7 +957,7 @@ impl MobileHost for TauriMobileHost {
                 manager.write(&id, &bytes)?;
             }
             Ok(json!({ "ok": true }))
-        })
+        }))
     }
 
     fn terminal_image<'a>(

@@ -137,9 +137,9 @@ impl Shared {
             let mut lines = lock(&self.pending_lines);
             lines.entry(id.into()).or_default().edited = true;
         }
-        let output = self.host.terminal_input(id, input).await.map_err(|_| {
-            error(
-                "mobile.host_failed",
+        let output = self.host.terminal_input(id, input).await.map_err(|e| {
+            super::http::host_error(
+                e,
                 "mobile.desktop_terminal_input_failed",
                 "桌面终端输入失败",
             )
@@ -154,9 +154,9 @@ impl Shared {
     }
 
     pub(super) async fn check_password(&self, id: &str) -> Result<(), AppError> {
-        let screen = self.host.terminal_text(id).await.map_err(|_| {
-            error(
-                "mobile.host_failed",
+        let screen = self.host.terminal_text(id).await.map_err(|e| {
+            super::http::host_error(
+                e,
                 "mobile.couldn_t_read_the_current_terminal_state",
                 "无法读取终端当前状态",
             )

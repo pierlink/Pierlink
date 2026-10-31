@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
-import { ArrowDown, ArrowLeft, Bot, ImagePlus, MoreHorizontal, ShieldAlert } from "lucide-react";
-import { api, ApiError, type InputRequest, type Me, type Screen, type TerminalItem } from "./api";
+import { ArrowDown, ArrowLeft, Bot, ImagePlus, MoreHorizontal, Plus, ShieldAlert } from "lucide-react";
+import { api, ApiError, type InputRequest, type Me, type OverviewServer, type Screen, type TerminalItem } from "./api";
 import { handleError } from "./App";
 import { parseSgrLine, stripSgr, type Style } from "./ansi";
 import { detectChoices, type Choice } from "./choices";
@@ -67,6 +67,39 @@ export function TerminalsTab({ me, version, onAuthLost, pending, onOpenConfirms 
   const [open, setOpen] = useState<TerminalItem | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  /** 新开终端：选服务器的面板（servers 为 null 时还在读）、正在打开的名字、打开失败的原因 */
+  const [picker, setPicker] = useState<{ servers: OverviewServer[] | null; opening: string | null; error: string | null } | null>(null);
+  /** 关掉面板或又点了别的：之前那次打开的结果不再用 */
+  const openSeq = useRef(0);
+
+  const startPick = () => {
+    const seq = ++openSeq.current;
+    setPicker({ servers: null, opening: null, error: null });
+    api.overview().then(
+      (o) => { if (seq === openSeq.current) setPicker((p) => p && { ...p, servers: o.servers }); },
+      (e: unknown) => { if (seq === openSeq.current) setPicker((p) => p && { ...p, servers: [], error: handleError(e, onAuthLost) }); },
+    );
+  };
+  const closePick = () => { openSeq.current++; setPicker(null); };
+  /** 在电脑上打开 server（null 为本机终端），开好后直接进去 */
+  const openOn = async (server: string | null, name: string) => {
+    const seq = ++openSeq.current;
+    setPicker((p) => p && { ...p, opening: name, error: null });
+    try {
+      const id = await api.openTerminal(server);
+      // 终端已经开好：列表读不到也照样进去
+      const l = await api.terminals().catch(() => null);
+      if (seq !== openSeq.current) return;
+      if (l) setList(l);
+      setPicker(null);
+      setNotice(null);
+      setOpen(l?.find((x) => x.id === id) ?? { id, title: name, kind: server ? "server" : "windows", server: server ? name : null, busy: null, ai: false });
+    } catch (e) {
+      if (seq !== openSeq.current) return;
+      // 电脑上没开成的原因由电脑写好（mobile.error.open_failed 里的 message），超时会说在等电脑上处理
+      setPicker((p) => p && { ...p, opening: null, error: handleError(e, onAuthLost) });
+    }
+  };
 
   useEffect(() => {
     let alive = true;
@@ -88,6 +121,36 @@ export function TerminalsTab({ me, version, onAuthLost, pending, onOpenConfirms 
   }
   return (
     <div className="m-page">
+      {me.permissions.input && !picker && (
+        <div className="m-list-head">
+          <button type="button" className="m-btn m-btn--small" onClick={startPick}><Plus size={16} aria-hidden="true" />{t("mobile.terminals.new")}</button>
+        </div>
+      )}
+      {picker && (
+        <section className="m-pick" aria-label={t("mobile.terminals.newTitle")}>
+          <h2 className="m-pick__title">{t("mobile.terminals.newTitle")}</h2>
+          {picker.opening ? <p className="m-muted">{t("mobile.terminals.opening", { name: picker.opening })}</p> : (
+            <>
+              {picker.servers === null && <p className="m-muted">{t("common.loading")}</p>}
+              {picker.servers?.map((s) => (
+                <button key={s.id} type="button" className="m-term-item" onClick={() => void openOn(s.id, s.name)}>
+                  <span className="m-term-item__head">
+                    <span className="m-term-item__title">{s.name}</span>
+                    {s.online === false && <span className="m-chip">{t("mobile.terminals.offline")}</span>}
+                  </span>
+                </button>
+              ))}
+              {picker.servers !== null && (
+                <button type="button" className="m-term-item" onClick={() => void openOn(null, t("mobile.terminals.localShell"))}>
+                  <span className="m-term-item__head"><span className="m-term-item__title">{t("mobile.terminals.localShell")}</span></span>
+                </button>
+              )}
+            </>
+          )}
+          {picker.error && <p className="m-error">{picker.error}</p>}
+          <div className="m-actions"><button type="button" className="m-btn" onClick={closePick}>{t("common.cancel")}</button></div>
+        </section>
+      )}
       {notice && <p className="m-muted">{notice}</p>}
       {error && <p className="m-error">{error}</p>}
       {list === null && !error && <p className="m-muted">{t("common.loading")}</p>}
@@ -434,7 +497,8 @@ function TerminalView({ me, term, pending, onOpenConfirms, onBack, onAuthLost }:
   };
 
   const updatePrefs = (patch: Partial<Prefs>) => setPrefs((p) => { const next = { ...p, ...patch }; savePrefs(next); return next; });
-  const canType = me.permissions.input && !screen?.password;
+  // 等危险确认时先不让输入（这期间排队的输入不会发出去）
+  const canType = me.permissions.input && !screen?.password && !danger;
   const textRef = useRef<HTMLTextAreaElement>(null);
   // 输入框随内容长高（最多几行，再多就在框里滚）
   useLayoutEffect(() => {

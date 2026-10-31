@@ -135,7 +135,8 @@ pub fn looks_typed(data: &str) -> bool {
     }
     let mut chars = rest.chars();
     match chars.next() {
-        // CSI：方向键、Home/End、Shift+Tab（可带 1;5 这类修饰键参数），编辑键和 F5 以上（数字加 ~）
+        // CSI：方向键、Home/End、Shift+Tab（可带 1;5 这类修饰键参数），编辑键和 F5 以上（数字加 ~），
+        // kitty 键盘协议的按键（数字加 u，如 Shift+Enter 是 13;2u；应答带 ? 不算）
         Some('[') => {
             let body = &rest[1..];
             let Some(last) = body.chars().last() else {
@@ -145,7 +146,7 @@ pub fn looks_typed(data: &str) -> bool {
             let numeric = params.chars().all(|c| c.is_ascii_digit() || c == ';');
             match last {
                 'A'..='D' | 'H' | 'F' | 'Z' => numeric,
-                '~' => numeric && !params.is_empty(),
+                '~' | 'u' => numeric && !params.is_empty(),
                 _ => false,
             }
         }
@@ -228,6 +229,8 @@ mod tests {
         assert!(!looks_typed("\x1b[I"));
         assert!(!looks_typed("\x1b[O"));
         assert!(!looks_typed("\x1b[<0;10;5M"));
+        // kitty 键盘协议的查询应答
+        assert!(!looks_typed("\x1b[?1u"));
     }
 
     #[test]
@@ -243,6 +246,7 @@ mod tests {
             "\x1b[3~",
             "\x1b[5~",
             "\x1b[15~",
+            "\x1b[13;2u",
             "\x1bOP",
             "\x1bb",
             "\x1b\x7f",

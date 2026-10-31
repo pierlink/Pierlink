@@ -100,6 +100,11 @@ pub trait MobileHost: Send + Sync + 'static {
     ) -> HostFuture<'a, Value> {
         Box::pin(async { Err(unavailable()) })
     }
+    /// 在电脑上打开一个终端：server 为服务器 ID，None 时打开本机终端；返回 {"id": 终端 ID}。
+    /// 要等电脑界面连上服务器（可能要在电脑上确认指纹），宿主限定等待时间并短于请求期限。默认拒绝。
+    fn open_terminal<'a>(&'a self, _server: Option<&'a str>) -> HostFuture<'a, Value> {
+        Box::pin(async { Err(unavailable()) })
+    }
     /// 无参数；返回待确认项目 JSON（建议数组，含 id）。
     fn confirms(&self) -> HostFuture<'_, Value> {
         Box::pin(async { Ok(json!([])) })

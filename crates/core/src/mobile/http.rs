@@ -33,6 +33,7 @@ enum Route<'a> {
     Me,
     Overview,
     Terminals,
+    OpenTerminal,
     Screen(&'a str),
     Input(&'a str),
     Image(&'a str),
@@ -53,6 +54,7 @@ impl<'a> Route<'a> {
             ("GET", "/api/me") => Self::Me,
             ("GET", "/api/overview") => Self::Overview,
             ("GET", "/api/terminals") => Self::Terminals,
+            ("POST", "/api/terminals") => Self::OpenTerminal,
             ("GET", "/api/activity") => Self::Activity,
             ("GET", "/api/confirms") => Self::Confirms,
             ("POST", "/api/stop-all") => Self::StopAll,
@@ -101,6 +103,7 @@ impl<'a> Route<'a> {
             Self::Me => ("me", None),
             Self::Overview => ("overview", None),
             Self::Terminals => ("terminals", None),
+            Self::OpenTerminal => ("terminal_open", None),
             Self::Screen(id) => ("terminal_screen", Some(id)),
             Self::Input(id) => ("terminal_input", Some(id)),
             Self::Image(id) => ("terminal_image", Some(id)),
@@ -117,7 +120,7 @@ impl<'a> Route<'a> {
     }
     fn permission(&self, p: Permissions) -> bool {
         match self {
-            Self::Input(_) | Self::Image(_) | Self::Size(_) => p.input,
+            Self::Input(_) | Self::Image(_) | Self::Size(_) | Self::OpenTerminal => p.input,
             Self::Answer(_) | Self::StopAll => p.confirm,
             Self::Overview
             | Self::Terminals
@@ -228,6 +231,12 @@ impl Shared {
             if matches!(route, Route::Image(_)) {
                 audit.record.bytes = Some(body.len());
             }
+            // 新开终端：审计记下要开在哪台服务器（本机为 windows）
+            if let Route::OpenTerminal = route
+                && let Ok(request) = parse::<OpenRequest>(&body)
+            {
+                audit.record.target = Some(request.server.unwrap_or_else(|| "windows".into()));
+            }
             if let Route::Pair = route {
                 let _approval = ApprovalWait::new(activity.clone());
                 let pairing: auth::PairRequest = parse(&body)?;
@@ -329,6 +338,10 @@ impl Shared {
             }
             Route::Overview => host(self.host.overview()).await?,
             Route::Terminals => host(self.host.terminals()).await?,
+            Route::OpenTerminal => {
+                let request: OpenRequest = parse(body)?;
+                host(self.host.open_terminal(open_target(&request)?)).await?
+            }
             Route::Screen(id) => host(self.host.terminal_screen(id, screen_lines(query)?)).await?,
             Route::Activity => host(self.host.activity(activity_limit(query)?)).await?,
             Route::Confirms => host(self.host.confirms()).await?,
@@ -474,13 +487,22 @@ impl Shared {
 }
 
 async fn host(future: HostFuture<'_, Value>) -> Result<Value, AppError> {
-    future.await.map_err(|_| {
-        error(
-            "mobile.host_failed",
+    future.await.map_err(|e| {
+        host_error(
+            e,
             "mobile.desktop_operation_failed_check_its_status_on_the_computer",
             "桌面操作失败，请在电脑上查看状态",
         )
     })
+}
+/// 宿主的错误：写给手机的（mobile. 开头，如终端已关闭、电脑上没及时打开终端）原样给手机，
+/// 其他的（桌面内部错误）只说失败了，不把内部细节交给手机。
+pub(super) fn host_error(e: AppError, key: &'static str, text: &str) -> AppError {
+    if e.code.starts_with("mobile.") {
+        e
+    } else {
+        error("mobile.host_failed", key, text)
+    }
 }
 async fn next_event(
     subscription: &mut Option<broadcast::Receiver<String>>,
@@ -509,6 +531,26 @@ impl Body for EventBody {
 impl Drop for EventBody {
     fn drop(&mut self) {
         self.worker.abort();
+    }
+}
+
+/// 手机请电脑打开终端：{server: 服务器 ID}，不给或为 null 时打开本机终端
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OpenRequest {
+    #[serde(default)]
+    server: Option<String>,
+}
+
+/// 检查打开终端的请求；返回服务器 ID，本机终端为 None
+fn open_target(request: &OpenRequest) -> Result<Option<&str>, AppError> {
+    match request.server.as_deref() {
+        Some(id) if !valid_id(id) => Err(error(
+            "mobile.invalid_request",
+            "mobile.server_id_is_invalid",
+            "服务器 ID 无效",
+        )),
+        server => Ok(server),
     }
 }
 
@@ -734,12 +776,13 @@ fn error_status(code: &str) -> StatusCode {
         "mobile.rate_limited" | "mobile.device_limit" | "mobile.input_limit" => {
             StatusCode::TOO_MANY_REQUESTS
         }
-        "mobile.pair_timeout" => StatusCode::GATEWAY_TIMEOUT,
+        "mobile.pair_timeout" | "mobile.open_timeout" => StatusCode::GATEWAY_TIMEOUT,
+        "mobile.open_failed" => StatusCode::BAD_GATEWAY,
         "mobile.request_timeout" => StatusCode::REQUEST_TIMEOUT,
         "mobile.body_too_large" => StatusCode::PAYLOAD_TOO_LARGE,
         "mobile.invalid_request" | "mobile.invalid_image" => StatusCode::BAD_REQUEST,
         "mobile.unsupported_image_type" => StatusCode::UNSUPPORTED_MEDIA_TYPE,
-        "mobile.not_found" => StatusCode::NOT_FOUND,
+        "mobile.not_found" | "mobile.server_not_found" => StatusCode::NOT_FOUND,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     }
 }
@@ -912,6 +955,48 @@ mod origin_tests {
 #[cfg(test)]
 mod size_tests {
     use super::*;
+
+    #[test]
+    fn 打开终端要输入权限_服务器_id_要合法() {
+        let route = Route::new(&Method::POST, "/api/terminals");
+        assert!(matches!(route, Route::OpenTerminal));
+        assert_eq!(route.audit().0, "terminal_open");
+        let view_only = Permissions {
+            view: true,
+            input: false,
+            confirm: true,
+        };
+        assert!(!route.permission(view_only));
+        assert!(route.permission(Permissions {
+            input: true,
+            ..view_only
+        }));
+        assert!(matches!(
+            Route::new(&Method::GET, "/api/terminals"),
+            Route::Terminals
+        ));
+        let open = |json: &str| -> Result<Option<String>, AppError> {
+            let request: OpenRequest = parse(json.as_bytes())?;
+            Ok(open_target(&request)?.map(str::to_owned))
+        };
+        assert_eq!(
+            open(r#"{"server":"srv-1"}"#).unwrap().as_deref(),
+            Some("srv-1")
+        );
+        assert_eq!(open(r#"{"server":null}"#).unwrap(), None);
+        assert_eq!(open("{}").unwrap(), None);
+        for bad in [
+            r#"{"server":"a/b"}"#,
+            r#"{"server":""}"#,
+            r#"{"local":true}"#,
+        ] {
+            assert_eq!(
+                open(bad).unwrap_err().code,
+                "mobile.invalid_request",
+                "{bad}"
+            );
+        }
+    }
 
     fn request(json: &str) -> Result<Option<(u16, u16)>, AppError> {
         terminal_size(parse(json.as_bytes())?)

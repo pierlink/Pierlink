@@ -373,6 +373,15 @@ export const commands = {
 	/**  回答配对请求 */
 	mobilePairAnswer: (id: number | null, allow: boolean) => typedError<boolean, AppError>(__TAURI_INVOKE("mobile_pair_answer", { id, allow })),
 	/**
+	 *  界面回报手机要的终端打开了没有
+	 * 
+	 *  :param id: 打开请求的编号
+	 *  :param terminal_id: 打开了的终端会话 ID
+	 *  :param error: 没打开的原因
+	 *  :return: 手机已经不等了（超时、断开）时返回 false
+	 */
+	mobileTerminalOpened: (id: number | null, terminalId: string | null, error: McpErrorInput_Deserialize | null) => typedError<boolean, AppError>(__TAURI_INVOKE("mobile_terminal_opened", { id, terminalId, error })),
+	/**
 	 *  查找服务器上的桌面（只读）
 	 * 
 	 *  :param server_id: 服务器 ID

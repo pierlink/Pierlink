@@ -9,20 +9,20 @@ export interface Choice {
   key: string;
   /** 按钮上的字 */
   label: string;
-  /** 当前高亮的那一项（编号菜单里带 ❯ 或 > 的） */
+  /** 当前高亮的那一项（编号菜单里带 ❯、›、● 等标记的） */
   current?: boolean;
   /** 按完还要回车（apt、pip、read -p 的 [Y/n] 要回车才生效；编号菜单按数字就生效） */
   enter?: boolean;
 }
 
 /** 编号选项：可选的高亮标记，然后“数字. 文字” */
-const NUMBERED = /^\s*[│┃|]?\s*([❯›>▶➤*])?\s*(\d)[.)]\s+(.+?)\s*[│┃|]?\s*$/;
+const NUMBERED = /^\s*[│┃|]?\s*([❯›>▶➤*●◉])?\s*(\d)[.)]\s+(.+?)\s*[│┃|]?\s*$/;
 /** 问是或否 */
 const YES_NO = /[([](y\/n|Y\/n|y\/N|yes\/no)[)\]]\s*[:?]?\s*$/i;
 
 /**
  * 从屏幕最后几行里找选项。
- * 编号的几行要么带高亮标记（Claude Code、Codex 的菜单总有 ❯ 或 ›），要么就在屏幕最底下（bash 的 select 等）；
+ * 编号的几行要么带高亮标记（Claude Code 的 ❯、Codex 的 ›、Gemini CLI 的 ●），要么就在屏幕最底下（bash 的 select 等）；
  * Claude 回答里的编号列表后面还有输入框和状态栏，不算选项。
  * @param lines 屏幕上的行（纯文字，去掉颜色码），按从上到下
  * @param scan 最多往上看几行非空行
@@ -56,7 +56,7 @@ export function detectChoices(lines: string[], scan = 14): Choice[] | null {
       finish();
       run = [item];
       runEnd = i;
-    } else if (run.length && ++gap > 2) finish();
+    } else if (run.length && ++gap > 4) finish();
   });
   finish();
   if (best) return best;

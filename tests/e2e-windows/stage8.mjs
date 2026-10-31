@@ -466,7 +466,7 @@ await rec.step(p, "手机改名；关掉二维码后邀请码作废；手机页�
   return `改名为 e2e-phone-2｜作废的邀请码 ${late.status}｜${js} 按 gzip 发送`;
 });
 
-await rec.step(p, "手机输入：电脑上给权限后能在本机终端执行命令；Shift+Tab、方向键后回车、多行粘贴、发图片、按手机宽度显示；危险命令要手机二次确认；撤销后手机立即失效", async () => {
+await rec.step(p, "手机输入：电脑上给权限后能在本机终端执行命令；Shift+Tab、方向键后回车、多行粘贴、发图片、按手机宽度显示、新开终端；危险命令要手机二次确认；撤销后手机立即失效", async () => {
   if (!phone?.terminal) throw new Error("没有配对好的手机");
   await p.js(`(()=>{const d=[...document.querySelectorAll('.mobile-dev')].find(x=>x.innerText.includes('e2e-phone')); const l=[...(d?.querySelectorAll('label.pl-check')||[])].find(l=>l.textContent.trim().startsWith('Type into terminals')); const i=l?.querySelector('input'); if(i && !i.checked) i.click();})()`);
   await sleep(800);
@@ -479,8 +479,7 @@ await rec.step(p, "手机输入：电脑上给权限后能在本机终端执行�
     screen = (await phoneFetch("GET", `/api/terminals/${id}/screen`)).json?.text ?? "";
   }
   if (!/^pl-phone-42/m.test(screen)) throw new Error(`手机上没看到输出：${screen.slice(-300)}`);
-  /** 等屏幕上出现 re 匹配的内容（最多 15 秒），返回最后读到的屏幕 */
-  /** 等屏幕上出现 re；joined：先把折行接起来再找（长路径可能被终端折成两行） */
+  /** 等屏幕上出现 re（最多 15 秒），返回最后读到的屏幕；joined：先把折行接起来再找（长路径可能被终端折成两行） */
   const waitScreen = async (re, what, joined = false) => {
     let text = "";
     for (let i = 0; i < 30; i++) {
@@ -527,13 +526,40 @@ await rec.step(p, "手机输入：电脑上给权限后能在本机终端执行�
   const width = Number(/^PLR=(\d+)$/m.exec(restored)[1]);
   if (!(width > 60)) throw new Error(`恢复后宽度应该大于 60：${width}`);
   if ((await phoneFetch("POST", `/api/terminals/${id}/size`, { cols: 10, rows: 20 })).status !== 400) throw new Error("10 列应该 400");
+  // 手机请电脑新开终端：本机终端开好后在列表里、能读屏；有 WSL 服务器时也开一个服务器终端；服务器 ID 不对时 400
+  const opened = await phoneFetch("POST", "/api/terminals", { server: null });
+  if (opened.status >= 300 || !opened.json?.id) throw new Error(`手机新开本机终端失败：${opened.status} ${opened.text.slice(0, 200)}`);
+  const listed = await phoneFetch("GET", "/api/terminals");
+  if (!(listed.json ?? []).some((t) => t.id === opened.json.id && t.kind === "windows")) throw new Error(`新开的终端不在列表里：${listed.text.slice(0, 300)}`);
+  let openedServer = "没有 WSL 服务器";
+  if (HAVE_LINUX) {
+    const servers = (await phoneFetch("GET", "/api/overview")).json?.servers ?? [];
+    const lx = servers.find((x) => x.name === LX_NAME);
+    if (!lx) throw new Error(`概况里没有 ${LX_NAME}：${JSON.stringify(servers).slice(0, 200)}`);
+    const remote = await phoneFetch("POST", "/api/terminals", { server: lx.id });
+    if (remote.status >= 300 || !remote.json?.id) throw new Error(`手机新开服务器终端失败：${remote.status} ${remote.text.slice(0, 200)}`);
+    const rid = encodeURIComponent(remote.json.id);
+    await phoneFetch("POST", `/api/terminals/${rid}/input`, { text: "echo pl-open-$((40+2))\r" });
+    let rs = "";
+    for (let i = 0; i < 30 && !/^pl-open-42$/m.test(rs); i++) {
+      await sleep(500);
+      rs = (await phoneFetch("GET", `/api/terminals/${rid}/screen`)).json?.text ?? "";
+    }
+    if (!/^pl-open-42$/m.test(rs)) throw new Error(`手机新开的服务器终端里没看到输出：${rs.slice(-300)}`);
+    openedServer = "服务器终端也能用";
+  }
+  const badServer = await phoneFetch("POST", "/api/terminals", { server: "a/b" });
+  if (badServer.status !== 400) throw new Error(`服务器 ID 不对应该 400：${badServer.status}`);
+  // 电脑上没有这台服务器：手机收到能看懂的错误码，不是笼统的“电脑上执行失败”
+  const gone = await phoneFetch("POST", "/api/terminals", { server: "pl-no-such-server" });
+  if (gone.status !== 404 || gone.json?.code !== "mobile.server_not_found") throw new Error(`不存在的服务器应该 404 mobile.server_not_found：${gone.status} ${gone.text.slice(0, 200)}`);
   const risky = await phoneFetch("POST", `/api/terminals/${id}/input`, { text: "rm -rf pl-no-such-dir\r" });
   if (risky.status !== 409 || !risky.json?.needs_confirm) throw new Error(`危险命令应该要求确认：${risky.status} ${risky.text.slice(0, 200)}`);
   await u.clickText("Revoke all", ".mobile-set__devices");
   await sleep(800);
   const after = await phoneFetch("GET", "/api/me");
   if (after.status !== 401) throw new Error(`撤销后应该 401：${after.status}`);
-  return `执行了 pl-phone-42；Shift+Tab、方向键后回车、多行粘贴、读屏行数、发图片、改成 60 列再恢复到 ${width} 列；危险命令 409；撤销后 401`;
+  return `执行了 pl-phone-42；Shift+Tab、方向键后回车、多行粘贴、读屏行数、发图片、改成 60 列再恢复到 ${width} 列；新开本机终端（${openedServer}）；危险命令 409；撤销后 401`;
 });
 
 p.close();

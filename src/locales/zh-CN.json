@@ -667,7 +667,10 @@
         "image_type_must_be_png_jpeg_webp_or_gif": "图片只能是 PNG、JPEG、WebP 或 GIF",
         "paste_carriage_return_must_be_last": "粘贴的内容里回车只能在最后",
         "screen_lines_must_be_an_integer_from_1_to_2000": "读屏行数必须是 1 到 2000 的整数",
-        "terminal_size_must_be_20_300_columns_and_5_100_rows": "终端尺寸必须是 20 到 300 列、5 到 100 行"
+        "terminal_size_must_be_20_300_columns_and_5_100_rows": "终端尺寸必须是 20 到 300 列、5 到 100 行",
+        "pc_did_not_open_the_terminal_in_time": "电脑上没有及时打开终端：可能在等确认主机指纹或输入密码，请到电脑上处理",
+        "terminal_was_not_opened": "终端没有打开",
+        "server_id_is_invalid": "服务器 ID 无效"
       },
       "monitor": {
         "create_built_in_sampling_thread": "创建内置采样线程",
@@ -1623,7 +1626,10 @@
       "invalid_request": "名字要是 1 到 80 个字符，不能有控制字符",
       "invalid_image": "图片无效：{{reason}}",
       "unsupported_image_type": "不支持这种图片：{{reason}}",
-      "not_found": "终端不存在或已经关掉了"
+      "not_found": "终端不存在或已经关掉了",
+      "open_timeout": "电脑上没有及时打开终端",
+      "open_failed": "终端没有打开",
+      "server_not_found": "服务器不存在"
     },
     "vnc": {
       "probe_timeout": "桌面没有回应",
@@ -1813,7 +1819,8 @@
     "pasteImageUploading": "正在上传图片…",
     "pasteImageBusy": "上一张图片还在上传",
     "pasteImageExpired": "终端已继续，图片没有粘贴",
-    "phoneView": "手机正以 {{cols}} 列查看这个终端，在这里打字就恢复"
+    "phoneView": "手机正以 {{cols}} 列查看这个终端，在这里打字就恢复",
+    "phoneOpenEnded": "连接在终端可用之前就结束了"
   },
   "hostKey": {
     "title": "确认服务器身份",
@@ -3052,7 +3059,12 @@
       "sendHint": "长按：只输入，不回车",
       "fit": "按手机宽度显示",
       "fitBusy": "电脑上正在用这个终端，按电脑的宽度显示",
-      "jumpNew": "有新内容"
+      "jumpNew": "有新内容",
+      "new": "新开终端",
+      "newTitle": "在电脑上打开终端",
+      "localShell": "本机终端",
+      "offline": "离线",
+      "opening": "正在电脑上打开 {{name}}…"
     },
     "error": {
       "forbidden": "这台手机没有这个权限（在电脑上 设置 → 手机 里打开）",
@@ -3067,7 +3079,10 @@
       "request_timeout": "电脑没有及时回应，再试一次",
       "invalid_request": "请求不对（可以刷新页面再试）",
       "host_unavailable": "电脑上的 Pierlink 暂时用不了",
-      "stopped": "手机入口已关闭"
+      "stopped": "手机入口已关闭",
+      "open_timeout": "电脑上没有及时打开终端：可能在等确认主机指纹或输入密码，请到电脑上处理。",
+      "open_failed": "电脑上没能打开终端：{{message}}",
+      "server_not_found": "这台服务器在电脑上已经删掉了"
     },
     "networkError": "连不上电脑。请确认手机和电脑都连着 Tailscale（或同一个局域网），稍后再试。",
     "signOut": "在这台手机上退出",

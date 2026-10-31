@@ -27,13 +27,27 @@ export class ApiError extends Error {
 
 const mock = new URLSearchParams(location.search).has("mock");
 
-async function request<T>(method: "GET" | "POST", path: string, body?: unknown): Promise<T> {
-  const res = await fetch(path, {
+/** 一个请求最多等多久（毫秒）：手机切网络时请求可能挂好几分钟，排在后面的输入会一直等着 */
+const REQUEST_TIMEOUT_MS = 20_000;
+
+/** 带超时的 fetch：超时按网络错误处理（不是 ApiError） */
+async function fetchWithin(path: string, init: RequestInit, timeoutMs: number): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(path, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function request<T>(method: "GET" | "POST", path: string, body?: unknown, timeoutMs = REQUEST_TIMEOUT_MS): Promise<T> {
+  const res = await fetchWithin(path, {
     method,
     credentials: "same-origin",
     headers: method === "POST" ? { "Content-Type": "application/json", "X-Pierlink": "1" } : undefined,
     body: body === undefined ? undefined : JSON.stringify(body),
-  });
+  }, timeoutMs);
   const text = await res.text();
   const json = text ? (JSON.parse(text) as unknown) : null;
   if (!res.ok) throw new ApiError(res.status, (json as Record<string, unknown>) ?? null);
@@ -79,7 +93,7 @@ export const api = {
   },
   pair: async (code: string, deviceName: string): Promise<void> => {
     if (mock) { await sleep(1500); if (code.length !== 8) throw new ApiError(401, { code: "mobile.invalid_invite" }); mockPaired = true; return; }
-    await request("POST", "/api/pair", { code, device_name: deviceName });
+    await request("POST", "/api/pair", { code, device_name: deviceName }, 130_000);
   },
   logout: async (): Promise<void> => { if (!mock) await request("POST", "/api/logout", {}); },
   overview: async (): Promise<Overview> => {
@@ -89,6 +103,11 @@ export const api = {
   terminals: async (): Promise<TerminalItem[]> => {
     if (mock) return [{ id: "a", title: "gpu-dev", kind: "server", server: "gpu-dev", busy: true, ai: false }, { id: "b", title: "PowerShell 7", kind: "windows", server: null, busy: false, ai: true }];
     return request("GET", "/api/terminals");
+  },
+  /** 请电脑打开一个终端（server 为服务器 ID，null 为本机终端）；电脑上开好后返回终端 ID */
+  openTerminal: async (server: string | null): Promise<string> => {
+    if (mock) { await sleep(800); return "a"; }
+    return (await request<{ id: string }>("POST", "/api/terminals", { server }, 60_000)).id;
   },
   /** 读屏：最近 lines 行（往上翻时多要一些） */
   screen: async (id: string, lines = 300): Promise<Screen> => {
@@ -111,12 +130,12 @@ export const api = {
   /** 发一张图片：电脑端存到终端所在的机器（服务器的 /tmp 或本机），再把路径粘贴进终端 */
   image: async (id: string, image: Blob): Promise<void> => {
     if (mock) { await sleep(1200); return; }
-    const res = await fetch(`/api/terminals/${encodeURIComponent(id)}/image`, {
+    const res = await fetchWithin(`/api/terminals/${encodeURIComponent(id)}/image`, {
       method: "POST",
       credentials: "same-origin",
       headers: { "Content-Type": image.type || "application/octet-stream", "X-Pierlink": "1" },
       body: image,
-    });
+    }, 60_000);
     if (!res.ok) {
       const text = await res.text();
       throw new ApiError(res.status, text ? (JSON.parse(text) as Record<string, unknown>) : null);

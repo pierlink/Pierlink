@@ -25,6 +25,7 @@ import { TransferCenter } from "../files/TransferCenter";
 import { isDangerous, LineBuffer, looksLikePasswordPrompt } from "./broadcast";
 import { getMcpApi } from "../mcp/api";
 import { pickPowerShell } from "../mcp/model";
+import { onPhoneOpen, reportPhoneOpen } from "./phoneOpen";
 import "../mcp/mcp.css";
 import { ServerOverview } from "../monitor/ServerOverview";
 import { useServerMonitor } from "../monitor/useServerMonitor";
@@ -93,6 +94,8 @@ interface Conn {
   revive?: string;
   /** AI 请求打开的终端：打开请求编号（打开结果要回报给后端） */
   ai?: number;
+  /** 手机请求打开的终端：打开请求编号（打开结果要回报给手机） */
+  phone?: number;
   /** 打开服务器桌面而不是终端 */
   desktop?: boolean;
   /** 开始连接的时间（performance.now()；快速连接在对话框里核对指纹，打开窗格后卡片接着计时） */
@@ -322,7 +325,7 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
 
   // 本机终端检测完之前点了“默认本机终端”：记下来，检测完自动打开（不能当作什么都没发生）
   const [shellsLoaded, setShellsLoaded] = useState(false);
-  const pendingDefault = useRef<{ target: Target } | null>(null);
+  const pendingDefault = useRef<{ target: Target; phone?: number } | null>(null);
   useEffect(() => {
     void listLocalShells().then(setShells, () => setShells([])).finally(() => setShellsLoaded(true));
   }, []);
@@ -368,9 +371,13 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
 
   useEffect(() => {
     if (!shellsLoaded || !pendingDefault.current) return;
-    const { target } = pendingDefault.current;
+    const { target, phone } = pendingDefault.current;
     pendingDefault.current = null;
-    openDefault(target);
+    const pane = openDefault(target);
+    if (phone !== undefined) {
+      if (pane) phoneOpens.current[pane] = phone;
+      else reportPhoneOpen(phone, null, { code: "terminal.shell_not_found", params: { shell_id: settings.terminal.defaultShell ?? "" } }).catch((e: unknown) => console.error(e));
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [shellsLoaded]);
 
@@ -439,7 +446,7 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
   const connectPane = (conn: Conn) => {
     const now = performance.now();
     // 同一台服务器半秒内又来一次（双击按成了两次）：当成同一次
-    if (!conn.revive && conn.ai === undefined && Object.values(panesRef.current).some((p) =>
+    if (!conn.revive && conn.ai === undefined && conn.phone === undefined && Object.values(panesRef.current).some((p) =>
       p.connecting?.phase === "probe" && now - p.connecting.start < 500 && JSON.stringify(p.spec) === JSON.stringify(conn.spec))) return;
     const connecting: Connecting = { start: now, stepStart: now, phase: "probe" };
     let id: string;
@@ -449,6 +456,7 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
     } else {
       id = add(conn.spec, conn.title, conn.subtitle, conn.target, conn.files, conn.ai, false, connecting);
     }
+    if (conn.phone !== undefined) phoneOpens.current[id] = conn.phone;
     paneConns.current[id] = conn;
     probePane(id);
   };
@@ -488,6 +496,8 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
     if (code === "ssh.host_key_rejected") { abandonPane(id, err); return; }
     // AI 打开的终端：把原因告诉 AI，不留下失败的窗格
     if (panesRef.current[id]?.ai?.request != null) { abandonPane(id, err); return; }
+    // 手机要打开的：原因告诉手机，失败卡片留在电脑上（能看到原因、能重试）
+    phoneOpened(id, null, err);
     updatePane(id, (p) => ({ connecting: p.connecting && { ...p.connecting, phase: "failed", error: formatError(err), failedAt: code.includes("host_key") ? "verify" : "connect" } }));
   };
   /** 显示对话框，并马上记下（同一时刻又来一个指纹确认时能看到前一个，排队而不是盖掉它） */
@@ -528,6 +538,7 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
     });
     const request = panesRef.current[id]?.ai?.request;
     if (request != null && aiErr) reportAiOpen(request, null, aiErr);
+    phoneOpened(id, null, aiErr ?? { code: "ssh.auth_cancelled", params: {} });
     if (conn?.revive) { updatePane(id, () => ({ restored: true, connecting: undefined })); return; }
     const tab = tabsRef.current.find((x) => paneIds(x.layout).includes(id));
     if (tab) dropPanes(tab.key, [id]);
@@ -646,6 +657,35 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
     return () => { alive = false; off?.(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [servers, shells]);
+  /** 手机要打开的窗格 → 还没回报的请求编号 */
+  const phoneOpens = useRef<Record<string, number>>({});
+  /** 手机要的窗格有了结果：回报一次（成功给会话 ID，失败给原因） */
+  const phoneOpened = (paneId: string, session: string | null, err: unknown) => {
+    const request = phoneOpens.current[paneId];
+    if (request === undefined) return;
+    delete phoneOpens.current[paneId];
+    reportPhoneOpen(request, session, err).catch((e: unknown) => console.error(e));
+  };
+  // 手机请电脑打开终端：服务器走正常连接流程（指纹、密码照常在电脑上处理）；本机开默认 shell
+  useEffect(() => {
+    if (backend.preview) return;
+    let alive = true;
+    let off: (() => void) | undefined;
+    void onPhoneOpen((r) => {
+      if (r.serverId) {
+        const s = servers.find((x) => x.id === r.serverId);
+        if (!s) { reportPhoneOpen(r.id, null, { code: "server.not_found", params: {} }).catch((e: unknown) => console.error(e)); return; }
+        connectPane({ spec: { kind: "server", serverId: s.id }, title: s.name, subtitle: s.address, quick: null, target: null, phone: r.id });
+        return;
+      }
+      if (!shellsLoaded) { pendingDefault.current = { target: null, phone: r.id }; return; }
+      const pane = openDefault(null);
+      if (pane) phoneOpens.current[pane] = r.id;
+      else reportPhoneOpen(r.id, null, { code: "terminal.shell_not_found", params: { shell_id: settings.terminal.defaultShell ?? "" } }).catch((e: unknown) => console.error(e));
+    }).then((u) => { if (alive) off = u; else u(); });
+    return () => { alive = false; off?.(); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [servers, shells, shellsLoaded]);
   // 手机按手机宽度查看某个终端：在那个窗格上提示（电脑上打字就恢复）
   useEffect(() => {
     if (backend.preview) return;
@@ -732,7 +772,8 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
   /** 终端会话变化：AI 打开的终端第一次拿到会话 ID 时回报给后端 */
   const onPaneSession = (id: string, session: string | null) => {
     const p = panesRef.current[id];
-    if (session) { delete paneConns.current[id]; updatePane(id, (x) => (x.connecting ? { connecting: undefined } : {})); }
+    if (session) { delete paneConns.current[id]; updatePane(id, (x) => (x.connecting ? { connecting: undefined } : {})); phoneOpened(id, session, null); }
+    else phoneOpened(id, null, { code: "mobile.open_failed", params: { message: t("terminal.phoneOpenEnded") } });
     if (session && p?.ai && p.ai.request !== null) {
       reportAiOpen(p.ai.request, session, null, id);
       updatePane(id, (x) => ({ session, ai: x.ai && { ...x.ai, request: null } }));
@@ -742,6 +783,7 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
   /** 终端打开失败：AI 还在等这个终端时回报原因 */
   const onPaneError = (id: string, err: unknown) => {
     console.error(formatError(err));
+    phoneOpened(id, null, err);
     const p = panesRef.current[id];
     if (p?.ai && p.ai.request !== null) {
       reportAiOpen(p.ai.request, null, err);
@@ -778,6 +820,7 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
 
   /** 去掉一些窗格；标签里的窗格全去掉时连标签一起关掉 */
   const dropPanes = (tabKey: string, ids: string[]) => {
+    for (const id of ids) phoneOpened(id, null, { code: "ssh.auth_cancelled", params: {} });
     const before = tabsRef.current;
     const index = before.findIndex((x) => x.key === tabKey);
     if (index < 0) return;

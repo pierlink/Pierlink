@@ -97,12 +97,27 @@ describe("认出等着回答的选项", () => {
     expect(detectChoices(["1) build", "2) test", "#? "])?.map((c) => c.key)).toEqual(["1", "2"]);
   });
 
+  it("Gemini CLI 的 ● 标记算选项（下面还有输入框也算）", () => {
+    const screen = [
+      " Allow execution of: 'npm test'?",
+      " ● 1. Yes, allow once",
+      "   2. Yes, allow always",
+      "   3. No (esc)",
+      "╭──────────────╮",
+      "│ >            │",
+      "╰──────────────╯",
+    ];
+    expect(detectChoices(screen)?.map((c) => c.key)).toEqual(["1", "2", "3"]);
+  });
+
   it("选项太长折行时仍然连成一组", () => {
     const screen = [
       " Do you want to proceed?",
       " ❯ 1. Yes",
       "   2. Yes, and don't ask again for",
-      "      npm commands in /home/dev/web",
+      "      npm commands in",
+      "      /home/dev/projects/web-",
+      "      frontend/packages/app",
       "   3. No (esc)",
     ];
     expect(detectChoices(screen)?.map((c) => c.key)).toEqual(["1", "2", "3"]);

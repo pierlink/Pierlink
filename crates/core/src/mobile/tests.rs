@@ -86,6 +86,20 @@ impl MobileHost for MockHost {
             Ok(json!({"ok":true}))
         })
     }
+    fn open_terminal<'a>(&'a self, server: Option<&'a str>) -> HostFuture<'a, Value> {
+        Box::pin(async move {
+            lock(&self.calls).push(json!(["open", server]));
+            match server {
+                Some("slow") => Err(error(
+                    "mobile.open_timeout",
+                    "mobile.pc_did_not_open_the_terminal_in_time",
+                    "电脑上没有及时打开终端",
+                )),
+                Some("internal") => Err(AppError::new("storage.locked").with("path", "C:\\secret")),
+                _ => Ok(json!({"id":"new"})),
+            }
+        })
+    }
     fn confirms(&self) -> HostFuture<'_, Value> {
         Box::pin(async { Ok(json!([{"id":"ask"}])) })
     }
@@ -1224,6 +1238,60 @@ async fn 空闲连接及入口释放关闭连接() {
     let mut client = entry.connect();
     drop(entry);
     client.closed().await;
+}
+
+#[tokio::test]
+async fn 新开终端要输入权限_写给手机的错误原样给_内部错误不外露() {
+    let entry = MemoryEntry::new();
+    let (id, cookie) = entry.pair().await;
+    let open =
+        |server: Value| entry.request("POST", "/api/terminals", &cookie, json!({"server": server}));
+    assert_eq!(open(json!("srv")).await.status, 403);
+    entry
+        .server
+        .set_permissions(
+            &id,
+            Permissions {
+                input: true,
+                ..Permissions::default()
+            },
+        )
+        .unwrap();
+    let opened = open(json!("srv")).await;
+    assert_eq!(opened.status, 200, "{}", opened.body);
+    assert_eq!(opened.json(), json!({"id":"new"}));
+    assert_eq!(open(Value::Null).await.json(), json!({"id":"new"}));
+    // 电脑上没及时开好：手机收到原来的错误码和说明
+    let slow = open(json!("slow")).await;
+    assert_eq!(slow.status, 504);
+    assert_eq!(slow.json()["code"], "mobile.open_timeout");
+    assert_eq!(
+        slow.json()["params"]["reason_key"],
+        "mobile.pc_did_not_open_the_terminal_in_time"
+    );
+    // 桌面内部错误：只说失败了，不带路径等细节
+    let internal = open(json!("internal")).await;
+    assert_eq!(internal.status, 500);
+    assert_eq!(internal.json()["code"], "mobile.host_failed");
+    assert!(!internal.body.contains("secret"));
+    assert_eq!(open(json!("a/b")).await.status, 400);
+    let calls = lock(&entry.host.calls).clone();
+    assert!(calls.contains(&json!(["open", "srv"])));
+    assert!(calls.contains(&json!(["open", null])));
+    let audits = lock(&entry.host.audits).clone();
+    assert!(audits.iter().any(|a| a.action == "terminal_open"
+        && a.target.as_deref() == Some("srv")
+        && a.result == "ok"));
+    assert!(
+        audits
+            .iter()
+            .any(|a| a.action == "terminal_open" && a.target.as_deref() == Some("windows"))
+    );
+    assert!(
+        audits
+            .iter()
+            .any(|a| a.action == "terminal_open" && a.result == "mobile.open_timeout")
+    );
 }
 
 #[tokio::test]
