@@ -386,7 +386,7 @@ fn with_ssh_pair(
     }
     let ssh_port = allocate_port().unwrap();
     let config = root.path().join("sshd_config");
-    fs::write(&config, format!("Port {ssh_port}\nListenAddress 127.0.0.1\nHostKey {}\nPidFile {}\nAuthorizedKeysFile {}\nStrictModes no\nPasswordAuthentication no\nKbdInteractiveAuthentication no\nUsePAM no\nAllowTcpForwarding yes\nAllowStreamLocalForwarding yes\nLogLevel ERROR\n", root.path().join("host").display(), root.path().join("sshd.pid").display(), root.path().join("client.pub").display())).unwrap();
+    fs::write(&config, format!("Port {ssh_port}\nListenAddress 127.0.0.1\nHostKey {}\nPidFile {}\nAuthorizedKeysFile {}\nStrictModes no\nPasswordAuthentication no\nKbdInteractiveAuthentication no\nUsePAM no\nAllowTcpForwarding yes\nAllowStreamLocalForwarding yes\nLogLevel ERROR\nSetEnv HISTFILE=/dev/null\n", root.path().join("host").display(), root.path().join("sshd.pid").display(), root.path().join("client.pub").display())).unwrap();
     let log = fs::File::create(root.path().join("sshd.log")).unwrap();
     let mut sshd = Sshd(
         Command::new("/usr/sbin/sshd")

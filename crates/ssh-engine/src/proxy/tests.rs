@@ -10,6 +10,82 @@ fn server(kind: ProxyKind) -> ProxyServer {
 }
 
 #[test]
+fn 拒绝原因提供完整翻译键并保持中文显示() {
+    use RefuseReason::*;
+    for (reason, key, text) in [
+        (
+            ConnectionUnavailable,
+            "proxy.connection_unavailable",
+            "无法取得代理连接",
+        ),
+        (
+            ConnectionSetupFailed,
+            "proxy.connection_setup_failed",
+            "无法设置代理连接",
+        ),
+        (
+            RequestWriteFailed,
+            "proxy.request_write_failed",
+            "写入代理请求失败",
+        ),
+        (
+            ResponseIncomplete,
+            "proxy.response_incomplete",
+            "代理响应不完整",
+        ),
+        (
+            ResponseHeaderTooLarge,
+            "proxy.response_header_too_large",
+            "代理响应头过大",
+        ),
+        (
+            InvalidHttpStatusLine,
+            "proxy.invalid_http_status_line",
+            "代理 HTTP 状态行无效",
+        ),
+        (
+            InvalidHttpStatus,
+            "proxy.invalid_http_status",
+            "代理 HTTP 状态码无效",
+        ),
+        (HttpStatus(403), "proxy.http_status", "HTTP 状态码 403"),
+        (
+            SocksHandshakeInterrupted,
+            "proxy.socks_handshake_interrupted",
+            "SOCKS5 握手中断",
+        ),
+        (
+            InvalidSocksVersion,
+            "proxy.invalid_socks_version",
+            "SOCKS5 协议版本无效",
+        ),
+        (
+            InvalidSocksAuthMethod,
+            "proxy.invalid_socks_auth_method",
+            "SOCKS5 认证方式无效",
+        ),
+        (
+            InvalidSocksResponse,
+            "proxy.invalid_socks_response",
+            "SOCKS5 响应格式无效",
+        ),
+        (SocksReply(2), "proxy.socks_reply", "SOCKS5 回复码 2"),
+        (
+            InvalidSocksAddressType,
+            "proxy.invalid_socks_address_type",
+            "SOCKS5 地址类型无效",
+        ),
+    ] {
+        assert_eq!(reason.key(), key);
+        assert_eq!(reason.to_string(), text);
+        assert_eq!(
+            refused("2001:db8::1", 22, reason).to_string(),
+            format!("代理拒绝连接目标 [2001:db8::1]:22：{text}")
+        );
+    }
+}
+
+#[test]
 fn 地址校验拒绝凭据及非法输入() {
     for kind in [ProxyKind::Http, ProxyKind::Socks5] {
         let mut proxy = server(kind);
@@ -40,7 +116,7 @@ async fn 内存http无认证请求目标格式有界头部和状态码() {
             (b"HTTP/1.1 407 secret-reason\r\n\r\nsecret-body", Some(407)),
             (b"HTTP/1.1 403 secret-reason\r\n\r\nsecret-body", Some(403)),
             (b"HTTP/1.1 bad secret-reason\r\n\r\n", Some(0)),
-            (b"invalid secret-reason\r\n\r\n", Some(0)),
+            (b"invalid secret-reason\r\n\r\n", Some(1)),
         ] {
             let target = if host.contains(':') {
                 format!("[{host}]:22")
@@ -65,10 +141,16 @@ async fn 内存http无认证请求目标格式有界头部和状态码() {
                     assert_eq!(&banner, b"SSH-banner");
                 }
                 Some(407) => assert_eq!(result, Err(ProxyError::AuthRequired)),
-                Some(_) => {
+                Some(code) => {
                     let error = result.unwrap_err();
-                    assert!(matches!(error, ProxyError::Refused { .. }));
+                    let reason = match code {
+                        0 => RefuseReason::InvalidHttpStatus,
+                        1 => RefuseReason::InvalidHttpStatusLine,
+                        status => RefuseReason::HttpStatus(status),
+                    };
+                    assert_eq!(error, refused(host, 22, reason));
                     assert!(!format!("{error:?}").contains("secret"));
+                    assert!(!error.to_string().contains("secret"));
                 }
             }
         }
@@ -86,11 +168,40 @@ async fn 内存http无认证请求目标格式有界头部和状态码() {
         };
         let (result, ()) = tokio::join!(http(&mut client, "host", 22), remote);
         let expected = if response.len() > 16384 {
-            "代理响应头过大"
+            RefuseReason::ResponseHeaderTooLarge
         } else {
-            "代理响应不完整"
+            RefuseReason::ResponseIncomplete
         };
         assert_eq!(result, Err(refused("host", 22, expected)));
+    }
+}
+
+#[tokio::test]
+async fn 内存代理流中断及畸形socks响应返回固定原因() {
+    let (mut client, peer) = tokio::io::duplex(1024);
+    drop(peer);
+    assert_eq!(
+        http(&mut client, "host", 22).await,
+        Err(refused("host", 22, RefuseReason::RequestWriteFailed))
+    );
+    assert_eq!(
+        socks(&mut client, "host", 22).await,
+        Err(refused("host", 22, RefuseReason::SocksHandshakeInterrupted))
+    );
+    for (response, reason) in [
+        (vec![4, 0, 0, 1], RefuseReason::InvalidSocksResponse),
+        (vec![5, 0, 1, 1], RefuseReason::InvalidSocksResponse),
+        (vec![5, 0, 0, 9], RefuseReason::InvalidSocksAddressType),
+        (vec![5, 0], RefuseReason::SocksHandshakeInterrupted),
+    ] {
+        let (mut client, mut peer) = tokio::io::duplex(1024);
+        peer.write_all(&[5, 0]).await.unwrap();
+        peer.write_all(&response).await.unwrap();
+        peer.shutdown().await.unwrap();
+        assert_eq!(
+            socks(&mut client, "host", 22).await,
+            Err(refused("host", 22, reason))
+        );
     }
 }
 
@@ -140,7 +251,7 @@ async fn 内存socks无认证地址类型错误回复及残留banner() {
             } else {
                 assert_eq!(
                     result.unwrap_err(),
-                    refused(host, 22, format!("SOCKS5 回复码 {reply_code}"))
+                    refused(host, 22, RefuseReason::SocksReply(reply_code))
                 );
             }
         }
@@ -149,8 +260,14 @@ async fn 内存socks无认证地址类型错误回复及残留banner() {
     for (response, expected) in [
         (vec![5, 255], ProxyError::AuthRequired),
         (vec![5, 2], ProxyError::AuthRequired),
-        (vec![5, 1], refused("host", 22, "SOCKS5 认证方式无效")),
-        (vec![4, 0], refused("host", 22, "SOCKS5 协议版本无效")),
+        (
+            vec![5, 1],
+            refused("host", 22, RefuseReason::InvalidSocksAuthMethod),
+        ),
+        (
+            vec![4, 0],
+            refused("host", 22, RefuseReason::InvalidSocksVersion),
+        ),
     ] {
         let (mut client, mut peer) = tokio::io::duplex(1024);
         peer.write_all(&response).await.unwrap();

@@ -172,8 +172,9 @@ impl Server {
         } else {
             String::new()
         };
+        // 测试 sshd 以当前用户登录、用真实的家目录：交互 shell 退出时会把测试敲的命令写进用户的 ~/.bash_history，所以把 HISTFILE 设成 /dev/null
         let config = format!(
-            "Port {port}\nListenAddress 127.0.0.1\nHostKey {}\nPidFile {}\nAuthorizedKeysFile {}{authorized}\nStrictModes no\nUsePAM no\nPasswordAuthentication no\nKbdInteractiveAuthentication no\nPermitRootLogin yes\nAcceptEnv PIERLINK_TEST\nSubsystem sftp internal-sftp\nLogLevel ERROR\n{isolation}{extra}\n",
+            "Port {port}\nListenAddress 127.0.0.1\nHostKey {}\nPidFile {}\nAuthorizedKeysFile {}{authorized}\nStrictModes no\nUsePAM no\nPasswordAuthentication no\nKbdInteractiveAuthentication no\nPermitRootLogin yes\nAcceptEnv PIERLINK_TEST\nSubsystem sftp internal-sftp\nLogLevel ERROR\nSetEnv HISTFILE=/dev/null\n{isolation}{extra}\n",
             root.path().join("host").display(),
             root.path().join("pid").display(),
             root.path().join("client.pub").display()

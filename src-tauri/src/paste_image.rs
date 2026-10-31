@@ -110,6 +110,44 @@ fn clean_remote(session: &mut pierlink_core::sftp::SftpSession, now: SystemTime)
     }
 }
 
+/// 在服务器上独占创建 path 并写入图片，最多等 30 秒。
+/// 失败时删掉自己传了一半的文件；文件本来就在（sftp.exists）时不动它。
+fn upload(
+    session: &mut pierlink_core::sftp::SftpSession,
+    path: &str,
+    png: &[u8],
+) -> Result<(), AppError> {
+    // 超时：另起一个线程，到时间就让写入停下
+    let cancel = Arc::new(AtomicBool::new(false));
+    let (done, wait) = std::sync::mpsc::channel::<()>();
+    let flag = cancel.clone();
+    std::thread::spawn(move || {
+        if wait.recv_timeout(UPLOAD_TIMEOUT).is_err() {
+            flag.store(true, Ordering::Release);
+        }
+    });
+    let written = session.write_new_from(
+        path,
+        &mut std::io::Cursor::new(png),
+        Some(0o600),
+        &mut |_| {},
+        &cancel,
+    );
+    let _ = done.send(());
+    match written {
+        Ok(_) => Ok(()),
+        Err(e) if e.code == "sftp.exists" => Err(e),
+        Err(e) => {
+            let _ = session.remove_file(path);
+            Err(if cancel.load(Ordering::Acquire) {
+                AppError::new("paste.upload_timeout")
+            } else {
+                e
+            })
+        }
+    }
+}
+
 /// 把剪贴板里的图片传到服务器终端所在的服务器，返回路径。
 ///
 /// :param loc: 终端所在的服务器（保存过的服务器或快速连接）
@@ -123,39 +161,20 @@ pub async fn terminal_paste_image_remote(app: AppHandle, loc: LocDto) -> Result<
     tauri::async_runtime::spawn_blocking(move || {
         let png = clipboard_png()?;
         let now = SystemTime::now();
-        let path = format!("{REMOTE_DIR}/{}", file_name(now));
         let result = crate::files::with_session(&app, &loc, |session| {
-            // 超时：另起一个线程，到时间就让写入停下
-            let cancel = Arc::new(AtomicBool::new(false));
-            let (done, wait) = std::sync::mpsc::channel::<()>();
-            let flag = cancel.clone();
-            std::thread::spawn(move || {
-                if wait.recv_timeout(UPLOAD_TIMEOUT).is_err() {
-                    flag.store(true, Ordering::Release);
-                }
-            });
-            let written = session.write_from(
-                &path,
-                &mut std::io::Cursor::new(&png),
-                Some(0o600),
-                &mut |_| {},
-                &cancel,
-            );
-            let _ = done.send(());
-            match written {
-                Ok(_) => Ok(()),
-                Err(e) => {
-                    // 失败时删掉传了一半的文件
-                    let _ = session.remove_file(&path);
-                    Err(if cancel.load(Ordering::Acquire) {
-                        AppError::new("paste.upload_timeout")
-                    } else {
-                        e
-                    })
+            // 文件名带随机字符，几乎不会重名；万一已经有同名的文件或链接（别人放的），换个名字再试一次
+            let mut exists = None;
+            for _ in 0..2 {
+                let path = format!("{REMOTE_DIR}/{}", file_name(now));
+                match upload(session, &path, &png) {
+                    Ok(()) => return Ok(path),
+                    Err(e) if e.code == "sftp.exists" => exists = Some(e),
+                    Err(e) => return Err(e),
                 }
             }
+            Err(exists.unwrap_or_else(|| AppError::new("sftp.exists")))
         });
-        result?;
+        let path = result?;
         eprintln!("粘贴图片已传到服务器: 路径={path}, 字节={}", png.len());
         // 清理放到后台：/tmp 里东西多时列目录要一会儿，不耽误这次粘贴
         if clean_due(&loc.key(), Instant::now()) {

@@ -62,8 +62,9 @@ impl Server {
         self.root.path().join(name)
     }
     fn start(&mut self, key: &str, forwarding: bool) {
+        // 测试 sshd 以当前用户登录、用真实的家目录：交互 shell 退出时会把测试敲的命令写进用户的 ~/.bash_history，所以把 HISTFILE 设成 /dev/null
         let mut config = format!(
-            "Port {}\nListenAddress 127.0.0.1\nHostKey {}\nPidFile {}\nAuthorizedKeysFile {} {}\nStrictModes no\nPasswordAuthentication no\nKbdInteractiveAuthentication no\nUsePAM no\nAcceptEnv LC_*\nAllowTcpForwarding {}\nLogLevel ERROR\nForceCommand /bin/bash --rcfile {} -ic \"$SSH_ORIGINAL_COMMAND\"\n",
+            "Port {}\nListenAddress 127.0.0.1\nHostKey {}\nPidFile {}\nAuthorizedKeysFile {} {}\nStrictModes no\nPasswordAuthentication no\nKbdInteractiveAuthentication no\nUsePAM no\nAcceptEnv LC_*\nAllowTcpForwarding {}\nLogLevel ERROR\nSetEnv HISTFILE=/dev/null\nForceCommand /bin/bash --rcfile {} -ic \"$SSH_ORIGINAL_COMMAND\"\n",
             self.port,
             self.path(key).display(),
             self.path("sshd.pid").display(),

@@ -7,7 +7,6 @@ use pierlink_core::error::AppError;
 use pierlink_core::proxy::{self, ProxyKind, ProxyMode, ProxyServer, ProxySettings, SystemProxy};
 use serde::{Deserialize, Serialize};
 use specta::Type;
-use std::net::IpAddr;
 use std::path::Path;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager};
@@ -328,7 +327,7 @@ pub fn terminal_env(shell: &LocalShell) -> Vec<(String, String)> {
     if env.is_empty() || !matches!(shell.kind, ShellKind::Wsl { .. }) {
         return env;
     }
-    let loopback = active_server().is_some_and(|s| is_loopback(&s.host));
+    let loopback = active_server().is_some_and(|s| proxy::loopback(&s.host));
     if loopback && !wsl_mirrored() {
         eprintln!("WSL 是 NAT 网络、代理在本机地址，WSL 终端不加代理环境变量");
         return Vec::new();
@@ -351,12 +350,6 @@ fn active_server() -> Option<ProxyServer> {
             SystemProxy::None | SystemProxy::Pac { .. } => None,
         },
     }
-}
-
-/// 是不是本机地址（localhost、127.x、::1）
-fn is_loopback(host: &str) -> bool {
-    host.eq_ignore_ascii_case("localhost")
-        || host.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback())
 }
 
 /// 把要传给 WSL 的变量名加到原有的 WSLENV 后面（去重，保留原有的）
@@ -537,11 +530,18 @@ mod tests {
 
     #[test]
     fn 本机地址() {
-        for host in ["localhost", "LOCALHOST", "127.0.0.1", "127.1.2.3", "::1"] {
-            assert!(is_loopback(host), "{host}");
+        for host in [
+            "localhost",
+            "LOCALHOST",
+            "127.0.0.1",
+            "127.1.2.3",
+            "::1",
+            "::ffff:127.0.0.1",
+        ] {
+            assert!(proxy::loopback(host), "{host}");
         }
         for host in ["192.168.1.2", "proxy.lan", "10.0.0.1"] {
-            assert!(!is_loopback(host), "{host}");
+            assert!(!proxy::loopback(host), "{host}");
         }
     }
 

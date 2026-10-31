@@ -7,7 +7,9 @@ fn normalized(host: &str) -> &str {
         .trim_end_matches('.')
 }
 
-pub(super) fn loopback(host: &str) -> bool {
+/// 判断 host 是否为回环地址；接受 localhost、IPv4、IPv6 及映射到 IPv4 回环的 IPv6。
+/// 忽略 localhost 的大小写、末尾的点和 IPv6 方括号；不解析域名，其他输入返回 false。
+pub fn loopback(host: &str) -> bool {
     let host = normalized(host);
     host.eq_ignore_ascii_case("localhost")
         || host.parse::<IpAddr>().is_ok_and(|ip| match ip {

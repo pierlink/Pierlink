@@ -2,6 +2,107 @@ use super::*;
 use crate::proxy::{ProxyMode, ProxySettings, set_settings};
 
 #[test]
+fn 系统未设代理或使用pac时原样返回且不启动ssh() {
+    let root = crate::test_support::tempdir();
+    // 不存在的可执行文件保证误走 ssh -G 时测试失败。
+    let program = SshProgram {
+        path: root.path().join("不存在的ssh"),
+    };
+    let command = SshCommand {
+        args: vec!["-F".into(), "existing.conf".into(), "alias".into()],
+        env: vec![("CUSTOM".into(), "value".into())],
+        config_text: Some("Host alias\n HostName unresolved.invalid\n".into()),
+        hooked: true,
+        builtin: None,
+        askpass: None,
+    };
+    let settings = ProxySettings {
+        mode: ProxyMode::System,
+        ..Default::default()
+    };
+    for proxy in [
+        super::super::SystemProxy::None,
+        super::super::SystemProxy::Pac {
+            url: "http://pac/script".into(),
+        },
+    ] {
+        let mut reads = 0;
+        let prepared =
+            prepare_with_system(&program, &command, Path::new("/helper"), &settings, || {
+                reads += 1;
+                proxy
+            })
+            .unwrap();
+        assert_eq!(reads, 1);
+        assert_eq!(prepared.command.args, command.args);
+        assert_eq!(prepared.command.env, command.env);
+        assert_eq!(prepared.command.config_text, command.config_text);
+        assert_eq!(prepared.command.hooked, command.hooked);
+        assert!(prepared.config.is_none());
+    }
+    let prepared = prepare_with_system(
+        &program,
+        &command,
+        Path::new("/helper"),
+        &ProxySettings::default(),
+        || panic!("关闭代理时不读取系统设置"),
+    )
+    .unwrap();
+    assert_eq!(prepared.command.args, command.args);
+    assert!(prepared.config.is_none());
+}
+
+#[cfg(unix)]
+#[test]
+fn 系统静态代理按解析后的主机和系统名单决定注入() {
+    let program = SshProgram {
+        path: "/usr/bin/ssh".into(),
+    };
+    let command = SshCommand {
+        args: vec!["-F".into(), "unused.conf".into(), "alias".into()],
+        env: vec![],
+        config_text: Some("Host alias\n HostName public.invalid\n".into()),
+        hooked: false,
+        builtin: None,
+        askpass: None,
+    };
+    let settings = ProxySettings {
+        mode: ProxyMode::System,
+        bypass: vec!["public.invalid".into()],
+    };
+    for bypass in [vec![], vec!["public.invalid".into()]] {
+        let expected = bypass.is_empty();
+        let mut reads = 0;
+        let prepared =
+            prepare_with_system(&program, &command, Path::new("/helper"), &settings, || {
+                reads += 1;
+                super::super::SystemProxy::Server {
+                    server: crate::proxy::tests::server(),
+                    bypass,
+                }
+            })
+            .unwrap();
+        assert_eq!(reads, 1);
+        assert_eq!(
+            prepared
+                .command
+                .args
+                .iter()
+                .any(|a| a.starts_with("ProxyCommand=")),
+            expected
+        );
+        assert_eq!(
+            prepared
+                .command
+                .env
+                .iter()
+                .any(|(key, _)| key == "PIERLINK_PROXY"),
+            expected
+        );
+    }
+}
+
+#[test]
 fn 帮手路径兼容空格中文百分号且拒绝换行() {
     assert_eq!(
         helper_for_platform(Path::new(r"C:\程序 文件\Pierlink.exe"), true).unwrap(),

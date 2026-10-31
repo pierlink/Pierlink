@@ -1232,6 +1232,22 @@
         "invalid_window_address": "窗口地址不合法",
         "setsid_or_xauth_missing": "setsid 或 xauth",
         "dbus_launcher_missing": "dbus-run-session 或 dbus-launch"
+      },
+      "proxy": {
+        "connection_unavailable": "无法取得代理连接",
+        "connection_setup_failed": "无法设置代理连接",
+        "request_write_failed": "写入代理请求失败",
+        "response_incomplete": "代理响应不完整",
+        "response_header_too_large": "代理响应头过大",
+        "invalid_http_status_line": "代理 HTTP 状态行无效",
+        "invalid_http_status": "代理 HTTP 状态码无效",
+        "http_status": "HTTP 状态码 {{status}}",
+        "socks_handshake_interrupted": "SOCKS5 握手中断",
+        "invalid_socks_version": "SOCKS5 协议版本无效",
+        "invalid_socks_auth_method": "SOCKS5 认证方式无效",
+        "invalid_socks_response": "SOCKS5 响应格式无效",
+        "socks_reply": "SOCKS5 回复码 {{reply}}",
+        "invalid_socks_address_type": "SOCKS5 地址类型无效"
       }
     },
     "ssh": {

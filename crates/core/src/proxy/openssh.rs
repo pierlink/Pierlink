@@ -33,10 +33,32 @@ pub(super) fn prepare_with_exe(
     command: &SshCommand,
     executable: &Path,
 ) -> Result<Prepared, AppError> {
+    prepare_with_system(
+        program,
+        command,
+        executable,
+        &super::settings(),
+        super::system_proxy,
+    )
+}
+
+fn prepare_with_system(
+    program: &SshProgram,
+    command: &SshCommand,
+    executable: &Path,
+    settings: &super::ProxySettings,
+    system: impl FnOnce() -> super::SystemProxy,
+) -> Result<Prepared, AppError> {
     let mut prepared = Prepared {
         command: command.clone(),
         config: None,
     };
+    // 先读取一次有效设置；没有静态代理时不生成临时配置，也不启动 ssh -G。
+    let Some((proxy, bypass)) = super::active(settings, system) else {
+        return Ok(prepared);
+    };
+    let use_proxy =
+        |host: &str| !super::bypass::loopback(host) && !super::bypass::matches(host, &bypass);
     // 只有应用参数构造器生成的手动链在第一跳注入；用户的跳板链完整保留。
     if let Some(text) = command
         .config_text
@@ -50,7 +72,7 @@ pub(super) fn prepare_with_exe(
             .find_map(|s| s.trim().strip_prefix("HostName "))
             .map(|s| s.trim_matches('"'))
             .ok_or_else(invalid)?;
-        if let Some(proxy) = super::for_target(host) {
+        if use_proxy(host) {
             pierlink_ssh_engine::proxy::validate(&proxy, host, 22)
                 .map_err(|e| super::map_error(&e))?;
             let text = text.replacen(
@@ -77,7 +99,7 @@ pub(super) fn prepare_with_exe(
     if cfg.proxy_command.is_some() || cfg.proxy_jump.is_some() {
         return Ok(prepared);
     }
-    if let Some(proxy) = super::for_target(&cfg.hostname) {
+    if use_proxy(&cfg.hostname) {
         pierlink_ssh_engine::proxy::validate(&proxy, &cfg.hostname, cfg.port)
             .map_err(|e| super::map_error(&e))?;
         prepared.command.args.splice(

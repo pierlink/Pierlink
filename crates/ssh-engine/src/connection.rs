@@ -444,7 +444,7 @@ impl Engine {
         options.report(ConnectStage::Auth);
         // 登录后主连接可能长期复用，不让连接持有已经关闭的终端进度回调。
         options.progress = None;
-        // 握手完成后不再持有代理凭据。
+        // 代理握手已完成，后续通道复用现有连接，不再需要保存出站代理设置。
         options.proxy = None;
         let counters = Arc::new(Counters::default());
         let remote_sshid = Arc::new(OnceLock::new());

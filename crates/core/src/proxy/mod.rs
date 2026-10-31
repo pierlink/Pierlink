@@ -6,8 +6,9 @@ mod stdio;
 mod system;
 
 use crate::error::AppError;
+pub use bypass::loopback;
 pub use env::terminal_env;
-use pierlink_ssh_engine::proxy::ProxyError;
+use pierlink_ssh_engine::proxy::{ProxyError, RefuseReason};
 pub use pierlink_ssh_engine::proxy::{ProxyKind, ProxyServer};
 use std::{
     net::TcpStream,
@@ -138,7 +139,14 @@ pub(crate) fn map_error(error: &ProxyError) -> AppError {
             result = result.with("proxy", proxy);
         }
         ProxyError::Refused { target, reason } => {
-            result = result.with("target", target).with("reason", reason);
+            result = result
+                .with("target", target)
+                .with_reason(reason.key(), reason);
+            result = match reason {
+                RefuseReason::HttpStatus(status) => result.with("status", status),
+                RefuseReason::SocksReply(reply) => result.with("reply", reply),
+                _ => result,
+            };
         }
         _ => {}
     }

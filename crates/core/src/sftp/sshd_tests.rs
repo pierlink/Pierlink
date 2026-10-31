@@ -47,6 +47,19 @@ pub(super) fn open(
 
 #[test]
 #[ignore = "需要普通用户启动本机 sshd 和随机监听端口"]
+fn 内置真实独占写入保留已有文件和链接并设置新文件权限() {
+    let f = Fixture::from_sshd(sshd::Server::with_root(
+        crate::test_support::tempdir(),
+        "",
+        false,
+    ));
+    let mut session =
+        SftpSession::open(&f.program(), &f.sftp_command(), Duration::from_secs(5)).unwrap();
+    super::tests::check_exclusive_write(&mut session, f.sshd.root.path());
+}
+
+#[test]
+#[ignore = "需要普通用户启动本机 sshd 和随机监听端口"]
 fn 内置真实并发传输取消与批量断线后重开() {
     let f = Fixture::from_sshd(sshd::Server::with_root(
         crate::test_support::tempdir(),

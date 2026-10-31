@@ -591,6 +591,20 @@ impl SftpSession {
     ) -> Result<u64, AppError> {
         self.write_file(value, input, mode, progress, cancel, false)
     }
+
+    /// 在 value 独占创建文件并写入 input，mode 是可选 Unix 权限；已有文件或链接返回带 path 的 sftp.exists。
+    /// progress 接收累计字节数，cancel 用于取消；成功返回写入字节数，失败时保留已经创建的部分文件供调用方清理。
+    pub fn write_new_from(
+        &mut self,
+        value: &str,
+        input: &mut dyn Read,
+        mode: Option<u32>,
+        progress: &mut dyn FnMut(u64),
+        cancel: &AtomicBool,
+    ) -> Result<u64, AppError> {
+        self.write_file(value, input, mode, progress, cancel, true)
+    }
+
     pub(crate) fn write_file(
         &mut self,
         value: &str,
@@ -601,7 +615,19 @@ impl SftpSession {
         exclusive: bool,
     ) -> Result<u64, AppError> {
         cancelled(cancel)?;
-        let handle = self.open_write(value, mode, exclusive)?;
+        let handle = match self.open_write(value, mode, exclusive) {
+            Ok(handle) => handle,
+            Err(error) if exclusive => {
+                // SFTP 第三版将文件已存在也报为通用失败；独占创建失败后用 LSTAT 区分，包含坏链接。
+                if error.code == "sftp.failure"
+                    && self.metadata(value, false).ok().flatten().is_some()
+                {
+                    return Err(AppError::new("sftp.exists").with("path", value));
+                }
+                return Err(error.with("path", value));
+            }
+            Err(error) => return Err(error),
+        };
         self.with_handle(handle, |session, handle| {
             session.write_handle(handle, input, progress, cancel)
         })

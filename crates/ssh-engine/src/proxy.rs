@@ -19,6 +19,61 @@ pub struct ProxyServer {
     pub port: u16,
 }
 
+/// 代理拒绝连接的固定原因；显示为中文原文，状态码仅保留经过校验的数字。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum RefuseReason {
+    #[error("无法取得代理连接")]
+    ConnectionUnavailable,
+    #[error("无法设置代理连接")]
+    ConnectionSetupFailed,
+    #[error("写入代理请求失败")]
+    RequestWriteFailed,
+    #[error("代理响应不完整")]
+    ResponseIncomplete,
+    #[error("代理响应头过大")]
+    ResponseHeaderTooLarge,
+    #[error("代理 HTTP 状态行无效")]
+    InvalidHttpStatusLine,
+    #[error("代理 HTTP 状态码无效")]
+    InvalidHttpStatus,
+    #[error("HTTP 状态码 {0}")]
+    HttpStatus(u16),
+    #[error("SOCKS5 握手中断")]
+    SocksHandshakeInterrupted,
+    #[error("SOCKS5 协议版本无效")]
+    InvalidSocksVersion,
+    #[error("SOCKS5 认证方式无效")]
+    InvalidSocksAuthMethod,
+    #[error("SOCKS5 响应格式无效")]
+    InvalidSocksResponse,
+    #[error("SOCKS5 回复码 {0}")]
+    SocksReply(u8),
+    #[error("SOCKS5 地址类型无效")]
+    InvalidSocksAddressType,
+}
+
+impl RefuseReason {
+    /// 无参数；返回当前原因在 errors.detail 下的翻译键，中文原文由 Display 提供。
+    pub fn key(&self) -> &'static str {
+        match self {
+            Self::ConnectionUnavailable => "proxy.connection_unavailable",
+            Self::ConnectionSetupFailed => "proxy.connection_setup_failed",
+            Self::RequestWriteFailed => "proxy.request_write_failed",
+            Self::ResponseIncomplete => "proxy.response_incomplete",
+            Self::ResponseHeaderTooLarge => "proxy.response_header_too_large",
+            Self::InvalidHttpStatusLine => "proxy.invalid_http_status_line",
+            Self::InvalidHttpStatus => "proxy.invalid_http_status",
+            Self::HttpStatus(_) => "proxy.http_status",
+            Self::SocksHandshakeInterrupted => "proxy.socks_handshake_interrupted",
+            Self::InvalidSocksVersion => "proxy.invalid_socks_version",
+            Self::InvalidSocksAuthMethod => "proxy.invalid_socks_auth_method",
+            Self::InvalidSocksResponse => "proxy.invalid_socks_response",
+            Self::SocksReply(_) => "proxy.socks_reply",
+            Self::InvalidSocksAddressType => "proxy.invalid_socks_address_type",
+        }
+    }
+}
+
 /// 代理失败原因；不存响应正文、认证值或未经检查的状态行。
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum ProxyError {
@@ -31,7 +86,10 @@ pub enum ProxyError {
     #[error("代理要求用户名和密码，Pierlink 不支持带密码的代理")]
     AuthRequired,
     #[error("代理拒绝连接目标 {target}：{reason}")]
-    Refused { target: String, reason: String },
+    Refused {
+        target: String,
+        reason: RefuseReason,
+    },
     #[error("代理握手超时")]
     Timeout,
 }
@@ -64,10 +122,10 @@ pub fn authority(host: &str, port: u16) -> String {
     }
 }
 
-fn refused(host: &str, port: u16, reason: impl Into<String>) -> ProxyError {
+fn refused(host: &str, port: u16, reason: RefuseReason) -> ProxyError {
     ProxyError::Refused {
         target: authority(host, port),
-        reason: reason.into(),
+        reason,
     }
 }
 
@@ -102,14 +160,14 @@ pub fn connect(
         .and_then(|stream| {
             stream
                 .into_std()
-                .map_err(|_| refused(host, port, "无法取得代理连接"))
+                .map_err(|_| refused(host, port, RefuseReason::ConnectionUnavailable))
         });
     // 系统 DNS 调用不能取消；超时后不让运行时析构继续阻塞调用方。
     runtime.shutdown_background();
     let stream = result?;
     stream
         .set_nonblocking(false)
-        .map_err(|_| refused(host, port, "无法设置代理连接"))?;
+        .map_err(|_| refused(host, port, RefuseReason::ConnectionSetupFailed))?;
     Ok(stream)
 }
 
@@ -132,7 +190,7 @@ pub async fn connect_async(
             })?;
         stream
             .set_nodelay(true)
-            .map_err(|_| refused(host, port, "无法设置代理连接"))?;
+            .map_err(|_| refused(host, port, RefuseReason::ConnectionSetupFailed))?;
         match proxy.kind {
             ProxyKind::Http => http(&mut stream, host, port).await?,
             ProxyKind::Socks5 => socks(&mut stream, host, port).await?,
@@ -153,37 +211,37 @@ async fn http<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
     stream
         .write_all(request.as_bytes())
         .await
-        .map_err(|_| refused(host, port, "写入代理请求失败"))?;
+        .map_err(|_| refused(host, port, RefuseReason::RequestWriteFailed))?;
     // 逐字节读取有界头部，不吞掉同包到达的 SSH banner，也不读取错误正文。
     let mut header = Vec::new();
     loop {
         let byte = stream
             .read_u8()
             .await
-            .map_err(|_| refused(host, port, "代理响应不完整"))?;
+            .map_err(|_| refused(host, port, RefuseReason::ResponseIncomplete))?;
         header.push(byte);
         if header.ends_with(b"\r\n\r\n") {
             break;
         }
         if header.len() >= 16 * 1024 {
-            return Err(refused(host, port, "代理响应头过大"));
+            return Err(refused(host, port, RefuseReason::ResponseHeaderTooLarge));
         }
     }
     let line = header.split(|b| *b == b'\n').next().unwrap_or(&[]);
     let mut parts = line.split(|b| *b == b' ');
     if !matches!(parts.next(), Some(b"HTTP/1.0" | b"HTTP/1.1")) {
-        return Err(refused(host, port, "代理 HTTP 状态行无效"));
+        return Err(refused(host, port, RefuseReason::InvalidHttpStatusLine));
     }
     let status = parts
         .next()
         .filter(|s| s.len() == 3 && s.iter().all(u8::is_ascii_digit))
         .and_then(|s| std::str::from_utf8(s).ok())
         .and_then(|s| s.parse::<u16>().ok())
-        .ok_or_else(|| refused(host, port, "代理 HTTP 状态码无效"))?;
+        .ok_or_else(|| refused(host, port, RefuseReason::InvalidHttpStatus))?;
     match status {
         200..=299 => Ok(()),
         407 => Err(ProxyError::AuthRequired),
-        _ => Err(refused(host, port, format!("HTTP 状态码 {status}"))),
+        _ => Err(refused(host, port, RefuseReason::HttpStatus(status))),
     }
 }
 
@@ -192,17 +250,17 @@ async fn socks<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
     host: &str,
     port: u16,
 ) -> Result<(), ProxyError> {
-    let failed = |_| refused(host, port, "SOCKS5 握手中断");
+    let failed = |_| refused(host, port, RefuseReason::SocksHandshakeInterrupted);
     stream.write_all(&[5, 1, 0]).await.map_err(failed)?;
     let mut reply = [0; 2];
     stream.read_exact(&mut reply).await.map_err(failed)?;
     if reply[0] != 5 {
-        return Err(refused(host, port, "SOCKS5 协议版本无效"));
+        return Err(refused(host, port, RefuseReason::InvalidSocksVersion));
     }
     match reply[1] {
         0 => {}
         2 | 0xff => return Err(ProxyError::AuthRequired),
-        _ => return Err(refused(host, port, "SOCKS5 认证方式无效")),
+        _ => return Err(refused(host, port, RefuseReason::InvalidSocksAuthMethod)),
     }
     let mut request = vec![5, 1, 0];
     match host.parse::<IpAddr>() {
@@ -224,16 +282,16 @@ async fn socks<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
     let mut reply = [0; 4];
     stream.read_exact(&mut reply).await.map_err(failed)?;
     if reply[0] != 5 || reply[2] != 0 {
-        return Err(refused(host, port, "SOCKS5 响应格式无效"));
+        return Err(refused(host, port, RefuseReason::InvalidSocksResponse));
     }
     if reply[1] != 0 {
-        return Err(refused(host, port, format!("SOCKS5 回复码 {}", reply[1])));
+        return Err(refused(host, port, RefuseReason::SocksReply(reply[1])));
     }
     let length = match reply[3] {
         1 => 4,
         4 => 16,
         3 => usize::from(stream.read_u8().await.map_err(failed)?),
-        _ => return Err(refused(host, port, "SOCKS5 地址类型无效")),
+        _ => return Err(refused(host, port, RefuseReason::InvalidSocksAddressType)),
     };
     let mut address = [0; 257];
     stream

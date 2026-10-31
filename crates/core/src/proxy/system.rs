@@ -63,6 +63,21 @@ pub(super) fn parse(enabled: bool, server: &str, bypass: &str, pac: &str) -> Sys
 
 #[cfg(any(windows, test))]
 fn endpoint(value: &str, kind: ProxyKind) -> Option<ProxyServer> {
+    let value = if let Some((scheme, address)) = value.split_once("://") {
+        let supported = match kind {
+            ProxyKind::Http => scheme.eq_ignore_ascii_case("http"),
+            ProxyKind::Socks5 => ["socks", "socks5", "socks5h"]
+                .iter()
+                .any(|s| scheme.eq_ignore_ascii_case(s)),
+        };
+        if !supported {
+            return None;
+        }
+        address
+    } else {
+        value
+    };
+    let value = value.trim_end_matches('/');
     let (host, port) = value.rsplit_once(':')?;
     let host = host
         .strip_prefix('[')
@@ -124,8 +139,10 @@ fn read_string(name: &str) -> String {
         return String::new();
     }
     let words: Vec<_> = data
-        .chunks_exact(2)
-        .map(|b| u16::from_le_bytes([b[0], b[1]]))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|b| u16::from_le_bytes(*b))
         .take_while(|w| *w != 0)
         .collect();
     String::from_utf16_lossy(&words)

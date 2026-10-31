@@ -81,9 +81,49 @@ fn 名单覆盖通配cidr本地主机和强制回环且不解析域名() {
 }
 
 #[test]
+fn 公开回环判断识别映射地址且不解析普通域名() {
+    for host in [
+        "localhost",
+        "LOCALHOST.",
+        "127.42.0.1",
+        "::1",
+        "[::1]",
+        "::ffff:127.0.0.1",
+        "[::ffff:7f00:2]",
+    ] {
+        assert!(crate::proxy::loopback(host), "{host}");
+    }
+    for host in [
+        "",
+        "localhost.example",
+        "localhost:80",
+        "127.0.0.1.example",
+        "10.0.0.1",
+        "::ffff:192.0.2.1",
+        "2001:db8::1",
+        "host.invalid",
+    ] {
+        assert!(!crate::proxy::loopback(host), "{host}");
+    }
+}
+
+#[test]
 fn 系统代理字符串选择优先协议及pac并采用系统名单() {
     for (raw, expected, kind, port) in [
         ("proxy:80", "proxy", ProxyKind::Http, 80),
+        ("http://127.0.0.1:7890", "127.0.0.1", ProxyKind::Http, 7890),
+        ("HTTP://127.0.0.1:7890/", "127.0.0.1", ProxyKind::Http, 7890),
+        ("http=http://h:1;https=http://h:2", "h", ProxyKind::Http, 2),
+        ("http=HtTp://h:1/", "h", ProxyKind::Http, 1),
+        ("socks=socks5://h:1080", "h", ProxyKind::Socks5, 1080),
+        ("socks=SOCKS://h:1080/", "h", ProxyKind::Socks5, 1080),
+        ("socks=SoCkS5://h:1080/", "h", ProxyKind::Socks5, 1080),
+        (
+            "socks=SoCkS5h://[::1]:1080/",
+            "::1",
+            ProxyKind::Socks5,
+            1080,
+        ),
         (
             "http=plain:81;https=secure:82;socks=socks:83",
             "secure",
@@ -119,6 +159,14 @@ fn 系统代理字符串选择优先协议及pac并采用系统名单() {
         "host:bad",
         "user:secret@host:80",
         "https=bad;http=good:80",
+        "https://h:1",
+        "HTTPS://h:1/",
+        "https=https://h:1;http=http://h:2",
+        "http=socks5://h:1080",
+        "socks=http://h:80",
+        "socks=https://h:1",
+        "http://h:80/path",
+        "http://user:secret@h:80/",
     ] {
         assert!(matches!(
             system::parse(true, value, "", ""),
@@ -222,7 +270,7 @@ fn 代理错误带中文原因及必要地址且不混为ssh认证失败() {
         (
             ProxyError::Refused {
                 target: "target:22".into(),
-                reason: "SOCKS5 回复码 5".into(),
+                reason: RefuseReason::SocksReply(5),
             },
             "proxy.refused",
         ),
@@ -255,6 +303,51 @@ fn 代理错误带中文原因及必要地址且不混为ssh认证失败() {
         if matches!(error, ProxyError::Refused { .. }) {
             assert_eq!(mapped.params["target"], "target:22");
         }
+    }
+}
+
+#[test]
+fn 拒绝原因映射保留中文翻译键及数字插值() {
+    use RefuseReason::*;
+    for reason in [
+        ConnectionUnavailable,
+        ConnectionSetupFailed,
+        RequestWriteFailed,
+        ResponseIncomplete,
+        ResponseHeaderTooLarge,
+        InvalidHttpStatusLine,
+        InvalidHttpStatus,
+        HttpStatus(403),
+        SocksHandshakeInterrupted,
+        InvalidSocksVersion,
+        InvalidSocksAuthMethod,
+        InvalidSocksResponse,
+        SocksReply(2),
+        InvalidSocksAddressType,
+    ] {
+        let error = ProxyError::Refused {
+            target: "host:22".into(),
+            reason,
+        };
+        let mapped = map_error(&error);
+        assert_eq!(mapped.code, "proxy.refused");
+        assert_eq!(mapped.params["target"], "host:22");
+        assert_eq!(mapped.params["reason"], reason.to_string());
+        assert_eq!(mapped.params["reason_key"], reason.key());
+        let numeric = match reason {
+            HttpStatus(status) => Some(("status", status.to_string())),
+            SocksReply(reply) => Some(("reply", reply.to_string())),
+            _ => None,
+        };
+        assert_eq!(mapped.params.len(), if numeric.is_some() { 4 } else { 3 });
+        if let Some((key, value)) = numeric {
+            assert_eq!(mapped.params[key], value);
+        }
+        let builtin = crate::builtin::error::map_engine_error(
+            &pierlink_ssh_engine::Error::Proxy(error),
+            crate::builtin::error::Operation::Other,
+        );
+        assert_eq!(builtin.params, mapped.params);
     }
 }
 

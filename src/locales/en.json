@@ -1233,6 +1233,22 @@
         "invalid_window_address": "invalid window address",
         "setsid_or_xauth_missing": "setsid or xauth",
         "dbus_launcher_missing": "dbus-run-session or dbus-launch"
+      },
+      "proxy": {
+        "connection_unavailable": "couldn't get a connection to the proxy",
+        "connection_setup_failed": "couldn't set up the proxy connection",
+        "request_write_failed": "couldn't send the request to the proxy",
+        "response_incomplete": "incomplete response from the proxy",
+        "response_header_too_large": "the proxy's response header is too large",
+        "invalid_http_status_line": "invalid HTTP status line from the proxy",
+        "invalid_http_status": "invalid HTTP status code from the proxy",
+        "http_status": "HTTP status {{status}}",
+        "socks_handshake_interrupted": "the SOCKS5 handshake was interrupted",
+        "invalid_socks_version": "invalid SOCKS5 version",
+        "invalid_socks_auth_method": "invalid SOCKS5 authentication method",
+        "invalid_socks_response": "invalid SOCKS5 response",
+        "socks_reply": "SOCKS5 reply code {{reply}}",
+        "invalid_socks_address_type": "invalid SOCKS5 address type"
       }
     },
     "ssh": {

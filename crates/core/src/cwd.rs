@@ -102,7 +102,11 @@ mod tests {
                         program: "/bin/bash".into(),
                         args: vec!["--noprofile".into(), "--norc".into(), "-i".into()],
                         cwd: None,
-                        env: vec![("LC_PIERLINK_TERM".into(), marker.clone())],
+                        // 不读 .bashrc 的交互 bash 退出时会按默认的 500 行截断并改写真实的 ~/.bash_history
+                        env: vec![
+                            ("LC_PIERLINK_TERM".into(), marker.clone()),
+                            ("HISTFILE".into(), "/dev/null".into()),
+                        ],
                     },
                     cols: 80,
                     rows: 24,

@@ -23,6 +23,106 @@ pub(super) fn server() -> SftpSession {
     )
     .unwrap()
 }
+
+pub(super) fn check_exclusive_write(session: &mut SftpSession, root: &std::path::Path) {
+    let cancel = AtomicBool::new(false);
+    let bytes = b"new image";
+    for mode in [0o600, 0o640] {
+        let path = root.join(format!("new-{mode:o}"));
+        let value = path.to_str().unwrap();
+        let mut progress = vec![];
+        assert_eq!(
+            session
+                .write_new_from(
+                    value,
+                    &mut &bytes[..],
+                    Some(mode),
+                    &mut |n| progress.push(n),
+                    &cancel
+                )
+                .unwrap(),
+            bytes.len() as u64
+        );
+        assert_eq!(progress.last(), Some(&(bytes.len() as u64)));
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        assert_eq!(session.stat(value).unwrap().unwrap().mode & 0o777, mode);
+        let mut input = b"overwrite".as_slice();
+        let error = session
+            .write_new_from(
+                value,
+                &mut input,
+                Some(0o777),
+                &mut |_| panic!("创建失败不得回报写入进度"),
+                &cancel,
+            )
+            .unwrap_err();
+        assert_eq!(error.code, "sftp.exists");
+        assert_eq!(error.params["path"], value);
+        assert_eq!(input, b"overwrite");
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        assert_eq!(session.stat(value).unwrap().unwrap().mode & 0o777, mode);
+    }
+    let target = root.join("target");
+    fs::write(&target, b"original").unwrap();
+    let missing = root.join("missing");
+    for (name, target) in [("link", &target), ("dangling", &missing)] {
+        let path = root.join(name);
+        symlink(target, &path).unwrap();
+        assert_eq!(
+            session
+                .write_new_from(
+                    path.to_str().unwrap(),
+                    &mut &bytes[..],
+                    Some(0o600),
+                    &mut |_| {},
+                    &cancel
+                )
+                .unwrap_err()
+                .code,
+            "sftp.exists"
+        );
+        assert_eq!(fs::read_link(&path).unwrap(), *target);
+    }
+    assert_eq!(fs::read(&target).unwrap(), b"original");
+    assert!(!missing.exists());
+    let missing_parent = missing.join("child");
+    assert_eq!(
+        session
+            .write_new_from(
+                missing_parent.to_str().unwrap(),
+                &mut &bytes[..],
+                None,
+                &mut |_| {},
+                &cancel
+            )
+            .unwrap_err()
+            .code,
+        "sftp.not_found"
+    );
+    cancel.store(true, Ordering::Relaxed);
+    assert_eq!(
+        session
+            .write_new_from(
+                missing.to_str().unwrap(),
+                &mut &bytes[..],
+                None,
+                &mut |_| {},
+                &cancel
+            )
+            .unwrap_err()
+            .code,
+        "sftp.cancelled"
+    );
+    assert!(!missing.exists());
+    assert!(session.stat(root.to_str().unwrap()).unwrap().is_some());
+}
+
+#[test]
+fn 独占写入创建权限且拒绝覆盖文件与符号链接() {
+    let root = crate::test_support::tempdir();
+    check_exclusive_write(&mut server(), root.path());
+}
+
 #[test]
 fn 大量符号链接分批查询结果正确() {
     let root = crate::test_support::tempdir();

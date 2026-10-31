@@ -52,7 +52,7 @@ impl Server {
         let port = listener.local_addr().unwrap().port();
         drop(listener);
         let config = format!(
-            "Port {port}\nListenAddress 127.0.0.1\nHostKey {}\nHostKey {}\nPidFile {}\nAuthorizedKeysFile {}\nStrictModes no\nUsePAM no\nPasswordAuthentication no\nKbdInteractiveAuthentication no\nAllowTcpForwarding yes\nLogLevel ERROR\n",
+            "Port {port}\nListenAddress 127.0.0.1\nHostKey {}\nHostKey {}\nPidFile {}\nAuthorizedKeysFile {}\nStrictModes no\nUsePAM no\nPasswordAuthentication no\nKbdInteractiveAuthentication no\nAllowTcpForwarding yes\nLogLevel ERROR\nSetEnv HISTFILE=/dev/null\n",
             root.path().join("host").display(),
             root.path().join("ec").display(),
             root.path().join("pid").display(),

@@ -9,9 +9,9 @@
 // 环境变量：PIERLINK_EXE、E2E_OUT（必填）；PIERLINK_TEST_LINUX_*（同 stage6.mjs，没有时服务器相关步骤失败）
 // 每一步截图；某一步失败不中断后面的步骤。全部通过时退出码为 0。
 import net from "node:net";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { mkdirSync, openSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { cpSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { killApp, launchApp, pwsh, recorder, sleep } from "./lib.mjs";
 
 const EXE = process.env.PIERLINK_EXE;
@@ -30,6 +30,8 @@ const HAVE_LINUX = !!(LX.host && LX.port && LX.user && LX.key && LX.wsl);
 const LX_NAME = "pl-linux";
 /** 经代理连接用的服务器：同一个 WSL sshd，地址换成 WSL 的 IP */
 const PX_NAME = "pl-proxy";
+/** 复制一份 Pierlink 到带空格和中文的目录（很多人的 Windows 用户名带空格或中文，按用户安装时路径里就有） */
+const SPACED_DIR = join(process.env.LOCALAPPDATA ?? "", "Pier link 测试");
 /** 本机终端存图片的目录（数据目录下的 paste） */
 const LOCAL_PASTE_DIR = join(process.env.LOCALAPPDATA ?? "", "com.pierlink.desktop", "paste");
 /** 粘贴进去的服务器路径 */
@@ -42,7 +44,7 @@ const PNG_HEAD = `89504e470d0a1a0a0000000d49484452${IMG_W.toString(16).padStart(
 const rec = recorder(OUT);
 killApp(EXE);
 await sleep(1000);
-const { p, u } = await launchApp(EXE, OUT, PORT);
+let { p, u } = await launchApp(EXE, OUT, PORT);
 const conn = () => p;
 
 let wslSshd = null;
@@ -281,6 +283,7 @@ async function saveProxy(mode, kind, port) {
   await openNetwork();
   await u.clickText(mode, '[role=tablist][aria-label="Proxy"]');
   if (mode === "Custom") {
+    await u.waitFor(`!!document.querySelector('[role=tablist][aria-label="Protocol"]')`, "自定义代理的协议和地址");
     await u.clickText(kind, '[role=tablist][aria-label="Protocol"]');
     await setInput('input[aria-label="Host"]', "127.0.0.1");
     await setInput('input[aria-label="Port"]', String(port));
@@ -337,6 +340,23 @@ await rec.step(conn, "系统 OpenSSH 经 HTTP 代理：ssh.exe 用 Pierlink.exe 
   return `代理入口进程 ${helpers} 个，经代理 ${before} → ${after}`;
 });
 
+await rec.step(conn, "Pierlink 在带空格和中文的目录里运行：系统 OpenSSH 的 ProxyCommand 照常能用", async () => {
+  if (!PX_IP) throw new Error("前面没有添加经代理的服务器");
+  p.close();
+  killApp(EXE);
+  await sleep(1500);
+  rmSync(SPACED_DIR, { recursive: true, force: true });
+  cpSync(dirname(EXE), SPACED_DIR, { recursive: true });
+  ({ p, u } = await launchApp(join(SPACED_DIR, basename(EXE)), OUT, PORT));
+  const before = viaProxy("http", PX_IP);
+  await openServer(PX_NAME, "pl-px2b");
+  const helpers = Number(pwsh(`@(Get-CimInstance Win32_Process -Filter "Name='Pierlink.exe'" | Where-Object { $_.CommandLine -match '--proxy-connect' -and $_.CommandLine -match 'Pier link' }).Count`).split("\n")[0].trim());
+  if (!(helpers >= 1)) throw new Error("没有找到从带空格目录启动的 Pierlink.exe --proxy-connect 进程");
+  const after = viaProxy("http", PX_IP);
+  if (!(after > before)) throw new Error(`从带空格目录运行时系统 OpenSSH 没有经过代理：${JSON.stringify(targets)}`);
+  return `${SPACED_DIR}，经代理 ${before} → ${after}`;
+});
+
 await rec.step(conn, "本机 PowerShell 有 HTTP 代理的环境变量", async () => {
   await u.clickText("Workspace", "header nav");
   await u.click('.tabbar button[aria-label="New terminal tab"]');
@@ -388,6 +408,9 @@ await rec.step(conn, "改回“不使用”：之后的新连接直连，本机�
 p.close();
 killApp(EXE);
 httpProxy.close();
+// 带空格目录里的副本：程序退出后删掉
+await sleep(1500);
+try { rmSync(SPACED_DIR, { recursive: true, force: true }); } catch { /* 文件还被占着时留给 CI 清理 */ }
 socksProxy.close();
 if (wslSshd) {
   try { execFileSync("wsl.exe", ["-d", LX.wsl, "-u", "root", "--", "pkill", "-x", "sshd"], { stdio: "ignore" }); } catch { /* 已经退出 */ }
