@@ -24,6 +24,7 @@ pub(super) fn local() -> (tempfile::TempDir, SshProgram, SshCommand) {
         builtin: None,
         askpass: None,
         config_text: None,
+        hooked: false,
     };
     (
         root,

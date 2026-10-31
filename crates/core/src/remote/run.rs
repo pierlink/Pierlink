@@ -356,6 +356,7 @@ mod process_tests {
             args: vec!["-s".into()],
             env: vec![],
             config_text: None,
+            hooked: false,
             builtin: None,
             askpass: None,
         };
@@ -424,6 +425,7 @@ mod process_tests {
             args: vec!["30".into()],
             env: vec![],
             config_text: None,
+            hooked: false,
             builtin: None,
             askpass: None,
         };

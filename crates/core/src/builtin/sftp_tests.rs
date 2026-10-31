@@ -57,6 +57,7 @@ fn 文件分派保留系统参数和别名回退且内置等待密码() {
         args: vec!["原参数".into()],
         env: vec![],
         config_text: None,
+        hooked: false,
         builtin: None,
         askpass: None,
     };

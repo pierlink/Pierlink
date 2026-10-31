@@ -29,7 +29,7 @@ __pl_pre() {
 __pl_post() {
     (( ${+__p9k_instant_prompt_active} )) && return 0
     case ${PS1-} in
-        $'%{\e]133;A\a%}'*$'%{\e]133;B\a%}') ;;
+        *$'%{\e]133;A\a%}'*$'%{\e]133;B\a%}'*) ;;
         *) PS1=$'%{\e]133;A\a%}'${PS1-}$'%{\e]133;B\a%}' ;;
     esac
 }

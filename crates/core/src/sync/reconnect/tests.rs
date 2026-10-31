@@ -308,7 +308,7 @@ fn 探活只对持续不可达的隧道请求重建() {
             )
         }));
         let mut since = if code.is_none() {
-            Some(Instant::now() - UNREACHABLE_REBUILD_AFTER)
+            Some(Instant::now())
         } else {
             None
         };
@@ -322,9 +322,10 @@ fn 探活只对持续不可达的隧道请求重建() {
                 // 刚开始不可达只重试，不重建（远端管理套接字可能还没就绪）
                 assert_eq!(result.unwrap_err().code, "syncthing.unreachable");
                 assert!(since.is_some());
-                since = Some(Instant::now() - UNREACHABLE_REBUILD_AFTER);
+                let now = since.unwrap() + UNREACHABLE_REBUILD_AFTER;
                 assert!(
-                    !remote_reachable(&control, "同步", Some(123), &remote, &mut since).unwrap()
+                    !remote_reachable_at(&control, "同步", Some(123), &remote, &mut since, now)
+                        .unwrap()
                 );
             }
             Some(code) => assert_eq!(result.unwrap_err().code, code),

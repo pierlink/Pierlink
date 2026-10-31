@@ -214,6 +214,7 @@ fn 后台按功能分派_密码从库读取_脚本经标准输入并保留帧隔
         args: vec!["原参数".into()],
         env: vec![],
         config_text: None,
+        hooked: false,
         askpass: None,
         builtin: None,
     };

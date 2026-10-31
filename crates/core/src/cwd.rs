@@ -71,6 +71,7 @@ mod tests {
             args: vec!["-s".into()],
             env: vec![],
             config_text: None,
+            hooked: false,
             builtin: None,
             askpass: None,
         };
@@ -118,6 +119,7 @@ mod tests {
             args: vec!["-s".into()],
             env: vec![],
             config_text: None,
+            hooked: false,
             builtin: None,
             askpass: None,
         };

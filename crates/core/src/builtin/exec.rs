@@ -484,6 +484,7 @@ mod raw_tests {
                 builtin: None,
                 askpass: None,
                 config_text: None,
+                hooked: false,
             })
         };
         let limits = RunLimits {

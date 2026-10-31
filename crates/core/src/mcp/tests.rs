@@ -452,10 +452,22 @@ async fn 旧式版本和工具列表不等待入口授权() {
         client.close().await;
         assert!(fixture.service.sessions().is_empty());
         let events = lock(&fixture.host.events);
+        let lifecycle: Vec<_> = events
+            .iter()
+            .filter(|event| {
+                matches!(
+                    event,
+                    HostEvent::SessionOpened(_) | HostEvent::SessionClosed(_)
+                )
+            })
+            .collect();
         assert!(
-            matches!(&events[0],HostEvent::SessionOpened(info) if info.client.name=="测试客户端")
+            matches!(lifecycle[0], HostEvent::SessionOpened(info) if info.client.name=="测试客户端")
         );
-        assert!(matches!(events.last(), Some(HostEvent::SessionClosed(_))));
+        assert!(matches!(
+            lifecycle.last(),
+            Some(HostEvent::SessionClosed(_))
+        ));
     }
 }
 #[tokio::test]
@@ -1492,8 +1504,8 @@ async fn 本机连接空闲超过五分钟仍显示且断开即移除() {
     let fixture = Fixture::new();
     let client = fixture.legacy().await;
     let session = client.handle.as_ref().unwrap().session.clone();
-    *lock(&session.last_request) = Instant::now() - Duration::from_secs(1800);
-    assert_eq!(fixture.service.sessions().len(), 1);
+    let now = *lock(&session.last_request) + Duration::from_secs(1800);
+    assert_eq!(fixture.service.shared.sessions_at(now).len(), 1);
     client.close().await;
     assert!(fixture.service.sessions().is_empty());
 }
@@ -1503,6 +1515,7 @@ fn 会话报告排除未接受和已停止连接且仅服务器入口检查活�
     let fixture = Fixture::new();
     let mut expected = Vec::new();
     let mut calls = Vec::new();
+    let now = Instant::now() + Duration::from_secs(1800);
     for entry in [
         Entry::Windows,
         Entry::Server {
@@ -1516,7 +1529,6 @@ fn 会话报告排除未接受和已停止连接且仅服务器入口检查活�
             (true, false, true),
         ] {
             let session = Arc::new(session::Session::new(entry.clone(), accepted));
-            *lock(&session.last_request) = Instant::now() - Duration::from_secs(1800);
             if busy {
                 calls.push(session.call_flag());
             }
@@ -1534,7 +1546,8 @@ fn 会话报告排除未接受和已停止连接且仅服务器入口检查活�
     assert_eq!(
         fixture
             .service
-            .sessions()
+            .shared
+            .sessions_at(now)
             .into_iter()
             .map(|s| s.id)
             .collect::<Vec<_>>(),
@@ -1603,4 +1616,40 @@ async fn 终端发送游标可用于多行正则并记录打开目录() {
         "{wait}"
     );
     client.close().await;
+}
+
+#[test]
+fn 可见会话集合过期只通知一次且本机连接不受时间影响() {
+    let fixture = Fixture::new();
+    let shared = &fixture.service.shared;
+    let local = Arc::new(session::Session::new(Entry::Windows, true));
+    let remote = Arc::new(session::Session::new(
+        Entry::Server {
+            server_id: "server-id".into(),
+        },
+        true,
+    ));
+    let last = *lock(&remote.last_request);
+    for session in [&local, &remote] {
+        lock(&shared.sessions).insert(session.snapshot().id, session.clone());
+    }
+    let mut previous = std::collections::HashSet::new();
+    assert!(shared.sessions_changed(&mut previous, last + Duration::from_secs(300)));
+    assert_eq!(previous.len(), 2);
+    assert!(!shared.sessions_changed(&mut previous, last + Duration::from_secs(300)));
+    assert!(shared.sessions_changed(&mut previous, last + Duration::from_secs(301)));
+    assert_eq!(
+        previous,
+        std::collections::HashSet::from([local.snapshot().id])
+    );
+    assert!(!shared.sessions_changed(&mut previous, last + Duration::from_secs(1800)));
+    let call = remote.call_flag();
+    assert!(shared.sessions_changed(&mut previous, last + Duration::from_secs(1800)));
+    drop(call);
+    assert!(shared.sessions_changed(&mut previous, last + Duration::from_secs(1800)));
+    assert!(
+        lock(&fixture.host.events)
+            .iter()
+            .any(|event| matches!(event, HostEvent::SessionsChanged))
+    );
 }

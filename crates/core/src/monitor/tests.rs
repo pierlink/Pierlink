@@ -57,6 +57,7 @@ impl Fixture {
                 ),
             ],
             config_text: None,
+            hooked: false,
             builtin: None,
             askpass: None,
         };

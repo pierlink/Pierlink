@@ -19,6 +19,15 @@ fn failure(code: &str, detail: &'static str, reason: &'static str) -> AppError {
         .with_text("stderr_tail", detail, reason)
 }
 
+/// 无参数；返回服务器拒绝带提示符钩子的登录命令的固定说明。
+pub(crate) fn hook_rejected() -> AppError {
+    failure(
+        "ssh.failed",
+        "hook_rejected",
+        "服务器不接受带提示符钩子的登录命令",
+    )
+}
+
 /// 登录途中（建连、换钥、认证）连接断了：服务器的登录时限到了或网络断了。
 /// 和用了一阵之后的断线分开提示；错误码仍是 ssh.unreachable，重试和等待的处理不变。
 pub fn login_disconnected() -> AppError {
@@ -161,7 +170,7 @@ mod tests {
                     .is_some_and(|text| !text.is_empty())
             );
         }
-        let mut errors = vec![login_disconnected()];
+        let mut errors = vec![login_disconnected(), hook_rejected()];
         for error in [
             Error::AsyncContext,
             Error::Dns,

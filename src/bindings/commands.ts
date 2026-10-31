@@ -151,8 +151,16 @@ export const commands = {
 	terminalOpenServer: (serverId: string, cols: number, rows: number, prediction: boolean, onEvent: Channel<TerminalEventDto_Deserialize>) => typedError<string, AppError>(__TAURI_INVOKE("terminal_open_server", { serverId, cols, rows, prediction, onEvent })),
 	/**  读取系统剪贴板的文字（不经过网页权限，不会弹出“是否允许读取剪贴板”）。没有文字时返回 null。 */
 	clipboardReadText: () => typedError<string | null, AppError>(__TAURI_INVOKE("clipboard_read_text")),
-	/**  把文字写进系统剪贴板（网页方式要求窗口在前台，程序在窗口不在前台时发来的复制请求会失败） */
-	clipboardWriteText: (text: string) => typedError<null, AppError>(__TAURI_INVOKE("clipboard_write_text", { text })),
+	/**
+	 *  系统剪贴板的变化序号：内容每变一次就变，取的时候不打开剪贴板（Windows）。
+	 *  远程桌面每秒看一次它，变了才去读剪贴板，免得一直占着剪贴板、和别的程序抢。其他系统和取不到时返回 None
+	 */
+	clipboardSequence: () => __TAURI_INVOKE<number | null>("clipboard_sequence"),
+	/**
+	 *  把文字写进系统剪贴板（网页方式要求窗口在前台，程序在窗口不在前台时发来的复制请求会失败）。
+	 *  返回写完时剪贴板的变化序号（Windows）：远程桌面据此认出“这次变化是我们自己写的”，不把它发回远程
+	 */
+	clipboardWriteText: (text: string) => typedError<number | null, AppError>(__TAURI_INVOKE("clipboard_write_text", { text })),
 	/**  用系统默认浏览器打开网址（只允许 http 和 https） */
 	openInBrowser: (url: string) => typedError<null, AppError>(__TAURI_INVOKE("open_in_browser", { url })),
 	/**  家目录：本机为用户目录，服务器为登录后的初始目录。 */
@@ -2388,7 +2396,12 @@ export type TerminalEventDto_Deserialize = { kind: "output"; data: string } | { 
  *  远程终端因为密码没登录上：ssh.auth_failed（输的密码不对，已作废）/
  *  ssh.password_needed（没输密码、取消或等太久）/ ssh.two_factor_required；其他退出为空
  */
-auth?: string | null };
+auth?: string | null; 
+/**
+ *  这次会话带着命令预测的提示符钩子启动（Windows 服务器、配置了 RemoteCommand 的服务器不装）。
+ *  带钩子连上就退出时，前端据此判断是不是钩子和服务器不兼容
+ */
+hooked: boolean };
 
 /**  推给前端的终端事件。输出按 base64 传输，避免多字节字符在分块处被拆坏。 */
 export type TerminalEventDto_Serialize = { kind: "output"; data: string } | { kind: "exited"; code: number | null; closedByUser: boolean; 
@@ -2396,7 +2409,12 @@ export type TerminalEventDto_Serialize = { kind: "output"; data: string } | { ki
  *  远程终端因为密码没登录上：ssh.auth_failed（输的密码不对，已作废）/
  *  ssh.password_needed（没输密码、取消或等太久）/ ssh.two_factor_required；其他退出为空
  */
-auth: string | null };
+auth: string | null; 
+/**
+ *  这次会话带着命令预测的提示符钩子启动（Windows 服务器、配置了 RemoteCommand 的服务器不装）。
+ *  带钩子连上就退出时，前端据此判断是不是钩子和服务器不兼容
+ */
+hooked: boolean };
 
 /**  读出来的文本文件 */
 export type TextFileDto = TextFileDto_Serialize | TextFileDto_Deserialize;

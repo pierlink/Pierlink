@@ -664,6 +664,7 @@ fn 无扩展覆盖报告空窗且失败清理part() {
             args: vec!["-P".into(), "rename".into()],
             env: vec![],
             config_text: None,
+            hooked: false,
             builtin: None,
             askpass: None,
         },

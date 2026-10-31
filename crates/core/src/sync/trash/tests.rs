@@ -121,6 +121,7 @@ fn shell_access() -> EstimateFileAccess {
             args: vec!["-s".into()],
             env: vec![],
             config_text: None,
+            hooked: false,
             builtin: None,
             askpass: None,
         },

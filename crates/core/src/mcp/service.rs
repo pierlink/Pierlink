@@ -22,7 +22,7 @@ use rmcp::{
 };
 use serde_json::Value;
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     path::PathBuf,
     sync::{
         Arc, Mutex,
@@ -46,6 +46,35 @@ pub(super) struct Shared {
     pub(super) sessions: Mutex<HashMap<String, Arc<Session>>>,
     activity: Mutex<VecDeque<AuditRecord>>,
     secrets: Mutex<Vec<Zeroizing<String>>>,
+}
+impl Shared {
+    /// 按 now 返回可见会话，结果按 ID 排序。
+    pub(super) fn sessions_at(&self, now: Instant) -> Vec<SessionInfo> {
+        let mut sessions: Vec<_> = lock(&self.sessions)
+            .values()
+            .filter(|session| {
+                if matches!(lock(&session.info).entry, Entry::Server { .. }) {
+                    session.is_recent(now)
+                } else {
+                    session.accepted && !session.stopped.load(Ordering::Acquire)
+                }
+            })
+            .map(|session| session.snapshot())
+            .collect();
+        sessions.sort_by(|a, b| a.id.cmp(&b.id));
+        sessions
+    }
+
+    /// 按 now 比较并更新 previous；集合变化时通知宿主并返回 true。
+    pub(super) fn sessions_changed(&self, previous: &mut HashSet<String>, now: Instant) -> bool {
+        let current = self.sessions_at(now).into_iter().map(|s| s.id).collect();
+        if *previous == current {
+            return false;
+        }
+        *previous = current;
+        self.host.notify(HostEvent::SessionsChanged);
+        true
+    }
 }
 /// 两个入口共享的 MCP 基座，拥有独立的两个异步工作线程。
 pub struct McpService {
@@ -87,22 +116,25 @@ impl McpService {
             secrets: Mutex::new(Vec::new()),
         });
         let weak = Arc::downgrade(&shared);
-        // 每秒看一次 AI 终端有没有退出（界面上的“AI 终端已结束”不需要更及时）；没有 AI 终端时什么也不做
+        // 每秒维护后台任务、AI 终端和界面可见的会话集合。
         handle.spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(1));
+            let mut visible = HashSet::new();
             loop {
                 interval.tick().await;
                 let Some(shared) = weak.upgrade() else { break };
-                if tokio::task::spawn_blocking(move || {
+                match tokio::task::spawn_blocking(move || {
+                    shared.sessions_changed(&mut visible, Instant::now());
                     shared.jobs.maintain(shared.host.as_ref());
                     if !shared.registry.is_empty() {
                         shared.registry.reap(shared.host.as_ref());
                     }
+                    visible
                 })
                 .await
-                .is_err()
                 {
-                    break;
+                    Ok(current) => visible = current,
+                    Err(_) => break,
                 }
             }
         });
@@ -166,20 +198,7 @@ impl McpService {
     /// 无参数；返回已接受且未停止的会话及其建立时权限快照。
     /// 服务器入口另要求最近五分钟有请求或仍有调用；本机管道连接期间始终显示。
     pub fn sessions(&self) -> Vec<SessionInfo> {
-        let now = Instant::now();
-        let mut sessions: Vec<_> = lock(&self.shared.sessions)
-            .values()
-            .filter(|session| {
-                if matches!(lock(&session.info).entry, Entry::Server { .. }) {
-                    session.is_recent(now)
-                } else {
-                    session.accepted && !session.stopped.load(Ordering::Acquire)
-                }
-            })
-            .map(|session| session.snapshot())
-            .collect();
-        sessions.sort_by(|a, b| a.id.cmp(&b.id));
-        sessions
+        self.shared.sessions_at(Instant::now())
     }
     /// 返回至多 limit 条已脱敏操作，新的在前；内存总量最多 30 条。
     pub fn activity(&self, limit: usize) -> Vec<AuditRecord> {

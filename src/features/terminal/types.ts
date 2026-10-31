@@ -13,9 +13,10 @@ export type TerminalEvent =
   | { kind: "output"; data: Uint8Array }
   /**
    * auth：远程终端因为密码没登录上时的原因（ssh.auth_failed 输的密码不对 / ssh.password_needed 没输或等太久 /
-   * ssh.two_factor_required），其他退出为 null
+   * ssh.two_factor_required），其他退出为 null。
+   * hooked：这次会话是带着命令预测的提示符钩子启动的（由后端决定：Windows 服务器、配置了 RemoteCommand 的服务器不装）
    */
-  | { kind: "exited"; code: number | null; closedByUser: boolean; auth?: string | null };
+  | { kind: "exited"; code: number | null; closedByUser: boolean; auth?: string | null; hooked?: boolean };
 
 /** 主机密钥确认的一步：已信任，或需要用户核对这一级的指纹 */
 export type HostKeyStep =

@@ -114,42 +114,106 @@ await rec.step(p, "换成要密码的 :5：输密码后连上、画面是蓝色�
   return await status();
 });
 
-/** :5 桌面的 X 剪贴板（CLIPBOARD）里的文字；读不到时为空 */
-const remoteClipboard = () => {
+/** :5 桌面的 X 剪贴板（CLIPBOARD）里的内容（默认取文字，target 取指定格式）；读不到时为空 */
+const remoteClipboard = (target = "") => {
   try {
-    return execFileSync("wsl.exe", ["-d", LX.wsl, "-u", "pl", "--", "sh", "-c", 'DISPLAY=:5 XAUTHORITY="$HOME/.vnc-e2e/x5.auth" timeout 5 xclip -o -selection clipboard 2>/dev/null'], { encoding: "utf8" });
+    return execFileSync("wsl.exe", ["-d", LX.wsl, "-u", "pl", "--", "sh", "-c", `DISPLAY=:5 XAUTHORITY="$HOME/.vnc-e2e/x5.auth" timeout 5 xclip -o -selection clipboard${target ? ` -t ${target}` : ""} 2>/dev/null`], { encoding: "utf8", timeout: 15000 });
   } catch {
     return "";
   }
 };
+/** 等远程剪贴板的文字变成 want */
+const waitRemote = async (want, what, timeoutMs = 10000) => {
+  const deadline = Date.now() + timeoutMs;
+  let got = "";
+  while (Date.now() < deadline) {
+    got = remoteClipboard();
+    if (got === want) return;
+    await sleep(500);
+  }
+  throw new Error(`${what}：远程剪贴板是 ${JSON.stringify(got.slice(0, 80))}，应该是 ${JSON.stringify(want)}`);
+};
+/** 设 Windows 剪贴板（经 base64 传进去，中文不受控制台代码页影响） */
+const setWindowsClipboard = (text) => {
+  const b64 = Buffer.from(text, "utf8").toString("base64");
+  execFileSync("powershell.exe", ["-NoProfile", "-Command", `Set-Clipboard -Value ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${b64}')))`]);
+};
+/** 读 Windows 剪贴板的文字（经 base64 传出来） */
+const getWindowsClipboard = () => {
+  const b64 = execFileSync("powershell.exe", ["-NoProfile", "-Command", "$t = Get-Clipboard -Raw; if ($null -eq $t) { $t = '' }; [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($t))"], { encoding: "utf8" }).trim();
+  return Buffer.from(b64, "base64").toString("utf8");
+};
+/**
+ * 在 :5 桌面里复制一段文字：xclip 在后台一直占着剪贴板，直到别人换掉它。
+ * 不能同步等 wsl.exe：后台的 xclip 让它一直不返回（execFileSync 的超时也拦不住），所以不等，过一会儿再看
+ */
+const copyOnRemote = async (text, target = "") => {
+  spawn("wsl.exe", ["-d", LX.wsl, "-u", "pl", "--", "sh", "-c", `printf %s '${text}' | DISPLAY=:5 XAUTHORITY="$HOME/.vnc-e2e/x5.auth" xclip -selection clipboard${target ? ` -t ${target}` : ""} -i >/dev/null 2>&1`], { stdio: "ignore" }).on("error", () => undefined);
+  await sleep(2000);
+};
 
 await rec.step(p, "在桌面画面里按 Ctrl+V：远程剪贴板收到 Windows 剪贴板的文字；断开重连后同样的文字也能再发过去", async () => {
   if (!vnc) return "跳过";
-  execFileSync("powershell.exe", ["-NoProfile", "-Command", "Set-Clipboard -Value 'PLDESKPASTE'"]);
+  setWindowsClipboard("PLDESKPASTE");
   const paste = async () => {
     await u.click(".desk__screen canvas");
     await sleep(300);
     await u.key("v", "KeyV", 86, 2);
   };
-  const waitRemote = async (what) => {
-    const deadline = Date.now() + 10000;
-    let got = "";
-    while (Date.now() < deadline) {
-      got = remoteClipboard();
-      if (got === "PLDESKPASTE") return;
-      await sleep(500);
-    }
-    throw new Error(`${what}：远程剪贴板是 ${JSON.stringify(got.slice(0, 80))}，应该是 "PLDESKPASTE"`);
-  };
   await paste();
-  await waitRemote("按 Ctrl+V 后");
+  await waitRemote("PLDESKPASTE", "按 Ctrl+V 后");
   await u.click('[aria-label="Disconnect"]');
   await u.clickText("Reconnect", ".desk__card");
   await u.waitFor(`(document.querySelector('.desk__status')?.innerText||'').startsWith('Connected')`, "重新连上", 30000);
   await sleep(1000);
   await paste();
-  await waitRemote("重连后再按 Ctrl+V");
+  await waitRemote("PLDESKPASTE", "重连后再按 Ctrl+V");
   return "两次远程剪贴板都收到了";
+});
+
+await rec.step(p, "剪贴板自动同步：Windows 复制后不按 Ctrl+V，点一下画面远程就有了（窗口在前台时不点也会同步）；远程复制了非文字的内容后，Windows 剪贴板里的旧文字不会冲掉它", async () => {
+  if (!vnc) return "跳过";
+  setWindowsClipboard("PLDESKAUTO");
+  await u.click(".desk__screen canvas");
+  await waitRemote("PLDESKAUTO", "复制后点一下画面");
+  let polled = "窗口不在前台，没测不点画面的同步";
+  if (await p.js(`document.hasFocus()`)) {
+    setWindowsClipboard("PLDESKPOLL");
+    await waitRemote("PLDESKPOLL", "复制后不点画面");
+    polled = "不点画面也同步了";
+  }
+  // 远程剪贴板里放一段非文字的内容（像在远程复制了文件）
+  await copyOnRemote("PLRICH", "text/x-pierlink");
+  await sleep(1000);
+  if (remoteClipboard("text/x-pierlink") !== "PLRICH") throw new Error("没能在远程剪贴板里放进非文字的内容");
+  await u.click(".desk__screen canvas");
+  await sleep(300);
+  await u.key("v", "KeyV", 86, 2);
+  await sleep(2500);
+  const rich = remoteClipboard("text/x-pierlink");
+  if (rich !== "PLRICH") throw new Error(`点画面、按 Ctrl+V 后，远程剪贴板里的非文字内容被冲掉了：${JSON.stringify(rich.slice(0, 80))}`);
+  return `点画面后同步了；${polled}；远程的非文字内容没被冲掉`;
+});
+
+await rec.step(p, "剪贴板：远程复制的文字到了 Windows；Windows 换过别的再复制回这段文字，远程照样收到；剪贴板里是中文时重新连接，远程收到的是中文", async () => {
+  if (!vnc) return "跳过";
+  await copyOnRemote("PLFROMREMOTE");
+  const deadline = Date.now() + 10000;
+  let got = "";
+  while (Date.now() < deadline && (got = getWindowsClipboard()) !== "PLFROMREMOTE") await sleep(500);
+  if (got !== "PLFROMREMOTE") throw new Error(`远程复制后 Windows 剪贴板是 ${JSON.stringify(got.slice(0, 80))}，应该是 "PLFROMREMOTE"`);
+  setWindowsClipboard("PLOTHER");
+  await u.click(".desk__screen canvas");
+  await waitRemote("PLOTHER", "Windows 复制别的以后");
+  setWindowsClipboard("PLFROMREMOTE");
+  await u.click(".desk__screen canvas");
+  await waitRemote("PLFROMREMOTE", "Windows 再复制回远程来过的文字以后");
+  setWindowsClipboard("剪贴板中文 PL");
+  await u.click('[aria-label="Disconnect"]');
+  await u.clickText("Reconnect", ".desk__card");
+  await u.waitFor(`(document.querySelector('.desk__status')?.innerText||'').startsWith('Connected')`, "重新连上", 30000);
+  await waitRemote("剪贴板中文 PL", "剪贴板里是中文时重新连接以后");
+  return "远程到 Windows、复制回来、中文重连都对";
 });
 
 await rec.step(p, "全屏：和终端分屏时也盖住整个窗口（旁边的窗格、分隔条、侧栏都在下面）；再点一次退出", async () => {

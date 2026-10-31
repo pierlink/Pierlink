@@ -10,6 +10,8 @@ export interface AppSettings {
   terminal: {
     fontSize: number;
     cursorStyle: "bar" | "block" | "underline";
+    /** 竖线光标的粗细（像素） */
+    cursorWidth: 1 | 2 | 3;
     cursorBlink: boolean;
     scrollback: number;
     /** 默认本机终端 ID；null 表示按检测结果自动选择 */
@@ -56,7 +58,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   theme: "dark",
   language: "system",
   closeToTray: true,
-  terminal: { fontSize: 13, cursorStyle: "bar", cursorBlink: true, scrollback: 10000, defaultShell: null, confirmMultilinePaste: true, rightClickCopyPaste: false, confirmClose: true, broadcastConfirmDanger: true, commandPrediction: true },
+  terminal: { fontSize: 13, cursorStyle: "bar", cursorWidth: 2, cursorBlink: true, scrollback: 10000, defaultShell: null, confirmMultilinePaste: true, rightClickCopyPaste: false, confirmClose: true, broadcastConfirmDanger: true, commandPrediction: true },
   desktop: { openInWindow: false },
   updates: { autoCheck: true },
   notices: { builtinSsh: false },
@@ -65,7 +67,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
 
 const clamp = (v: unknown, lo: number, hi: number, d: number) =>
   typeof v === "number" && Number.isFinite(v) ? Math.min(hi, Math.max(lo, Math.round(v))) : d;
-const oneOf = <T extends string>(v: unknown, opts: readonly T[], d: T): T => (opts.includes(v as T) ? (v as T) : d);
+const oneOf = <T extends string | number>(v: unknown, opts: readonly T[], d: T): T => (opts.includes(v as T) ? (v as T) : d);
 const bool = (v: unknown, d: boolean) => (typeof v === "boolean" ? v : d);
 
 /**
@@ -91,6 +93,7 @@ export function normalizeSettings(raw: unknown): AppSettings {
     terminal: {
       fontSize: clamp(t.fontSize, 10, 24, d.terminal.fontSize),
       cursorStyle: oneOf(t.cursorStyle, ["bar", "block", "underline"] as const, d.terminal.cursorStyle),
+      cursorWidth: oneOf(t.cursorWidth, [1, 2, 3] as const, d.terminal.cursorWidth),
       cursorBlink: bool(t.cursorBlink, d.terminal.cursorBlink),
       scrollback: clamp(t.scrollback, 1000, 100000, d.terminal.scrollback),
       defaultShell: typeof t.defaultShell === "string" && t.defaultShell.length <= 200 ? t.defaultShell : null,

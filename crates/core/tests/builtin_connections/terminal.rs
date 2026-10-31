@@ -95,7 +95,11 @@ impl Terminal {
                 TerminalEvent::Exited {
                     code,
                     closed_by_user,
-                } => return (code, closed_by_user),
+                    hooked,
+                } => {
+                    assert!(!hooked);
+                    return (code, closed_by_user);
+                }
             }
         }
     }
@@ -201,4 +205,39 @@ fn 本机内置终端订阅输入协调与服务器断开() {
     drop(sshd);
     // 服务器那头断开：退出码 255（和系统 ssh 一样），界面据此显示“连接已断开”
     assert_eq!(terminal.exit(), (Some(255), false));
+}
+
+#[test]
+#[ignore = "需要允许普通用户启动本机 sshd 并监听随机端口"]
+fn 服务器拒绝pty时保留通用请求拒绝说明() {
+    let sshd = support::Server::new("PermitTTY no");
+    let record = record("target", &sshd);
+    let connections = ConnectionManager::default();
+    for integration in [true, false] {
+        let request = ConnectionRequest {
+            server: &record,
+            class: ConnectionClass::Main,
+            vault: Arc::new(PasswordVault::default()),
+            callbacks: callbacks(&[(&record.id, sshd.options())]),
+            interactive: true,
+            cancelled: Arc::new(AtomicBool::new(false)),
+        };
+        let kind = terminal::remote(&connections, request, None, integration, || {
+            panic!("不能回退到 OpenSSH")
+        })
+        .unwrap();
+        let error = TerminalManager::new()
+            .open(
+                TerminalSpec {
+                    kind,
+                    cols: 80,
+                    rows: 24,
+                },
+                Arc::new(|_| {}),
+            )
+            .unwrap_err();
+        assert_eq!(error.code, "ssh.failed");
+        assert_eq!(error.params["reason_key"], "request_rejected");
+        assert_eq!(error.params["stderr_tail_key"], "request_rejected");
+    }
 }

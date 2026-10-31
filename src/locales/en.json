@@ -73,6 +73,12 @@
         "block": "Block",
         "underline": "Underline"
       },
+      "cursorWidth": "Cursor thickness",
+      "cursorWidthOption": {
+        "1": "Thin",
+        "2": "Medium",
+        "3": "Thick"
+      },
       "cursorBlink": "Blinking cursor",
       "scrollback": "Scrollback lines",
       "scrollbackHint": "How many lines of history each terminal keeps; more uses more memory",
@@ -216,6 +222,7 @@
       "agent": "the SSH agent isn't available or refused to sign; check the service and its loaded keys",
       "algorithm": "the server and built-in SSH have no signature algorithm in common; you can switch to system OpenSSH",
       "request_rejected": "the server rejected the SSH request",
+      "hook_rejected": "the server did not accept the login command with the prompt hook",
       "disconnected": "the SSH connection or channel was closed; please reconnect",
       "disconnected_login": "the connection dropped while signing in (the server's login time limit may have run out, or the network dropped); please reconnect",
       "protocol": "SSH or subsystem protocol error",
@@ -3046,7 +3053,6 @@
     "qualityHigh": "Sharp",
     "fit": "Fit to window",
     "actualSize": "Actual size",
-    "paste": "Type clipboard text",
     "fullscreen": "Full screen",
     "exitFullscreen": "Exit full screen",
     "disconnect": "Disconnect",
@@ -3118,7 +3124,6 @@
     "popOut": "Open in separate window",
     "poppedTitle": "Opened in a separate window",
     "showHere": "Show here",
-    "typeTooLong": "Too long to type; it is in the remote clipboard, paste it in the remote program",
     "popOutFailed": "Couldn't open the separate window: {{reason}}"
   }
 }

@@ -622,7 +622,9 @@ fn 真实ssh交互终端回显() {
             TerminalEvent::Exited {
                 code,
                 closed_by_user,
+                hooked,
             } => {
+                assert!(!hooked);
                 assert_eq!(code, Some(0));
                 assert!(!closed_by_user);
                 break;

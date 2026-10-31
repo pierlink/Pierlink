@@ -1215,12 +1215,12 @@ async fn 报告列表隐藏过期空闲会话并保留长调用且请求刷新�
         .next()
         .unwrap()
         .clone();
-    *lock(&session.last_request) = Instant::now() - Duration::from_secs(301);
-    assert!(f.service.sessions().is_empty());
+    let now = *lock(&session.last_request) + Duration::from_secs(301);
+    assert!(f.service.shared.sessions_at(now).is_empty());
     let call = session.call_flag();
-    assert_eq!(f.service.sessions().len(), 1);
+    assert_eq!(f.service.shared.sessions_at(now).len(), 1);
     drop(call);
-    assert!(f.service.sessions().is_empty());
+    assert!(f.service.shared.sessions_at(now).is_empty());
     let ping = json!({"jsonrpc":"2.0","id":2,"method":"ping"}).to_string();
     assert_eq!(
         client
@@ -1230,7 +1230,13 @@ async fn 报告列表隐藏过期空闲会话并保留长调用且请求刷新�
         200
     );
     assert_eq!(f.service.sessions().len(), 1);
-    *lock(&session.last_request) = Instant::now() - Duration::from_secs(301);
+    let previous_request = *lock(&session.last_request);
+    assert!(
+        f.service
+            .shared
+            .sessions_at(previous_request + Duration::from_secs(301))
+            .is_empty()
+    );
     let notification = json!({"jsonrpc":"2.0","method":"notifications/initialized"}).to_string();
     assert_eq!(
         client
@@ -1240,6 +1246,7 @@ async fn 报告列表隐藏过期空闲会话并保留长调用且请求刷新�
         202
     );
     assert_eq!(f.service.sessions().len(), 1);
+    assert!(*lock(&session.last_request) >= previous_request);
     session.cancel();
     assert!(f.service.sessions().is_empty());
 }

@@ -268,3 +268,41 @@ fn 仅gitbash且环境显式启用时安装预测钩子() {
         }
     }
 }
+
+#[cfg(unix)]
+#[test]
+fn git_bash关闭预测时不向嵌套shell导出目录钩子() {
+    use std::{
+        io::Write,
+        process::{Command, Stdio},
+    };
+    let root = crate::test_support::tempdir();
+    fs::write(
+        root.path().join(".bashrc"),
+        "export PROMPT_COMMAND='history -a'\ncygpath() { printf '%s' \"$PWD\"; }\n",
+    )
+    .unwrap();
+    let rc = write_script(root.path(), "git-bash-cwd.rc", &script(false, true)).unwrap();
+    let mut child = Command::new("/bin/bash")
+        .args(["--rcfile", rc.to_str().unwrap(), "-i"])
+        .env("HOME", root.path())
+        .env("PIERLINK_PREDICT", "0")
+        .env("HISTFILE", "/dev/null")
+        .env("PS1", "")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(b"/bin/sh -c 'printf \"ENV=%s\\n\" \"${PROMPT_COMMAND-unset}\"'\n/bin/bash -i <<'INNER'\nprintf 'NESTED_OK\\n'\nexit\nINNER\nexit\n").unwrap();
+    let output = child.wait_with_output().unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stderr}");
+    assert!(
+        stdout.contains("ENV=unset") && stdout.contains("NESTED_OK"),
+        "{stdout}"
+    );
+    assert!(!stderr.contains("command not found"), "{stderr}");
+    assert!(!stdout.contains("\x1b]133;"), "{stdout}");
+}

@@ -73,6 +73,12 @@
         "block": "方块",
         "underline": "下划线"
       },
+      "cursorWidth": "光标粗细",
+      "cursorWidthOption": {
+        "1": "细",
+        "2": "中",
+        "3": "粗"
+      },
       "cursorBlink": "光标闪烁",
       "scrollback": "回滚行数",
       "scrollbackHint": "每个终端保留多少行历史输出；越大越占内存",
@@ -215,6 +221,7 @@
       "agent": "SSH agent 不可用或拒绝签名，请检查服务和已加载密钥",
       "algorithm": "服务器与内置 SSH 没有共同的签名算法，可改用系统 OpenSSH",
       "request_rejected": "服务器拒绝了 SSH 请求",
+      "hook_rejected": "服务器不接受带提示符钩子的登录命令",
       "disconnected": "SSH 连接或通道已关闭，请重新连接",
       "disconnected_login": "登录过程中连接断开了（可能是服务器的登录时限到了或网络中断），请重新连接",
       "protocol": "SSH 或子系统协议异常",
@@ -3007,7 +3014,6 @@
     "qualityHigh": "清晰",
     "fit": "适应窗口",
     "actualSize": "原始大小",
-    "paste": "输入剪贴板里的文字",
     "fullscreen": "全屏",
     "exitFullscreen": "退出全屏",
     "disconnect": "断开",
@@ -3079,7 +3085,6 @@
     "popOut": "在独立窗口打开",
     "poppedTitle": "已在独立窗口打开",
     "showHere": "在这里显示",
-    "typeTooLong": "文字太长，已放进远程剪贴板，请在远程程序里粘贴",
     "popOutFailed": "没能在独立窗口打开：{{reason}}"
   }
 }

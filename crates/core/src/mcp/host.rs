@@ -214,6 +214,8 @@ pub enum HostEvent {
     SessionOpened(SessionInfo),
     /// 会话 ID
     SessionClosed(String),
+    /// 可见会话集合发生变化，请重新读取 sessions()；不携带数据。
+    SessionsChanged,
     Activity(AuditRecord),
     TerminalOpened {
         session: String,

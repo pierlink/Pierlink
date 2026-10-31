@@ -46,6 +46,7 @@ struct State {
     ring: VecDeque<(bool, Vec<u8>)>,
     bytes: usize,
     cursor: u64,
+    last_output: [Option<Instant>; 2],
     finished: Option<Instant>,
     exit_code: Option<i32>,
     error: Option<AppError>,
@@ -56,9 +57,13 @@ struct State {
 }
 impl State {
     fn push(&mut self, stderr: bool, bytes: &[u8]) {
+        self.push_at(stderr, bytes, Instant::now());
+    }
+    fn push_at(&mut self, stderr: bool, bytes: &[u8], now: Instant) {
         if bytes.is_empty() {
             return;
         }
+        self.last_output[usize::from(stderr)] = Some(now);
         let preview = if stderr {
             &mut self.preview_err
         } else {
@@ -92,8 +97,17 @@ impl State {
         }
     }
     fn output(&self, since: u64) -> Value {
+        self.output_at(since, Instant::now())
+    }
+    fn output_at(&self, since: u64, now: Instant) -> Value {
         let base = self.cursor.saturating_sub(self.bytes as u64);
-        let mut streams = [StreamPage::default(), StreamPage::default()];
+        let mut streams = self.last_output.map(|last| StreamPage {
+            quiet: self.finished.is_some()
+                || last.is_some_and(|last| {
+                    now.saturating_duration_since(last) >= Duration::from_secs(1)
+                }),
+            ..Default::default()
+        });
         let mut position = base;
         for (stderr, bytes) in &self.ring {
             let stream = &mut streams[usize::from(*stderr)];
@@ -108,11 +122,11 @@ impl State {
         loop {
             let previous = cursor;
             for stream in &streams {
-                cursor = stream.boundary(start, cursor, self.finished.is_some());
+                cursor = stream.boundary(start, cursor, self.finished.is_some(), since < base);
             }
             let size = streams
                 .iter()
-                .map(|stream| stream.read(start, cursor).len())
+                .map(|stream| stream.read(start, cursor, since < base).len())
                 .sum::<usize>();
             if size > READ_LIMIT {
                 cursor = start + (cursor - start) * READ_LIMIT as u64 / size as u64;
@@ -122,20 +136,32 @@ impl State {
                 break;
             }
         }
-        json!({"stdout":streams[0].read(start, cursor),"stderr":streams[1].read(start, cursor),"running":self.finished.is_none(),"exit_code":self.exit_code,"cursor":cursor,"more":cursor < self.cursor,"lost":since < base,"timed_out":self.timed_out,"stop_reason":self.stop_reason,"error":self.error})
+        json!({"stdout":streams[0].read(start, cursor, since < base),"stderr":streams[1].read(start, cursor, since < base),"running":self.finished.is_none(),"exit_code":self.exit_code,"cursor":cursor,"more":cursor < self.cursor,"lost":since < base,"timed_out":self.timed_out,"stop_reason":self.stop_reason,"error":self.error})
     }
 }
 #[derive(Default)]
 struct StreamPage {
     bytes: Vec<u8>,
     positions: Vec<u64>,
+    quiet: bool,
 }
 impl StreamPage {
-    fn boundary(&self, since: u64, limit: u64, finished: bool) -> u64 {
-        let mut offset =
-            text::aligned_start(&self.bytes, self.positions.partition_point(|p| *p < since));
+    fn start(&self, since: u64, lost: bool) -> usize {
+        let offset = self.positions.partition_point(|p| *p < since);
+        if lost {
+            text::aligned_start(&self.bytes, offset)
+        } else {
+            offset
+        }
+    }
+    fn settled(&self, limit: u64) -> bool {
+        self.quiet && self.positions.last().is_some_and(|last| *last < limit)
+    }
+    fn boundary(&self, since: u64, limit: u64, finished: bool, lost: bool) -> u64 {
+        let mut offset = self.start(since, lost);
+        let settled = self.settled(limit);
         while offset < self.bytes.len() && self.positions[offset] < limit {
-            let size = match text::token_len(&self.bytes[offset..]) {
+            let size = match text::token_len_settled(&self.bytes[offset..], settled) {
                 Some(size) => size,
                 None if finished => self.bytes.len() - offset,
                 None => return self.positions[offset],
@@ -147,11 +173,10 @@ impl StreamPage {
         }
         limit
     }
-    fn read(&self, since: u64, cursor: u64) -> String {
-        let start =
-            text::aligned_start(&self.bytes, self.positions.partition_point(|p| *p < since));
+    fn read(&self, since: u64, cursor: u64, lost: bool) -> String {
+        let start = self.start(since, lost);
         let end = self.positions.partition_point(|p| *p < cursor);
-        text::strip_ansi(&self.bytes[start.min(end)..end])
+        text::strip_ansi_settled(&self.bytes[start.min(end)..end], self.settled(cursor))
     }
 }
 
@@ -333,15 +358,15 @@ impl Jobs {
             job.cancel("entry_closed");
         }
     }
-    fn prune(&self) {
+    fn prune(&self, now: Instant) {
         lock(&self.jobs).retain(|_, job| {
             !lock(&job.state)
                 .finished
-                .is_some_and(|t| t.elapsed() >= RETENTION)
+                .is_some_and(|t| now.saturating_duration_since(t) >= RETENTION)
         });
     }
     pub(in crate::mcp) fn maintain(&self, host: &dyn McpHost) {
-        self.prune();
+        self.prune(Instant::now());
         let jobs: Vec<_> = lock(&self.jobs).values().cloned().collect();
         for job in jobs {
             if lock(&job.state).finished.is_some() {
@@ -567,8 +592,10 @@ mod tests {
             .unwrap();
         jobs.stop(&Entry::Windows, &id).unwrap();
         let job = jobs.get(&Entry::Windows, &id).unwrap();
-        lock(&job.state).finished = Some(Instant::now() - RETENTION - Duration::from_secs(1));
-        jobs.prune();
+        let finished = lock(&job.state).finished.unwrap();
+        jobs.prune(finished + RETENTION - Duration::from_secs(1));
+        assert!(jobs.get(&Entry::Windows, &id).is_ok());
+        jobs.prune(finished + RETENTION);
         assert!(jobs.get(&Entry::Windows, &id).is_err());
     }
 }
@@ -577,6 +604,153 @@ mod tests {
 mod page_tests {
     use super::*;
     #[test]
+    fn 运行中双流字符串静止一秒后放行且后续游标不跳不重() {
+        for stderr in [false, true] {
+            let key = if stderr { "stderr" } else { "stdout" };
+            for kind in *b"]PX^_" {
+                let now = Instant::now();
+                let mut state = State::default();
+                let bytes = [b"abc\x1b".to_vec(), vec![kind], vec![b'x'; 100]].concat();
+                state.push_at(stderr, &bytes, now);
+                let early = now + Duration::from_millis(999);
+                state.push_at(stderr, b"", early);
+                let first = state.output_at(0, early);
+                assert_eq!(first[key], "abc");
+                assert_eq!(first["cursor"], 3);
+                assert_eq!(first["more"], true);
+                let later = now + Duration::from_secs(1);
+                let ready = state.output_at(0, later);
+                assert_eq!(ready[key], format!("abc{}", "x".repeat(100)));
+                assert_eq!(ready["cursor"], bytes.len());
+                assert_eq!(ready["more"], false);
+                assert_eq!(ready["running"], true);
+                assert_eq!(state.output_at(3, later)[key], "x".repeat(100));
+                let cursor = ready["cursor"].as_u64().unwrap();
+                state.push_at(stderr, b"\x07done", later);
+                let next = state.output_at(cursor, later);
+                assert_eq!(next[key], "\u{7}done");
+                assert_eq!(next["cursor"], state.cursor);
+                assert_eq!(next["more"], false);
+                assert_eq!(next["lost"], false);
+            }
+        }
+    }
+
+    #[test]
+    fn 运行中双流残缺单位静止后消费且完成任务立即放行() {
+        for stderr in [false, true] {
+            let key = if stderr { "stderr" } else { "stdout" };
+            for (fragment, plain, completed) in [
+                (b"\x1b".as_slice(), "", "abc"),
+                (b"\x1b[31;", "", "abc"),
+                (b"\x1b( ", "", "abc"),
+                (b"\x1bO", "", "abc"),
+                (b"\x1bN", "", "abc"),
+                (b"\xe4", "�", "abc�"),
+                (b"\xe4\xb8", "�", "abc�"),
+                (b"\x1b]unfinished", "unfinished", "abcunfinished"),
+            ] {
+                let now = Instant::now();
+                let mut state = State::default();
+                let bytes = [b"abc", fragment].concat();
+                state.push_at(stderr, &bytes, now);
+                let first = state.output_at(0, now + Duration::from_millis(999));
+                assert_eq!(first[key], "abc");
+                assert_eq!(first["cursor"], 3);
+                assert_eq!(first["more"], true);
+                let ready = state.output_at(3, now + Duration::from_secs(1));
+                assert_eq!(ready[key], plain);
+                assert_eq!(ready["cursor"], state.cursor);
+                assert_eq!(ready["more"], false);
+                assert_eq!(ready["running"], true);
+                state.finished = Some(now);
+                for at in [now, now + Duration::from_secs(2)] {
+                    let finished = state.output_at(0, at);
+                    assert_eq!(finished[key], completed);
+                    assert_eq!(finished["cursor"], state.cursor);
+                    assert_eq!(finished["more"], false);
+                    assert_eq!(finished["running"], false);
+                    for (previous, remaining) in [(&first, plain), (&ready, "")] {
+                        let next = state.output_at(previous["cursor"].as_u64().unwrap(), at);
+                        assert_eq!(next[key], remaining);
+                        assert_eq!(next["cursor"], state.cursor);
+                        assert_eq!(next["more"], false);
+                        assert_eq!(next["running"], false);
+                        assert_eq!(next["lost"], false);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn 两个流独立计算静止时间且新增输出重新计时() {
+        for stderr in [false, true] {
+            let key = if stderr { "stderr" } else { "stdout" };
+            let other = if stderr { "stdout" } else { "stderr" };
+            let now = Instant::now();
+            let mut state = State::default();
+            state.push_at(stderr, b"abc\x1b]xx", now);
+            state.push_at(!stderr, b"err\x1b", now + Duration::from_millis(500));
+            let first = state.output_at(0, now + Duration::from_secs(1));
+            assert_eq!(first[key], "abcxx");
+            assert_eq!(first[other], "err");
+            assert_eq!(first["cursor"], state.cursor - 1);
+            assert_eq!(first["more"], true);
+            let next = state.output_at(
+                first["cursor"].as_u64().unwrap(),
+                now + Duration::from_millis(1500),
+            );
+            assert_eq!(next[key], "");
+            assert_eq!(next[other], "");
+            assert_eq!(next["cursor"], state.cursor);
+            assert_eq!(next["more"], false);
+
+            let mut state = State::default();
+            state.push_at(stderr, b"abc\x1b]xx", now);
+            state.push_at(stderr, b"y", now + Duration::from_millis(999));
+            assert_eq!(state.output_at(0, now + Duration::from_secs(1))[key], "abc");
+            assert_eq!(
+                state.output_at(0, now + Duration::from_millis(1999))[key],
+                "abcxxy"
+            );
+        }
+    }
+
+    #[test]
+    fn 静止放行只作用于流末尾且分页不超过文字上限() {
+        let bytes = [b"abc\x1b]".to_vec(), vec![b'x'; 100]].concat();
+        let stream = StreamPage {
+            positions: (100..100 + bytes.len() as u64).collect(),
+            bytes,
+            quiet: true,
+        };
+        let end = 100 + stream.bytes.len() as u64;
+        assert_eq!(stream.boundary(100, end - 1, false, false), 103);
+        assert_eq!(stream.boundary(100, end, false, false), end);
+        assert_eq!(
+            stream.read(100, end, false),
+            format!("abc{}", "x".repeat(100))
+        );
+        for stderr in [false, true] {
+            let key = if stderr { "stderr" } else { "stdout" };
+            let now = Instant::now();
+            let mut state = State::default();
+            let prefix = "p".repeat(READ_LIMIT - 50);
+            state.push_at(stderr, prefix.as_bytes(), now);
+            state.push_at(stderr, &stream.bytes, now);
+            let later = now + Duration::from_secs(1);
+            let first = state.output_at(0, later);
+            assert_eq!(first[key], format!("{prefix}abc"));
+            assert_eq!(first["more"], true);
+            let next = state.output_at(first["cursor"].as_u64().unwrap(), later);
+            assert_eq!(next[key], "x".repeat(100));
+            assert_eq!(next["cursor"], state.cursor);
+            assert_eq!(next["more"], false);
+        }
+    }
+
+    #[test]
     fn 运行中字符串控制序列封顶后边界和双流分页继续推进() {
         for kind in *b"]PX^_" {
             let mut bytes = vec![0x1b, kind];
@@ -584,14 +758,15 @@ mod page_tests {
             let mut stream = StreamPage {
                 positions: (100..100 + bytes.len() as u64).collect(),
                 bytes,
+                quiet: false,
             };
-            assert_eq!(stream.boundary(100, u64::MAX, false), 100);
+            assert_eq!(stream.boundary(100, u64::MAX, false, false), 100);
             stream.bytes.extend_from_slice(b"xREADY");
             stream.positions = (100..100 + stream.bytes.len() as u64).collect();
             let end = 100 + stream.bytes.len() as u64;
-            assert_eq!(stream.boundary(100, end, false), end);
-            assert_eq!(stream.read(100, end), "READY");
-            assert_eq!(stream.boundary(100, 101, false), 100);
+            assert_eq!(stream.boundary(100, end, false, false), end);
+            assert_eq!(stream.read(100, end, false), "READY");
+            assert_eq!(stream.boundary(100, 101, false, false), 100);
 
             let mut state = State::default();
             state.push(false, &stream.bytes[..2]);
@@ -608,6 +783,26 @@ mod page_tests {
                 state.output(page["cursor"].as_u64().unwrap())["stdout"],
                 "NEXT"
             );
+        }
+    }
+
+    #[test]
+    fn 显式游标保留跨块换行且不重新解释先前字符串() {
+        for stderr in [false, true] {
+            let mut state = State::default();
+            state.push(stderr, b"a\r");
+            let key = if stderr { "stderr" } else { "stdout" };
+            let first = state.output(0);
+            assert_eq!(first[key], "a\r");
+            state.push(!stderr, b"other");
+            state.push(stderr, b"\nb");
+            let next = state.output(first["cursor"].as_u64().unwrap());
+            assert_eq!(next[key], "\nb");
+            // 明确的保留范围内游标不根据前面的控制序列重新对齐。
+            state.push(stderr, b"\x1b]old");
+            let cursor = state.cursor;
+            state.push(stderr, b"new\x07\x1b[32m$ ");
+            assert_eq!(state.output(cursor)[key], "new\u{7}$ ");
         }
     }
 

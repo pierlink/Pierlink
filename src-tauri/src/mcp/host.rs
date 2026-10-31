@@ -419,14 +419,17 @@ impl McpHost for TauriHost {
             &self.app,
             match &event {
                 HostEvent::Activity(_) => "activity",
-                HostEvent::SessionOpened(_) | HostEvent::SessionClosed(_) => "overview",
+                HostEvent::SessionOpened(_)
+                | HostEvent::SessionClosed(_)
+                | HostEvent::SessionsChanged => "overview",
                 _ => "terminals",
             },
         );
         let result = match event {
-            HostEvent::SessionOpened(_) | HostEvent::SessionClosed(_) => {
-                self.app.emit(SESSIONS_EVENT, ())
-            }
+            // 会话列表变了（包括服务器入口的 AI 五分钟没动静后不再算“已连接”）：界面重新拉
+            HostEvent::SessionOpened(_)
+            | HostEvent::SessionClosed(_)
+            | HostEvent::SessionsChanged => self.app.emit(SESSIONS_EVENT, ()),
             HostEvent::Activity(record) => self
                 .app
                 .emit(super::ACTIVITY_EVENT, super::McpActivityDto::from(record)),

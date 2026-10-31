@@ -9,7 +9,8 @@ import type { HistoryEntry } from "./predict";
 export const PIERLINK_OSC = 7701;
 
 export type Mark =
-  | { kind: "promptStart" }
+  /** secondary：续行提示符（PS2，A 带 k=s 或 k=c），它后面的 B 不是新命令的输入起点 */
+  | { kind: "promptStart"; secondary?: boolean }
   | { kind: "inputStart" }
   | { kind: "commandEnd"; exit: number | null }
   | { kind: "init"; native: boolean }
@@ -24,8 +25,13 @@ function exitCode(text: string | undefined): number | null {
  * @returns 认识的标记；C 和不认识的为 null
  */
 export function parse133(data: string): Mark | null {
-  const [kind, code] = data.split(";");
-  if (kind === "A") return { kind: "promptStart" };
+  const [kind, code, ...rest] = data.split(";");
+  if (kind === "A") {
+    const k = [code, ...rest].find((p) => p?.startsWith("k="))?.slice(2);
+    // 右侧提示符（k=r）画在输入行上，不当成新的提示符
+    if (k === "r") return null;
+    return k === "s" || k === "c" ? { kind: "promptStart", secondary: true } : { kind: "promptStart" };
+  }
   if (kind === "B") return { kind: "inputStart" };
   if (kind === "D") return { kind: "commandEnd", exit: exitCode(code) };
   return null;
@@ -80,6 +86,8 @@ export class ShellTracker {
   integrated = false;
   /** shell 自带预测（zsh-autosuggestions、ble.sh）：只记录不显示 */
   native = false;
+  /** 最近一个提示符是续行提示符：等下一个主提示符再取输入 */
+  private secondary = false;
   private anchor: { marker: { readonly line: number; readonly isDisposed: boolean; dispose(): void }; col: number; prompt: string } | null = null;
 
   /**
@@ -96,10 +104,12 @@ export class ShellTracker {
         return null;
       case "promptStart":
       case "commandEnd":
+        this.secondary = mark.kind === "promptStart" && !!mark.secondary;
         this.leave();
         return null;
       case "inputStart": {
         this.leave();
+        if (this.secondary) return null;
         const buf = term.buffer.active;
         const marker = term.registerMarker(0);
         const line = buf.getLine(buf.baseY + buf.cursorY);
@@ -116,6 +126,7 @@ export class ShellTracker {
   /** 会话重新连接：钩子要等新会话的标记再算装上 */
   restart(): void {
     this.leave();
+    this.secondary = false;
     this.integrated = false;
     this.native = false;
   }

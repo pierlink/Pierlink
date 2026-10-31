@@ -3,7 +3,7 @@ use crate::{
     error::AppError,
     mcp::{
         safety::looks_like_password_prompt,
-        text::{ALIGN_LOOKBEHIND, aligned_start, strip_ansi, token_len},
+        text::{ALIGN_LOOKBEHIND, aligned_start_settled, strip_ansi, token_len_settled},
     },
     terminal::{InputSource, TerminalEvent, TerminalManager},
 };
@@ -218,12 +218,12 @@ pub(super) fn send_at_generation(
 }
 
 // 每个文字字节记录对应原始输出的结束位置，保证正则命中后游标不会越过未返回文字。
-fn clean_prefix(bytes: &[u8], start: u64) -> (String, VecDeque<u64>, usize) {
+fn clean_prefix(bytes: &[u8], start: u64, settled: bool) -> (String, VecDeque<u64>, usize) {
     let mut text = String::new();
     let mut positions = VecDeque::new();
     let mut i = 0;
     while i < bytes.len() {
-        let Some(size) = token_len(&bytes[i..]) else {
+        let Some(size) = token_len_settled(&bytes[i..], settled) else {
             break;
         };
         let end = i + size;
@@ -243,31 +243,43 @@ fn read_chunk(
     since: Option<u64>,
     tail_bytes: Option<u64>,
 ) -> Result<(TerminalRead, VecDeque<u64>), AppError> {
+    read_chunk_at(m, id, since, tail_bytes, Instant::now())
+}
+fn read_chunk_at(
+    m: &TerminalManager,
+    id: &str,
+    since: Option<u64>,
+    tail_bytes: Option<u64>,
+    now: Instant,
+) -> Result<(TerminalRead, VecDeque<u64>), AppError> {
     // 在历史锁内确定尾部和窗口，只复制本次需要的字节及少量边界上下文。
-    read_window(|limit| {
+    read_window(since, |limit| {
         m.output_window(
             id,
             since.unwrap_or(0),
             tail_bytes.map(|tail| tail.min(READ_LIMIT as u64) as usize),
             ALIGN_LOOKBEHIND,
             limit,
+            now,
         )
     })
 }
 
 fn read_window(
+    since: Option<u64>,
     mut window: impl FnMut(usize) -> Result<(crate::terminal::OutputRead, u64), AppError>,
 ) -> Result<(TerminalRead, VecDeque<u64>), AppError> {
     let mut limit = READ_LIMIT + ALIGN_LOOKBEHIND;
     loop {
         let (output, requested) = window(limit)?;
-        let result = read_output(&output, requested);
+        let result = read_output(&output, requested, since != Some(requested));
         let consumed = (result.0.cursor - output.start) as usize;
         // 窗口切到控制序列时只扩大重读一次；字符串序列有 4 KiB 上限，
         // 即使历史全是控制序列，累计复制也不超过 3 × READ_LIMIT + 5 × ALIGN_LOOKBEHIND。
         if limit == READ_LIMIT + ALIGN_LOOKBEHIND
             && output.start + (output.data.len() as u64) < output.next
-            && token_len(&output.data[consumed..]).is_none()
+            && consumed < output.data.len()
+            && token_len_settled(&output.data[consumed..], settled(&output)).is_none()
         {
             limit = limit.saturating_mul(2);
             continue;
@@ -275,10 +287,23 @@ fn read_window(
         return Ok(result);
     }
 }
-fn read_output(output: &crate::terminal::OutputRead, since: u64) -> (TerminalRead, VecDeque<u64>) {
-    let skip = aligned_start(&output.data, since.saturating_sub(output.start) as usize);
+fn settled(output: &crate::terminal::OutputRead) -> bool {
+    output.quiet_for >= Duration::from_secs(1)
+        && output.start + output.data.len() as u64 == output.next
+}
+fn read_output(
+    output: &crate::terminal::OutputRead,
+    since: u64,
+    align: bool,
+) -> (TerminalRead, VecDeque<u64>) {
+    let requested = (since.saturating_sub(output.start) as usize).min(output.data.len());
+    let skip = if align || output.lost || since < output.start {
+        aligned_start_settled(&output.data, requested, settled(output))
+    } else {
+        requested
+    };
     let start = output.start + skip as u64;
-    let (text, positions, consumed) = clean_prefix(&output.data[skip..], start);
+    let (text, positions, consumed) = clean_prefix(&output.data[skip..], start, settled(output));
     (
         TerminalRead {
             text,
@@ -290,7 +315,7 @@ fn read_output(output: &crate::terminal::OutputRead, since: u64) -> (TerminalRea
     )
 }
 /// 从 id 的 since（默认历史开头）读取至多 64 KiB 去 ANSI 文字；tail_bytes 限定最近字节范围，最多 64 KiB。
-/// 返回原始字节游标、历史丢失标记和后面是否仍有输出；起点向后对齐字符及控制序列。
+/// 返回原始字节游标、历史丢失标记和后面是否仍有输出；保留范围内的显式游标原样使用，计算出的起点向后对齐。
 pub fn terminal_read(
     m: &TerminalManager,
     id: &str,
@@ -328,6 +353,28 @@ pub(super) fn wait_cancellable(
     timeout: Duration,
     cancelled: impl Fn() -> bool,
 ) -> Result<TerminalWait, AppError> {
+    wait_with_clock(
+        m,
+        id,
+        pattern,
+        quiet,
+        since,
+        timeout,
+        cancelled,
+        Instant::now,
+    )
+}
+#[allow(clippy::too_many_arguments)]
+fn wait_with_clock(
+    m: &TerminalManager,
+    id: &str,
+    pattern: Option<&Regex>,
+    quiet: Option<Duration>,
+    since: Option<u64>,
+    timeout: Duration,
+    cancelled: impl Fn() -> bool,
+    now: impl Fn() -> Instant,
+) -> Result<TerminalWait, AppError> {
     let start = Instant::now();
     let timeout = timeout.min(Duration::from_secs(1800));
     let quiet = quiet.or_else(|| pattern.is_none().then_some(Duration::from_secs(2)));
@@ -350,7 +397,7 @@ pub(super) fn wait_cancellable(
             );
         }
         let previous = result.cursor;
-        match read_chunk(m, id, Some(previous), None) {
+        match read_chunk_at(m, id, Some(previous), None, now()) {
             Ok((read, offsets)) => {
                 if read.cursor != previous {
                     last_output = Instant::now();
@@ -781,20 +828,24 @@ mod tests {
         let first = read_chunk(&manager, &id, Some(0), None).unwrap().0;
         assert!(first.lost && first.more);
         assert_eq!(first.text.len(), READ_LIMIT);
-        for since in [4194304, 4194306] {
+        for (since, prefix, consumed_control) in [
+            (4194304, "", crate::mcp::text::STRING_SEQUENCE_LIMIT),
+            (4194306, "0;", 0),
+        ] {
             let read = read_chunk(&manager, &id, Some(since), None).unwrap().0;
-            // 超长 OSC 在 4 KiB 处结束，后续字节作为正常输出分页返回。
-            assert_eq!(read.text, "x".repeat(READ_LIMIT));
+            // 从引导符开始时最多消费 4 KiB 控制序列；显式给出序列内部游标时保留原始起点。
+            assert_eq!(
+                read.text,
+                format!("{prefix}{}", "x".repeat(READ_LIMIT - prefix.len()))
+            );
+            assert_eq!(read.cursor, since + (consumed_control + READ_LIMIT) as u64);
             assert!(read.more && !read.lost);
             let next = read_chunk(&manager, &id, Some(read.cursor), None)
                 .unwrap()
                 .0;
             assert_eq!(
                 next.text,
-                format!(
-                    "{}\x07DONE",
-                    "x".repeat(102404 - crate::mcp::text::STRING_SEQUENCE_LIMIT - READ_LIMIT)
-                )
+                format!("{}\x07DONE", "x".repeat((end - read.cursor - 5) as usize))
             );
             assert_eq!(next.cursor, end);
             assert!(!next.more && !next.lost);
@@ -867,7 +918,7 @@ mod tests {
     #[test]
     fn 输出限额宽字符及控制序列游标() {
         let bytes = format!("\x1b[31m{}\x1b[0m尾", "甲".repeat(40000));
-        let (text, offsets, count) = clean_prefix(bytes.as_bytes(), 100);
+        let (text, offsets, count) = clean_prefix(bytes.as_bytes(), 100, false);
         assert!(text.len() <= READ_LIMIT && std::str::from_utf8(text.as_bytes()).is_ok());
         assert_eq!(offsets.back().copied(), Some(100 + count as u64));
         assert!(count < bytes.len());
@@ -939,7 +990,7 @@ mod boundary_tests {
             let mut found = false;
             for _ in 0..3 {
                 let mut copies = Vec::new();
-                let read = read_window(|limit| {
+                let read = read_window(Some(since), |limit| {
                     let start = (since as usize).saturating_sub(ALIGN_LOOKBEHIND);
                     let end = (since as usize + limit).min(history.len());
                     let data = history[start..end].to_vec();
@@ -950,6 +1001,7 @@ mod boundary_tests {
                             next: history.len() as u64,
                             data,
                             lost: false,
+                            quiet_for: Duration::ZERO,
                         },
                         since,
                     ))
@@ -983,10 +1035,15 @@ mod boundary_tests {
         ] {
             for split in 1..data.len() {
                 let bytes = [b"a", &data[..split]].concat();
-                let (text, _, count) = clean_prefix(&bytes, 0);
+                let (text, _, count) = clean_prefix(&bytes, 0, false);
                 assert_eq!(text, "a");
-                assert_eq!(count, 1, "{data:?}/{split}");
-                let (tail, _, consumed) = clean_prefix(data, count as u64);
+                let expected = if bytes.ends_with(b"\x1b") && data.starts_with(b"\x1b]") {
+                    bytes.len() - 1
+                } else {
+                    1
+                };
+                assert_eq!(count, expected, "{data:?}/{split}");
+                let (tail, _, consumed) = clean_prefix(data, count as u64, false);
                 assert_eq!(consumed, data.len());
                 assert_eq!(tail, if data[0] == 0x1b { "" } else { "甲" });
             }
@@ -1001,16 +1058,20 @@ mod boundary_tests {
             next: data.len() as u64,
             data,
             lost: false,
+            quiet_for: Duration::ZERO,
         };
-        let first = read_output(&output, 0).0;
+        let first = read_output(&output, 0, false).0;
         assert!(first.more);
         assert_eq!(first.cursor, (READ_LIMIT - 1) as u64);
-        let second = read_output(&output, first.cursor).0;
+        let second = read_output(&output, first.cursor, false).0;
         assert_eq!(second.text, "甲尾");
         assert!(!second.more);
         assert_eq!(second.cursor, output.next);
-        assert_eq!(read_output(&output, READ_LIMIT as u64).0.text, "尾");
-        assert_eq!(read_output(&output, (READ_LIMIT + 3) as u64).0.text, "尾");
+        assert_eq!(read_output(&output, READ_LIMIT as u64, true).0.text, "尾");
+        assert_eq!(
+            read_output(&output, (READ_LIMIT + 3) as u64, true).0.text,
+            "尾"
+        );
     }
     #[test]
     fn 有界回看对齐多字节字符和各类控制序列内部起点() {
@@ -1033,9 +1094,10 @@ mod boundary_tests {
                 next: 100 + data.len() as u64,
                 data,
                 lost: false,
+                quiet_for: Duration::ZERO,
             };
             for split in 1..token.len() {
-                let read = read_output(&output, 100 + (start + split) as u64).0;
+                let read = read_output(&output, 100 + (start + split) as u64, true).0;
                 let expected = if token == "甲😀".as_bytes() && split <= 3 {
                     "😀tail"
                 } else {
@@ -1046,5 +1108,336 @@ mod boundary_tests {
                 assert!(!read.more && !read.lost);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod reading_tests {
+    use super::*;
+    use crate::terminal::OutputRead;
+
+    fn snapshot(data: Vec<u8>, quiet_for: Duration) -> OutputRead {
+        OutputRead {
+            start: 0,
+            next: data.len() as u64,
+            data,
+            lost: false,
+            quiet_for,
+        }
+    }
+
+    #[test]
+    fn 字符串静止后仅丢引导符并保留后续游标() {
+        for kind in *b"]PX^_" {
+            let mut data = vec![0x1b, kind];
+            data.extend(vec![b'x'; 2048]);
+            data.extend_from_slice(b"$ ");
+            let mut output = snapshot(data, Duration::from_millis(999));
+            let first = read_output(&output, 0, false).0;
+            assert_eq!(first.text, "");
+            assert_eq!(first.cursor, 0);
+            output.quiet_for = Duration::from_secs(1);
+            let ready = read_output(&output, 0, false).0;
+            assert_eq!(ready.text, format!("{}$ ", "x".repeat(2048)));
+            assert_eq!(ready.cursor, output.next);
+            assert_eq!(read_output(&output, output.next - 2, true).0.text, "$ ");
+            output.data.extend_from_slice(b"new\x07\x1b[32m$ \x1b[0m");
+            output.next = output.data.len() as u64;
+            output.quiet_for = Duration::ZERO;
+            let next = read_output(&output, ready.cursor, false).0;
+            assert_eq!(next.text, "new\u{7}$ ");
+            assert_eq!(next.cursor, output.next);
+        }
+    }
+
+    #[test]
+    fn 字符串被转义或取消终止时一次读取到提示符() {
+        for kind in *b"]PX^_" {
+            for ending in [
+                b"\x1b[32m$ \x1b[0m".as_slice(),
+                b"\x1b\\$ ",
+                b"\x18$ ",
+                b"\x1a$ ",
+            ] {
+                let data = [vec![0x1b, kind], vec![b'x'; 2048], ending.to_vec()].concat();
+                let output = snapshot(data, Duration::ZERO);
+                let read = read_output(&output, 0, false).0;
+                assert_eq!(read.text, "$ ");
+                assert_eq!(read.cursor, output.next);
+            }
+        }
+    }
+
+    #[test]
+    fn 显式游标保留跨块换行且计算起点仍向后对齐() {
+        let mut output = snapshot(b"a\r".to_vec(), Duration::ZERO);
+        let first = read_output(&output, 0, false).0;
+        assert_eq!(first.text, "a\r");
+        output.data.extend_from_slice(b"\nb");
+        output.next = output.data.len() as u64;
+        assert_eq!(read_output(&output, first.cursor, false).0.text, "\nb");
+        let mut output = snapshot("甲\x1b[32m尾".as_bytes().to_vec(), Duration::ZERO);
+        assert_eq!(read_output(&output, 1, true).0.text, "尾");
+        assert_eq!(read_output(&output, 5, true).0.text, "尾");
+        assert_eq!(read_output(&output, 1, false).0.text, "��尾");
+        output.data.drain(..1);
+        output.start = 1;
+        output.lost = true;
+        assert_eq!(read_output(&output, 0, false).0.text, "尾");
+    }
+
+    #[test]
+    fn 窗口读完只复制一次且静止规则只作用于真正末尾() {
+        for (data, quiet_for, hidden_tail) in [
+            (b"\x1b7".repeat(READ_LIMIT), Duration::ZERO, true),
+            (b"\x1b]unfinished$ ".to_vec(), Duration::from_secs(1), false),
+            (b"\x1b]unfinished$ ".to_vec(), Duration::from_secs(1), true),
+        ] {
+            let mut copies = 0;
+            let mut output = snapshot(data, quiet_for);
+            output.next += u64::from(hidden_tail);
+            let read = read_window(Some(0), |_| {
+                copies += 1;
+                Ok((output.clone(), 0))
+            })
+            .unwrap()
+            .0;
+            if output.data.starts_with(b"\x1b]") && hidden_tail {
+                assert_eq!(copies, 2);
+                assert_eq!(read.cursor, 0);
+            } else {
+                assert_eq!(copies, 1);
+                assert_eq!(read.cursor, output.data.len() as u64);
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    fn manager() -> (TerminalManager, String) {
+        use crate::terminal::{TerminalKind, TerminalSpec};
+        let manager = TerminalManager::new();
+        let id = manager
+            .open(
+                TerminalSpec {
+                    kind: TerminalKind::Local {
+                        program: "/bin/cat".into(),
+                        args: vec![],
+                        cwd: None,
+                        env: vec![],
+                    },
+                    cols: 80,
+                    rows: 24,
+                },
+                std::sync::Arc::new(|_| {}),
+            )
+            .unwrap();
+        (manager, id)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn 管理器静止后消费残缺转义且后续字节从原游标读取() {
+        for (fragment, tail) in [
+            (b"\x1b".as_slice(), b"[31mred".as_slice()),
+            (b"\x1b[31;", b"1mred"),
+            (b"\x1b( ", b"Bred"),
+            (b"\x1bO", b"Ared"),
+            (b"\x1bN", b"Ared"),
+        ] {
+            let (manager, id) = manager();
+            let now = Instant::now();
+            let data = [b"$ ", fragment].concat();
+            manager.feed_output_at(&id, &data, now).unwrap();
+            let first = read_chunk_at(
+                &manager,
+                &id,
+                Some(0),
+                None,
+                now + Duration::from_millis(999),
+            )
+            .unwrap()
+            .0;
+            assert_eq!(first.text, "$ ");
+            assert_eq!(first.cursor, 2);
+            assert!(first.more);
+            let later = now + Duration::from_secs(1);
+            let ready = read_chunk_at(&manager, &id, Some(first.cursor), None, later)
+                .unwrap()
+                .0;
+            assert_eq!(ready.text, "");
+            assert_eq!(ready.cursor, data.len() as u64);
+            assert!(!ready.more);
+            manager.feed_output_at(&id, tail, later).unwrap();
+            let next = read_chunk_at(&manager, &id, Some(ready.cursor), None, later)
+                .unwrap()
+                .0;
+            assert_eq!(next.text, String::from_utf8_lossy(tail));
+            assert_eq!(next.cursor, (data.len() + tail.len()) as u64);
+            assert!(!next.more && !next.lost);
+            manager.close(&id).unwrap();
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn 管理器静止后替换半个中文且等待命中与后续续读不丢字节() {
+        let bytes = "中".as_bytes();
+        let pattern = Regex::new("�").unwrap();
+        for split in 1..bytes.len() {
+            let (manager, id) = manager();
+            let now = Instant::now();
+            let data = [b"$ ", &bytes[..split]].concat();
+            manager.feed_output_at(&id, &data, now).unwrap();
+            let first = read_chunk_at(
+                &manager,
+                &id,
+                Some(0),
+                None,
+                now + Duration::from_millis(999),
+            )
+            .unwrap()
+            .0;
+            assert_eq!(first.text, "$ ");
+            assert_eq!(first.cursor, 2);
+            assert!(first.more);
+            let later = now + Duration::from_secs(1);
+            let ready = read_chunk_at(&manager, &id, Some(first.cursor), None, later)
+                .unwrap()
+                .0;
+            assert_eq!(ready.text, "�");
+            assert_eq!(ready.cursor, data.len() as u64);
+            assert!(!ready.more);
+            let waited = wait_with_clock(
+                &manager,
+                &id,
+                Some(&pattern),
+                None,
+                Some(first.cursor),
+                Duration::ZERO,
+                || false,
+                || later,
+            )
+            .unwrap();
+            assert!(waited.matched && !waited.timed_out);
+            assert_eq!(waited.text, "�");
+            assert_eq!(waited.cursor, ready.cursor);
+            let tail = [&bytes[split..], b"red"].concat();
+            manager.feed_output_at(&id, &tail, later).unwrap();
+            let next = read_chunk_at(&manager, &id, Some(ready.cursor), None, later)
+                .unwrap()
+                .0;
+            assert_eq!(next.text, String::from_utf8_lossy(&tail));
+            assert_eq!(next.cursor, (data.len() + tail.len()) as u64);
+            assert!(!next.more && !next.lost);
+            manager.close(&id).unwrap();
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn 管理器读取未终止字符串注入时间后等待命中且新增输出不丢失() {
+        let pattern = Regex::new(r"\$ ").unwrap();
+        for kind in *b"]PX^_" {
+            let (manager, id) = manager();
+            let now = Instant::now();
+            let data = [vec![0x1b, kind], vec![b'x'; 2048], b"$ ".to_vec()].concat();
+            manager.feed_output_at(&id, &data, now).unwrap();
+            assert_eq!(
+                read_chunk_at(
+                    &manager,
+                    &id,
+                    Some(0),
+                    None,
+                    now + Duration::from_millis(999)
+                )
+                .unwrap()
+                .0
+                .cursor,
+                0
+            );
+            let later = now + Duration::from_secs(1);
+            assert_eq!(
+                read_chunk_at(&manager, &id, None, Some(2), later)
+                    .unwrap()
+                    .0
+                    .text,
+                "$ "
+            );
+            let ready = read_chunk_at(&manager, &id, Some(0), None, later)
+                .unwrap()
+                .0;
+            assert_eq!(ready.text, format!("{}$ ", "x".repeat(2048)));
+            let wait = wait_with_clock(
+                &manager,
+                &id,
+                Some(&pattern),
+                None,
+                Some(0),
+                Duration::ZERO,
+                || false,
+                || later,
+            )
+            .unwrap();
+            assert!(wait.matched && !wait.timed_out);
+            assert_eq!(wait.cursor, ready.cursor);
+            let tail = b"new\x07\x1b[32m$ \x1b[0m";
+            manager.feed_output_at(&id, tail, later).unwrap();
+            let next = terminal_read(&manager, &id, Some(ready.cursor), None).unwrap();
+            assert_eq!(next.text, "new\u{7}$ ");
+            assert_eq!(next.cursor, (data.len() + tail.len()) as u64);
+            manager.close(&id).unwrap();
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn 管理器字符串终止与换行游标及尾部对齐() {
+        for kind in *b"]PX^_" {
+            for ending in [
+                b"\x1b[32m$ \x1b[0m".as_slice(),
+                b"\x1b\\$ ",
+                b"\x18$ ",
+                b"\x1a$ ",
+            ] {
+                let (manager, id) = manager();
+                let data = [vec![0x1b, kind], vec![b'x'; 2048], ending.to_vec()].concat();
+                manager.feed_output_at(&id, &data, Instant::now()).unwrap();
+                assert_eq!(
+                    terminal_read(&manager, &id, Some(0), None).unwrap().text,
+                    "$ "
+                );
+                manager.close(&id).unwrap();
+            }
+        }
+        let (manager, id) = manager();
+        manager.feed_output_at(&id, b"a\r", Instant::now()).unwrap();
+        let first = terminal_read(&manager, &id, None, None).unwrap();
+        assert_eq!(first.text, "a\r");
+        manager.feed_output_at(&id, b"\nb", Instant::now()).unwrap();
+        assert_eq!(
+            terminal_read(&manager, &id, Some(first.cursor), None)
+                .unwrap()
+                .text,
+            "\nb"
+        );
+        // tail_bytes 未改变显式起点时，也必须保留原来的游标。
+        assert_eq!(
+            terminal_read(&manager, &id, Some(first.cursor), Some(100))
+                .unwrap()
+                .text,
+            "\nb"
+        );
+        manager
+            .feed_output_at(&id, "甲\x1b[32m尾".as_bytes(), Instant::now())
+            .unwrap();
+        for tail_bytes in [10, 6] {
+            assert_eq!(
+                terminal_read(&manager, &id, None, Some(tail_bytes))
+                    .unwrap()
+                    .text,
+                "尾"
+            );
+        }
+        manager.close(&id).unwrap();
     }
 }

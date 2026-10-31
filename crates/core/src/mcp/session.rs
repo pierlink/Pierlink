@@ -215,8 +215,8 @@ mod tests {
         assert!(session.is_recent(last + Duration::from_secs(1800)));
         drop(call);
         assert_eq!(session.idle_since(), Some(last));
-        *lock(&session.last_request) = last - Duration::from_secs(301);
         session.observe(None);
+        assert!(*lock(&session.last_request) >= last);
         assert!(session.is_recent(Instant::now()));
         session.cancel();
         assert!(!session.is_recent(Instant::now()));

@@ -1287,6 +1287,7 @@ fn y8_y24_d13_y22_远程真实路径脚本() {
         args: vec!["-s".into()],
         env: vec![("HOME".into(), home.display().to_string())],
         config_text: None,
+        hooked: false,
         builtin: None,
         askpass: None,
     };
@@ -1552,6 +1553,7 @@ fn 真实进程_双向同步_只接收_迁移_三端共享_移除保留文件() 
             args: vec!["-s".into()],
             env: vec![],
             config_text: None,
+            hooked: false,
             builtin: None,
             askpass: None,
         };

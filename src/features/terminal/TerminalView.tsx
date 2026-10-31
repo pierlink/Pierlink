@@ -148,6 +148,7 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
       lineHeight: 1.25,
       cursorBlink: opts.cursorBlink,
       cursorStyle: opts.cursorStyle,
+      cursorWidth: opts.cursorWidth,
       scrollback: opts.scrollback,
       allowTransparency: true,
       allowProposedApi: true,
@@ -211,8 +212,7 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
     let disposed = false;
     // 用户点了“断开”：结束后写“已断开”，不当成断网；连接过程中点的，连上后马上关掉
     let manual = false;
-    // 这次连接有没有带命令预测的提示符钩子，收到多少输出、按了几次回车（连上就退出时判断是不是钩子的问题）
-    let hooked = false;
+    // 这次连接收到多少输出、按了几次回车（带钩子连上就退出时判断是不是钩子的问题）
     let sessionBytes = 0;
     let sessionEnters = 0;
     let last = { cols: term.cols, rows: term.rows };
@@ -242,7 +242,6 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
     const open = async () => {
       exited = false;
       manual = false;
-      hooked = spec.kind !== "local" && !!cb.current.prediction;
       sessionBytes = 0;
       sessionEnters = 0;
       tail = "";
@@ -272,8 +271,10 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
             if (e.auth === "ssh.auth_failed") { end({ kind: "authFailed", password: true }); return; }
             if (e.auth === "ssh.two_factor_required") { end({ kind: "authFailed", twoFactor: true }); return; }
             if (e.auth === "ssh.too_many_auth_attempts") { end({ kind: "authFailed", tooManyAuth: true }); return; }
+            // 这次实际装没装钩子由后端说了算（Windows 服务器、配置了 RemoteCommand 的服务器不装）
+            const hooked = spec.kind !== "local" && !!e.hooked;
             // 服务器拒绝了带钩子的命令（系统 OpenSSH 打印 exec request failed on channel 0 后以 255 退出）
-            if (spec.kind !== "local" && e.code === 255 && hooked && !prediction.integrated && /(exec|shell) request failed/i.test(tail)) {
+            if (e.code === 255 && hooked && !prediction.integrated && /(exec|shell) request failed/i.test(tail)) {
               hookIncompatible();
               return;
             }
@@ -309,8 +310,8 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
         cb.current.onStatus?.("exited");
         // 连接过程中点了“断开”，之后连接失败：照样显示“已断开”
         if (manual) { end({ kind: "disconnected" }); return; }
-        // 内置 SSH：服务器拒绝了带钩子的命令请求
-        if (hooked && isAppError(err) && err.code === "ssh.failed" && err.params?.reason_key === "request_rejected") {
+        // 内置 SSH：服务器拒绝了带钩子的启动请求（PTY 被拒等其他请求照常报错）
+        if (isAppError(err) && err.code === "ssh.failed" && err.params?.reason_key === "hook_rejected") {
           hookIncompatible();
           return;
         }
@@ -493,13 +494,14 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
     const term = termRef.current;
     if (!term) return;
     term.options.cursorStyle = opts.cursorStyle;
+    term.options.cursorWidth = opts.cursorWidth;
     term.options.cursorBlink = opts.cursorBlink;
     term.options.scrollback = opts.scrollback;
     if (term.options.fontSize !== opts.fontSize) {
       term.options.fontSize = opts.fontSize;
       resizeRef.current();
     }
-  }, [opts.cursorStyle, opts.cursorBlink, opts.scrollback, opts.fontSize]);
+  }, [opts.cursorStyle, opts.cursorWidth, opts.cursorBlink, opts.scrollback, opts.fontSize]);
 
   return (
     <div

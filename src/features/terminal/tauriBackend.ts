@@ -22,7 +22,7 @@ export function createTauriBackend(): TerminalBackend {
       const channel = new Channel<TerminalEventDto_Deserialize>();
       channel.onmessage = (e) => {
         if (e.kind === "output") onEvent({ kind: "output", data: base64ToBytes(e.data) });
-        else onEvent({ kind: "exited", code: e.code ?? null, closedByUser: e.closedByUser, auth: e.auth ?? null });
+        else onEvent({ kind: "exited", code: e.code ?? null, closedByUser: e.closedByUser, auth: e.auth ?? null, hooked: e.hooked });
       };
       if (spec.kind === "local") return unwrap(await commands.terminalOpenLocal(spec.shellId, cols, rows, prediction, channel));
       if (spec.kind === "server") return unwrap(await commands.terminalOpenServer(spec.serverId, cols, rows, prediction, channel));

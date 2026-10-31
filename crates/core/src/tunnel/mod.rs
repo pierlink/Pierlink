@@ -527,11 +527,12 @@ impl Entry {
         }
     }
     fn flush(&mut self, events: &Events) {
-        if self
-            .pending
-            .as_ref()
-            .is_some_and(|(since, _)| since.elapsed() >= Duration::from_secs(3))
-            && let Some((_, mut event)) = self.pending.take()
+        self.flush_at(events, Instant::now());
+    }
+    fn flush_at(&mut self, events: &Events, now: Instant) {
+        if self.pending.as_ref().is_some_and(|(since, _)| {
+            now.saturating_duration_since(*since) >= Duration::from_secs(3)
+        }) && let Some((_, mut event)) = self.pending.take()
         {
             event.timestamp_ms = now_ms();
             store_event(events, event);
@@ -787,6 +788,9 @@ impl Entry {
         Ok(())
     }
     fn poll(&mut self, events: &Events) -> Result<(), AppError> {
+        self.poll_at(events, Instant::now())
+    }
+    fn poll_at(&mut self, events: &Events, now: Instant) -> Result<(), AppError> {
         if self.spec.builtin.is_some() && !self.fatal {
             return self.poll_builtin(events);
         }
@@ -821,7 +825,7 @@ impl Entry {
             .map_err(|_| io_error("tunnel.query_tunnel", "查询隧道"))?
         {
             if !data.done
-                && connection.exited.get_or_insert_with(Instant::now).elapsed()
+                && now.saturating_duration_since(*connection.exited.get_or_insert(now))
                     < Duration::from_millis(500)
             {
                 return Ok(());
@@ -864,7 +868,7 @@ impl Entry {
             return Err(classify_error(status.code(), &text, &[]));
         }
         if !connection.ready {
-            if connection.started.elapsed() >= Duration::from_secs(15) {
+            if now.saturating_duration_since(connection.started) >= Duration::from_secs(15) {
                 return Err(AppError::new("ssh.unreachable")
                     .with_reason("tunnel.connection_setup_timed_out", "连接建立超时")
                     .with_text(
@@ -877,14 +881,12 @@ impl Entry {
             let listening = match self.spec.readiness {
                 Readiness::AuthMarker => {
                     data.authenticated
-                        && connection
-                            .authenticated_since
-                            .get_or_insert_with(Instant::now)
-                            .elapsed()
-                            >= Duration::from_millis(500)
+                        && now.saturating_duration_since(
+                            *connection.authenticated_since.get_or_insert(now),
+                        ) >= Duration::from_millis(500)
                 }
                 Readiness::ProbeLocalPorts => {
-                    connection.started.elapsed() >= Duration::from_millis(100)
+                    now.saturating_duration_since(connection.started) >= Duration::from_millis(100)
                         && self.ports.iter().all(|port| {
                             TcpStream::connect_timeout(
                                 &SocketAddr::from(([127, 0, 0, 1], *port)),
@@ -914,7 +916,7 @@ impl Entry {
                 drop(data);
                 self.change(TunnelState::Connected, None, false, events);
             }
-        } else if connection.started.elapsed() >= Duration::from_secs(3) {
+        } else if now.saturating_duration_since(connection.started) >= Duration::from_secs(3) {
             self.event.attempt = 0;
         }
         Ok(())
@@ -1144,8 +1146,8 @@ mod scheduler_tests {
         entry.change(TunnelState::Connected, None, false, &events);
         entry.flush(&events);
         assert!(events.lock().unwrap().is_empty());
-        entry.pending.as_mut().unwrap().0 = Instant::now() - Duration::from_secs(4);
-        entry.flush(&events);
+        let now = entry.pending.as_ref().unwrap().0 + Duration::from_secs(4);
+        entry.flush_at(&events, now);
         assert_eq!(events.lock().unwrap()["隧道"].state, TunnelState::Connected);
         events.lock().unwrap().clear();
         for _ in 0..8 {
@@ -1180,6 +1182,7 @@ mod scheduler_tests {
                 args: vec!["30".into()],
                 env: vec![],
                 config_text: None,
+                hooked: false,
                 builtin: None,
                 askpass: None,
             })
@@ -1408,6 +1411,7 @@ mod scheduler_tests {
             args: vec!["30".into()],
             env: vec![],
             config_text: None,
+            hooked: false,
             builtin: None,
             askpass: None,
         })

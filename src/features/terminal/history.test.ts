@@ -54,6 +54,44 @@ describe("命令历史缓存", () => {
     expect(api.calls).toBe(2);
   });
 
+  it("清除时还在读的旧记录不回到缓存；清除期间不读，清完再读", async () => {
+    let release: (v: HistoryEntry[]) => void = () => undefined;
+    let calls = 0;
+    let cleared: () => void = () => undefined;
+    setHistoryApi({
+      list: () => { calls++; return calls === 1 ? new Promise((r) => { release = r; }) : Promise.resolve([]); },
+      add: async () => undefined,
+      clear: () => new Promise((r) => { cleared = r; }),
+    });
+    historyOf("server:a");
+    const done = clearHistory();
+    release([entry("old", 1)]);
+    await flush();
+    expect(historyOf("server:a")).toEqual([]);
+    expect(calls).toBe(1);
+    cleared();
+    await done;
+    historyOf("server:a");
+    await flush();
+    expect(calls).toBe(2);
+    expect(historyOf("server:a")).toEqual([]);
+  });
+
+  it("刚记下的一条先存进后端又被读到时只留一份", async () => {
+    const stored: HistoryEntry[] = [entry("git status", 1)];
+    let release: () => void = () => undefined;
+    setHistoryApi({
+      list: () => new Promise((r) => { release = () => r([...stored]); }),
+      add: async (_s, e) => { stored.push(e); },
+      clear: async () => undefined,
+    });
+    remember("server:a", entry("ls", 2));
+    await flush();
+    release();
+    await flush();
+    expect(historyOf("server:a").map((e) => e.command)).toEqual(["git status", "ls"]);
+  });
+
   it("没有后端时只存在内存里", () => {
     setHistoryApi(null);
     remember("local:bash", entry("make", 1));

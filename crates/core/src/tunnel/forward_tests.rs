@@ -195,6 +195,7 @@ fn alive(entry: &mut Entry, program: &str, args: Vec<String>) {
         args,
         env: vec![],
         config_text: None,
+        hooked: false,
         builtin: None,
         askpass: None,
     })
@@ -205,7 +206,7 @@ fn alive(entry: &mut Entry, program: &str, args: Vec<String>) {
     entry.connection = Some(Connection {
         process,
         stderr,
-        started: Instant::now() - Duration::from_secs(10),
+        started: Instant::now(),
         ready: false,
         exited: None,
         authenticated_since: None,
@@ -229,6 +230,7 @@ fn 别名目标接受不同hostname的认证标记且仍等待500毫秒() {
         args: vec!["30".into()],
         env: vec![],
         config_text: None,
+        hooked: false,
         builtin: None,
         askpass: None,
     })
@@ -250,9 +252,14 @@ fn 别名目标接受不同hostname的认证标记且仍等待500毫秒() {
     });
     entry.poll(&events()).unwrap();
     assert_eq!(entry.event.state, TunnelState::Connecting);
-    entry.connection.as_mut().unwrap().authenticated_since =
-        Some(Instant::now() - Duration::from_millis(501));
-    entry.poll(&events()).unwrap();
+    let now = entry
+        .connection
+        .as_ref()
+        .unwrap()
+        .authenticated_since
+        .unwrap()
+        + Duration::from_millis(501);
+    entry.poll_at(&events(), now).unwrap();
     assert_eq!(entry.event.state, TunnelState::Connected);
     assert!(entry.ports.is_empty());
 }
@@ -294,9 +301,14 @@ fn 认证后仍需存活500毫秒_三种转发不探端口_网络恢复保留连
             .authenticated = true;
         entry.poll(&events()).unwrap();
         assert!(!entry.connection.as_ref().unwrap().ready);
-        entry.connection.as_mut().unwrap().authenticated_since =
-            Some(Instant::now() - Duration::from_millis(501));
-        entry.poll(&events()).unwrap();
+        let now = entry
+            .connection
+            .as_ref()
+            .unwrap()
+            .authenticated_since
+            .unwrap()
+            + Duration::from_millis(501);
+        entry.poll_at(&events(), now).unwrap();
         assert!(
             entry.connection.as_ref().unwrap().ready,
             "无端口监听时认证模式也应就绪"
@@ -339,11 +351,12 @@ fn 认证后仍需存活500毫秒_三种转发不探端口_网络恢复保留连
         .lock()
         .unwrap()
         .authenticated = true;
-    entry.connection.as_mut().unwrap().authenticated_since =
-        Some(Instant::now() - Duration::from_secs(1));
+    entry.connection.as_mut().unwrap().authenticated_since = Some(Instant::now());
     // 等待管道 EOF，模拟认证后立刻退出的 SSH。
     entry.connection.as_mut().unwrap().stderr.join();
-    let error = entry.poll(&events()).unwrap_err();
+    let error = entry
+        .poll_at(&events(), Instant::now() + Duration::from_secs(1))
+        .unwrap_err();
     assert_ne!(entry.event.state, TunnelState::Connected);
     entry.fail(error, &events());
     entry.network_restored(&events());
@@ -372,6 +385,7 @@ fn 就绪前禁止转发致命_端口转发就绪后只记录一次且继续_同
                 args: vec!["30".into()],
                 env: vec![],
                 config_text: None,
+                hooked: false,
                 builtin: None,
                 askpass: None,
             })

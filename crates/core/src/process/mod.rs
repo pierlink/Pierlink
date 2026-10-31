@@ -446,6 +446,7 @@ mod tests {
     fn 最小环境和显式环境() {
         let cmd = SshCommand {
             config_text: None,
+            hooked: false,
             builtin: None,
             askpass: None,
             args: vec![],
@@ -501,6 +502,7 @@ mod tests {
         let mut process = program
             .spawn(&SshCommand {
                 config_text: None,
+                hooked: false,
                 builtin: None,
                 askpass: None,
                 args: vec!["60".into()],
@@ -518,6 +520,7 @@ mod tests {
             }
             .spawn(&SshCommand {
                 config_text: None,
+                hooked: false,
                 builtin: None,
                 askpass: None,
                 args: vec![],
@@ -535,6 +538,7 @@ mod revision_tests {
     fn 修订13_新增环境变量仍遵守白名单() {
         let cmd = SshCommand {
             config_text: None,
+            hooked: false,
             builtin: None,
             askpass: None,
             args: vec![],
@@ -600,6 +604,7 @@ mod revision_tests {
         }
         .spawn(&SshCommand {
             config_text: None,
+            hooked: false,
             builtin: None,
             askpass: None,
             args: vec![],
@@ -702,6 +707,7 @@ mod password_tests {
             args: vec!["-c".into(), "exit 255".into()],
             env: vec![],
             config_text: None,
+            hooked: false,
             builtin: None,
             askpass: Some(template.clone()),
         };

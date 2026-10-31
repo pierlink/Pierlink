@@ -18,6 +18,7 @@ fn shell(home: &std::path::Path) -> (SshProgram, SshCommand) {
                 ("XDG_RUNTIME_DIR".into(), "/run/不存在".into()),
             ],
             config_text: None,
+            hooked: false,
             builtin: None,
             askpass: None,
         },

@@ -106,6 +106,8 @@ pub struct OutputRead {
     pub next: u64,
     pub data: Vec<u8>,
     pub lost: bool,
+    /// 最后一次非空输出至快照时刻的静止时长。
+    pub quiet_for: Duration,
 }
 
 pub(super) struct Output {
@@ -115,6 +117,7 @@ pub(super) struct Output {
     position: u64,
     subscribers: Vec<Weak<Subscriber>>,
     ended: bool,
+    last_output: Instant,
 }
 impl Output {
     pub(super) fn new(cols: u16, rows: u16) -> Self {
@@ -125,14 +128,21 @@ impl Output {
             position: 0,
             subscribers: Vec::new(),
             ended: false,
+            last_output: Instant::now(),
         }
     }
     pub(super) fn resize(&mut self, cols: u16, rows: u16) {
         self.parser.screen_mut().set_size(rows, cols);
     }
     fn feed(&mut self, event: &TerminalEvent) {
+        self.feed_at(event, Instant::now());
+    }
+    fn feed_at(&mut self, event: &TerminalEvent, now: Instant) {
         self.ended |= matches!(event, TerminalEvent::Exited { .. });
         if let TerminalEvent::Output(bytes) = event {
+            if !bytes.is_empty() {
+                self.last_output = now;
+            }
             self.parser.process(bytes);
             self.position = self.position.saturating_add(bytes.len() as u64);
             self.newlines += bytes.iter().filter(|&&b| b == b'\n').count();
@@ -185,7 +195,7 @@ impl Output {
         Ok(OutputSubscription { subscriber })
     }
     fn since(&self, position: u64) -> Result<OutputRead, AppError> {
-        self.window(position, None, 0, usize::MAX)
+        self.window(position, None, 0, usize::MAX, Instant::now())
             .map(|(output, _)| output)
     }
     fn window(
@@ -194,6 +204,7 @@ impl Output {
         tail_bytes: Option<usize>,
         lookbehind: usize,
         limit: usize,
+        now: Instant,
     ) -> Result<(OutputRead, u64), AppError> {
         if position > self.position {
             return Err(error(
@@ -216,6 +227,7 @@ impl Output {
                 start,
                 next: self.position,
                 lost: position < oldest,
+                quiet_for: now.saturating_duration_since(self.last_output),
                 data: self
                     .history
                     .range((start - oldest) as usize..(end - oldest) as usize)
@@ -262,6 +274,18 @@ impl Session {
 }
 
 impl TerminalManager {
+    /// 测试中向 id 注入 bytes 和接收时刻 now；返回不存在的终端错误。
+    #[cfg(test)]
+    pub(crate) fn feed_output_at(
+        &self,
+        id: &str,
+        bytes: &[u8],
+        now: Instant,
+    ) -> Result<(), AppError> {
+        lock(&self.get(id)?.output).feed_at(&TerminalEvent::Output(bytes.to_vec()), now);
+        Ok(())
+    }
+
     /// 从订阅时刻开始接收 id 的输出和退出事件；capacity 为缓冲字节上限（1 到 1 MiB）。
     /// 满时丢最旧数据并设置 lost，最多 32 个附加订阅；取消使用句柄的 unsubscribe 或 Drop。
     pub fn subscribe(&self, id: &str, capacity: usize) -> Result<OutputSubscription, AppError> {
@@ -285,7 +309,8 @@ impl TerminalManager {
 
     /// 从 position 或 tail_bytes 限定的尾部起点读取 id 的历史窗口。
     /// 起点前最多附带 lookbehind 字节、起点后最多 limit 字节；返回窗口和实际请求位置。
-    /// next 仍是完整历史的末尾，lost 仅表示请求位置已过期，未来位置返回错误。
+    /// now 用于计算静止时长；next 仍是完整历史的末尾，lost 表示请求位置已过期，未来位置返回错误。
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn output_window(
         &self,
         id: &str,
@@ -293,8 +318,9 @@ impl TerminalManager {
         tail_bytes: Option<usize>,
         lookbehind: usize,
         limit: usize,
+        now: Instant,
     ) -> Result<(OutputRead, u64), AppError> {
-        lock(&self.get(id)?.output).window(position, tail_bytes, lookbehind, limit)
+        lock(&self.get(id)?.output).window(position, tail_bytes, lookbehind, limit, now)
     }
 
     /// 从 position 字节偏移读取 id 的新输出；返回原始字节及下次位置，过期位置通过 lost 标记。
@@ -309,6 +335,24 @@ mod tests {
     use super::*;
     fn feed(output: &mut Output, bytes: &[u8]) {
         output.feed(&TerminalEvent::Output(bytes.to_vec()));
+    }
+
+    #[test]
+    fn 历史快照静止时长只随非空输出重置() {
+        let mut output = Output::new(80, 24);
+        let now = Instant::now();
+        output.feed_at(&TerminalEvent::Output(b"a".to_vec()), now);
+        let later = now + Duration::from_secs(1);
+        output.feed_at(&TerminalEvent::Output(Vec::new()), later);
+        assert_eq!(
+            output.window(0, None, 0, 10, later).unwrap().0.quiet_for,
+            Duration::from_secs(1)
+        );
+        output.feed_at(&TerminalEvent::Output(b"b".to_vec()), later);
+        assert_eq!(
+            output.window(0, None, 0, 10, later).unwrap().0.quiet_for,
+            Duration::ZERO
+        );
     }
 
     #[test]
@@ -339,6 +383,7 @@ mod tests {
         output.feed(&TerminalEvent::Exited {
             code: Some(7),
             closed_by_user: false,
+            hooked: false,
         });
         assert!(matches!(
             fast.recv_timeout(Duration::ZERO).unwrap().event,
@@ -413,24 +458,24 @@ mod tests {
     fn 历史窗口限制复制范围并区分过期和分页() {
         let mut output = Output::new(80, 24);
         feed(&mut output, b"0123456789");
-        let (window, requested) = output.window(5, None, 2, 3).unwrap();
+        let (window, requested) = output.window(5, None, 2, 3, Instant::now()).unwrap();
         assert_eq!(requested, 5);
         assert_eq!(window.start, 3);
         assert_eq!(window.next, 10);
         assert_eq!(window.data, b"34567");
         assert!(!window.lost);
-        let (window, requested) = output.window(0, Some(2), 1, 4).unwrap();
+        let (window, requested) = output.window(0, Some(2), 1, 4, Instant::now()).unwrap();
         assert_eq!(requested, 8);
         assert_eq!(window.data, b"789");
-        assert!(output.window(11, Some(0), 0, 1).is_err());
+        assert!(output.window(11, Some(0), 0, 1, Instant::now()).is_err());
         // 模拟滚动窗口已经丢弃前五个字节，校验附带上下文不掩盖 lost。
         output.history.drain(..5);
-        let (window, requested) = output.window(0, None, 4, 2).unwrap();
+        let (window, requested) = output.window(0, None, 4, 2, Instant::now()).unwrap();
         assert_eq!(requested, 0);
         assert_eq!(window.start, 5);
         assert_eq!(window.data, b"56");
         assert!(window.lost);
-        let (window, _) = output.window(7, None, 4, 2).unwrap();
+        let (window, _) = output.window(7, None, 4, 2, Instant::now()).unwrap();
         assert!(!window.lost);
         assert_eq!(window.data, b"5678");
     }

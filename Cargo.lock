@@ -3577,7 +3577,7 @@ dependencies = [
 
 [[package]]
 name = "pierlink"
-version = "0.9.5"
+version = "0.9.6"
 dependencies = [
  "base64 0.23.1",
  "if-addrs",
@@ -3602,7 +3602,7 @@ dependencies = [
 
 [[package]]
 name = "pierlink-core"
-version = "0.9.5"
+version = "0.9.6"
 dependencies = [
  "bytes",
  "encoding_rs",
@@ -3645,14 +3645,14 @@ dependencies = [
 
 [[package]]
 name = "pierlink-export-bindings"
-version = "0.9.5"
+version = "0.9.6"
 dependencies = [
  "pierlink",
 ]
 
 [[package]]
 name = "pierlink-ssh-engine"
-version = "0.9.5"
+version = "0.9.6"
 dependencies = [
  "russh",
  "serde",

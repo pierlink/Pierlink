@@ -145,6 +145,7 @@ impl SftpSession {
                 args: vec![],
                 env: vec![],
                 config_text: None,
+                hooked: false,
                 builtin: None,
                 askpass: None,
             },

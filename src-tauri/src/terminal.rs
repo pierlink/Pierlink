@@ -198,6 +198,9 @@ pub enum TerminalEventDto {
         /// 远程终端因为密码没登录上：ssh.auth_failed（输的密码不对，已作废）/
         /// ssh.password_needed（没输密码、取消或等太久）/ ssh.two_factor_required；其他退出为空
         auth: Option<String>,
+        /// 这次会话带着命令预测的提示符钩子启动（Windows 服务器、配置了 RemoteCommand 的服务器不装）。
+        /// 带钩子连上就退出时，前端据此判断是不是钩子和服务器不兼容
+        hooked: bool,
     },
 }
 
@@ -312,6 +315,7 @@ fn forward(
             TerminalEvent::Exited {
                 code,
                 closed_by_user,
+                hooked,
             } => TerminalEventDto::Exited {
                 code,
                 closed_by_user,
@@ -320,6 +324,7 @@ fn forward(
                 } else {
                     watch.as_ref().and_then(|w| w.classify(&app, code))
                 },
+                hooked,
             },
         };
         // 前端窗口已关闭时发送会失败，忽略即可
@@ -754,13 +759,39 @@ pub async fn clipboard_read_text() -> Result<Option<String>, AppError> {
         .map_err(|e| AppError::new("clipboard.read_failed").with("reason", e.to_string()))?
 }
 
-/// 把文字写进系统剪贴板（网页方式要求窗口在前台，程序在窗口不在前台时发来的复制请求会失败）
+/// 剪贴板的变化序号（Windows，不打开剪贴板）；其他系统和没有权限时为 None
+fn clipboard_seq() -> Option<u32> {
+    #[cfg(windows)]
+    {
+        // SAFETY: 没有参数，只读一个计数；没有访问剪贴板的权限时返回 0
+        let seq = unsafe { windows_sys::Win32::System::DataExchange::GetClipboardSequenceNumber() };
+        (seq != 0).then_some(seq)
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
+}
+
+/// 系统剪贴板的变化序号：内容每变一次就变，取的时候不打开剪贴板（Windows）。
+/// 远程桌面每秒看一次它，变了才去读剪贴板，免得一直占着剪贴板、和别的程序抢。其他系统和取不到时返回 None
 #[tauri::command]
 #[specta::specta]
-pub async fn clipboard_write_text(text: String) -> Result<(), AppError> {
-    tauri::async_runtime::spawn_blocking(move || pierlink_core::clipboard::write_text(&text))
-        .await
-        .map_err(|e| AppError::new("clipboard.write_failed").with("reason", e.to_string()))?
+pub async fn clipboard_sequence() -> Option<u32> {
+    clipboard_seq()
+}
+
+/// 把文字写进系统剪贴板（网页方式要求窗口在前台，程序在窗口不在前台时发来的复制请求会失败）。
+/// 返回写完时剪贴板的变化序号（Windows）：远程桌面据此认出“这次变化是我们自己写的”，不把它发回远程
+#[tauri::command]
+#[specta::specta]
+pub async fn clipboard_write_text(text: String) -> Result<Option<u32>, AppError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        pierlink_core::clipboard::write_text(&text)?;
+        Ok(clipboard_seq())
+    })
+    .await
+    .map_err(|e| AppError::new("clipboard.write_failed").with("reason", e.to_string()))?
 }
 
 /// 用系统默认浏览器打开网址（只允许 http 和 https）

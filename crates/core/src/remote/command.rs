@@ -73,6 +73,7 @@ pub(crate) fn for_feature(
         args: Vec::new(),
         env: Vec::new(),
         config_text: None,
+        hooked: false,
         askpass: None,
         builtin: Some(Arc::new(BuiltinCommand {
             manager: manager.clone(),

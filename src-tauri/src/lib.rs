@@ -81,6 +81,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
         terminal::terminal_close,
         terminal::terminal_open_server,
         terminal::clipboard_read_text,
+        terminal::clipboard_sequence,
         terminal::clipboard_write_text,
         terminal::open_in_browser,
         files::files_home,

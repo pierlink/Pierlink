@@ -160,6 +160,23 @@ fn remote_reachable(
     remote: &Client,
     unreachable_since: &mut Option<Instant>,
 ) -> Result<bool, AppError> {
+    remote_reachable_at(
+        control,
+        tunnel_id,
+        connected_at,
+        remote,
+        unreachable_since,
+        Instant::now(),
+    )
+}
+fn remote_reachable_at(
+    control: &TunnelControl,
+    tunnel_id: &str,
+    connected_at: Option<u64>,
+    remote: &Client,
+    unreachable_since: &mut Option<Instant>,
+    now: Instant,
+) -> Result<bool, AppError> {
     match remote.ping_with_timeout(REQUEST_TIMEOUT) {
         Ok(()) => {
             *unreachable_since = None;
@@ -167,8 +184,8 @@ fn remote_reachable(
             Ok(true)
         }
         Err(error) if error.code == "syncthing.unreachable" => {
-            let since = *unreachable_since.get_or_insert_with(Instant::now);
-            if since.elapsed() < UNREACHABLE_REBUILD_AFTER {
+            let since = *unreachable_since.get_or_insert(now);
+            if now.saturating_duration_since(since) < UNREACHABLE_REBUILD_AFTER {
                 return Err(error);
             }
             control.reconnect_if_current(tunnel_id, connected_at)?;

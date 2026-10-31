@@ -59,6 +59,7 @@ pub(super) fn capture(
             args,
             env: vec![],
             config_text: None,
+            hooked: false,
             builtin: None,
             askpass: None,
         })

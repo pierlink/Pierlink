@@ -14,14 +14,29 @@ export async function readClipboardText(): Promise<string> {
 }
 
 /**
+ * 剪贴板的变化序号：内容每变一次就变（Windows 由后端取，不用打开剪贴板）。用来判断要不要重新读。
+ * @returns 序号；拿不到时（其他系统、浏览器预览）为 null，这时只能读出内容来比较
+ */
+export async function clipboardSequence(): Promise<number | null> {
+  if (!inTauri) return null;
+  try {
+    return await commands.clipboardSequence();
+  } catch {
+    return null;
+  }
+}
+
+/**
  * 把文字写进剪贴板。在应用里由后端直接写系统剪贴板：网页方式要求窗口在前台，程序发来的复制请求
  * （OSC 52、远程桌面同步）可能在窗口不在前台时到达，那时会失败。浏览器预览里用网页接口。
  * @param text 要写入的文字
+ * @returns 写完时剪贴板的变化序号（Windows）；拿不到时为 null
  */
-export async function writeClipboardText(text: string): Promise<void> {
-  if (!inTauri) return navigator.clipboard.writeText(text);
+export async function writeClipboardText(text: string): Promise<number | null> {
+  if (!inTauri) { await navigator.clipboard.writeText(text); return null; }
   const r = await commands.clipboardWriteText(text);
   if (r.status === "error") throw r.error;
+  return r.data;
 }
 
 /**

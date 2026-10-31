@@ -50,6 +50,7 @@ fn spawn(bin: &SyncthingBin, args: Vec<String>, key: Option<&str>) -> Result<Ssh
         args,
         env,
         config_text: None,
+        hooked: false,
         builtin: None,
         askpass: None,
     };

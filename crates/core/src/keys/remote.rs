@@ -285,6 +285,7 @@ mod tests {
             args: vec!["-s".into()],
             env: vec![("HOME".into(), home.to_str().unwrap().into())],
             config_text: None,
+            hooked: false,
             builtin: None,
             askpass: None,
         }
@@ -586,6 +587,7 @@ mod credential_tests {
             args: vec!["-s".into()],
             env: vec![("HOME".into(), root.path().to_str().unwrap().into())],
             config_text: None,
+            hooked: false,
             builtin: None,
             askpass: Some(crate::ssh::askpass_pipe::test_registration("user@host")),
         };

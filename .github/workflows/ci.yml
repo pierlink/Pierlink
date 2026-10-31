@@ -22,9 +22,9 @@ on:
         type: string
         default: ""
       old_release:
-        description: "升级测试用的旧版：本仓库 Releases 里的版本标签（如 v0.9.4；只有公开仓库 pierlink/Pierlink 有 Release）；留空跳过升级测试"
+        description: "升级测试用的旧版：本仓库 Releases 里的版本标签（如 v0.9.5；只有公开仓库 pierlink/Pierlink 有 Release）；留空跳过升级测试"
         type: string
-        default: "v0.9.4"
+        default: "v0.9.5"
       engine:
         description: "内置 SSH 引擎试验：Linux 上多种 sshd 配置和老版本服务器、Windows 上编译和 ssh-agent"
         type: boolean

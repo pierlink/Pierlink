@@ -194,6 +194,16 @@ export function SettingsPage({ version }: { version: string | null }) {
                 options={(["bar", "block", "underline"] as const).map((v) => ({ value: v, label: t(`settings.term.cursorStyle.${v}`) }))}
               />
             </Row>
+            {term.cursorStyle === "bar" && (
+              <Row label={t("settings.term.cursorWidth")}>
+                <RowSelect
+                  label={t("settings.term.cursorWidth")}
+                  value={String(term.cursorWidth)}
+                  onChange={(v) => setTerm({ cursorWidth: Number(v) as AppSettings["terminal"]["cursorWidth"] })}
+                  options={([1, 2, 3] as const).map((v) => ({ value: String(v), label: t(`settings.term.cursorWidthOption.${v}`) }))}
+                />
+              </Row>
+            )}
             <Row label={t("settings.term.cursorBlink")}>
               <Switch label={t("settings.term.cursorBlink")} checked={term.cursorBlink} onChange={(v) => setTerm({ cursorBlink: v })} />
             </Row>

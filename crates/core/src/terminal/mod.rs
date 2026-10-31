@@ -57,6 +57,8 @@ pub enum TerminalEvent {
         /// 远程退出码；内置 SSH 连接断开时为 255，与系统 SSH 一致。
         code: Option<i32>,
         closed_by_user: bool,
+        /// 本次会话是否使用带提示符钩子的命令启动；本机终端为 false。
+        hooked: bool,
     },
 }
 const CHUNK: usize = 64 * 1024;
@@ -96,6 +98,7 @@ impl Default for Flow {
     }
 }
 struct Session {
+    hooked: bool,
     flow: Mutex<Flow>,
     wake: Condvar,
     master: Mutex<(Option<MasterHandle>, u16, u16)>,
@@ -151,10 +154,11 @@ impl TerminalManager {
     ) -> Result<(String, Option<Arc<crate::ssh::askpass_pipe::Registration>>), AppError> {
         let dimensions = size(spec.cols, spec.rows)?;
         if let TerminalKind::BuiltinRemote(terminal) = spec.kind {
-            let mut channel = terminal.open(spec.cols, spec.rows)?;
+            let (mut channel, hooked) = terminal.open(spec.cols, spec.rows)?;
             let (writer, reader, stderr) = channel.take_io();
             drop(stderr);
             let session = Arc::new(Session {
+                hooked,
                 flow: Mutex::new(Flow::default()),
                 wake: Condvar::new(),
                 master: Mutex::new((None, spec.cols, spec.rows)),
@@ -200,11 +204,13 @@ impl TerminalManager {
             .master
             .take_writer()
             .map_err(|_| error("spawn_failed", "terminal.open_input", "打开输入"))?;
+        let hooked = matches!(&spec.kind, TerminalKind::Remote { command, .. } if command.hooked);
         let process = child::spawn(spec.kind, &pair)?;
         let registration = process.askpass.clone();
         #[cfg(unix)]
         drop(pair.slave);
         let session = Arc::new(Session {
+            hooked,
             flow: Mutex::new(Flow::default()),
             wake: Condvar::new(),
             master: Mutex::new((Some(pair.master), spec.cols, spec.rows)),
@@ -354,6 +360,17 @@ impl TerminalManager {
     }
 }
 impl Session {
+    fn stop_if_stale(&self, now: Instant) {
+        let stale = {
+            let flow = lock(&self.flow);
+            flow.pending >= WINDOW
+                && now.saturating_duration_since(flow.last_ack) >= Duration::from_secs(300)
+        };
+        if stale {
+            self.stop();
+        }
+    }
+
     fn stop(&self) {
         {
             let mut flow = lock(&self.flow);
@@ -459,13 +476,7 @@ fn dispatch(session: &Session, rx: mpsc::Receiver<Vec<u8>>, callback: Callback) 
         if !output.is_empty() {
             session.emit(&callback, TerminalEvent::Output(output));
         }
-        let stale = {
-            let flow = lock(&session.flow);
-            flow.pending >= WINDOW && flow.last_ack.elapsed() >= Duration::from_secs(300)
-        };
-        if stale {
-            session.stop();
-        }
+        session.stop_if_stale(Instant::now());
         let status = lock(&session.child).poll();
         if status.is_some() {
             exited_at.get_or_insert_with(Instant::now);
@@ -492,6 +503,7 @@ fn dispatch(session: &Session, rx: mpsc::Receiver<Vec<u8>>, callback: Callback) 
                 TerminalEvent::Exited {
                     code: status.flatten(),
                     closed_by_user: closed,
+                    hooked: session.hooked,
                 },
             );
             break;

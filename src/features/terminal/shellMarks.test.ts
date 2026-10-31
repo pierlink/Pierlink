@@ -51,6 +51,10 @@ describe("提示符标记", () => {
     expect(parse133("D;1")).toEqual({ kind: "commandEnd", exit: 1 });
     expect(parse133("D")).toEqual({ kind: "commandEnd", exit: null });
     expect(parse133("C")).toBeNull();
+    expect(parse133("A;k=s")).toEqual({ kind: "promptStart", secondary: true });
+    expect(parse133("A;cl=m;k=c")).toEqual({ kind: "promptStart", secondary: true });
+    expect(parse133("A;k=i")).toEqual({ kind: "promptStart" });
+    expect(parse133("A;k=r")).toBeNull();
     expect(parseMark("i;native=1")).toEqual({ kind: "init", native: true });
     expect(parseMark("i;native=0")).toEqual({ kind: "init", native: false });
     const b64 = btoa(String.fromCharCode(...new TextEncoder().encode("echo 中文")));
@@ -70,6 +74,22 @@ describe("提示符标记", () => {
     expect(s.input(term)).toEqual({ text: "git st", room: 40 - 16 });
     s.leave();
     expect(s.input(term)).toBeNull();
+  });
+
+  it("续行提示符（PS2）后面的 B 不取输入，下一个主提示符照常", () => {
+    const { t, term } = fakeTerm();
+    const s = new ShellTracker();
+    t.put(0, "> ");
+    s.onMark({ kind: "promptStart", secondary: true }, term, "/home/u");
+    s.onMark({ kind: "inputStart" }, term, "/home/u");
+    t.put(0, "> echo");
+    expect(s.input(term)).toBeNull();
+    s.onMark({ kind: "commandEnd", exit: 0 }, term, "/home/u");
+    s.onMark({ kind: "promptStart" }, term, "/home/u");
+    t.put(0, "$ ");
+    s.onMark({ kind: "inputStart" }, term, "/home/u");
+    t.put(0, "$ git");
+    expect(s.input(term)).toEqual({ text: "git", room: 40 - 5 });
   });
 
   it("命令记录属于收到时的目录", () => {

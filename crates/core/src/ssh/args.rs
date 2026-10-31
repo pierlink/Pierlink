@@ -129,6 +129,8 @@ pub struct CommonOpts {
 pub struct SshCommand {
     /// 内置后台执行上下文；由 remote::command::background 构造，不启动本地进程。
     pub builtin: Option<std::sync::Arc<crate::remote::command::BuiltinCommand>>,
+    /// 本次终端命令是否包含提示符钩子；后台用途为 false。
+    pub hooked: bool,
     pub args: Vec<String>,
     pub env: Vec<(String, String)>,
     /// 启动前须写入 CommonOpts.config_file 的配置文本；结束或失败后由调用方删除。
@@ -139,7 +141,8 @@ pub struct SshCommand {
 
 impl PartialEq for SshCommand {
     fn eq(&self, other: &Self) -> bool {
-        self.args == other.args
+        self.hooked == other.hooked
+            && self.args == other.args
             && self.env == other.env
             && self.config_text == other.config_text
             && match (&self.builtin, &other.builtin) {
@@ -561,6 +564,7 @@ pub fn build_args(
         }
     }
     args.push(destination);
+    let mut hooked = false;
     match purpose {
         Purpose::Background => args.push("/bin/sh -s".into()),
         Purpose::HostKeyProbe => args.push("exit".into()),
@@ -576,15 +580,15 @@ pub fn build_args(
                     SshTarget::Explicit(target) => target.has_remote_command,
                     SshTarget::Manual { .. } => false,
                 };
-            if let Some(command) =
-                terminal_command(login_shell, *integration && !has_remote_command)?
-            {
+            hooked = *integration && !has_remote_command;
+            if let Some(command) = terminal_command(login_shell, hooked)? {
                 args.push(command);
             }
         }
         Purpose::Tunnel { .. } => {}
     }
     Ok(SshCommand {
+        hooked,
         args,
         env,
         config_text,
@@ -622,6 +626,7 @@ mod tests {
                         integration: true,
                     };
                     let command = build_args(target, &purpose, &opts).unwrap();
+                    assert_eq!(command.hooked, !has_remote_command);
                     assert_eq!(
                         command
                             .args
@@ -1145,6 +1150,7 @@ mod tests {
         );
         let cmd = SshCommand {
             config_text: None,
+            hooked: false,
             builtin: None,
             askpass: None,
             args: vec!["ProxyCommand=helper --credential sensitive-value".into()],

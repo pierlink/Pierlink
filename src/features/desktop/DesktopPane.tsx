@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import RFB from "@novnc/novnc";
-import { AppWindow, ClipboardPaste, Expand, Maximize, Minimize, Power, Unplug, X } from "lucide-react";
+import { AppWindow, Expand, Maximize, Minimize, Power, Unplug, X } from "lucide-react";
 import { Button, Checkbox, Dialog, Select } from "../../components";
 import { formatError, isAppError } from "../../errors";
-import { readClipboardText, writeClipboardText } from "../shell/clipboard";
-import { typingKeysyms } from "./keysyms";
+import { clipboardSequence, readClipboardText, writeClipboardText } from "../shell/clipboard";
+import { ClipboardSync } from "./clipboardSync";
 import { openDesktopWindow } from "./popouts";
 import { inTauri } from "../shell/TitleBar";
 import { DesktopChannel } from "./channel";
@@ -47,7 +47,10 @@ interface CreateArgs {
 /** 官方包的下载地址（电脑上用浏览器下载后再“选择已下载的包”） */
 const OFFICIAL_URL = "https://sourceforge.net/projects/tigervnc/files/stable/1.16.2/tigervnc-1.16.2.x86_64.tar.gz";
 
-/** noVNC 1.7 的内部字段：恢复远程分辨率要用（公开接口只能“跟随窗口”，不能指定尺寸） */
+/**
+ * noVNC 1.7 的内部字段：恢复远程分辨率要用（公开接口只能“跟随窗口”，不能指定尺寸）；
+ * 扩展剪贴板的能力（服务器连上后才告诉我们，键是格式和动作的位）
+ */
 interface RfbInternals {
   _fbWidth: number;
   _fbHeight: number;
@@ -55,6 +58,8 @@ interface RfbInternals {
   _screenID: number;
   _screenFlags: number;
   _sock: unknown;
+  _clipboardServerCapabilitiesFormats?: Record<number, boolean>;
+  _clipboardServerCapabilitiesActions?: Record<number, boolean>;
 }
 const rfbMessages = (RFB as unknown as { messages: { setDesktopSize(sock: unknown, width: number, height: number, id: number, flags: number): void } }).messages;
 
@@ -67,6 +72,15 @@ function setRemoteSize(rfb: RFB, size: Size): "sent" | "same" | "unsupported" {
   rfbMessages.setDesktopSize(r._sock, size.w, size.h, r._screenID, r._screenFlags);
   return "sent";
 }
+/**
+ * 服务器说了支持扩展剪贴板（UTF-8 文字，远程粘贴时才来取）。说之前 noVNC 发剪贴板走老式的，
+ * 只能发 Latin-1，中文会变成问号
+ */
+function extendedClipboard(rfb: RFB): boolean {
+  const r = rfb as unknown as RfbInternals;
+  return !!r._clipboardServerCapabilitiesFormats?.[1] && !!r._clipboardServerCapabilitiesActions?.[1 << 27];
+}
+
 /** 把远程分辨率改回 size；发了返回 true */
 function restoreRemoteSize(rfb: RFB, size: Size | null): boolean {
   return !!size && setRemoteSize(rfb, size) === "sent";
@@ -149,6 +163,20 @@ export function DesktopPane({ serverId, visible, title, controls, windowTitle, s
   const [confirmStop, setConfirmStop] = useState(false);
   /** 全屏是这个窗格要的（页面全屏时只有它铺满窗口） */
   const wantFull = useRef(false);
+  /** 已经连上远程（noVNC 握手完成）：连上之前发剪贴板会被 noVNC 丢掉 */
+  const linked = useRef(false);
+  /** 剪贴板自动同步：本机剪贴板有了新文字就发到远程 */
+  const [clip] = useState(() => new ClipboardSync({
+    ready: () => !!rfbRef.current && linked.current,
+    sequence: clipboardSequence,
+    read: readClipboardText,
+    send: (text) => {
+      const rfb = rfbRef.current;
+      if (!rfb || !linked.current) return false;
+      rfb.clipboardPasteFrom(text);
+      return true;
+    },
+  }));
 
   const disconnect = useCallback(() => {
     rfbRef.current?.disconnect();
@@ -159,6 +187,8 @@ export function DesktopPane({ serverId, visible, title, controls, windowTitle, s
 
   const connect = useCallback(async (session: DesktopSession) => {
     disconnect();
+    linked.current = false;
+    clip.reset();
     setPhase({ kind: "connecting", session });
     setSize("");
     const api = await getDesktopApi();
@@ -197,6 +227,23 @@ export function DesktopPane({ serverId, visible, title, controls, windowTitle, s
       // 此时还是服务器原本的尺寸（跟随窗口的改尺寸请求在这之后才发）
       const r = rfb as unknown as RfbInternals;
       originalSize.current = r._fbWidth > 0 ? { w: r._fbWidth, h: r._fbHeight } : null;
+      // 剪贴板等服务器说清支不支持扩展剪贴板再发（早发中文会变成问号）。老式服务器不会说，最多等 1.5 秒；
+      // 网络慢、说得比这还晚的，说了以后再发一次
+      const since = Date.now();
+      const wait = setInterval(() => {
+        if (rfbRef.current !== rfb) { clearInterval(wait); return; }
+        const ext = extendedClipboard(rfb);
+        const waited = Date.now() - since;
+        if (!linked.current) {
+          if (!ext && waited < 1500) return;
+          linked.current = true;
+          void clip.check();
+        } else if (ext) {
+          clip.reset();
+          void clip.check();
+        }
+        if (ext || waited > 15000) clearInterval(wait);
+      }, 50);
       setPhase({ kind: "connected", session, noAuth: conn.probe.noAuth });
       try { localStorage.setItem(LAST_KEY + serverId, session.key); } catch { /* 不记也行 */ }
       if (typed.current && rememberRef.current) void api.savePassword(serverId, session.key, typed.current).catch(() => {});
@@ -217,7 +264,7 @@ export function DesktopPane({ serverId, visible, title, controls, windowTitle, s
     });
     rfb.addEventListener("disconnect", (e) => {
       const clean = (e as CustomEvent<{ clean: boolean }>).detail?.clean;
-      if (rfbRef.current === rfb) rfbRef.current = null;
+      if (rfbRef.current === rfb) { rfbRef.current = null; linked.current = false; }
       connRef.current = null;
       setPhase((cur) => (cur.kind === "password" || cur.kind === "popped" ? cur : { kind: "closed", session, error: closedReason || (clean ? null : t("desktop.lost")) }));
     });
@@ -225,9 +272,10 @@ export function DesktopPane({ serverId, visible, title, controls, windowTitle, s
     rfb.addEventListener("clipboard", (e) => {
       const text = (e as CustomEvent<{ text: string }>).detail?.text;
       if (!text) return;
-      void writeClipboardText(text).catch(() => {});
+      clip.fromRemote(text);
+      void writeClipboardText(text).then((seq) => clip.written(seq), () => {});
     });
-  }, [disconnect, serverId, t]);
+  }, [clip, disconnect, serverId, t]);
 
   // 检测：上次连过的或只有一个时直接连；auto 为 false（用户要换一个）时总是列出来让用户选
   const detect = useCallback(async (auto = true) => {
@@ -342,20 +390,27 @@ export function DesktopPane({ serverId, visible, title, controls, windowTitle, s
     void document.documentElement.requestFullscreen().catch(() => { wantFull.current = false; });
   };
 
-  /**
-   * 把 Windows 剪贴板的文字发到远程剪贴板。每次都发：重新连接后远程剪贴板是空的，
-   * 远程复制过别的东西后也已经变了，不能按“上次发过同样的”跳过
-   */
-  const pushClipboard = useCallback(async () => {
-    const text = await readClipboardText().catch(() => "");
-    const rfb = rfbRef.current;
-    if (!rfb || !text) return;
-    rfb.clipboardPasteFrom(text);
-  }, []);
+  // 什么时候看本机剪贴板：连上时、切到这个窗格时、窗口回到前台时、点进画面时（远程里右键之前），
+  // 以及窗口在前台时每秒看一次变化序号
+  useEffect(() => {
+    if (phase.kind !== "connected" || !visible) return;
+    const check = () => void clip.check();
+    check();
+    const timer = setInterval(() => {
+      if (document.visibilityState === "visible" && document.hasFocus()) void clip.check(true);
+    }, 1000);
+    const el = screenRef.current;
+    window.addEventListener("focus", check);
+    el?.addEventListener("pointerdown", check, true);
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener("focus", check);
+      el?.removeEventListener("pointerdown", check, true);
+    };
+  }, [phase.kind, visible, clip]);
 
-  // 和 Windows 一样用 Ctrl+C、Ctrl+V 复制粘贴：在远程画面里按 Ctrl+V（或 Ctrl+Shift+V）时，
-  // 先把 Windows 剪贴板发过去，再补发这个 V（按住的 Ctrl、Shift 已经由 noVNC 发给远程了）。
-  // 只在按 Ctrl+V 时发：点进画面时不发，免得刚复制的口令之类一点画面就到了服务器上
+  // 在远程画面里按 Ctrl+V（或 Ctrl+Shift+V）时，先看一次本机剪贴板（刚复制的可能还没来得及发），
+  // 再补发这个 V（按住的 Ctrl、Shift 已经由 noVNC 发给远程了）
   useEffect(() => {
     const el = screenRef.current;
     if (!el) return;
@@ -368,7 +423,7 @@ export function DesktopPane({ serverId, visible, title, controls, windowTitle, s
       ev.preventDefault();
       ev.stopPropagation();
       const shift = ev.shiftKey;
-      void pushClipboard().finally(() => {
+      void clip.check().finally(() => {
         const rfb = rfbRef.current;
         if (!rfb) return;
         if (ctrlHeld) { rfb.sendKey(shift ? 0x56 : 0x76, "KeyV"); return; }
@@ -393,7 +448,7 @@ export function DesktopPane({ serverId, visible, title, controls, windowTitle, s
       document.removeEventListener("keyup", onDocKeyUp, true);
       window.removeEventListener("blur", released);
     };
-  }, [pushClipboard]);
+  }, [clip]);
 
   // 换分辨率：跟随窗口交给 noVNC；原始改回连上时的尺寸；预设直接改（服务器还没说支持时先记下）
   const applyResolution = (rfb: RFB, resolution: string, pierlink: boolean) => {
@@ -458,19 +513,6 @@ export function DesktopPane({ serverId, visible, title, controls, windowTitle, s
     rfb.compressionLevel = QUALITY[next.quality].compression;
   };
 
-  /** 把 Windows 剪贴板里的文字直接输入到远程（中文也能输），同时放进远程剪贴板；太长时只放进剪贴板 */
-  const typeToRemote = async () => {
-    const text = await readClipboardText().catch(() => "");
-    const rfb = rfbRef.current;
-    if (!rfb) return;
-    rfb.focus();
-    if (!text) return;
-    rfb.clipboardPasteFrom(text);
-    const keys = typingKeysyms(text);
-    if (!keys) { setNotice(t("desktop.typeTooLong")); return; }
-    for (const k of keys) rfb.sendKey(k, null);
-  };
-
   const submitPassword = (e: React.FormEvent) => {
     e.preventDefault();
     if (phase.kind !== "password" || !password) return;
@@ -515,9 +557,6 @@ export function DesktopPane({ serverId, visible, title, controls, windowTitle, s
                 ...(session?.pierlink ? [] : [{ value: "original", label: t("desktop.resOriginal") }]),
                 ...PRESETS.map((v) => ({ value: v, label: v.replace("x", "×") })),
               ]} />
-            <button type="button" className="pane__btn" title={t("desktop.paste")} aria-label={t("desktop.paste")} onClick={() => void typeToRemote()}>
-              <ClipboardPaste size={14} />
-            </button>
             <button type="button" className="pane__btn" title={fullscreen ? t("desktop.exitFullscreen") : t("desktop.fullscreen")} aria-label={t("desktop.fullscreen")}
               onClick={toggleFullscreen}>
               {fullscreen ? <Minimize size={14} /> : <Maximize size={14} />}

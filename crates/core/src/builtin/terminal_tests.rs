@@ -78,14 +78,15 @@ fn output(
     assert_eq!(actual, expected);
 }
 
-fn exited(rx: &mpsc::Receiver<TerminalEvent>) -> (Option<i32>, bool) {
+fn exited(rx: &mpsc::Receiver<TerminalEvent>) -> (Option<i32>, bool, bool) {
     loop {
         if let TerminalEvent::Exited {
             code,
             closed_by_user,
+            hooked,
         } = rx.recv_timeout(Duration::from_secs(5)).unwrap()
         {
-            return (code, closed_by_user);
+            return (code, closed_by_user, hooked);
         }
     }
 }
@@ -119,8 +120,8 @@ fn 内置终端对windows服务器的集成请求与关闭集成逐字节相同(
 
         manager.close(&first).unwrap();
         manager.close(&second).unwrap();
-        assert!(exited(&first_rx).1);
-        assert!(exited(&second_rx).1);
+        assert!(matches!(exited(&first_rx), (_, true, false)));
+        assert!(matches!(exited(&second_rx), (_, true, false)));
     }
 }
 
@@ -152,8 +153,8 @@ fn 内置终端对普通openssh服务器保留集成命令且仍可关闭() {
         assert_eq!(connection.statistics().opened_sessions, 2);
         manager.close(&id).unwrap();
         manager.close(&plain).unwrap();
-        assert!(exited(&rx).1);
-        assert!(exited(&plain_rx).1);
+        assert!(matches!(exited(&rx), (_, true, true)));
+        assert!(matches!(exited(&plain_rx), (_, true, false)));
     }
 }
 
@@ -190,7 +191,7 @@ fn 内置终端复用主连接发送目录标记与登录shell请求() {
     );
     manager.write(&id, b"\x04").unwrap();
     output(&manager, &id, &rx, b"bye");
-    assert_eq!(exited(&rx), (Some(7), false));
+    assert_eq!(exited(&rx), (Some(7), false, false));
     assert!(!connection.is_closed());
 }
 
@@ -271,7 +272,7 @@ fn 关闭只结束本通道而断开主连接产生唯一退出提示() {
     manager.write(&second, b"alive").unwrap();
     output(&manager, &second, &second_rx, b"alive");
     f.manager.close_server(&f.server.id).unwrap();
-    assert_eq!(exited(&second_rx), (Some(255), false));
+    assert_eq!(exited(&second_rx), (Some(255), false, false));
     assert!(!matches!(
         second_rx.try_recv(),
         Ok(TerminalEvent::Exited { .. })
@@ -284,7 +285,8 @@ fn 关闭只结束本通道而断开主连接产生唯一退出提示() {
         subscriber.recv_timeout(Duration::ZERO).unwrap().event,
         TerminalEvent::Exited {
             code: Some(255),
-            closed_by_user: false
+            closed_by_user: false,
+            hooked: false,
         }
     ));
 }
@@ -295,7 +297,7 @@ fn 内存对端断开时终端退出码标明连接中断() {
     let manager = TerminalManager::new();
     let (id, rx) = open(&f, &manager);
     manager.write(&id, b"\x1d").unwrap();
-    assert_eq!(exited(&rx), (Some(255), false));
+    assert_eq!(exited(&rx), (Some(255), false, false));
     assert!(!matches!(rx.try_recv(), Ok(TerminalEvent::Exited { .. })));
 }
 

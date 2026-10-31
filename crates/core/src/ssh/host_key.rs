@@ -200,6 +200,7 @@ fn probe_command(cmd: &SshCommand) -> Result<SshCommand, AppError> {
     args.push(PROBE_COMMAND.into());
     Ok(SshCommand {
         config_text: None,
+        hooked: false,
         builtin: None,
         askpass: None,
         args,
@@ -923,6 +924,7 @@ mod tests {
     fn 超时诊断先规范化脱敏再按字符截尾() {
         let cmd = SshCommand {
             config_text: None,
+            hooked: false,
             builtin: None,
             askpass: None,
             args: vec![],
@@ -1078,6 +1080,7 @@ mod tests {
             args: vec!["host".into(), "/bin/sh -s".into()],
             env: vec![],
             config_text: None,
+            hooked: false,
             builtin: None,
             askpass: None,
         };
@@ -1140,6 +1143,7 @@ mod pty_tests {
             SshProgram { path },
             SshCommand {
                 config_text: None,
+                hooked: false,
                 builtin: None,
                 askpass: None,
                 args: vec!["/bin/sh -s".into()],
@@ -1484,6 +1488,7 @@ time.sleep(30)
         let path = root.path().join("fake-ssh");
         let cmd = SshCommand {
             config_text: None,
+            hooked: false,
             builtin: None,
             askpass: None,
             args: vec!["/bin/sh -s".into()],

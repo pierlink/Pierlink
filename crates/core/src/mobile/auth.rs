@@ -50,7 +50,14 @@ impl Pairing {
         self.generation.send_modify(|v| *v = v.wrapping_add(1));
     }
     fn consume(&mut self, code: &str, peer: IpAddr) -> Result<watch::Receiver<u64>, AppError> {
-        let time = Instant::now();
+        self.consume_at(code, peer, Instant::now())
+    }
+    fn consume_at(
+        &mut self,
+        code: &str,
+        peer: IpAddr,
+        time: Instant,
+    ) -> Result<watch::Receiver<u64>, AppError> {
         self.attempts.retain(|_, attempts| {
             while attempts
                 .front()
@@ -312,9 +319,9 @@ mod tests {
             pairing.consume("错误", peer).err().unwrap().code,
             "mobile.rate_limited"
         );
-        pairing.attempts.get_mut(&peer).unwrap()[0] = Instant::now() - RATE_WINDOW;
+        let now = pairing.attempts[&peer][0] + RATE_WINDOW;
         assert_eq!(
-            pairing.consume("错误", peer).err().unwrap().code,
+            pairing.consume_at("错误", peer, now).err().unwrap().code,
             "mobile.invalid_invite"
         );
         pairing.attempts.clear();
@@ -329,11 +336,9 @@ mod tests {
             "mobile.rate_limited"
         );
         assert_eq!(pairing.attempts.len(), 1024);
-        for attempts in pairing.attempts.values_mut() {
-            attempts[0] = Instant::now() - RATE_WINDOW;
-        }
+        let now = Instant::now() + RATE_WINDOW;
         assert_eq!(
-            pairing.consume("错误", peer).err().unwrap().code,
+            pairing.consume_at("错误", peer, now).err().unwrap().code,
             "mobile.invalid_invite"
         );
         assert_eq!(pairing.attempts.len(), 1);

@@ -355,6 +355,7 @@ fn background() -> SshCommand {
         args: vec!["-T".into(), "host".into(), "/bin/sh -s".into()],
         env: vec![],
         config_text: None,
+        hooked: false,
         builtin: None,
         askpass: None,
     }

@@ -133,7 +133,11 @@ fn until_exit(rx: &mpsc::Receiver<TerminalEvent>) -> (Vec<u8>, Option<i32>, bool
             TerminalEvent::Exited {
                 code,
                 closed_by_user,
-            } => return (bytes, code, closed_by_user),
+                hooked,
+            } => {
+                assert!(!hooked);
+                return (bytes, code, closed_by_user);
+            }
         }
     }
 }
@@ -146,10 +150,11 @@ fn 事件序列化和尺寸校验() {
     assert_eq!(
         serde_json::to_value(TerminalEvent::Exited {
             code: None,
-            closed_by_user: true
+            closed_by_user: true,
+            hooked: false,
         })
         .unwrap(),
-        serde_json::json!({"Exited":{"code":null,"closed_by_user":true}})
+        serde_json::json!({"Exited":{"code":null,"closed_by_user":true,"hooked":false}})
     );
     assert!(size(0, 1).is_err());
     assert!(size(1, 0).is_err());
@@ -222,6 +227,7 @@ fn 远程会话本机进程状态返回未知() {
                     args: vec!["-i".into()],
                     env: vec![],
                     config_text: None,
+                    hooked: false,
                     builtin: None,
                     askpass: None,
                 },
@@ -334,6 +340,7 @@ fn 远程配置唯一并在所有结束路径删除() {
                 ],
                 env: vec![],
                 config_text: Some("Host *\n".into()),
+                hooked: false,
                 builtin: None,
                 askpass: None,
             },
@@ -432,7 +439,9 @@ fn r3_大文件确认后完整排空才退出() {
             TerminalEvent::Exited {
                 code,
                 closed_by_user,
+                hooked,
             } => {
+                assert!(!hooked);
                 assert_eq!(code, Some(0));
                 assert!(!closed_by_user);
                 break;
@@ -506,6 +515,7 @@ fn 远程配置并发唯一及自然结束清理() {
                 ],
                 env: vec![],
                 config_text: Some("Host *\n".into()),
+                hooked: false,
                 builtin: None,
                 askpass: None,
             },
@@ -562,7 +572,9 @@ fn windows_conpty输出与关闭() {
             TerminalEvent::Exited {
                 code,
                 closed_by_user,
+                hooked,
             } => {
+                assert!(!hooked);
                 // 失败时把终端输出带上，便于在 CI 日志里看清 cmd 实际收到了什么
                 let text = String::from_utf8_lossy(&output);
                 assert_eq!(code, Some(0), "终端输出: {text:?}");
@@ -657,7 +669,8 @@ fn 丢失ack超时关闭() {
     manager.ack(&id, 0).unwrap();
     assert!(lock(&session.flow).last_ack.elapsed() < Duration::from_secs(1));
     assert!(rx.recv_timeout(Duration::from_millis(250)).is_err());
-    lock(&session.flow).last_ack = Instant::now() - Duration::from_secs(301);
+    let now = lock(&session.flow).last_ack + Duration::from_secs(301);
+    session.stop_if_stale(now);
     assert!(until_exit(&rx).2);
 }
 #[cfg(unix)]
@@ -718,6 +731,7 @@ fn 远程创建目录并强制term() {
                     ],
                     env: vec![("TERM".into(), "错误".into())],
                     config_text: Some("Host *\n".into()),
+                    hooked: false,
                     builtin: None,
                     askpass: None,
                 },
@@ -813,6 +827,7 @@ fn 终端返回实际登记_退出后可检查代数并保护新密码() {
                         args: vec!["-c".into(), "exit 255".into()],
                         env: vec![],
                         config_text: None,
+                        hooked: false,
                         builtin: None,
                         askpass: Some(template.clone()),
                     },
@@ -907,4 +922,52 @@ fn 管理器克隆释放保留会话且最后一个释放关闭会话() {
     other.write(&id, b"a").unwrap();
     drop(other);
     assert!(until_exit(&rx).2);
+}
+
+#[cfg(unix)]
+#[test]
+fn 系统ssh退出事件保留命令生成的实际钩子状态() {
+    use crate::ssh::{
+        args::{CommonOpts, Purpose, build_args},
+        target::SshTarget,
+    };
+    let root = crate::test_support::tempdir();
+    for has_remote_command in [true, false] {
+        let command = build_args(
+            &SshTarget::Alias {
+                alias: "example".into(),
+            },
+            &Purpose::Terminal {
+                login_shell: None,
+                cwd_marker: None,
+                integration: true,
+            },
+            &CommonOpts {
+                has_remote_command: Some(has_remote_command),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let manager = TerminalManager::new();
+        let (_, rx) = start(
+            &manager,
+            TerminalSpec {
+                kind: TerminalKind::Remote {
+                    ssh: "/bin/true".into(),
+                    command,
+                    config_dir: root.path().into(),
+                },
+                cols: 80,
+                rows: 24,
+            },
+        );
+        loop {
+            if let TerminalEvent::Exited { hooked, .. } =
+                rx.recv_timeout(Duration::from_secs(5)).unwrap()
+            {
+                assert_eq!(hooked, !has_remote_command);
+                break;
+            }
+        }
+    }
 }

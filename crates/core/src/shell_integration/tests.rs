@@ -455,6 +455,7 @@ fn 包装后的交互shell仍能查询目录与忙碌状态() {
             args: vec!["-s".into()],
             env: vec![],
             config_text: None,
+            hooked: false,
             builtin: None,
             askpass: None,
         };
@@ -815,4 +816,27 @@ fn 登录shell绝对路径按原路径执行() {
     session.read(B);
     let output = session.run("printf 'SHELL-PATH=%s\\n' \"$BASH\"");
     assert!(output.contains(&format!("SHELL-PATH={}\r\n", shell.display())));
+}
+
+#[test]
+fn zsh提示符前后有内容但中间已有标记时不重复包装() {
+    let Some(zsh) = zsh() else {
+        eprintln!("未安装 zsh，跳过真实 zsh 集成测试");
+        return;
+    };
+    let root = home("");
+    fs::write(
+        root.path().join(".zshrc"),
+        r#"PROMPT='${${_theme_prefix::=value}+}'$'%{\e]133;A\a%}'READY$'%{\e]133;B\a%}'TAIL
+"#,
+    )
+    .unwrap();
+    let session = Session::remote(root.path(), vec![("SHELL".into(), zsh)]);
+    let first = session.read("TAIL");
+    assert_eq!(first.matches(A).count(), 1, "{first:?}");
+    assert_eq!(first.matches(B).count(), 1, "{first:?}");
+    session.manager.write(&session.id, b"true\r").unwrap();
+    let next = session.read("TAIL");
+    assert_eq!(next.matches(A).count(), 1, "{next:?}");
+    assert_eq!(next.matches(B).count(), 1, "{next:?}");
 }

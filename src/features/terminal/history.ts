@@ -38,13 +38,28 @@ const loaded = new Set<string>();
 const listeners = new Set<() => void>();
 // 浏览器预览没有后端：只存在内存里，刷新页面就没了
 let api: HistoryApi | null = inTauri ? backendApi() : null;
+// 换接口或清除记录时加一：之前发出、还没回来的读取作废（否则清掉的记录会回到缓存）
+let generation = 0;
+// 正在清除后端的记录：这期间不读，清完再读
+let clearing: Promise<void> | null = null;
 
 /** 换掉后端接口（测试里换成假的） */
 export function setHistoryApi(next: HistoryApi | null): void {
   api = next;
+  generation++;
+  clearing = null;
   cache.clear();
   loading.clear();
   loaded.clear();
+}
+
+/** 同一条记录（同一毫秒记下的同一条命令）只留一份 */
+const key = (e: HistoryEntry) => `${e.at}\u0000${e.command}`;
+
+/** 从后端读到的记录放前面，读之前、读的过程中新记下的放后面；新记下的已经存进后端、读到了的不重复放 */
+function merge(stored: HistoryEntry[], pending: HistoryEntry[]): HistoryEntry[] {
+  const seen = new Set(stored.map(key));
+  return [...stored, ...pending.filter((e) => !seen.has(key(e)))].slice(-MAX);
 }
 
 /** 历史读进来后通知（让正在输入的终端重新算预测） */
@@ -58,16 +73,16 @@ export function onHistoryLoaded(listener: () => void): () => void {
  * @param scope 范围键
  */
 export function historyOf(scope: string): readonly HistoryEntry[] {
-  if (api && !loaded.has(scope) && !loading.has(scope)) {
+  if (api && !clearing && !loaded.has(scope) && !loading.has(scope)) {
     loading.add(scope);
     const target = api;
+    const gen = generation;
     target.list(scope).then((entries) => {
-      if (api !== target) return;
-      // 读之前、读的过程中新记下的放在后面
-      cache.set(scope, [...entries, ...(cache.get(scope) ?? [])].slice(-MAX));
+      if (gen !== generation) return;
+      cache.set(scope, merge(entries, cache.get(scope) ?? []));
       listeners.forEach((l) => l());
     }, () => undefined).finally(() => {
-      if (api !== target) return;
+      if (gen !== generation) return;
       loading.delete(scope);
       loaded.add(scope);
     });
@@ -93,7 +108,19 @@ export function remember(scope: string, entry: HistoryEntry): void {
 
 /** 清除全部命令记录（设置里的“清除命令记录”） */
 export async function clearHistory(): Promise<void> {
+  generation++;
   cache.clear();
+  loading.clear();
   loaded.clear();
-  await api?.clear();
+  const job = (async () => { await api?.clear(); })();
+  clearing = job;
+  try {
+    await job;
+  } finally {
+    if (clearing === job) {
+      clearing = null;
+      // 清除期间没读的范围现在可以读了：让正在输入的终端重新算
+      listeners.forEach((l) => l());
+    }
+  }
 }

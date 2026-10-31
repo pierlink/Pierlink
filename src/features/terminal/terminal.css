@@ -8,6 +8,14 @@
   scrollbar-width: thin;
   scrollbar-color: var(--chip) transparent;
 }
+/* 系统要求减少动画时（Windows 关了“动画效果”），全局样式会停掉所有动画；
+   光标闪烁是设置里单独的开关，照常闪 */
+@media (prefers-reduced-motion: reduce) {
+  .xterm .xterm-rows .xterm-cursor.xterm-cursor-blink {
+    animation-duration: 1s !important;
+    animation-iteration-count: infinite !important;
+  }
+}
 
 /* 终端窗格：宿主元素铺满，提示条浮在顶部 */
 .term-pane {

@@ -42,6 +42,8 @@ else
         *) PROMPT_COMMAND="${PROMPT_COMMAND:+$PROMPT_COMMAND$'\n'}__pierlink_report_cwd" ;;
     esac
 fi
+# 子 shell 的 .bashrc 会自己重设 PROMPT_COMMAND，不能继承当前 shell 才有的目录函数。
+export -n PROMPT_COMMAND
 "#;
 fn error(text_key: &'static str, operation: &str) -> AppError {
     AppError::new("detect.shell_config_failed").with_reason(text_key, operation)

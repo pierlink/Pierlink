@@ -54,7 +54,7 @@ impl BuiltinTerminal {
         self,
         cols: u16,
         rows: u16,
-    ) -> Result<pierlink_ssh_engine::Session, AppError> {
+    ) -> Result<(pierlink_ssh_engine::Session, bool), AppError> {
         let env: Vec<_> = self
             .marker
             .as_deref()
@@ -80,16 +80,29 @@ impl BuiltinTerminal {
                         // 保留参数错误；只让 SSH 通道错误触发连接池重试。
                         Err(error) => return Ok(Err(error)),
                     };
-                connection
-                    .terminal(
+                terminal_result(
+                    connection.terminal(
                         &pty(cols, rows),
                         &env,
                         command.as_deref(),
                         self.cancelled.clone(),
-                    )
-                    .map(Ok)
+                    ),
+                    integration,
+                )
             },
         )?
+    }
+}
+
+fn terminal_result(
+    result: Result<pierlink_ssh_engine::Session, pierlink_ssh_engine::Error>,
+    integration: bool,
+) -> Result<Result<(pierlink_ssh_engine::Session, bool), AppError>, pierlink_ssh_engine::Error> {
+    match result {
+        Err(pierlink_ssh_engine::Error::RequestRejected("启动会话")) if integration => {
+            Ok(Err(crate::builtin::error::hook_rejected()))
+        }
+        result => result.map(|session| Ok((session, integration))),
     }
 }
 
@@ -159,6 +172,76 @@ impl Process {
 #[cfg(test)]
 mod tests {
     use super::windows_server;
+
+    #[test]
+    fn 内存对端拒绝启动时只为带钩子的请求提供专用说明() {
+        use super::*;
+        use pierlink_ssh_engine::{
+            Authentication, ConnectionOptions, Engine, HostKeyCheck, test_support::connect_terminal,
+        };
+        let engine = Engine::new().unwrap();
+        let options = ConnectionOptions::new(
+            "内存终端",
+            22,
+            "测试",
+            HostKeyCheck::Callback(Arc::new(|_| true)),
+        );
+        let connection = connect_terminal(
+            &engine,
+            options,
+            Authentication::Password("测试密码".into()),
+            Arc::default(),
+            None,
+        )
+        .unwrap();
+        for hooked in [true, false] {
+            let result = connection.terminal(
+                &pty(80, 24),
+                &[],
+                Some("reject"),
+                Arc::new(AtomicBool::new(false)),
+            );
+            assert!(matches!(
+                result,
+                Err(pierlink_ssh_engine::Error::RequestRejected("启动会话"))
+            ));
+            let error = match terminal_result(result, hooked) {
+                Ok(Err(error)) => error,
+                Err(error) => crate::builtin::error::map_engine_error(
+                    &error,
+                    crate::builtin::error::Operation::OpenSession,
+                ),
+                Ok(Ok(_)) => panic!("服务器拒绝后不应打开终端"),
+            };
+            assert_eq!(error.code, "ssh.failed");
+            assert_eq!(
+                error.params["reason_key"],
+                if hooked {
+                    "hook_rejected"
+                } else {
+                    "request_rejected"
+                }
+            );
+            assert_eq!(error.params["reason_key"], error.params["stderr_tail_key"]);
+        }
+    }
+
+    #[test]
+    fn 拒绝pty不误报提示符钩子被拒绝() {
+        use super::*;
+        for integration in [true, false] {
+            let result = terminal_result(
+                Err(pierlink_ssh_engine::Error::RequestRejected("PTY")),
+                integration,
+            );
+            let error = result.err().unwrap();
+            let error = crate::builtin::error::map_engine_error(
+                &error,
+                crate::builtin::error::Operation::OpenSession,
+            );
+            assert_eq!(error.params["reason_key"], "request_rejected");
+        }
+    }
 
     #[test]
     fn 服务器版本识别不区分大小写且未知版本保持集成() {
