@@ -123,6 +123,21 @@ export interface McpConnectInfo {
 
 export type McpAnswer = "allow" | "allow_always" | "deny";
 
+/** AI 开的一个后台任务 */
+export interface McpJob {
+  id: string;
+  /** 哪个入口的 AI 开的：windows 或服务器 ID */
+  entry: string;
+  /** 在哪执行：windows 或服务器 ID */
+  target: string;
+  /** 命令（已遮掉密码、令牌） */
+  command: string;
+  /** 开始时间（Unix 毫秒） */
+  startedMs: number;
+  running: boolean;
+  exitCode: number | null;
+}
+
 /** AI 接入接口：Tauri 实现和浏览器预览实现都遵守它 */
 export interface McpApi {
   getSettings(): Promise<McpSettings>;
@@ -133,6 +148,10 @@ export interface McpApi {
   rotateToken(serverId: string): Promise<void>;
   activity(limit: number): Promise<McpActivity[]>;
   stopAll(): Promise<void>;
+  /** AI 开的后台任务（还在运行的和刚结束的） */
+  jobs(): Promise<McpJob[]>;
+  /** 停掉一个后台任务；返回 false 表示它已经不在了 */
+  stopJob(id: string): Promise<boolean>;
   /** 回答确认框；返回 false 表示请求已经失效 */
   answer(id: number, answer: McpAnswer): Promise<boolean>;
   /** 还没回答的确认（页面重新加载后恢复） */
@@ -171,6 +190,8 @@ export interface McpApi {
   onOpenTerminal(cb: (r: McpOpenTerminal) => void): Promise<() => void>;
   onNotice(cb: (n: McpNotice) => void): Promise<() => void>;
   onEntries(cb: (entries: McpEntryState[]) => void): Promise<() => void>;
+  /** 后台任务有变化（开始、结束、被停掉） */
+  onJobs(cb: () => void): Promise<() => void>;
 }
 
 /** 默认设置（和 Rust 端一致）：全部关闭，本机入口默认允许执行命令 */
@@ -247,6 +268,11 @@ function previewApi(): McpApi {
     rotateToken: async () => {},
     activity: async () => (sample ? sampleActivity() : []),
     stopAll: async () => {},
+    jobs: async () => (sample ? [
+      { id: "j1", entry: "s1", target: "windows", command: "npm run dev", startedMs: Date.now() - 600_000, running: true, exitCode: null },
+      { id: "j2", entry: "windows", target: "windows", command: "ping -t 127.0.0.1", startedMs: Date.now() - 120_000, running: false, exitCode: 1 },
+    ] : []),
+    stopJob: async () => true,
     answer: async () => true,
     pendingConfirms: async () => [],
     terminalOpened: async () => true,
@@ -270,6 +296,7 @@ function previewApi(): McpApi {
     onOpenTerminal: noop,
     onNotice: noop,
     onEntries: noop,
+    onJobs: noop,
   };
 }
 

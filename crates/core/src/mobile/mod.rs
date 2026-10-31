@@ -3,6 +3,7 @@ mod assets;
 mod auth;
 mod host;
 mod http;
+mod image;
 mod input;
 mod log;
 
@@ -258,6 +259,7 @@ struct Shared {
     // 同一终端的检查和输入串行执行，避免两个手机请求交错。
     input_gate: tokio::sync::Mutex<()>,
     pending_lines: Mutex<HashMap<String, input::PendingLine>>,
+    image_rate: Mutex<image::ImageRate>,
 }
 struct State {
     db: Arc<Mutex<Db>>,
@@ -342,6 +344,7 @@ impl Shared {
             limits: Limits::default(),
             input_gate: tokio::sync::Mutex::new(()),
             pending_lines: Mutex::default(),
+            image_rate: Mutex::default(),
         }))
     }
     fn register(self: &Arc<Self>) -> Option<Connection> {

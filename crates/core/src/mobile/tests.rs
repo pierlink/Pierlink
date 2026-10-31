@@ -11,6 +11,7 @@ struct MockHost {
     approvals: AtomicUsize,
     approve_ready: tokio::sync::Notify,
     screen: Mutex<String>,
+    read_error: AtomicU8,
     calls: Mutex<Vec<Value>>,
     audits: Mutex<Vec<AuditRecord>>,
     events: broadcast::Sender<String>,
@@ -22,6 +23,7 @@ impl Default for MockHost {
             approvals: AtomicUsize::new(0),
             approve_ready: tokio::sync::Notify::new(),
             screen: Mutex::new("$ ".into()),
+            read_error: AtomicU8::new(0),
             calls: Mutex::default(),
             audits: Mutex::default(),
             events: broadcast::channel(16).0,
@@ -50,16 +52,52 @@ impl MobileHost for MockHost {
     fn terminals(&self) -> HostFuture<'_, Value> {
         Box::pin(async { Ok(json!([{"id":"term","title":"终端"}])) })
     }
-    fn terminal_screen<'a>(&'a self, id: &'a str) -> HostFuture<'a, Value> {
-        Box::pin(async move { Ok(json!({"id":id,"screen":{"text":lock(&self.screen).clone()}})) })
+    fn terminal_screen<'a>(&'a self, id: &'a str, lines: usize) -> HostFuture<'a, Value> {
+        Box::pin(async move {
+            Ok(json!({"id":id,"lines":lines,"screen":{"text":lock(&self.screen).clone()}}))
+        })
     }
     fn terminal_text<'a>(&'a self, _id: &'a str) -> HostFuture<'a, String> {
-        Box::pin(async { Ok(lock(&self.screen).clone()) })
+        Box::pin(async {
+            if self.read_error.load(Ordering::SeqCst) != 0 {
+                return Err(error(
+                    "mobile.host_unavailable",
+                    "mobile.desktop_does_not_provide_this_capability",
+                    "桌面未提供此项能力",
+                ));
+            }
+            Ok(lock(&self.screen).clone())
+        })
     }
     fn terminal_input<'a>(&'a self, id: &'a str, input: TerminalInput) -> HostFuture<'a, Value> {
         Box::pin(async move {
             lock(&self.calls).push(json!(["input", id, input]));
             Ok(json!({"ok":true}))
+        })
+    }
+    fn terminal_image<'a>(
+        &'a self,
+        id: &'a str,
+        bytes: Vec<u8>,
+        ext: &'static str,
+    ) -> HostFuture<'a, Value> {
+        Box::pin(async move {
+            lock(&self.calls).push(json!(["image", id, bytes.len(), ext]));
+            Ok(json!({"ok":true}))
+        })
+    }
+    fn open_terminal<'a>(&'a self, server: Option<&'a str>) -> HostFuture<'a, Value> {
+        Box::pin(async move {
+            lock(&self.calls).push(json!(["open", server]));
+            match server {
+                Some("slow") => Err(error(
+                    "mobile.open_timeout",
+                    "mobile.pc_did_not_open_the_terminal_in_time",
+                    "电脑上没有及时打开终端",
+                )),
+                Some("internal") => Err(AppError::new("storage.locked").with("path", "C:\\secret")),
+                _ => Ok(json!({"id":"new"})),
+            }
         })
     }
     fn confirms(&self) -> HostFuture<'_, Value> {
@@ -866,7 +904,7 @@ async fn 危险命令要求确认并保护分次提交和密码输入() {
             .request("POST", path, &cookie, json!({"keys":["ArrowUp","Enter"]}))
             .await
             .status,
-        409
+        200
     );
     *lock(&entry.host.screen) = "[sudo] password for user: ".into();
     let count = lock(&entry.host.calls).len();
@@ -1203,6 +1241,60 @@ async fn 空闲连接及入口释放关闭连接() {
 }
 
 #[tokio::test]
+async fn 新开终端要输入权限_写给手机的错误原样给_内部错误不外露() {
+    let entry = MemoryEntry::new();
+    let (id, cookie) = entry.pair().await;
+    let open =
+        |server: Value| entry.request("POST", "/api/terminals", &cookie, json!({"server": server}));
+    assert_eq!(open(json!("srv")).await.status, 403);
+    entry
+        .server
+        .set_permissions(
+            &id,
+            Permissions {
+                input: true,
+                ..Permissions::default()
+            },
+        )
+        .unwrap();
+    let opened = open(json!("srv")).await;
+    assert_eq!(opened.status, 200, "{}", opened.body);
+    assert_eq!(opened.json(), json!({"id":"new"}));
+    assert_eq!(open(Value::Null).await.json(), json!({"id":"new"}));
+    // 电脑上没及时开好：手机收到原来的错误码和说明
+    let slow = open(json!("slow")).await;
+    assert_eq!(slow.status, 504);
+    assert_eq!(slow.json()["code"], "mobile.open_timeout");
+    assert_eq!(
+        slow.json()["params"]["reason_key"],
+        "mobile.pc_did_not_open_the_terminal_in_time"
+    );
+    // 桌面内部错误：只说失败了，不带路径等细节
+    let internal = open(json!("internal")).await;
+    assert_eq!(internal.status, 500);
+    assert_eq!(internal.json()["code"], "mobile.host_failed");
+    assert!(!internal.body.contains("secret"));
+    assert_eq!(open(json!("a/b")).await.status, 400);
+    let calls = lock(&entry.host.calls).clone();
+    assert!(calls.contains(&json!(["open", "srv"])));
+    assert!(calls.contains(&json!(["open", null])));
+    let audits = lock(&entry.host.audits).clone();
+    assert!(audits.iter().any(|a| a.action == "terminal_open"
+        && a.target.as_deref() == Some("srv")
+        && a.result == "ok"));
+    assert!(
+        audits
+            .iter()
+            .any(|a| a.action == "terminal_open" && a.target.as_deref() == Some("windows"))
+    );
+    assert!(
+        audits
+            .iter()
+            .any(|a| a.action == "terminal_open" && a.result == "mobile.open_timeout")
+    );
+}
+
+#[tokio::test]
 async fn 宿主默认查询为空且写操作与安全读屏拒绝() {
     struct Empty;
     impl MobileHost for Empty {}
@@ -1217,8 +1309,11 @@ async fn 宿主默认查询为空且写操作与安全读屏拒绝() {
     assert_eq!(host.terminals().await.unwrap(), json!([]));
     assert_eq!(host.confirms().await.unwrap(), json!([]));
     assert_eq!(host.activity(1).await.unwrap(), json!([]));
-    assert!(host.terminal_screen("t").await.is_err());
+    assert!(host.terminal_screen("t", 300).await.is_err());
     assert!(host.terminal_text("t").await.is_err());
+    let unavailable = host.terminal_image("t", vec![], "png").await.unwrap_err();
+    assert_eq!(unavailable.code, "mobile.host_unavailable");
+    assert!(unavailable.params.contains_key("reason"));
     assert!(
         host.terminal_input("t", TerminalInput::default())
             .await
@@ -1233,6 +1328,7 @@ async fn 宿主默认查询为空且写操作与安全读屏拒绝() {
         target: None,
         result: "ok".into(),
         peer: "127.0.0.1".into(),
+        bytes: None,
     });
 }
 
@@ -1380,3 +1476,6 @@ async fn 已配对数量有界且失败配对有延时() {
 
 #[path = "device_tests.rs"]
 mod device_tests;
+
+#[path = "usability_tests.rs"]
+mod usability_tests;

@@ -45,9 +45,24 @@ pub fn key_bytes(key: &str) -> Result<Vec<u8>, AppError> {
     let bytes: &[u8] = match key {
         "Enter" => b"\r",
         "Tab" => b"\t",
+        "Shift+Tab" => b"\x1b[Z",
         "Esc" => b"\x1b",
         "Backspace" => b"\x7f",
         "Delete" => b"\x1b[3~",
+        "Insert" => b"\x1b[2~",
+        "F1" => b"\x1bOP",
+        "F2" => b"\x1bOQ",
+        "F3" => b"\x1bOR",
+        "F4" => b"\x1bOS",
+        "F5" => b"\x1b[15~",
+        "F6" => b"\x1b[17~",
+        "F7" => b"\x1b[18~",
+        "F8" => b"\x1b[19~",
+        "F9" => b"\x1b[20~",
+        "F10" => b"\x1b[21~",
+        "F11" => b"\x1b[23~",
+        "F12" => b"\x1b[24~",
+        "Ctrl+Space" => b"\0",
         "Up" => b"\x1b[A",
         "Down" => b"\x1b[B",
         "Right" => b"\x1b[C",
@@ -59,15 +74,31 @@ pub fn key_bytes(key: &str) -> Result<Vec<u8>, AppError> {
         _ => {
             if let Some(letter) = key
                 .strip_prefix("Ctrl+")
-                .filter(|v| v.len() == 1 && v.as_bytes()[0].is_ascii_uppercase())
+                .filter(|v| v.len() == 1 && v.as_bytes()[0].is_ascii_alphabetic())
             {
-                return Ok(vec![letter.as_bytes()[0] - b'A' + 1]);
+                return Ok(vec![letter.as_bytes()[0].to_ascii_uppercase() - b'A' + 1]);
+            }
+            if let Some(letter) = key
+                .strip_prefix("Alt+")
+                .filter(|v| v.len() == 1 && v.as_bytes()[0].is_ascii_alphabetic())
+            {
+                return Ok(vec![0x1b, letter.as_bytes()[0]]);
             }
             return Err(AppError::new("mcp.invalid_argument")
                 .with_reason("mcp.unknown_terminal_key", "未知终端按键"));
         }
     };
     Ok(bytes.into())
+}
+pub(super) fn normalized_key(key: &str) -> String {
+    if let Some(letter) = key
+        .strip_prefix("Ctrl+")
+        .filter(|v| v.len() == 1 && v.as_bytes()[0].is_ascii_alphabetic())
+    {
+        format!("Ctrl+{}", letter.to_ascii_uppercase())
+    } else {
+        key.into()
+    }
 }
 /// 删掉 line 末尾的一个词（连同它后面的空白），和 shell 里 Ctrl+W 一样
 fn delete_word(line: &mut String) {
@@ -133,7 +164,7 @@ pub fn submitted_lines(
         }
     }
     for key in keys {
-        match key.as_str() {
+        match normalized_key(key).as_str() {
             "Enter" | "Ctrl+M" | "Ctrl+J" => submit(&mut line),
             "Ctrl+C" | "Ctrl+U" => line.clear(),
             "Ctrl+W" => delete_word(&mut line),
@@ -157,7 +188,7 @@ pub fn submits_recalled_history(text: Option<&str>, keys: &[String]) -> bool {
     let text = text.unwrap_or_default();
     let recalled = keys.iter().any(|key| {
         matches!(
-            key.as_str(),
+            normalized_key(key).as_str(),
             "Up" | "Down" | "PageUp" | "PageDown" | "Ctrl+P" | "Ctrl+N"
         )
     }) || [
@@ -167,7 +198,7 @@ pub fn submits_recalled_history(text: Option<&str>, keys: &[String]) -> bool {
     .any(|sequence| text.contains(sequence));
     let submits = keys
         .iter()
-        .any(|key| matches!(key.as_str(), "Enter" | "Ctrl+M" | "Ctrl+J"))
+        .any(|key| matches!(normalized_key(key).as_str(), "Enter" | "Ctrl+M" | "Ctrl+J"))
         || text.contains(['\r', '\n']);
     recalled && submits
 }
@@ -478,6 +509,7 @@ mod line_tests {
             ["echo a", "echo b", "echo c"]
         );
         assert_eq!(super::key_bytes("Delete").unwrap(), b"\x1b[3~");
+        assert_eq!(super::key_bytes("Shift+Tab").unwrap(), b"\x1b[Z");
     }
 
     #[test]
@@ -1439,5 +1471,61 @@ mod reading_tests {
             );
         }
         manager.close(&id).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod extended_key_tests {
+    use super::*;
+    #[test]
+    fn 扩展按键编码与小写控制键提交保持一致() {
+        for (key, bytes) in [
+            ("F1", "\x1bOP"),
+            ("F2", "\x1bOQ"),
+            ("F3", "\x1bOR"),
+            ("F4", "\x1bOS"),
+            ("F5", "\x1b[15~"),
+            ("F6", "\x1b[17~"),
+            ("F7", "\x1b[18~"),
+            ("F8", "\x1b[19~"),
+            ("F9", "\x1b[20~"),
+            ("F10", "\x1b[21~"),
+            ("F11", "\x1b[23~"),
+            ("F12", "\x1b[24~"),
+            ("Insert", "\x1b[2~"),
+            ("PageUp", "\x1b[5~"),
+            ("PageDown", "\x1b[6~"),
+            ("Ctrl+Space", "\0"),
+        ] {
+            assert_eq!(key_bytes(key).unwrap(), bytes.as_bytes());
+        }
+        for letter in 'a'..='z' {
+            assert_eq!(
+                key_bytes(&format!("Ctrl+{letter}")).unwrap(),
+                vec![letter as u8 - b'a' + 1]
+            );
+            for letter in [letter, letter.to_ascii_uppercase()] {
+                assert_eq!(
+                    key_bytes(&format!("Alt+{letter}")).unwrap(),
+                    vec![0x1b, letter as u8]
+                );
+            }
+        }
+        for key in ["F13", "Alt+1", "Alt+中文", "Ctrl+aa"] {
+            assert!(key_bytes(key).is_err());
+        }
+        assert_eq!(
+            submitted_lines("git clean -fd", None, &["Ctrl+m".into()]).0,
+            ["git clean -fd"]
+        );
+        assert!(
+            submitted_lines("pending", None, &["Ctrl+u".into(), "Enter".into()])
+                .0
+                .is_empty()
+        );
+        assert!(submits_recalled_history(
+            None,
+            &["Ctrl+p".into(), "Ctrl+j".into()]
+        ));
     }
 }

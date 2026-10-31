@@ -11,7 +11,7 @@ const PWSH_C = String.raw`(?:powershell|pwsh)(?:\.exe)?(?:\s+-\w+(?:\s+[^-\s"']\
 // 命令名必须在命令开头（行首，或 ; & | ( 换行之后），避免“grep reboot log”这类误判；
 // 开头可以套 sudo（带选项和选项的值）、上面三种包装、env、nohup 等
 const START = String.raw`(?:^|[;&|(\r\n])\s*(?:(?:sudo(?:\s+-\S+(?:\s+[^-\s]\S*)?)*|${CMD_C}|${SHELL_C}|${PWSH_C}|nohup|exec|time|env(?:\s+\w+=\S*)*)\s+)*`;
-// 整套不区分大小写（Windows 命令和参数本来就不区分；Unix 命令大写也照样算）
+// 整套不区分大小写（Windows 命令和参数本来就不区分；Unix 命令大写也照样算）；git branch 的 -D 另外判断（见 BRANCH）
 const DANGEROUS: RegExp[] = [
   // rm 带 -r / -R / -f（含组合写法 -rf、-fr、--recursive、--force）
   String.raw`rm\s+(?:-[a-zA-Z]*[rRf][a-zA-Z]*|--recursive|--force)\b`,
@@ -21,7 +21,25 @@ const DANGEROUS: RegExp[] = [
   String.raw`dd\b.*\bof=/dev/`,
   String.raw`(?:chmod|chown)\s+(?:-[a-zA-Z]*R[a-zA-Z]*|--recursive)\b.*\s/(?:\s|$)`,
   String.raw`git\s+push\b.*(?:\s-f\b|--force)`,
-  String.raw`git\s+reset\s+--hard\b`,
+  String.raw`git\s+reset\b[^;&|\r\n]*\s--hard(?:\s|$)`,
+  String.raw`git\s+clean\b`,
+  String.raw`git\s+checkout\b[^;&|\r\n]*\s(?:--\s+\S|\.(?:\s|$))`,
+  String.raw`git\s+stash\s+(?:drop|clear)\b`,
+  String.raw`(?:curl|wget)\b[^;&|\r\n]*\|\s*(?:sh|bash|zsh)\b`,
+  String.raw`(?:Invoke-Expression|iex|Set-ExecutionPolicy)\b`,
+  String.raw`reg\s+add\s+(?:HKLM|HKEY_LOCAL_MACHINE)\b`,
+  String.raw`(?:Set-ItemProperty|Remove-Item)\b[^;&|\r\n]*\s(?:HKLM|HKEY_LOCAL_MACHINE):`,
+  String.raw`schtasks(?:\.exe)?\b[^;&|\r\n]*\s/create\b`,
+  String.raw`Register-ScheduledTask\b`,
+  String.raw`Stop-Process\b[^;&|\r\n]*\s-Force(?:\s|$)`,
+  String.raw`taskkill(?:\.exe)?\b[^;&|\r\n]*\s/F(?:\s|$)`,
+  String.raw`docker\s+system\s+prune\b`,
+  String.raw`docker\s+rm\b[^;&|\r\n]*\s(?:-[a-z]*f[a-z]*|--force)(?:\s|$)`,
+  String.raw`docker\s+volume\s+rm\b`,
+  String.raw`(?:Remove-Item|ri)\b[^;&|\r\n]*\s-f(?:orce|orc|or|o)?(?:\s|$)`,
+  String.raw`crontab\s+-[a-z]*r[a-z]*(?:\s|$)`,
+  String.raw`systemctl\s+(?:disable|mask)\b`,
+  String.raw`truncate\b[^;&|\r\n]*\s(?:-s\s*0|--size(?:=|\s+)0)(?:\s|$)`,
   String.raw`kubectl\s+delete\b`,
   String.raw`(?:drop\s+(?:table|database|schema)\b|truncate\s+table\b)`,
   // PowerShell 的删除和它的别名，-Recurse 可以缩写到 -r
@@ -32,6 +50,24 @@ const DANGEROUS: RegExp[] = [
   />\s*\/dev\/(?:sd|nvme|vd|hd)/,
   /:\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:/,
 ]);
+// 下面两条要看参数，单独判断：git branch 的 -D 区分大小写（-d 只删已合并的分支）；
+// git restore 不带 --staged 才会丢掉工作区的修改。不用 (?-i:) 写法，老一些的浏览器内核不认
+const BRANCH = new RegExp(START + String.raw`git\s+branch\b([^;&|\r\n]*)`, "gi");
+const RESTORE = new RegExp(START + String.raw`git\s+restore\b([^;&|\r\n]*)`, "gi");
+
+/** 看参数才能判断的几条：git branch -D、不带 --staged 的 git restore */
+function dangerousArgs(masked: string): boolean {
+  for (const m of masked.matchAll(BRANCH)) {
+    // 参数后面紧跟的字符（命令分隔符或换行）也带上，和后端的“-D 后面是空白或结尾”一致
+    const next = masked.charAt((m.index ?? 0) + m[0].length);
+    if (/\s-D(?:\s|$)/.test(m[1] + next)) return true;
+  }
+  for (const m of masked.matchAll(RESTORE)) {
+    if (!m[1].split(/\s+/).some((arg) => arg.toLowerCase() === "--staged")) return true;
+  }
+  return false;
+}
+
 /** 引号前面是 sh -c、cmd /c、powershell -Command 这类包装：引号里的才是真正执行的命令 */
 const WRAPPER_END = new RegExp(String.raw`(?:^|[\s;&|(])(?:${SHELL_C}|${CMD_C}|${PWSH_C})\s*$`, "i");
 
@@ -51,6 +87,7 @@ function scan(line: string, escapes: boolean): Scan {
   const segments: { before: string; inner: string }[] = [];
   let quote: { q: string; start: number } | null = null;
   let inner = "";
+  let quoteStart = 0;
   let escaped = false;
   for (let i = 0; i < line.length; i++) {
     const c = line[i];
@@ -62,21 +99,35 @@ function scan(line: string, escapes: boolean): Scan {
     }
     if (!quote) {
       if (escapes && c === "\\") { escaped = true; masked += "x"; }
-      else if (c === "'" || c === '"') { quote = { q: c, start: i }; inner = ""; masked += "x"; }
+      else if (c === "'" || c === '"') { quote = { q: c, start: i }; inner = ""; quoteStart = masked.length; masked += "x"; }
       else masked += c;
     } else {
       masked += "x";
       if (escapes && c === "\\" && quote.q === '"') escaped = true;
-      else if (c === quote.q) { segments.push({ before: line.slice(0, quote.start), inner }); quote = null; }
+      else if (c === quote.q) {
+        // 只影响参数判断的几个字面量留下来（"."、"--staged"、注册表 HKLM 路径），引号里的命令边界和命令文字仍然屏蔽
+        const token = quotedToken(inner);
+        if (token) masked = masked.slice(0, quoteStart) + token;
+        segments.push({ before: line.slice(0, quote.start), inner });
+        quote = null;
+      }
       else inner += c;
     }
   }
   return { masked, segments, unterminated: quote !== null };
 }
 
+/** 引号里是这些字面量时保留成什么（和后端一样只把 ASCII 字母转小写比较） */
+function quotedToken(inner: string): string | null {
+  const lower = inner.replace(/[A-Z]/g, (c) => c.toLowerCase());
+  if (lower === "." || lower === "--staged") return lower;
+  if (lower.startsWith("hklm:") || lower.startsWith("hklm\\") || lower.startsWith("hkey_local_machine\\")) return "HKLM:";
+  return null;
+}
+
 function dangerousScan(s: Scan, depth: number): boolean {
   if (!s.masked) return false;
-  if (DANGEROUS.some((r) => r.test(s.masked))) return true;
+  if (DANGEROUS.some((r) => r.test(s.masked)) || dangerousArgs(s.masked)) return true;
   if (depth >= 3) return false;
   return s.segments.some(({ before, inner }) => WRAPPER_END.test(before) && dangerousAt(inner, depth + 1));
 }
@@ -84,8 +135,8 @@ function dangerousScan(s: Scan, depth: number): boolean {
 function dangerousAt(line: string, depth: number): boolean {
   const trimmed = line.trim();
   const shell = scan(trimmed, true);
-  // 按 sh 的规则引号到行尾都没闭合：可能是 PowerShell、cmd 里以 \ 结尾的路径（"D:\work\tmp\"），按反斜杠不转义再看一遍
-  return dangerousScan(shell, depth) || (shell.unterminated && dangerousScan(scan(trimmed, false), depth));
+  // Windows 路径里的反斜杠不是转义符（没加引号的注册表路径、以 \ 结尾的带引号路径 "D:\work\tmp\"）：按反斜杠不转义再看一遍
+  return dangerousScan(shell, depth) || ((shell.unterminated || trimmed.includes("\\")) && dangerousScan(scan(trimmed, false), depth));
 }
 
 /**

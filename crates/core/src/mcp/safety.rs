@@ -10,12 +10,15 @@ const CMD_C: &str = r"cmd(?:\.exe)?(?:\s+/\w)*?\s+/[ck]";
 /// powershell/pwsh 的 -Command（可缩写到 -c）：前面可以有 -NoProfile、-ExecutionPolicy Bypass 这类开关
 const PWSH_C: &str = r#"(?:powershell|pwsh)(?:\.exe)?(?:\s+-\w+(?:\s+[^-\s"']\S*)?)*?\s+-c\w*"#;
 
-/// 危险清单：整套不区分大小写（Windows 命令和参数本来就不区分；Unix 命令大写也照样算）。
+/// 危险清单默认不区分大小写，git branch 的 -D 单独区分，避免把安全的 -d 当成强制删除。
 /// 命令名必须在命令开头：行首或 ; & | ( 换行之后，可以套 sudo（带选项和选项的值）、上面三种包装、env、nohup 等
-static DANGEROUS: LazyLock<Result<Vec<Regex>, regex::Error>> = LazyLock::new(|| {
-    let start = format!(
+fn command_start() -> String {
+    format!(
         r"(?:^|[;&|(\r\n])\s*(?:(?:sudo(?:\s+-\S+(?:\s+[^-\s]\S*)?)*|{CMD_C}|{SHELL_C}|{PWSH_C}|nohup|exec|time|env(?:\s+\w+=\S*)*)\s+)*"
-    );
+    )
+}
+static DANGEROUS: LazyLock<Result<Vec<Regex>, regex::Error>> = LazyLock::new(|| {
+    let start = command_start();
     [
         r"rm\s+(?:-[a-zA-Z]*[rRf][a-zA-Z]*|--recursive|--force)\b",
         r"(?:reboot|shutdown|poweroff|halt)\b",
@@ -24,7 +27,26 @@ static DANGEROUS: LazyLock<Result<Vec<Regex>, regex::Error>> = LazyLock::new(|| 
         r"dd\b.*\bof=/dev/",
         r"(?:chmod|chown)\s+(?:-[a-zA-Z]*R[a-zA-Z]*|--recursive)\b.*\s/(?:\s|$)",
         r"git\s+push\b.*(?:\s-f\b|--force)",
-        r"git\s+reset\s+--hard\b",
+        r"git\s+reset\b[^;&|\r\n]*\s--hard(?:\s|$)",
+        r"git\s+clean\b",
+        r"git\s+checkout\b[^;&|\r\n]*\s(?:--\s+\S|\.(?:\s|$))",
+        r"git\s+branch\b[^;&|\r\n]*\s-(?-i:D)(?:\s|$)",
+        r"git\s+stash\s+(?:drop|clear)\b",
+        r"(?:curl|wget)\b[^;&|\r\n]*\|\s*(?:sh|bash|zsh)\b",
+        r"(?:Invoke-Expression|iex|Set-ExecutionPolicy)\b",
+        r"reg\s+add\s+(?:HKLM|HKEY_LOCAL_MACHINE)\b",
+        r"(?:Set-ItemProperty|Remove-Item)\b[^;&|\r\n]*\s(?:HKLM|HKEY_LOCAL_MACHINE):",
+        r"schtasks(?:\.exe)?\b[^;&|\r\n]*\s/create\b",
+        r"Register-ScheduledTask\b",
+        r"Stop-Process\b[^;&|\r\n]*\s-Force(?:\s|$)",
+        r"taskkill(?:\.exe)?\b[^;&|\r\n]*\s/F(?:\s|$)",
+        r"docker\s+system\s+prune\b",
+        r"docker\s+rm\b[^;&|\r\n]*\s(?:-[a-z]*f[a-z]*|--force)(?:\s|$)",
+        r"docker\s+volume\s+rm\b",
+        r"(?:Remove-Item|ri)\b[^;&|\r\n]*\s-f(?:orce|orc|or|o)?(?:\s|$)",
+        r"crontab\s+-[a-z]*r[a-z]*(?:\s|$)",
+        r"systemctl\s+(?:disable|mask)\b",
+        r"truncate\b[^;&|\r\n]*\s(?:-s\s*0|--size(?:=|\s+)0)(?:\s|$)",
         r"kubectl\s+delete\b",
         r"(?:drop\s+(?:table|database|schema)\b|truncate\s+table\b)",
         // PowerShell 的删除和它的别名，-Recurse 可以缩写到 -r
@@ -40,6 +62,14 @@ static DANGEROUS: LazyLock<Result<Vec<Regex>, regex::Error>> = LazyLock::new(|| 
             .map(Regex::new),
     )
     .collect()
+});
+
+// restore --staged 只修改暂存区；不带此选项才视为丢弃工作区修改。
+static RESTORE: LazyLock<Result<Regex, regex::Error>> = LazyLock::new(|| {
+    Regex::new(&format!(
+        "(?i){}git\\s+restore\\b([^;&|\\r\\n]*)",
+        command_start()
+    ))
 });
 
 /// 引号前面是 sh -c、cmd /c、powershell -Command 这类包装：引号里的才是真正执行的命令
@@ -65,6 +95,7 @@ fn scan(line: &str, escapes: bool) -> Scan<'_> {
     let mut segments = Vec::new();
     let mut quote: Option<(char, usize)> = None;
     let mut inner = String::new();
+    let mut quote_start = 0;
     let mut escaped = false;
     for (i, c) in line.char_indices() {
         if escaped {
@@ -82,6 +113,7 @@ fn scan(line: &str, escapes: bool) -> Scan<'_> {
                     masked.push('x');
                 } else if c == '\'' || c == '"' {
                     quote = Some((c, i));
+                    quote_start = masked.len();
                     inner.clear();
                     masked.push('x');
                 } else {
@@ -93,6 +125,22 @@ fn scan(line: &str, escapes: bool) -> Scan<'_> {
                 if escapes && c == '\\' && q == '"' {
                     escaped = true;
                 } else if c == q {
+                    // 保留只影响参数判断的字面量，仍屏蔽引号内的命令边界和命令文字。
+                    let lower = inner.to_ascii_lowercase();
+                    let token = if matches!(lower.as_str(), "." | "--staged") {
+                        Some(lower.as_str())
+                    } else if lower.starts_with("hklm:")
+                        || lower.starts_with("hklm\\")
+                        || lower.starts_with("hkey_local_machine\\")
+                    {
+                        Some("HKLM:")
+                    } else {
+                        None
+                    };
+                    if let Some(token) = token {
+                        masked.truncate(quote_start);
+                        masked.push_str(token);
+                    }
                     segments.push((&line[..start], std::mem::take(&mut inner)));
                     quote = None;
                 } else {
@@ -115,6 +163,14 @@ fn dangerous_scan(scan: &Scan, depth: u8) -> bool {
             .any(|pattern| pattern.is_match(&scan.masked)),
         Err(_) => !scan.masked.is_empty(),
     };
+    let direct = direct
+        || RESTORE.as_ref().is_ok_and(|pattern| {
+            pattern.captures_iter(&scan.masked).any(|capture| {
+                !capture[1]
+                    .split_whitespace()
+                    .any(|arg| arg.eq_ignore_ascii_case("--staged"))
+            })
+        });
     if direct || depth >= 3 {
         return direct;
     }
@@ -129,8 +185,9 @@ fn dangerous_scan(scan: &Scan, depth: u8) -> bool {
 fn dangerous_at(line: &str, depth: u8) -> bool {
     let line = line.trim();
     let shell = scan(line, true);
-    // 按 sh 的规则引号到行尾都没闭合：可能是 PowerShell、cmd 里以 \ 结尾的路径（"D:\work\tmp\"），按反斜杠不转义再看一遍
-    dangerous_scan(&shell, depth) || shell.unterminated && dangerous_scan(&scan(line, false), depth)
+    // Windows 路径中的反斜杠不是转义符，包括未加引号的注册表路径和以反斜杠结尾的引号参数。
+    dangerous_scan(&shell, depth)
+        || (shell.unterminated || line.contains('\\')) && dangerous_scan(&scan(line, false), depth)
 }
 
 /// 判断 line 中直接输入的命令是否命中危险清单，返回是否需要用户确认。

@@ -53,3 +53,16 @@ export interface TerminalBackend {
    */
   pasteImage(spec: OpenSpec): Promise<string | null>;
 }
+
+/**
+ * 窗格里连接服务器的前半段（核对指纹）。start、stepStart 是开始连接、当前一步开始的时间（performance.now()）。
+ * phase：probe 正在核对指纹；confirm 等用户确认指纹；failed 没连上（error 是原因，failedAt 是停在哪一步）；
+ * go 指纹已通过，终端接着登录、启动
+ */
+export interface Connecting {
+  start: number;
+  stepStart: number;
+  phase: "probe" | "confirm" | "failed" | "go";
+  error?: string;
+  failedAt?: "connect" | "verify";
+}

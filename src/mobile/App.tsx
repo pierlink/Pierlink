@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { History, LayoutDashboard, ShieldCheck, SquareTerminal, type LucideIcon } from "lucide-react";
 import i18n from "./i18n";
@@ -8,6 +8,7 @@ import { OverviewTab } from "./OverviewTab";
 import { TerminalsTab } from "./TerminalsTab";
 import { ConfirmsTab } from "./ConfirmsTab";
 import { ActivityTab } from "./ActivityTab";
+import { useVisualViewport } from "./viewport";
 
 type Tab = "overview" | "terminals" | "confirms" | "activity";
 
@@ -20,20 +21,25 @@ export interface Changes { overview: number; terminals: number; confirms: number
  */
 export function MobileApp() {
   const { t } = useTranslation();
-  const [me, setMe] = useState<Me | null | "loading">("loading");
+  useVisualViewport();
+  /** unreachable：第一次就连不上电脑（不是没配对，别跳到配对页） */
+  const [me, setMe] = useState<Me | null | "loading" | "unreachable">("loading");
   const [tab, setTab] = useState<Tab>("overview");
   const [online, setOnline] = useState(true);
   const [changes, setChanges] = useState<Changes>({ overview: 0, terminals: 0, confirms: 0, activity: 0 });
   const [pending, setPending] = useState(0);
 
   const loadMe = useCallback(() => {
-    // 401/403：没配对或被撤销，回到配对；网络错误时保留当前状态（首次加载除外）
-    api.me().then(setMe, (e: unknown) => setMe((cur) => (e instanceof ApiError && (e.status === 401 || e.status === 403)) || cur === "loading" ? null : cur));
+    // 401/403：没配对或被撤销，回到配对；网络错误时保留当前状态（第一次就连不上时显示“连不上电脑”）
+    api.me().then(setMe, (e: unknown) => setMe((cur) => {
+      if (e instanceof ApiError && (e.status === 401 || e.status === 403)) return null;
+      return cur === "loading" || cur === "unreachable" ? "unreachable" : cur;
+    }));
   }, []);
   useEffect(loadMe, [loadMe]);
 
   // 电脑上改权限或撤销会断开连接；重连后重新读一次自己的权限（被撤销就回到配对）
-  const authed = !!me && me !== "loading";
+  const authed = !!me && me !== "loading" && me !== "unreachable";
   useEffect(() => {
     if (!authed) return;
     return api.events((name) => {
@@ -46,11 +52,26 @@ export function MobileApp() {
 
   // 待确认数显示在标签上
   useEffect(() => {
-    if (!me || me === "loading" || !me.permissions.view) return;
+    if (!authed || !me.permissions.view) return;
     api.confirms().then((l) => setPending(l.length), () => {});
-  }, [me, changes.confirms]);
+  }, [authed, me, changes.confirms]);
+  // 有新的确认：振动一下（安卓），标题前面显示个数，切到别的应用时在标签页上也看得到
+  const lastPending = useRef(0);
+  useEffect(() => {
+    if (pending > lastPending.current) navigator.vibrate?.([160, 80, 160]);
+    lastPending.current = pending;
+    document.title = pending > 0 ? `(${pending}) Pierlink` : "Pierlink";
+  }, [pending]);
 
   if (me === "loading") return <div className="m-center">{t("common.loading")}</div>;
+  if (me === "unreachable") {
+    return (
+      <div className="m-center m-unreachable">
+        <p className="m-muted">{t("mobile.networkError")}</p>
+        <button type="button" className="m-btn m-btn--primary" onClick={() => { setMe("loading"); loadMe(); }}>{t("common.retry")}</button>
+      </div>
+    );
+  }
   if (!me) return <PairScreen onPaired={loadMe} />;
 
   // 被撤销或会话失效：回到配对
@@ -71,8 +92,8 @@ export function MobileApp() {
         </span>
       </header>
       <main className="m-main">
-        {tab === "overview" && <OverviewTab me={me} version={changes.overview} onAuthLost={onAuthLost} />}
-        {tab === "terminals" && <TerminalsTab me={me} version={changes.terminals} onAuthLost={onAuthLost} />}
+        {tab === "overview" && <OverviewTab me={me} version={changes.overview} onAuthLost={onAuthLost} onSignedOut={() => setMe(null)} />}
+        {tab === "terminals" && <TerminalsTab me={me} version={changes.terminals} onAuthLost={onAuthLost} pending={pending} onOpenConfirms={() => setTab("confirms")} />}
         {tab === "confirms" && <ConfirmsTab me={me} version={changes.confirms} onAuthLost={onAuthLost} />}
         {tab === "activity" && <ActivityTab version={changes.activity} onAuthLost={onAuthLost} />}
       </main>
@@ -93,7 +114,8 @@ export function handleError(e: unknown, onAuthLost: () => void): string | null {
   if (e instanceof ApiError) {
     // 设备被撤销或失效：回到配对
     if (e.status === 401) { onAuthLost(); return null; }
-    const known = e.code ? i18n.t(`mobile.error.${e.code.replace(/^mobile\./, "")}`, { defaultValue: "" }) : "";
+    const params = (e.body?.params ?? {}) as Record<string, string>;
+    const known = e.code ? i18n.t(`mobile.error.${e.code.replace(/^mobile\./, "")}`, { ...params, defaultValue: "" }) : "";
     if (known) return known;
     return e.message;
   }

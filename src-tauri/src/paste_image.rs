@@ -69,18 +69,24 @@ fn random_suffix() -> String {
     uuid::Uuid::new_v4().simple().to_string()[..10].to_owned()
 }
 
-/// 新图片的文件名：pierlink-paste-年月日-时分秒-随机10位.png（UTC；只有字母、数字和横线，路径不用加引号）
-fn file_name(now: SystemTime) -> String {
+/// 图片的扩展名（电脑上粘贴的都是 png；手机发来的还可能是 jpg、webp、gif）
+const EXTENSIONS: [&str; 4] = ["png", "jpg", "webp", "gif"];
+
+/// 新图片的文件名：pierlink-paste-年月日-时分秒-随机10位.扩展名（UTC；只有字母、数字和横线，路径不用加引号）
+fn file_name(now: SystemTime, ext: &str) -> String {
     let secs = now
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    format!("{PREFIX}{}-{}.png", stamp(secs), random_suffix())
+    format!("{PREFIX}{}-{}.{ext}", stamp(secs), random_suffix())
 }
 
 /// 是不是我们放的图片
 fn is_ours(name: &str) -> bool {
-    name.starts_with(PREFIX) && name.ends_with(".png")
+    name.starts_with(PREFIX)
+        && EXTENSIONS
+            .iter()
+            .any(|ext| name.strip_suffix(ext).is_some_and(|n| n.ends_with('.')))
 }
 
 /// 剪贴板里的图片（PNG）；没有图片返回 clipboard.no_image，太大返回 paste.image_too_large
@@ -158,38 +164,49 @@ pub async fn terminal_paste_image_remote(app: AppHandle, loc: LocDto) -> Result<
     if matches!(loc, LocDto::Local) {
         return Err(AppError::new("paste.image_unsupported"));
     }
-    tauri::async_runtime::spawn_blocking(move || {
-        let png = clipboard_png()?;
-        let now = SystemTime::now();
-        let result = crate::files::with_session(&app, &loc, |session| {
-            // 文件名带随机字符，几乎不会重名；万一已经有同名的文件或链接（别人放的），换个名字再试一次
-            let mut exists = None;
-            for _ in 0..2 {
-                let path = format!("{REMOTE_DIR}/{}", file_name(now));
-                match upload(session, &path, &png) {
-                    Ok(()) => return Ok(path),
-                    Err(e) if e.code == "sftp.exists" => exists = Some(e),
-                    Err(e) => return Err(e),
-                }
+    tauri::async_runtime::spawn_blocking(move || store_remote(&app, &loc, &clipboard_png()?, "png"))
+        .await
+        .map_err(|e| AppError::new("terminal.task_failed").with("reason", e.to_string()))?
+}
+
+/// 把一张图片存到服务器的 /tmp（只有自己能读），返回路径；顺便在后台清理旧图片。阻塞，不要在异步线程上调用。
+///
+/// :param loc: 终端所在的服务器（保存过的服务器或快速连接）
+/// :param bytes: 图片内容
+/// :param ext: 扩展名（png、jpg、webp、gif）
+/// :return: 服务器上的绝对路径；上传超过 30 秒返回 paste.upload_timeout
+pub(crate) fn store_remote(
+    app: &AppHandle,
+    loc: &LocDto,
+    bytes: &[u8],
+    ext: &str,
+) -> Result<String, AppError> {
+    let now = SystemTime::now();
+    let path = crate::files::with_session(app, loc, |session| {
+        // 文件名带随机字符，几乎不会重名；万一已经有同名的文件或链接（别人放的），换个名字再试一次
+        let mut exists = None;
+        for _ in 0..2 {
+            let path = format!("{REMOTE_DIR}/{}", file_name(now, ext));
+            match upload(session, &path, bytes) {
+                Ok(()) => return Ok(path),
+                Err(e) if e.code == "sftp.exists" => exists = Some(e),
+                Err(e) => return Err(e),
             }
-            Err(exists.unwrap_or_else(|| AppError::new("sftp.exists")))
-        });
-        let path = result?;
-        eprintln!("粘贴图片已传到服务器: 路径={path}, 字节={}", png.len());
-        // 清理放到后台：/tmp 里东西多时列目录要一会儿，不耽误这次粘贴
-        if clean_due(&loc.key(), Instant::now()) {
-            let (app, loc) = (app.clone(), loc.clone());
-            std::thread::spawn(move || {
-                let _ = crate::files::with_session(&app, &loc, |session| {
-                    clean_remote(session, SystemTime::now());
-                    Ok(())
-                });
-            });
         }
-        Ok(path)
-    })
-    .await
-    .map_err(|e| AppError::new("terminal.task_failed").with("reason", e.to_string()))?
+        Err(exists.unwrap_or_else(|| AppError::new("sftp.exists")))
+    })?;
+    eprintln!("图片已传到服务器: 路径={path}, 字节={}", bytes.len());
+    // 清理放到后台：/tmp 里东西多时列目录要一会儿，不耽误这次粘贴
+    if clean_due(&loc.key(), Instant::now()) {
+        let (app, loc) = (app.clone(), loc.clone());
+        std::thread::spawn(move || {
+            let _ = crate::files::with_session(&app, &loc, |session| {
+                clean_remote(session, SystemTime::now());
+                Ok(())
+            });
+        });
+    }
+    Ok(path)
 }
 
 /// 本机放图片的目录（数据目录下的 paste）
@@ -220,25 +237,31 @@ fn clean_local(dir: &Path, now: SystemTime) {
 #[tauri::command]
 #[specta::specta]
 pub async fn terminal_paste_image_local(app: AppHandle) -> Result<String, AppError> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let png = clipboard_png()?;
-        let now = SystemTime::now();
-        let dir = local_dir(&app)?;
-        std::fs::create_dir_all(&dir)
-            .map_err(|e| AppError::new("paste.save_failed").with("reason", e.to_string()))?;
-        clean_local(&dir, now);
-        let path = dir.join(file_name(now));
-        std::fs::write(&path, &png)
-            .map_err(|e| AppError::new("paste.save_failed").with("reason", e.to_string()))?;
-        eprintln!(
-            "粘贴图片已存到本机: 路径={}, 字节={}",
-            path.display(),
-            png.len()
-        );
-        Ok(path.to_string_lossy().into_owned())
-    })
-    .await
-    .map_err(|e| AppError::new("terminal.task_failed").with("reason", e.to_string()))?
+    tauri::async_runtime::spawn_blocking(move || store_local(&app, &clipboard_png()?, "png"))
+        .await
+        .map_err(|e| AppError::new("terminal.task_failed").with("reason", e.to_string()))?
+}
+
+/// 把一张图片存到本机数据目录的 paste 文件夹，返回 Windows 路径；顺便清理 7 天前的。阻塞。
+///
+/// :param bytes: 图片内容
+/// :param ext: 扩展名（png、jpg、webp、gif）
+/// :return: 本机绝对路径；存不下返回 paste.save_failed
+pub(crate) fn store_local(app: &AppHandle, bytes: &[u8], ext: &str) -> Result<String, AppError> {
+    let now = SystemTime::now();
+    let dir = local_dir(app)?;
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| AppError::new("paste.save_failed").with("reason", e.to_string()))?;
+    clean_local(&dir, now);
+    let path = dir.join(file_name(now, ext));
+    std::fs::write(&path, bytes)
+        .map_err(|e| AppError::new("paste.save_failed").with("reason", e.to_string()))?;
+    eprintln!(
+        "图片已存到本机: 路径={}, 字节={}",
+        path.display(),
+        bytes.len()
+    );
+    Ok(path.to_string_lossy().into_owned())
 }
 
 #[cfg(test)]
@@ -257,8 +280,8 @@ mod tests {
     #[test]
     fn 文件名只有字母数字横线且不重复() {
         let now = UNIX_EPOCH + Duration::from_secs(1_793_457_125);
-        let a = file_name(now);
-        let b = file_name(now);
+        let a = file_name(now, "png");
+        let b = file_name(now, "png");
         assert!(
             a.starts_with("pierlink-paste-20261031-143205-") && a.ends_with(".png"),
             "{a}"
@@ -270,6 +293,9 @@ mod tests {
         assert_ne!(a, b);
         assert!(is_ours(&a));
         assert!(!is_ours("pierlink-paste-x.txt"));
+        assert!(is_ours("pierlink-paste-20261031-143205-abcdef0123.jpg"));
+        assert!(!is_ours("pierlink-paste-xjpg"));
+        assert!(file_name(now, "webp").ends_with(".webp"));
         assert!(!is_ours("other.png"));
     }
 

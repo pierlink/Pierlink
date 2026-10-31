@@ -11,6 +11,7 @@ const CONFIRM_CLOSED_EVENT = "pierlink://mcp-confirm-closed";
 const OPEN_TERMINAL_EVENT = "pierlink://mcp-open-terminal";
 const NOTICE_EVENT = "pierlink://mcp-notice";
 const ENTRIES_EVENT = "pierlink://mcp-entries";
+const JOBS_EVENT = "pierlink://mcp-jobs";
 
 /** tauri-specta 对可能失败的命令返回 {status, data|error}；这里统一转成“成功返回数据、失败抛出错误” */
 function unwrap<T>(r: { status: "ok"; data: T } | { status: "error"; error: unknown }): T {
@@ -33,6 +34,9 @@ export const tauriMcpApi: McpApi = {
   rotateToken: async (serverId) => { unwrap(await commands.mcpTokenRotate(serverId)); },
   activity: async (limit) => unwrap(await commands.mcpActivity(limit)) as McpActivity[],
   stopAll: async () => { unwrap(await commands.mcpStopAll()); },
+  // 时间戳在绑定里是 number | null（f64 可能不是有限数）：实际总有值，缺了按 0 处理
+  jobs: async () => unwrap(await commands.mcpJobs()).map((j) => ({ ...j, startedMs: j.startedMs ?? 0 })),
+  stopJob: async (id) => unwrap(await commands.mcpJobStop(id)),
   answer: async (id, answer) => unwrap(await commands.mcpConfirmAnswer(id, answer)),
   pendingConfirms: async () => unwrap(await commands.mcpConfirmPending()) as McpConfirm[],
   terminalOpened: async (id, terminalId, error) => unwrap(await commands.mcpTerminalOpened(id, terminalId, terminalId ? null : toAppError(error))),
@@ -50,6 +54,7 @@ export const tauriMcpApi: McpApi = {
   detectServerClients: async (serverId) => unwrap(await commands.mcpDetectServerClients(serverId)),
   reportCwd: async (terminalId, cwd) => { unwrap(await commands.terminalReportCwd(terminalId, cwd)); },
   onSessions: (cb) => listen(SESSIONS_EVENT, () => cb()),
+  onJobs: (cb) => listen(JOBS_EVENT, () => cb()),
   onActivity: (cb) => listen<McpActivity>(ACTIVITY_EVENT, (e) => cb(e.payload)),
   onConfirm: (cb) => listen<McpConfirm>(CONFIRM_EVENT, (e) => cb(e.payload)),
   onConfirmClosed: (cb) => listen<number>(CONFIRM_CLOSED_EVENT, (e) => cb(e.payload)),

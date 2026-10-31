@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { localizeAction } from "../features/mcp/actionText";
 import { api, type ConfirmItem, type Me } from "./api";
 import { handleError } from "./App";
 
 /** 待确认：AI 第一次连接、危险命令等，电脑上弹的同一个确认框，在这里也能回答 */
 export function ConfirmsTab({ me, version, onAuthLost }: { me: Me; version: number; onAuthLost: () => void }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const [list, setList] = useState<ConfirmItem[] | null>(null);
   const [busy, setBusy] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -45,7 +46,7 @@ export function ConfirmsTab({ me, version, onAuthLost }: { me: Me; version: numb
               <ul className="m-list">{c.targets.map((x) => <li key={x}>{x}</li>)}</ul>
             </>
           )}
-          {c.action && <pre className="m-code">{c.action}</pre>}
+          {c.action && <pre className="m-code">{localizeAction(c.action, i18n.language)}</pre>}
           {me.permissions.confirm && (
             <div className="m-actions">
               <button type="button" className="m-btn" disabled={busy !== null} onClick={() => void answer(c.id, "deny")}>{t("mcp.deny")}</button>

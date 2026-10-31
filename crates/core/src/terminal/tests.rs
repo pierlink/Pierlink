@@ -24,7 +24,20 @@ fn 本机终端多订阅及屏幕增量查询() {
     }
     assert_eq!(manager.screen_text(&id).unwrap(), "ready\none\ntwo");
     assert_eq!(manager.recent_lines(&id, 2).unwrap(), ["one", "two"]);
+    assert_eq!(
+        manager.recent_lines_formatted(&id, 2).unwrap(),
+        ["\x1b[0mone\x1b[0m", "\x1b[0mtwo\x1b[0m"]
+    );
     assert_eq!(manager.output_since(&id, position).unwrap().data, bytes);
+    assert!(!manager.bracketed_paste(&id).unwrap());
+    manager
+        .feed_output_at(&id, b"\x1b[?2004h", Instant::now())
+        .unwrap();
+    assert!(manager.bracketed_paste(&id).unwrap());
+    manager
+        .feed_output_at(&id, b"\x1b[?2004l", Instant::now())
+        .unwrap();
+    assert!(!manager.bracketed_paste(&id).unwrap());
     assert!(!first.recv_timeout(Duration::ZERO).unwrap().lost);
     assert!(slow.recv_timeout(Duration::ZERO).unwrap().lost);
     manager.set_user_control(&id, true).unwrap();
@@ -54,6 +67,8 @@ fn 本机终端多订阅及屏幕增量查询() {
     for result in [
         manager.screen_text("无会话").map(|_| ()),
         manager.recent_lines("无会话", 1).map(|_| ()),
+        manager.recent_lines_formatted("无会话", 1).map(|_| ()),
+        manager.bracketed_paste("无会话").map(|_| ()),
         manager.output_since("无会话", 0).map(|_| ()),
         manager.set_user_control("无会话", true),
     ] {
@@ -481,12 +496,20 @@ fn 环境工作目录及多会话关闭() {
     }
     let (_, first) = start(&manager, input);
     let (_, second) = start(&manager, spec("read line"));
-    let TerminalEvent::Output(bytes) = first.recv_timeout(Duration::from_secs(2)).unwrap() else {
-        panic!("缺少输出")
-    };
-    let output = String::from_utf8(bytes).unwrap();
-    assert!(output.contains("xterm-256color:中文参数:"));
-    assert!(output.contains(dir.path().to_str().unwrap()));
+    // 输出可能分几块到达：一直收到两段都出现（最多 5 秒）
+    let expected = dir.path().to_str().unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let mut output = String::new();
+    while !(output.contains("xterm-256color:中文参数:") && output.contains(expected)) {
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        match first.recv_timeout(left) {
+            Ok(TerminalEvent::Output(bytes)) => output.push_str(&String::from_utf8_lossy(&bytes)),
+            Ok(_) => {}
+            Err(_) => break,
+        }
+    }
+    assert!(output.contains("xterm-256color:中文参数:"), "{output:?}");
+    assert!(output.contains(expected), "{output:?}");
     manager.close_all();
     manager.close_all();
     assert!(until_exit(&first).2);

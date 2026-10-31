@@ -36,6 +36,14 @@ export const commands = {
 	mcpActivity: (limit: number) => typedError<McpActivityDto_Serialize[], AppError>(__TAURI_INVOKE("mcp_activity", { limit })),
 	/**  全部停止：取消正在进行的操作、断开所有 agent、关闭这次打开的 AI 终端 */
 	mcpStopAll: () => typedError<null, AppError>(__TAURI_INVOKE("mcp_stop_all")),
+	/**  AI 开的后台任务（还在运行的和刚结束的） */
+	mcpJobs: () => typedError<McpJobDto_Serialize[], AppError>(__TAURI_INVOKE("mcp_jobs")),
+	/**
+	 *  停掉 AI 开的一个后台任务（结束它的进程树）
+	 * 
+	 *  :return: 找到并停掉了返回 true，任务已经不在了返回 false
+	 */
+	mcpJobStop: (id: string) => typedError<boolean, AppError>(__TAURI_INVOKE("mcp_job_stop", { id })),
 	/**
 	 *  回答确认框
 	 * 
@@ -364,6 +372,15 @@ export const commands = {
 	mobileRevoke: (id: string | null) => typedError<null, AppError>(__TAURI_INVOKE("mobile_revoke", { id })),
 	/**  回答配对请求 */
 	mobilePairAnswer: (id: number | null, allow: boolean) => typedError<boolean, AppError>(__TAURI_INVOKE("mobile_pair_answer", { id, allow })),
+	/**
+	 *  界面回报手机要的终端打开了没有
+	 * 
+	 *  :param id: 打开请求的编号
+	 *  :param terminal_id: 打开了的终端会话 ID
+	 *  :param error: 没打开的原因
+	 *  :return: 手机已经不等了（超时、断开）时返回 false
+	 */
+	mobileTerminalOpened: (id: number | null, terminalId: string | null, error: McpErrorInput_Deserialize | null) => typedError<boolean, AppError>(__TAURI_INVOKE("mobile_terminal_opened", { id, terminalId, error })),
 	/**
 	 *  查找服务器上的桌面（只读）
 	 * 
@@ -1812,6 +1829,41 @@ export type McpInstallDto = {
 	client: string,
 	/**  改了哪个配置文件（Cursor）或用了哪个程序（其他），给用户看 */
 	detail: string,
+};
+
+/**  AI 开的一个后台任务（MCP 页列出来，可以停掉） */
+export type McpJobDto = McpJobDto_Serialize | McpJobDto_Deserialize;
+
+/**  AI 开的一个后台任务（MCP 页列出来，可以停掉） */
+export type McpJobDto_Deserialize = {
+	id: string,
+	/**  哪个入口的 AI 开的：windows 或服务器 ID */
+	entry: string,
+	/**  在哪执行：windows 或服务器 ID */
+	target: string,
+	/**  命令（已遮掉密码、令牌） */
+	command: string,
+	/**  开始时间（Unix 毫秒） */
+	startedMs: number | null,
+	running: boolean,
+	/**  结束了的退出码（还在运行或拿不到时为 null） */
+	exitCode?: number | null,
+};
+
+/**  AI 开的一个后台任务（MCP 页列出来，可以停掉） */
+export type McpJobDto_Serialize = {
+	id: string,
+	/**  哪个入口的 AI 开的：windows 或服务器 ID */
+	entry: string,
+	/**  在哪执行：windows 或服务器 ID */
+	target: string,
+	/**  命令（已遮掉密码、令牌） */
+	command: string,
+	/**  开始时间（Unix 毫秒） */
+	startedMs: number | null,
+	running: boolean,
+	/**  结束了的退出码（还在运行或拿不到时为 null） */
+	exitCode: number | null,
 };
 
 export type McpOutputPreviewDto = {

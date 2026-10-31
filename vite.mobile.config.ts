@@ -27,7 +27,8 @@ function gzipAssets(): Plugin {
 // 手机页面：单独打包到 dist-mobile，安装包里作为资源，由 Windows 上的手机入口提供给手机浏览器
 export default defineConfig({
   root: resolve(import.meta.dirname, "mobile"),
-  publicDir: false,
+  // 原样复制的文件：加到主屏幕用的清单和图标（文件名固定，清单里按名字引用）
+  publicDir: resolve(import.meta.dirname, "mobile/public"),
   plugins: [react(), gzipAssets()],
   clearScreen: false,
   server: { port: 1430, strictPort: true, host: "127.0.0.1", fs: { allow: [resolve(import.meta.dirname)] } },

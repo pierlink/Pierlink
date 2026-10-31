@@ -28,27 +28,40 @@ pub(super) static TOOLS: LazyLock<Vec<Tool>> = LazyLock::new(|| {
         "End",
         "PageUp",
         "PageDown",
+        "Insert",
+        "Shift+Tab",
+        "Ctrl+Space",
     ]
     .into_iter()
     .map(str::to_owned)
     .collect();
-    keys.extend(('A'..='Z').map(|key| format!("Ctrl+{key}")));
+    keys.extend((1..=12).map(|key| format!("F{key}")));
+    for prefix in ["Ctrl", "Alt"] {
+        keys.extend(
+            ('A'..='Z')
+                .chain('a'..='z')
+                .map(|key| format!("{prefix}+{key}")),
+        );
+    }
     let wait_timeout = json!({"type":"integer","minimum":1,"maximum":1800,"default":60});
     let sync_timeout = json!({"type":"integer","minimum":1,"maximum":1800,"default":300});
     [
         ("list_targets", "列出入口允许的目标及在线状态；folders 为可用授权目录，unavailable_folders 列出不可用目录的错误码和原因。", json!({}), json!([])),
-        ("run_command", "在目标执行非交互命令，检查 exit_code；退出码取最后一条语句。要拿原生程序的退出码，不要在后面接管道（例如 cargo build 2>&1 | Select-Object -Last 50，构建失败时仍可能返回 0）。返回 stdout、stderr、cwd、shell、truncated、timed_out、duration_ms。Windows 默认 powershell 和用户目录，shell 只能选 list_targets 列出的项。background:true 立即返回 job_id（不受 timeout_secs 限制），用 job_output 读取输出，用 job_stop 结束进程树。入口重启（换令牌、全部停止）会结束后台任务。每入口最多 8 个后台任务，用 list_jobs 查看、job_stop 结束不用的；后台任务目前只支持 Windows，服务器长任务请用 AI 终端。前台输出各保留 256 KiB 头尾，最长 1800 秒。", json!({"target":target,"command":{"type":"string","minLength":1},"cwd":string,"timeout_secs":timeout,"shell":{"type":"string","enum":["powershell","pwsh","cmd","git-bash"]},"background":boolean}), json!(["target","command"])),
+        ("run_command", "在目标执行非交互命令，检查 exit_code；退出码取最后一条语句。要拿原生程序的退出码，不要在后面接管道（例如 cargo build 2>&1 | Select-Object -Last 50，构建失败时仍可能返回 0）。返回 stdout、stderr、cwd、shell、truncated、timed_out、duration_ms。Windows 默认 powershell 和用户目录，cwd 必须是 Windows 绝对路径；shell 只能选 list_targets 列出的项。background:true 立即返回 job_id（不受 timeout_secs 限制），用 job_output 读取输出，用 job_stop 结束进程树。入口重启（换令牌、全部停止）会结束后台任务。每入口最多 8 个后台任务，用 list_jobs 查看、job_stop 结束不用的；后台任务目前只支持 Windows，服务器长任务请用 AI 终端。前台输出各保留 256 KiB 头尾，最长 1800 秒。", json!({"target":target,"command":{"type":"string","minLength":1},"cwd":string,"timeout_secs":timeout,"shell":{"type":"string","enum":["powershell","pwsh","cmd","git-bash"]},"background":boolean}), json!(["target","command"])),
         ("open_terminal", "请用户界面打开可见的 AI 终端，返回 terminal_id。cwd 会以一行 cd 的形式回显。", json!({"target":target,"cwd":string,"title":string}), json!(["target"])),
         ("list_terminals", "返回 ai_terminals（可操作终端，source.kind 为 opened 或 handed_over，含 cwd，未知为 null）和 user_terminals（用户终端元数据，handed_over 表示是否交给当前入口）。仅列获准目标，不含地址；未交出的终端不提供目录和内容。", json!({}), json!([])),
         ("close_terminal", "关闭已登记的 AI 终端，不能关闭用户自己的终端。", json!({"terminal_id":id}), json!(["terminal_id"])),
-        ("terminal_send", "发送文字或按键，text 的 CRLF 和 LF 都转换为 CR 提交。成功只表示已入队，返回 cursor（入队前的输出末尾字节游标）；把 cursor 作为 terminal_wait / terminal_read 的 since，就不会漏掉命令的输出；屏幕在等密码时发送文字会被拒绝，请用户在 Pierlink 里输入，按键仍允许。", json!({"terminal_id":id,"text":string,"keys":{"type":"array","items":{"type":"string","enum":keys}}}), json!(["terminal_id"])),
+        ("terminal_send", "发送文字或按键（支持 F1–F12、Insert、PageUp/PageDown、Shift+Tab、Alt+字母、Ctrl+Space，Ctrl+字母不区分大小写），text 的 CRLF 和 LF 都转换为 CR 提交。成功只表示已入队，返回 cursor（入队前的输出末尾字节游标）；把 cursor 作为 terminal_wait / terminal_read 的 since，就不会漏掉命令的输出；屏幕在等密码时发送文字会被拒绝，请用户在 Pierlink 里输入，按键仍允许。", json!({"terminal_id":id,"text":string,"keys":{"type":"array","items":{"type":"string","enum":keys}}}), json!(["terminal_id"])),
         ("terminal_read", "从 since 字节游标读取新输出；省略 since 从保留历史的开头读取。tail_bytes 只读最近 N 个原始字节（最多 64 KiB），与 since 同给时取较晚起点。单次最多 64 KiB 文字，停在完整字符和控制序列边界；返回 text、cursor（下次读取的字节偏移）、lost（起点之前的历史已丢失）、more（后面还有未读取的输出）。", json!({"terminal_id":id,"since":number,"tail_bytes":{"type":"integer","minimum":1,"maximum":65536}}), json!(["terminal_id"])),
         ("terminal_screen", "读取终端当前屏幕的文字。", json!({"terminal_id":id}), json!(["terminal_id"])),
         ("terminal_wait", "从 since 字节游标等 pattern 正则匹配或输出安静 quiet_ms；省略 since 从调用时的输出末尾开始。pattern 默认多行模式，^/$ 匹配每行首尾；pattern 和 quiet_ms 都省略时 quiet_ms 默认 2000。返回 matched、text、cursor（下次读取的字节偏移）、lost（历史或等待缓冲已丢失部分输出）、exited（终端进程已退出）、timed_out（达到等待期限，命令可能仍在运行）；最长 1800 秒。", json!({"terminal_id":id,"pattern":string,"quiet_ms":{"type":"integer","minimum":1,"maximum":1800000},"since":number,"timeout_secs":wait_timeout}), json!(["terminal_id"])),
-        ("read_file", "读取 Windows 上授权文件夹内的文件，file_path 用 Windows 绝对路径。默认按行读，offset 从 1 开始，limit 默认 2000、最多 5000；返回带行号的文字、编码、换行、修改时间和 sha256；超过 64 MiB 时 sha256 为 null，sha256_skipped_reason 说明原因。byte_offset/max_bytes 改为按字节读取。", json!({"file_path":id,"offset":{"type":"integer","minimum":1},"limit":{"type":"integer","minimum":1,"maximum":5000,"default":2000},"byte_offset":number,"max_bytes":{"type":"integer","minimum":1,"maximum":1048576}}), json!(["file_path"])),
-        ("write_file", "写入 Windows 文件，file_path 用 Windows 绝对路径。内容最多 5 MiB；不能覆盖已有二进制文件或超过 5 MiB 的已有文件。保持已有编码、BOM 和换行。expected_sha256 不符时拒绝覆盖；Windows 可执行类型（如 .ps1/.bat/.exe）和启动文件夹需要确认；授权目录中的 .js/.py/.sh 等开发源码按普通文件处理。", json!({"file_path":id,"content":string,"expected_sha256":id}), json!(["file_path","content"])),
+        ("read_file", "读取 Windows 上授权文件夹内的文件，file_path 用 Windows 绝对路径。默认按行读，offset 从 1 开始，limit 默认 2000、最多 5000；返回带行号的文字、编码、换行、修改时间和 sha256；超过 64 MiB 时 sha256 为 null，sha256_skipped_reason 说明原因。byte_offset/max_bytes 改为按字节读取。.png/.jpg/.jpeg/.gif/.webp 图片不超过 2 MiB 时始终返回 MCP 图片内容，可直接查看。", json!({"file_path":id,"offset":{"type":"integer","minimum":1},"limit":{"type":"integer","minimum":1,"maximum":5000,"default":2000},"byte_offset":number,"max_bytes":{"type":"integer","minimum":1,"maximum":1048576}}), json!(["file_path"])),
+        ("write_file", "写入 Windows 文件，file_path 用 Windows 绝对路径。会自动创建缺少的父目录。内容最多 5 MiB；不能覆盖已有二进制文件或超过 5 MiB 的已有文件。保持已有编码、BOM 和换行。expected_sha256 不符时拒绝覆盖；Windows 可执行类型（如 .ps1/.bat/.exe）和启动文件夹需要确认；授权目录中的 .js/.py/.sh 等开发源码按普通文件处理。", json!({"file_path":id,"content":string,"expected_sha256":id}), json!(["file_path","content"])),
+        ("make_dir", "创建 Windows 授权范围内的目录及父目录，已有目录成功；不经过链接或目录联接。按写入规则审批。", json!({"path":id}), json!(["path"])),
+        ("delete_path", "删除 Windows 授权范围内的文件或空目录；recursive:true 才删除非空目录。只删除链接本身。按写入规则审批，删除目录在只问危险操作模式下也需确认。", json!({"path":id,"recursive":{"type":"boolean","default":false}}), json!(["path"])),
+        ("rename_path", "重命名 Windows 授权范围内的路径，两端都须授权；overwrite 默认为 false，目标存在时报错。按写入规则审批，链接只移动链接本身；目标父目录须已存在。", json!({"from":id,"to":id,"overwrite":{"type":"boolean","default":false}}), json!(["from","to"])),
         ("edit_file", "精确替换 Windows 文件中的文字，file_path 用 Windows 绝对路径。old_string 必须唯一，replace_all 可替换所有匹配；保持原编码、BOM 和换行。可用 expected_sha256 检查读后变化。", json!({"file_path":id,"old_string":id,"new_string":string,"replace_all":boolean,"expected_sha256":id}), json!(["file_path","old_string","new_string"])),
-        ("search", "在 Windows 授权文件夹中用 Rust regex 搜索，path 用 Windows 绝对路径，省略时搜索全部授权文件夹。遵守 .gitignore，不跟随链接；跳过二进制及超过 10 MiB 的文件。结果按路径排序，最多扫描 20000 项、256 MiB、10 秒，输出最多 256 KiB；达到限制返回 truncated。", json!({"pattern":string,"path":id,"glob":id,"type":id,"output_mode":{"type":"string","enum":["content","files_with_matches","count"],"default":"files_with_matches"},"-i":boolean,"-n":boolean,"multiline":boolean,"-A":{"type":"integer","minimum":0,"maximum":5000},"-B":{"type":"integer","minimum":0,"maximum":5000},"-C":{"type":"integer","minimum":0,"maximum":5000},"head_limit":{"type":"integer","minimum":1,"maximum":10000,"default":250},"offset":number}), json!(["pattern"])),
+        ("search", "在 Windows 授权文件夹中用 Rust regex 搜索，path 用 Windows 绝对路径，省略时搜索全部授权文件夹。遵守 .gitignore，不跟随链接；跳过二进制及超过 10 MiB 的文件。content 模式按文件分组为 {path, encoding, line_ending, lines: [{line, text, match}]}；-n:false 省略 line，offset/head_limit 仍按行计。结果按路径排序，最多扫描 20000 项、256 MiB、10 秒，输出最多 256 KiB；达到限制返回 truncated。", json!({"pattern":string,"path":id,"glob":id,"type":id,"output_mode":{"type":"string","enum":["content","files_with_matches","count"],"default":"files_with_matches"},"-i":boolean,"-n":boolean,"multiline":boolean,"-A":{"type":"integer","minimum":0,"maximum":5000},"-B":{"type":"integer","minimum":0,"maximum":5000},"-C":{"type":"integer","minimum":0,"maximum":5000},"head_limit":{"type":"integer","minimum":1,"maximum":10000,"default":250},"offset":number}), json!(["pattern"])),
         ("find_files", "在 Windows 授权文件夹中按 glob 找文件，path 用 Windows 绝对路径，省略时搜索全部授权文件夹。按修改时间从新到旧返回路径；遵守 .gitignore，include_ignored 可关闭忽略规则；不跟随链接，达到扫描或输出限制返回 truncated。", json!({"pattern":id,"path":id,"head_limit":{"type":"integer","minimum":1,"maximum":10000,"default":250},"include_ignored":boolean}), json!(["pattern"])),
         ("job_output", "读取当前入口后台任务的新输出，since 是字节游标，省略从保留输出开头读。单次最多 64 KiB，返回 stdout、stderr、cursor（下次读取位置）、more（还有未读取输出）、lost（更早输出已丢失）、running、exit_code、timed_out 和 stop_reason（timeout 超时、stopped 主动停止、entry_closed 入口关闭、permission_revoked 目标权限收回；正常完成为 null）。输出仅保留最近 1 MiB。", json!({"job_id":id,"since":number}), json!(["job_id"])),
         ("job_stop", "结束当前入口后台任务的整棵进程树。", json!({"job_id":id}), json!(["job_id"])),

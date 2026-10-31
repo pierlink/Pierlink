@@ -255,7 +255,8 @@ pub(super) fn execute(
             &cancelled,
             &mut approval,
         ),
-        "read_file" | "write_file" | "edit_file" | "search" | "find_files" | "list_dir" => {
+        "read_file" | "write_file" | "edit_file" | "make_dir" | "delete_path" | "rename_path"
+        | "search" | "find_files" | "list_dir" => {
             file_call(&permissions, name, args, &cancelled, &mut approval)
         }
         "sync_status" => {
@@ -441,7 +442,7 @@ fn run_command(
                 target: target.clone(),
                 cwd: cwd.clone(),
                 shell: shell.clone(),
-                command: command.into(),
+                command: shared.redact_command(command),
             },
             &cancelled,
             // 后台任务（开发服务器等）不受 timeout_secs 限制：只由 job_stop、入口关闭或 Pierlink 退出结束
@@ -472,11 +473,32 @@ fn run_command(
             cancelled.clone(),
         ),
     }
-    .inspect_err(|error| login_needed(shared.host.as_ref(), target, error))?;
-    check_cancel(&cancelled)?;
-    Ok(
-        json!({"exit_code":output.exit_code,"stdout":text::strip_ansi(&output.stdout),"stderr":text::strip_ansi(&output.stderr),"truncated":output.truncated,"timed_out":output.timed_out,"duration_ms":output.duration_ms,"cwd":cwd,"shell":shell}),
-    )
+    .inspect_err(|error| login_needed(shared.host.as_ref(), target, error))
+    .map_err(|error| {
+        if target.kind == TargetKind::Server
+            && (cancelled.load(Ordering::Acquire)
+                || error.code.contains("timeout")
+                || error.code == "mcp.cancelled")
+        {
+            error.with_text(
+                "note",
+                "mcp.remote_process_may_still_run",
+                "远端进程可能仍在运行，可以打开终端查看",
+            )
+        } else {
+            error
+        }
+    })?;
+    let stopped = cancelled.load(Ordering::Acquire);
+    if target.kind != TargetKind::Server {
+        check_cancel(&cancelled)?;
+    }
+    let mut value = json!({"exit_code":output.exit_code,"stdout":text::strip_ansi(&output.stdout),"stderr":text::strip_ansi(&output.stderr),"truncated":output.truncated,"timed_out":output.timed_out,"duration_ms":output.duration_ms,"cwd":cwd,"shell":shell});
+    if target.kind == TargetKind::Server && (output.timed_out || stopped) {
+        value["cancelled"] = json!(stopped);
+        value["note"] = json!("远端进程可能仍在运行，可以打开终端查看");
+    }
+    Ok(value)
 }
 fn login_needed(host: &dyn super::McpHost, target: &Target, error: &AppError) {
     if matches!(
@@ -522,7 +544,7 @@ fn terminal_call(
                 .into_iter()
                 .flatten()
                 .filter_map(Value::as_str)
-                .map(str::to_owned)
+                .map(terminal::normalized_key)
                 .collect();
             if text.is_some_and(|text| !text.is_empty())
                 && safety::looks_like_password_prompt(&shared.terminals.screen_text(id)?)
@@ -651,6 +673,8 @@ fn file_call(
 ) -> Result<Value, Failure> {
     let path = if matches!(name, "read_file" | "write_file" | "edit_file") {
         required(args, "file_path")
+    } else if name == "rename_path" {
+        required(args, "from")
     } else {
         required(args, "path")
     };
@@ -666,6 +690,9 @@ fn file_call(
     check_cancel(cancelled)?;
     match name {
         "read_file" => {
+            if let Some(image) = files::read_image(&sandbox, path, cancelled)? {
+                return Ok(image);
+            }
             if args.contains_key("byte_offset") || args.contains_key("max_bytes") {
                 Ok(json!(files::read_cancelled(
                     &sandbox,
@@ -701,11 +728,7 @@ fn file_call(
             };
             approval.confirm(
                 &windows,
-                &format!(
-                    "{}：{}",
-                    reason.as_deref().unwrap_or("写入文件"),
-                    resolved.display()
-                ),
+                &file_action(name, &resolved, reason.as_deref(), args),
                 reason.is_some(),
                 cancelled,
             )?;
@@ -729,6 +752,67 @@ fn file_call(
                     string(args, "expected_sha256")
                 )?))
             }
+        }
+        "make_dir" | "delete_path" | "rename_path" => {
+            let resolved = if name == "make_dir" {
+                sandbox.resolve_directory(std::path::Path::new(path))?
+            } else {
+                sandbox.resolve_entry(path)?
+            };
+            let mut dangerous = files::write_needs_confirmation(&resolved).is_some();
+            let recursive = args
+                .get("recursive")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let overwrite = args
+                .get("overwrite")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let action = match name {
+                "make_dir" => format!("创建目录（含父目录）：{}", resolved.display()),
+                "delete_path" => {
+                    let metadata = std::fs::symlink_metadata(&resolved).map_err(|_| {
+                        AppError::new("mcp.not_found")
+                            .with_reason("mcp.path_missing", "文件或目录不存在")
+                    })?;
+                    // 注定失败的（授权文件夹本身、非空又没给 recursive）不问用户，直接告诉 AI
+                    files::check_delete(&sandbox, &resolved, recursive)?;
+                    dangerous |= metadata.is_dir();
+                    #[cfg(windows)]
+                    {
+                        use std::os::windows::fs::FileTypeExt;
+                        dangerous |= metadata.file_type().is_symlink_dir();
+                    }
+                    format!("删除路径：{}\n递归删除：{recursive}", resolved.display())
+                }
+                _ => {
+                    files::check_move(&sandbox, &resolved)?;
+                    let to = sandbox.resolve_entry(required(args, "to"))?;
+                    dangerous |= files::write_needs_confirmation(&to).is_some();
+                    format!(
+                        "重命名：{} → {}\n覆盖已有目标：{overwrite}（目录连同内容移动，不递归删除）",
+                        resolved.display(),
+                        to.display()
+                    )
+                }
+            };
+            let windows = Target {
+                target: "windows".into(),
+                id: "windows".into(),
+                name: "Windows".into(),
+                kind: TargetKind::Windows,
+                online: None,
+                engine: None,
+                address: None,
+            };
+            approval.confirm(&windows, &action, dangerous, cancelled)?;
+            check_cancel(cancelled)?;
+            let path = match name {
+                "make_dir" => files::make_dir(&sandbox, path)?,
+                "delete_path" => files::delete_path(&sandbox, path, recursive)?,
+                _ => files::rename_path(&sandbox, path, required(args, "to"), overwrite)?,
+            };
+            Ok(json!({"path":path}))
         }
         "list_dir" => Ok(json!(files::list_dir(&sandbox, path)?)),
         _ => Err(schema::invalid("mcp.unknown_file_tool", "未知文件工具").into()),
@@ -765,7 +849,10 @@ pub(super) fn summary(name: &str, args: &JsonObject, password_denied: bool) -> S
             summary
         }
         "read_file" | "write_file" | "edit_file" => required(args, "file_path").into(),
-        "search" | "find_files" | "list_dir" => required(args, "path").into(),
+        "search" | "find_files" | "list_dir" | "make_dir" | "delete_path" => {
+            required(args, "path").into()
+        }
+        "rename_path" => format!("{} → {}", required(args, "from"), required(args, "to")),
         "job_output" | "job_stop" => required(args, "job_id").into(),
         "sync_status" | "sync_wait" => string(args, "task").unwrap_or_default().into(),
         _ => string(args, "terminal_id")
@@ -776,4 +863,40 @@ pub(super) fn summary(name: &str, args: &JsonObject, password_denied: bool) -> S
 }
 pub(super) fn audit_target(args: &JsonObject) -> Option<String> {
     string(args, "target").map(str::to_owned)
+}
+
+fn preview_text(text: &str, max: usize) -> String {
+    let count = text.chars().count();
+    let mut preview: String = text.chars().take(max).collect();
+    if count > max {
+        preview.push_str(&format!("…（共 {count} 字）"));
+    }
+    preview
+}
+fn file_action(
+    name: &str,
+    path: &std::path::Path,
+    reason: Option<&str>,
+    args: &JsonObject,
+) -> String {
+    let heading = format!("{}：{}", reason.unwrap_or("写入文件"), path.display());
+    if name == "edit_file" {
+        format!(
+            "{heading}\n旧文字：\n{}\n新文字：\n{}",
+            preview_text(required(args, "old_string"), 300),
+            preview_text(required(args, "new_string"), 300)
+        )
+    } else {
+        let content = required(args, "content");
+        let preview = content
+            .lines()
+            .take(6)
+            .map(|line| preview_text(line, 300))
+            .collect::<Vec<_>>()
+            .join("\n");
+        format!(
+            "{heading}\n内容：{} 字节，前 6 行：\n{preview}",
+            content.len()
+        )
+    }
 }

@@ -600,7 +600,15 @@
         "home_folder_not_found": "couldn't find the user folder",
         "address_or_token_has_unsupported_characters": "the address or token has unsupported characters",
         "couldn_t_write_the_config_on_the_server": "couldn't write the config on the server",
-        "client_remove_command_failed": "the client's own remove command failed"
+        "client_remove_command_failed": "the client's own remove command failed",
+        "folder_must_be_absolute": "the folder must be an absolute path (D:\\work on Windows, /home/me or ~/work on a server)",
+        "cwd_must_be_windows_absolute": "cwd must be an absolute Windows path",
+        "parent_is_not_a_directory": "the parent path is not a folder",
+        "path_links_are_not_allowed": "the path can't go through a symbolic link or junction",
+        "remote_process_may_still_run": "the process on the server may still be running; open a terminal to check",
+        "rename_target_exists": "the target already exists; choose another path or set overwrite",
+        "allowed_folder_itself_cannot_be_deleted_or_moved": "an allowed folder itself can't be deleted or moved",
+        "folder_is_not_empty_set_recursive": "the folder isn't empty; set recursive: true to delete it with its contents"
       },
       "mobile": {
         "web_asset_reader_task_failed": "web asset reader task failed",
@@ -652,7 +660,18 @@
         "couldn_t_open_the_web_asset_directory": "couldn't open the web asset directory",
         "web_asset_path_must_be_a_directory": "web asset path must be a directory",
         "couldn_t_start_the_mobile_entry_listener": "couldn't start the phone access listener",
-        "phone_page_missing_from_install": "the phone page is missing from the installation"
+        "phone_page_missing_from_install": "the phone page is missing from the installation",
+        "at_most_ten_images_per_device_per_minute": "at most 10 images per phone per minute",
+        "desktop_terminal_image_failed": "the PC couldn't put the image into the terminal",
+        "image_body_exceeds_8_mib": "the image is larger than 8 MB",
+        "image_signature_does_not_match_content_type": "the image content doesn't match its type",
+        "image_type_must_be_png_jpeg_webp_or_gif": "images must be PNG, JPEG, WebP or GIF",
+        "paste_carriage_return_must_be_last": "a pasted carriage return may only come last",
+        "screen_lines_must_be_an_integer_from_1_to_2000": "screen lines must be an integer from 1 to 2000",
+        "terminal_size_must_be_20_300_columns_and_5_100_rows": "the terminal size must be 20–300 columns and 5–100 rows",
+        "pc_did_not_open_the_terminal_in_time": "the PC didn't open the terminal in time; it may be waiting for a host key confirmation or a password on the PC",
+        "terminal_was_not_opened": "the terminal didn't open",
+        "server_id_is_invalid": "the server ID is invalid"
       },
       "monitor": {
         "create_built_in_sampling_thread": "create built-in sampling thread",
@@ -1605,7 +1624,13 @@
       "stopped": "Phone access isn't on",
       "assets": "The phone page is missing from the installation; reinstall Pierlink",
       "task_failed": "The operation stopped unexpectedly: {{reason}}",
-      "invalid_request": "The name must be 1 to 80 characters without control characters"
+      "invalid_request": "The name must be 1 to 80 characters without control characters",
+      "invalid_image": "Invalid image: {{reason}}",
+      "unsupported_image_type": "Unsupported image: {{reason}}",
+      "not_found": "The terminal doesn't exist or was closed",
+      "open_timeout": "The PC didn't open the terminal in time",
+      "open_failed": "The terminal didn't open",
+      "server_not_found": "The server doesn't exist"
     },
     "vnc": {
       "probe_timeout": "The desktop did not respond",
@@ -1787,16 +1812,17 @@
     "cmdName": "Command Prompt",
     "stages": {
       "label": "Connection progress",
-      "resolve": "Resolve",
       "connect": "Connect",
-      "auth": "Auth",
-      "session": "Session",
-      "connecting": "Connecting",
+      "verify": "Verify host",
+      "auth": "Sign in",
+      "session": "Start shell",
       "seconds": "{{s}}s"
     },
     "pasteImageUploading": "Uploading image…",
     "pasteImageBusy": "Still uploading the previous image",
-    "pasteImageExpired": "The terminal moved on; image not pasted"
+    "pasteImageExpired": "The terminal moved on; image not pasted",
+    "phoneView": "A phone is viewing this terminal at {{cols}} columns; type here to restore",
+    "phoneOpenEnded": "The connection ended before the terminal was ready"
   },
   "hostKey": {
     "title": "Verify the server's identity",
@@ -2823,7 +2849,7 @@
     "allowAlways": "Always allow",
     "confirmConnectBody": "{{client}} (connected from {{entry}}) wants to use these machines through Pierlink:",
     "targetWindows": "This Windows PC",
-    "clientNameUntrusted": "The client reports its own name, so treat it as a hint. \"Always allow\" is remembered per entry: any AI connecting through this entry won't be asked again.",
+    "clientNameUntrusted": "Clients report their own names; \"Always allow\" covers every AI that connects through this entry later.",
     "confirmDangerBody": "{{client}} (connected from {{entry}}) wants to run this on {{target}}:",
     "moreConfirms": "{{count}} more waiting",
     "indicator": "AI access",
@@ -2832,7 +2858,7 @@
     "stopAll": "Stop all",
     "sessions": "Connected AI",
     "noSessions": "No AI is connected",
-    "noSessionsRecent": "No AI is connected right now. To interrupt an AI on a server, or be asked again, click “Stop all”.",
+    "noSessionsRecent": "No AI is connected right now",
     "recent": "Recent actions",
     "noActivity": "Nothing yet",
     "outcome": {
@@ -2847,7 +2873,7 @@
     "copied": "Copied",
     "windowsCommands": "Allow running commands on this PC",
     "windowsCommandsHint": "PowerShell can read and write every file of this Windows account; the folder list below only limits the file tools",
-    "windowsCommandsServerHint": "Checking this lets AI on that server do anything on your Windows PC. Allowing folders is usually enough",
+    "windowsCommandsServerHint": "Checking this lets AI on that server do anything on your Windows PC",
     "folders": "Folders the file tools may use",
     "removeFolder": "Remove this folder",
     "folderPath": "Folder",
@@ -2855,7 +2881,7 @@
     "addFolder": "Add",
     "servers": "Servers AI may use",
     "noServers": "No other servers yet",
-    "intro": "Let AI assistants such as Claude Code and Cursor work on your Windows PC and servers through Pierlink: run commands, open terminals, read and write folders you choose. You can take over the terminals AI opens at any time.",
+    "intro": "Let AI assistants such as Claude Code and Cursor work on your Windows PC and servers through Pierlink: run commands, open terminals, and read and write folders you choose.",
     "enable": "Turn on AI access",
     "enableHint": "When off, every entry is closed and connected AI is refused on its next action",
     "windowsEntry": "Local entry (AI on this PC)",
@@ -2864,9 +2890,7 @@
     "remembered": "This entry is set to \"Always allow\"",
     "forget": "Ask every time again",
     "serverEntries": "Server entries (AI on a server)",
-    "serverEntriesHint": "AI on the server reaches this PC through the existing SSH connection; this PC opens no outside ports. The token is in ~/.pierlink/mcp.json on that server (readable only by you).",
-    "serverRiskTitle": "Only for servers you trust",
-    "serverRisk": "root on that server, or anyone who breaks into it, can read the token and use every target you allow for this entry, including your Windows PC. Allow as little as possible, and turn the entry off when you don't need it.",
+    "serverEntriesHint": "AI on the server reaches this PC through the existing SSH connection; this PC opens no outside ports.",
     "entryState": {
       "connecting": "Connecting",
       "running": "Running",
@@ -2880,9 +2904,6 @@
     "port": "Port on the server",
     "portInvalid": "The port must be between 1024 and 65535",
     "rotateToken": "New token",
-    "addServerEntry": "Add server entry",
-    "chooseServer": "Choose a server",
-    "audit": "Action log",
     "auditHint": "Every AI action is logged (commands, file paths and so on, not output or file contents) and kept for 30 days",
     "openLogFolder": "Open log folder",
     "aiTerminal": "Terminal opened by AI",
@@ -2899,7 +2920,7 @@
     "approvalHint": {
       "ask_all": "You approve every command, every Enter in a terminal, and every file write.",
       "dangerous": "Only risky commands (rm -rf, formatting, shutdown…) and writing script files need your approval; everything else runs directly.",
-      "auto": "Nothing is asked; everything runs. One wrong call by the AI can delete files or force-push over code, so use it only while you watch or on a test machine."
+      "auto": "Nothing is asked and everything runs; use it only while you watch or on a test machine"
     },
     "confirmActionTitle": "AI wants to run an action",
     "allowSession": "Don't ask again this session",
@@ -2946,18 +2967,17 @@
     "added": "Added to {{client}}. Restart it to take effect",
     "addedCursor": "Written to {{path}}; Cursor loads it automatically",
     "addedServer": "Added to {{client}} on {{server}}",
-    "manualCommands": "Or run it yourself",
     "rotateTokenHint": "The old token stops working immediately; connected AIs disconnect and their background jobs end",
-    "rotated": "Token rotated; the old one no longer works. One-click setups are redone and take effect once the client reconnects (for example /mcp in Claude Code)",
-    "clientMissing": "{{client}} wasn't found on this PC. Reopen this page after installing it, or copy a command below to add it manually",
-    "serverClientMissing": "{{client}} wasn't found on {{server}}. Reopen this page after installing it there, or copy a command below",
+    "rotated": "Token rotated; one-click setups update themselves and take effect when the client reconnects",
+    "clientMissing": "{{client}} wasn't found on this PC; copy a command below to add it yourself",
+    "serverClientMissing": "{{client}} wasn't found on {{server}}; copy a command below to add it yourself",
     "showOutput": "Show output",
     "stderr": "Error output:",
     "fileWritten": "~/.pierlink/mcp.json on the server is ready",
     "fileNotWritten": "~/.pierlink/mcp.json is written once the entry connects; commands copied before that get no token",
     "clientsTitle": "Add to AI clients",
     "manualLocal": "To add it yourself, run this in a terminal on this computer:",
-    "manualCursor": "To add it yourself, merge this into ~/.cursor/mcp.json. Other MCP clients can use the same config.",
+    "manualCursor": "Merge this into ~/.cursor/mcp.json (other MCP clients can use it too)",
     "manualServer": "To add it yourself, run this on the server:",
     "manualServerJq": "To add it yourself, run one of these on the server (use the second if jq isn't installed):",
     "addOneClick": "Add",
@@ -2965,7 +2985,14 @@
     "removing": "Removing…",
     "removed": "Removed from {{client}}. Restart it to take effect",
     "removedServer": "Removed from {{client}} on {{server}}",
-    "notAdded": "Pierlink wasn't in {{client}}"
+    "notAdded": "Pierlink wasn't in {{client}}",
+    "stopAllHint": "Interrupt the AI, stop its background tasks, and make it ask again",
+    "jobs": {
+      "title": "Background tasks ({{count}} running)",
+      "running": "running for {{min}} min",
+      "exited": "ended (exit code {{code}})",
+      "stop": "Stop"
+    }
   },
   "backup": {
     "export": "Export to file",
@@ -3033,7 +3060,8 @@
       "ai": "AI",
       "aiState": "{{sessions}} AI connected, {{pending}} waiting for you",
       "stopConfirm": "Stop all now",
-      "stopped": "All stopped"
+      "stopped": "All stopped",
+      "syncing": "Syncing"
     },
     "confirms": {
       "none": "Nothing waiting for you",
@@ -3051,9 +3079,31 @@
       "password": "The terminal is waiting for a password; passwords can only be typed on the PC.",
       "dangerTitle": "This command is risky. Run it?",
       "runAnyway": "Run anyway",
-      "placeholder": "Type a command, Enter to send",
+      "placeholder": "Type here",
       "send": "Send",
-      "noInput": "This phone can only view (turn on input in Settings → Phone on the PC)."
+      "noInput": "This phone can only view (turn on input in Settings → Phone on the PC).",
+      "closed": "The terminal was closed on the PC",
+      "jump": "Latest",
+      "more": "More",
+      "wrap": "Wrap lines",
+      "copy": "Copy screen",
+      "copied": "Copied",
+      "copyFailed": "Couldn't copy",
+      "confirmBanner": "AI is waiting for you ({{count}})",
+      "choices": "Options",
+      "image": "Send image",
+      "imageSending": "Sending image…",
+      "imageSent": "Image pasted into the terminal",
+      "imageFailed": "Couldn't send the image",
+      "sendHint": "Long-press: type without Enter",
+      "fit": "Fit to phone",
+      "fitBusy": "Someone is using this terminal on the PC, so it keeps the PC's width",
+      "jumpNew": "New output",
+      "new": "New terminal",
+      "newTitle": "Open a terminal on the PC",
+      "localShell": "Local terminal",
+      "offline": "Offline",
+      "opening": "Opening {{name}} on the PC…"
     },
     "error": {
       "forbidden": "This phone doesn't have that permission (turn it on in Settings → Phone on the PC)",
@@ -3062,9 +3112,20 @@
       "not_found": "Not found (it may have been closed)",
       "input_limit": "Sending too fast; wait a moment",
       "rate_limited": "Too many requests; wait a moment",
-      "body_too_large": "That's too long"
+      "body_too_large": "That's too long",
+      "invalid_image": "Invalid image",
+      "unsupported_image_type": "Only PNG, JPEG, WebP or GIF images",
+      "request_timeout": "The PC didn't answer in time; try again",
+      "invalid_request": "Bad request (reload the page and try again)",
+      "host_unavailable": "Pierlink on the PC isn't available right now",
+      "stopped": "Phone access was turned off",
+      "open_timeout": "The PC didn't open the terminal in time. It may be waiting for a host key confirmation or a password on the PC.",
+      "open_failed": "The PC couldn't open the terminal: {{message}}",
+      "server_not_found": "This server was removed on the PC"
     },
-    "networkError": "Can't reach the PC. Make sure both the phone and the PC are on Tailscale (or the same LAN), then try again."
+    "networkError": "Can't reach the PC. Make sure both the phone and the PC are on Tailscale (or the same LAN), then try again.",
+    "signOut": "Sign out on this phone",
+    "signOutConfirm": "Sign out (pair again to use)"
   },
   "mobileSettings": {
     "enable": "Turn on phone access",

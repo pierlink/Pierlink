@@ -71,11 +71,42 @@ impl Sandbox {
         self.contains(&resolved)?;
         Ok(resolved)
     }
-    /// 规范化 path 的父目录再拼接文件名；已有目标另查链接及类型，返回可替换的普通文件路径。
+    /// 校验 path 及最近存在的父目录，返回可替换的普通文件路径；不创建目录、不跟随链接。
     pub fn resolve_write(&self, path: &str) -> Result<PathBuf, AppError> {
+        let target = self.resolve_entry(path)?;
+        if let Some(metadata) = metadata_if_exists(&target)?
+            && (!metadata.is_file() || is_link(&metadata))
+        {
+            return Err(path_error(
+                if is_link(&metadata) {
+                    "mcp.path_outside"
+                } else {
+                    "mcp.path_invalid"
+                },
+                &target,
+                "mcp.only_regular_files_can_be_replaced",
+                "只能替换普通文件，不能覆盖目录、链接或设备",
+            ));
+        }
+        Ok(target)
+    }
+
+    // 只解析父目录，末级可以是链接；删除或重命名时操作链接本身。
+    pub(super) fn resolve_entry(&self, path: &str) -> Result<PathBuf, AppError> {
         let path = Path::new(path);
         reject_network_folder(path)?;
         valid_path(path)?;
+        // 授权目录本身也在范围内；检查它自身，不能因为父目录未授权而误拒绝。
+        if self
+            .folders
+            .iter()
+            .any(|folder| path_within(path, folder) && path_within(folder, path))
+        {
+            return self.resolve_directory(path);
+        }
+        let parent = path
+            .parent()
+            .ok_or_else(|| io_error(std::io::ErrorKind::NotFound.into(), path))?;
         let name = path.file_name().ok_or_else(|| {
             path_error(
                 "mcp.path_invalid",
@@ -84,39 +115,179 @@ impl Sandbox {
                 "缺少文件名",
             )
         })?;
-        let parent = path.parent().ok_or_else(|| {
-            path_error(
-                "mcp.path_invalid",
-                path,
-                "mcp.parent_directory_is_missing",
-                "缺少父目录",
-            )
-        })?;
-        let parent = canonical(parent)?;
-        self.contains(&parent)?;
-        let target = parent.join(name);
-        match fs::symlink_metadata(&target) {
-            Ok(_) => {
-                let resolved = canonical(&target)?;
-                self.contains(&resolved)?;
-                if !fs::metadata(&target)
-                    .map_err(|e| io_error(e, &target))?
-                    .is_file()
-                {
-                    return Err(path_error(
-                        "mcp.path_invalid",
-                        path,
-                        "mcp.only_regular_files_can_be_replaced",
-                        "只能替换普通文件，不能覆盖目录或设备",
-                    ));
-                }
-                return Ok(resolved);
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(io_error(e, &target)),
-        }
+        let target = self.resolve_directory(parent)?.join(name);
+        self.contains(&target)?;
         Ok(target)
     }
+
+    // 从最近存在的祖先规范化，缺失部分只拼接；审批前调用不会产生文件系统改动。
+    pub(super) fn resolve_directory(&self, path: &Path) -> Result<PathBuf, AppError> {
+        reject_network_folder(path)?;
+        valid_path(path)?;
+        let mut ancestor = path;
+        while metadata_if_exists(ancestor)?.is_none() {
+            ancestor = ancestor
+                .parent()
+                .ok_or_else(|| io_error(std::io::ErrorKind::NotFound.into(), path))?;
+        }
+        for part in ancestor.ancestors() {
+            if metadata_if_exists(part)?.is_some_and(|m| is_link(&m)) {
+                return Err(path_error(
+                    "mcp.path_outside",
+                    part,
+                    "mcp.path_links_are_not_allowed",
+                    "写入路径不能经过符号链接或目录联接",
+                ));
+            }
+        }
+        let resolved = canonical(ancestor)?;
+        self.contains(&resolved)?;
+        if !resolved.is_dir() {
+            return Err(path_error(
+                "mcp.path_invalid",
+                path,
+                "mcp.parent_is_not_a_directory",
+                "父路径不是目录",
+            ));
+        }
+        let suffix = path
+            .strip_prefix(ancestor)
+            .map_err(|_| io_error(std::io::ErrorKind::InvalidInput.into(), path))?;
+        Ok(resolved.join(suffix))
+    }
+}
+
+pub(super) fn is_link(metadata: &fs::Metadata) -> bool {
+    metadata.file_type().is_symlink()
+}
+
+/// 删除前的检查（审批前调用，免得用户点了允许才失败）：授权文件夹本身不能删；
+/// 非空文件夹要 recursive。target 是 resolve_entry 的结果。
+pub(super) fn check_delete(sb: &Sandbox, target: &Path, recursive: bool) -> Result<(), AppError> {
+    check_move(sb, target)?;
+    let metadata = fs::symlink_metadata(target).map_err(|e| io_error(e, target))?;
+    if !recursive
+        && metadata.is_dir()
+        && !is_link(&metadata)
+        && fs::read_dir(target)
+            .map_err(|e| io_error(e, target))?
+            .next()
+            .is_some()
+    {
+        return Err(path_error(
+            "mcp.path_invalid",
+            target,
+            "mcp.folder_is_not_empty_set_recursive",
+            "文件夹不是空的；要连同里面的内容一起删除，请设 recursive: true",
+        ));
+    }
+    Ok(())
+}
+
+/// 删除、移走前的检查：授权文件夹本身不能删、不能移走（移走后授权就失效了）
+pub(super) fn check_move(sb: &Sandbox, target: &Path) -> Result<(), AppError> {
+    if sb
+        .folders
+        .iter()
+        .any(|folder| path_within(target, folder) && path_within(folder, target))
+    {
+        return Err(path_error(
+            "mcp.path_invalid",
+            target,
+            "mcp.allowed_folder_itself_cannot_be_deleted_or_moved",
+            "不能删除或移动授权文件夹本身",
+        ));
+    }
+    Ok(())
+}
+fn metadata_if_exists(path: &Path) -> Result<Option<fs::Metadata>, AppError> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => Ok(Some(metadata)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(io_error(e, path)),
+    }
+}
+
+/// 在 sb 授权范围内创建 path 及父目录；已有目录成功，链接和非目录返回错误。
+pub fn make_dir(sb: &Sandbox, path: &str) -> Result<PathBuf, AppError> {
+    let target = sb.resolve_directory(Path::new(path))?;
+    fs::create_dir_all(&target).map_err(|e| io_error(e, &target))?;
+    sb.resolve_directory(Path::new(path))
+}
+
+/// 删除 sb 内的 path；recursive 允许删除非空目录，末级链接仅删除链接本身，返回原路径。
+pub fn delete_path(sb: &Sandbox, path: &str, recursive: bool) -> Result<PathBuf, AppError> {
+    let target = sb.resolve_entry(path)?;
+    check_delete(sb, &target, recursive)?;
+    let metadata = fs::symlink_metadata(&target).map_err(|e| io_error(e, &target))?;
+    let result = if is_link(&metadata) {
+        remove_link(&target, &metadata)
+    } else if metadata.is_dir() {
+        if recursive {
+            fs::remove_dir_all(&target)
+        } else {
+            fs::remove_dir(&target)
+        }
+    } else {
+        fs::remove_file(&target)
+    };
+    result.map_err(|e| io_error(e, &target))?;
+    Ok(target)
+}
+fn remove_link(path: &Path, metadata: &fs::Metadata) -> std::io::Result<()> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::FileTypeExt;
+        if metadata.file_type().is_symlink_dir() {
+            return fs::remove_dir(path);
+        }
+    }
+    let _ = metadata;
+    fs::remove_file(path)
+}
+
+/// 将 sb 内的 from 重命名到 to；overwrite 为假时拒绝已有目标，链接仅移动链接本身，返回目标路径。
+pub fn rename_path(
+    sb: &Sandbox,
+    from: &str,
+    to: &str,
+    overwrite: bool,
+) -> Result<PathBuf, AppError> {
+    let source = sb.resolve_entry(from)?;
+    let target = sb.resolve_entry(to)?;
+    check_move(sb, &source)?;
+    fs::symlink_metadata(&source).map_err(|e| io_error(e, &source))?;
+    if !overwrite && metadata_if_exists(&target)?.is_some() {
+        return Err(path_error(
+            "mcp.path_exists",
+            &target,
+            "mcp.rename_target_exists",
+            "目标已存在，请选择其他路径或设置 overwrite",
+        ));
+    }
+    if overwrite {
+        fs::rename(&source, &target).map_err(|e| io_error(e, &target))?;
+    } else {
+        // 使用现有排他重命名，检查之后新出现的目标也不能覆盖。
+        fs_local::rename(&source, &target).map_err(|error| {
+            if error.code == "fs.exists" {
+                path_error(
+                    "mcp.path_exists",
+                    &target,
+                    "mcp.rename_target_exists",
+                    "目标已存在，请选择其他路径或设置 overwrite",
+                )
+            } else {
+                path_error(
+                    "mcp.path_invalid",
+                    &target,
+                    "mcp.file_operation",
+                    "无法访问路径或完成文件操作",
+                )
+            }
+        })?;
+    }
+    Ok(target)
 }
 /// 校验待授权的 folder；返回规范化的本机目录，网络盘返回 mcp.network_folder。
 /// 保存授权设置前调用；不存在、不可访问或非目录的路径返回带原因的错误。
@@ -495,6 +666,14 @@ pub(super) fn write_checked(
         }
         None => content.as_bytes().to_vec(),
     };
+    if let Some(parent) = target.parent() {
+        make_dir(
+            sb,
+            parent
+                .to_str()
+                .ok_or_else(|| io_error(std::io::ErrorKind::InvalidInput.into(), parent))?,
+        )?;
+    }
     atomic_write(sb, path, &target, &bytes, original.as_deref())
 }
 fn too_large(max: usize) -> AppError {
@@ -999,7 +1178,7 @@ mod tests {
         );
     }
     #[cfg(windows)]
-    fn junction(link: &Path, target: &Path) {
+    pub(super) fn junction(link: &Path, target: &Path) {
         use std::os::windows::{
             ffi::OsStrExt,
             io::{AsRawHandle, FromRawHandle},
@@ -1468,5 +1647,237 @@ mod confirmation_tests {
                 ext.to_uppercase()
             )));
         }
+    }
+}
+
+// 小图片走 MCP 图片内容，不占用按行或按字节文本响应。
+pub(super) fn read_image(
+    sb: &Sandbox,
+    path: &str,
+    cancelled: &AtomicBool,
+) -> Result<Option<serde_json::Value>, AppError> {
+    let extension = Path::new(path)
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let mime = match extension.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        _ => return Ok(None),
+    };
+    check_cancel(cancelled)?;
+    let path = sb.resolve_read(path)?;
+    let mut file = open_file(&path)?;
+    let metadata = file.metadata().map_err(|e| io_error(e, &path))?;
+    const LIMIT: usize = 2 * 1024 * 1024;
+    if metadata.len() > LIMIT as u64 {
+        return Ok(None);
+    }
+    let mut bytes = Vec::new();
+    let mut buffer = [0; 32768];
+    loop {
+        let count = read_chunk(&mut file, &mut buffer, &path, cancelled)?;
+        bytes.extend_from_slice(&buffer[..count]);
+        if bytes.len() > LIMIT {
+            return Err(too_large(LIMIT));
+        }
+        if count == 0 {
+            break;
+        }
+    }
+    check_metadata(&file, &metadata)?;
+    Ok(Some(
+        serde_json::json!({"path":path,"size":bytes.len(),"image":{"data":Base64::encode_string(&bytes),"mimeType":mime}}),
+    ))
+}
+
+#[cfg(test)]
+mod mutation_tests {
+    use super::*;
+    #[test]
+    fn 写入自动建父目录且预检无副作用() {
+        let root = crate::test_support::tempdir();
+        let sb = Sandbox::new(&[root.path().into()]);
+        let path = root.path().join("src/components/New.tsx");
+        let text = path.to_str().unwrap();
+        assert_eq!(sb.resolve_write(text).unwrap(), path);
+        assert!(!root.path().join("src").exists());
+        write_file(&sb, text, "组件").unwrap();
+        assert_eq!(fs::read_to_string(path).unwrap(), "组件");
+        let bad = root.path().join("src/components/New.tsx/child");
+        assert!(write_file(&sb, bad.to_str().unwrap(), "x").is_err());
+    }
+    #[test]
+    fn 目录创建删除与重命名覆盖规则() {
+        let root = crate::test_support::tempdir();
+        let sb = Sandbox::new(&[root.path().into()]);
+        let dir = root.path().join("one/two");
+        for _ in 0..2 {
+            make_dir(&sb, dir.to_str().unwrap()).unwrap();
+        }
+        make_dir(&sb, root.path().to_str().unwrap()).unwrap();
+        let from = dir.join("a.txt");
+        let to = dir.join("b.txt");
+        write_file(&sb, from.to_str().unwrap(), "a").unwrap();
+        assert!(make_dir(&sb, from.to_str().unwrap()).is_err());
+        rename_path(&sb, from.to_str().unwrap(), to.to_str().unwrap(), false).unwrap();
+        write_file(&sb, from.to_str().unwrap(), "b").unwrap();
+        assert_eq!(
+            rename_path(&sb, from.to_str().unwrap(), to.to_str().unwrap(), false)
+                .unwrap_err()
+                .code,
+            "mcp.path_exists"
+        );
+        rename_path(&sb, from.to_str().unwrap(), to.to_str().unwrap(), true).unwrap();
+        assert_eq!(fs::read_to_string(&to).unwrap(), "b");
+        assert!(delete_path(&sb, dir.to_str().unwrap(), false).is_err());
+        delete_path(&sb, to.to_str().unwrap(), false).unwrap();
+        delete_path(&sb, dir.to_str().unwrap(), false).unwrap();
+        make_dir(&sb, dir.to_str().unwrap()).unwrap();
+        fs::write(dir.join("nested"), "x").unwrap();
+        let moved = root.path().join("moved");
+        rename_path(&sb, dir.to_str().unwrap(), moved.to_str().unwrap(), false).unwrap();
+        delete_path(&sb, moved.to_str().unwrap(), true).unwrap();
+        assert!(!moved.exists());
+    }
+    #[test]
+    fn 新文件操作拒绝越界且不创建越界目录() {
+        let root = crate::test_support::tempdir();
+        let allowed = root.path().join("allowed");
+        fs::create_dir(&allowed).unwrap();
+        let sb = Sandbox::new(std::slice::from_ref(&allowed));
+        let outside = root.path().join("outside/nested");
+        let outside = outside.to_str().unwrap();
+        assert!(make_dir(&sb, outside).is_err());
+        assert!(write_file(&sb, outside, "x").is_err());
+        assert!(delete_path(&sb, outside, true).is_err());
+        let source = allowed.join("a");
+        fs::write(&source, "safe").unwrap();
+        assert!(rename_path(&sb, source.to_str().unwrap(), outside, true).is_err());
+        assert!(rename_path(&sb, outside, source.to_str().unwrap(), true).is_err());
+        assert!(!root.path().join("outside").exists());
+        assert_eq!(fs::read_to_string(source).unwrap(), "safe");
+    }
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn 链接与联接不用于创建且删除重命名只操作链接() {
+        let root = crate::test_support::tempdir();
+        let allowed = root.path().join("allowed");
+        let outside = root.path().join("outside");
+        fs::create_dir(&allowed).unwrap();
+        fs::create_dir(&outside).unwrap();
+        fs::write(outside.join("keep"), "safe").unwrap();
+        let sb = Sandbox::new(std::slice::from_ref(&allowed));
+        for destination in [&outside, &allowed] {
+            let link = allowed.join("link");
+            #[cfg(unix)]
+            std::os::unix::fs::symlink(destination, &link).unwrap();
+            #[cfg(windows)]
+            super::tests::junction(&link, destination);
+            let path = link.join("missing/child");
+            assert!(write_file(&sb, path.to_str().unwrap(), "x").is_err());
+            assert!(make_dir(&sb, path.to_str().unwrap()).is_err());
+            assert!(delete_path(&sb, link.join("keep").to_str().unwrap(), false).is_err());
+            let moved = allowed.join("moved");
+            rename_path(&sb, link.to_str().unwrap(), moved.to_str().unwrap(), false).unwrap();
+            delete_path(&sb, moved.to_str().unwrap(), true).unwrap();
+            assert_eq!(fs::read_to_string(outside.join("keep")).unwrap(), "safe");
+            assert!(!destination.join("missing").exists());
+        }
+    }
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn 递归删除不跟随嵌套链接且授权目录本身不能删除或移走() {
+        let root = crate::test_support::tempdir();
+        let allowed = root.path().join("allowed");
+        let sub = allowed.join("sub");
+        let outside = root.path().join("outside");
+        fs::create_dir_all(&sub).unwrap();
+        fs::create_dir(&outside).unwrap();
+        fs::write(outside.join("keep"), "safe").unwrap();
+        let link = sub.join("link");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside, &link).unwrap();
+        #[cfg(windows)]
+        super::tests::junction(&link, &outside);
+        let sb = Sandbox::new(std::slice::from_ref(&allowed));
+        for recursive in [false, true] {
+            let error = delete_path(&sb, allowed.to_str().unwrap(), recursive).unwrap_err();
+            assert_eq!(
+                error.params["reason_key"],
+                "mcp.allowed_folder_itself_cannot_be_deleted_or_moved"
+            );
+        }
+        let moved = root.path().join("moved");
+        assert!(
+            rename_path(
+                &sb,
+                allowed.to_str().unwrap(),
+                moved.to_str().unwrap(),
+                false
+            )
+            .is_err()
+        );
+        let error = delete_path(&sb, sub.to_str().unwrap(), false).unwrap_err();
+        assert_eq!(
+            error.params["reason_key"],
+            "mcp.folder_is_not_empty_set_recursive"
+        );
+        delete_path(&sb, sub.to_str().unwrap(), true).unwrap();
+        assert!(!sub.exists() && allowed.exists());
+        assert_eq!(fs::read_to_string(outside.join("keep")).unwrap(), "safe");
+    }
+    #[cfg(unix)]
+    #[test]
+    fn 悬空链接删除与重命名不触及指向路径() {
+        let root = crate::test_support::tempdir();
+        let sb = Sandbox::new(&[root.path().into()]);
+        let link = root.path().join("link");
+        std::os::unix::fs::symlink(root.path().join("absent"), &link).unwrap();
+        assert!(write_file(&sb, link.to_str().unwrap(), "x").is_err());
+        let moved = root.path().join("moved");
+        rename_path(&sb, link.to_str().unwrap(), moved.to_str().unwrap(), false).unwrap();
+        delete_path(&sb, moved.to_str().unwrap(), false).unwrap();
+        assert!(!root.path().join("absent").exists());
+    }
+    #[test]
+    fn 图片格式大小授权与取消边界() {
+        let root = crate::test_support::tempdir();
+        let sb = Sandbox::new(&[root.path().into()]);
+        let cancelled = AtomicBool::new(false);
+        for (ext, mime) in [
+            ("PNG", "image/png"),
+            ("jpg", "image/jpeg"),
+            ("jpeg", "image/jpeg"),
+            ("gif", "image/gif"),
+            ("webp", "image/webp"),
+        ] {
+            let path = root.path().join(format!("image.{ext}"));
+            fs::write(&path, [0, 1, 255]).unwrap();
+            let image = read_image(&sb, path.to_str().unwrap(), &cancelled)
+                .unwrap()
+                .unwrap();
+            assert_eq!(image["image"]["mimeType"], mime);
+            assert_eq!(image["image"]["data"], "AAH/");
+            assert!(read_image(&sb, path.to_str().unwrap(), &AtomicBool::new(true)).is_err());
+        }
+        let path = root.path().join("limit.png");
+        let file = fs::File::create(&path).unwrap();
+        file.set_len(2 * 1024 * 1024).unwrap();
+        assert!(
+            read_image(&sb, path.to_str().unwrap(), &cancelled)
+                .unwrap()
+                .is_some()
+        );
+        file.set_len(2 * 1024 * 1024 + 1).unwrap();
+        assert!(
+            read_image(&sb, path.to_str().unwrap(), &cancelled)
+                .unwrap()
+                .is_none()
+        );
+        assert!(read_image(&Sandbox::new(&[]), path.to_str().unwrap(), &cancelled).is_err());
     }
 }

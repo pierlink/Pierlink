@@ -331,7 +331,7 @@ impl McpHost for TauriHost {
         cancelled: &AtomicBool,
     ) -> Result<String, AppError> {
         if let Some(cwd) = request.cwd.as_deref() {
-            super::validate_cwd(cwd)?;
+            super::validate_cwd(cwd, request.target.kind)?;
         }
         crate::app_shell::show_main(&self.app);
         let app = self.app.clone();
@@ -421,7 +421,8 @@ impl McpHost for TauriHost {
                 HostEvent::Activity(_) => "activity",
                 HostEvent::SessionOpened(_)
                 | HostEvent::SessionClosed(_)
-                | HostEvent::SessionsChanged => "overview",
+                | HostEvent::SessionsChanged
+                | HostEvent::JobsChanged => "overview",
                 _ => "terminals",
             },
         );
@@ -457,6 +458,7 @@ impl McpHost for TauriHost {
                 NOTICE_EVENT,
                 McpNoticeDto::TerminalTakenBack { terminal_id },
             ),
+            HostEvent::JobsChanged => self.app.emit(super::JOBS_EVENT, ()),
         };
         if let Err(e) = result {
             eprintln!("推送 AI 接入事件失败: 错误={e}");

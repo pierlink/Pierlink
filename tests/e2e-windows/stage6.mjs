@@ -510,9 +510,9 @@ await rec.step(conn, "密码服务器：输错密码会提示并重新问；输�
   await answerPassword("pl-wrong-password", false);
   const ended = await u.waitFor(`(()=>{const e=[...document.querySelectorAll('.term-ended')].find(x=>x.offsetParent); return e ? e.innerText : null;})()`, "登录失败的提示", 30000);
   if (!/Login failed/.test(ended) || !/wrong or has changed/.test(ended)) throw new Error(`输错密码后的提示不对：${ended}`);
-  // 提示块上标出连接停在哪一步：解析、连接走完了，认证这一步标红
-  const steps = await p.js(`(()=>{const e=[...document.querySelectorAll('.term-ended')].find(x=>x.offsetParent); return e ? [...e.querySelectorAll('.conn-step')].map(s=>s.className.replace('conn-step conn-step--','')+':'+s.innerText.trim()) : null;})()`);
-  if (JSON.stringify(steps) !== JSON.stringify(["done:Resolve", "done:Connect", "failed:Auth", "todo:Session"])) throw new Error(`提示块上的连接进度不对：${JSON.stringify(steps)}`);
+  // 提示块上标出连接停在哪一步：连接、验证主机走完了，登录这一步标红
+  const steps = await p.js(`(()=>{const e=[...document.querySelectorAll('.term-ended')].find(x=>x.offsetParent); return e ? [...e.querySelectorAll('.conn-seg')].map(s=>s.className.replace('conn-seg conn-seg--','')+':'+s.innerText.trim()) : null;})()`);
+  if (JSON.stringify(steps) !== JSON.stringify(["done:Connect", "done:Verify host", "failed:Sign in", "todo:Start shell"])) throw new Error(`提示块上的连接进度不对：${JSON.stringify(steps)}`);
   // 重新连接：会再问（错的密码已作废，不会被再用一次）
   await u.clickText("Reconnect", ".term-ended");
   await waitPasswordDialog();

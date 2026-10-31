@@ -48,6 +48,11 @@ pub(super) struct Shared {
     secrets: Mutex<Vec<Zeroizing<String>>>,
 }
 impl Shared {
+    pub(super) fn redact_command(&self, command: &str) -> String {
+        let secrets = lock(&self.secrets);
+        let refs: Vec<_> = secrets.iter().map(|s| s.as_str()).collect();
+        crate::security::redact(command, &refs)
+    }
     /// 按 now 返回可见会话，结果按 ID 排序。
     pub(super) fn sessions_at(&self, now: Instant) -> Vec<SessionInfo> {
         let mut sessions: Vec<_> = lock(&self.sessions)
@@ -106,9 +111,9 @@ impl McpService {
         }
         let terminals = Arc::new(terminals);
         let shared = Arc::new(Shared {
-            host,
+            host: host.clone(),
             registry: Registry::new(terminals.clone()),
-            jobs: tools::jobs::Jobs::default(),
+            jobs: tools::jobs::Jobs::new(host),
             terminals,
             audit,
             sessions: Mutex::new(HashMap::new()),
@@ -271,6 +276,18 @@ impl McpService {
         for info in self.shared.registry.close_all(self.shared.host.as_ref()) {
             self.shared.audit_handover("take_back", &info);
         }
+    }
+    /// 无参数；返回各入口后台任务的脱敏快照，按开始时间排序，已完成记录保留 30 分钟。
+    pub fn jobs(&self) -> Vec<super::JobView> {
+        let mut jobs = self.shared.jobs.views();
+        for job in &mut jobs {
+            job.command = self.shared.redact_command(&job.command);
+        }
+        jobs
+    }
+    /// 按 id 请求结束后台任务的进程树，返回是否找到任务；清理完成后通过 JobsChanged 通知宿主。
+    pub fn stop_job(&self, id: &str) -> bool {
+        self.shared.jobs.stop_id(id)
     }
     /// 登记 secret 以遮蔽后续审计及工具结果中的值；空值忽略，秘密在释放时清零。
     pub fn add_secret(&self, secret: Zeroizing<String>) {
@@ -596,6 +613,7 @@ impl Shared {
     ) -> Result<CallToolResult, ErrorData> {
         let info = session.snapshot();
         let outcome = match &result {
+            Ok(value) if value["cancelled"] == true => "cancelled",
             Ok(_) => "ok",
             Err(Failure::Params(_)) => "mcp.invalid_params",
             Err(Failure::Tool(error)) => match error.code.as_str() {
@@ -676,8 +694,20 @@ impl Shared {
         }
         let response = match result {
             Ok(mut value) => {
+                let image = if name == "read_file" {
+                    value.as_object_mut().and_then(|v| v.remove("image"))
+                } else {
+                    None
+                };
                 hide_value(&mut value, &secret_refs);
-                Ok(CallToolResult::structured(value))
+                let mut result = CallToolResult::structured(value);
+                if let Some(image) = image {
+                    result.content.push(ContentBlock::image(
+                        image["data"].as_str().unwrap_or_default(),
+                        image["mimeType"].as_str().unwrap_or_default(),
+                    ));
+                }
+                Ok(result)
             }
             Err(Failure::Params(error)) => Err(error),
             Err(Failure::Tool(mut error)) => {

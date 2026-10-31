@@ -6,7 +6,7 @@ use serde_json::{Value, json};
 #[derive(Clone, Default)]
 pub(super) struct PendingLine {
     text: String,
-    edited: bool,
+    pub(super) edited: bool,
 }
 impl Drop for PendingLine {
     fn drop(&mut self) {
@@ -26,6 +26,7 @@ impl Shared {
         input: TerminalInput,
     ) -> Result<InputResult, AppError> {
         if input.text.is_some() == input.keys.is_some()
+            || (input.paste && input.text.is_none())
             || input.text.as_ref().is_some_and(|s| s.is_empty())
             || input
                 .keys
@@ -56,42 +57,50 @@ impl Shared {
                     "文字中含有不支持的控制字符",
                 ));
             }
-            let screen = self.host.terminal_text(id).await.map_err(|_| {
-                error(
-                    "mobile.host_failed",
-                    "mobile.couldn_t_read_the_current_terminal_state",
-                    "无法读取终端当前状态",
-                )
-            })?;
-            if looks_like_password_prompt(&screen) {
-                return Err(error(
-                    "mobile.password_prompt",
-                    "mobile.terminal_is_waiting_for_a_password_or_verification_code_enter",
-                    "终端正在等待密码或验证码，请在电脑上输入",
-                ));
-            }
-            for ch in text.chars() {
-                if ch == '\r' || ch == '\n' {
-                    submit(&mut pending, &mut dangerous);
-                } else {
-                    if ch == '\t' {
-                        pending.edited = true;
+            self.check_password(id).await?;
+            if input.paste {
+                let body = text.strip_suffix('\r').unwrap_or(text);
+                if body.contains('\r') {
+                    return Err(error(
+                        "mobile.invalid_request",
+                        "mobile.paste_carriage_return_must_be_last",
+                        "粘贴正文只允许在末尾附带一个回车，正文换行请使用换行符",
+                    ));
+                }
+                pending.text.push_str(body);
+                dangerous.extend(dangerous_lines(&pending.text));
+                if text.ends_with('\r') {
+                    if pending.edited {
+                        self.check_edited(id, &mut dangerous).await;
                     }
-                    pending.text.push(ch);
+                    pending = PendingLine::default();
+                }
+            } else {
+                for ch in text.chars() {
+                    if ch == '\r' || ch == '\n' {
+                        self.submit(id, &mut pending, &mut dangerous).await;
+                    } else {
+                        if ch == '\t' {
+                            pending.edited = true;
+                        }
+                        pending.text.push(ch);
+                    }
                 }
             }
         }
         if let Some(keys) = &input.keys {
             for key in keys {
                 match key.as_str() {
-                    "Enter" | "Ctrl+J" | "Ctrl+M" => submit(&mut pending, &mut dangerous),
+                    "Enter" | "Ctrl+J" | "Ctrl+M" => {
+                        self.submit(id, &mut pending, &mut dangerous).await;
+                    }
                     "Backspace" => {
                         pending.text.pop();
                     }
                     "Ctrl+C" | "Ctrl+U" => pending = PendingLine::default(),
                     "Tab" | "ArrowUp" | "ArrowDown" | "ArrowLeft" | "ArrowRight" | "Home"
                     | "End" => pending.edited = true,
-                    "Escape" | "Ctrl+D" => {}
+                    "Escape" | "Shift+Tab" | "Ctrl+D" => {}
                     _ => {
                         return Err(error(
                             "mobile.invalid_request",
@@ -128,9 +137,9 @@ impl Shared {
             let mut lines = lock(&self.pending_lines);
             lines.entry(id.into()).or_default().edited = true;
         }
-        let output = self.host.terminal_input(id, input).await.map_err(|_| {
-            error(
-                "mobile.host_failed",
+        let output = self.host.terminal_input(id, input).await.map_err(|e| {
+            super::http::host_error(
+                e,
                 "mobile.desktop_terminal_input_failed",
                 "桌面终端输入失败",
             )
@@ -143,15 +152,87 @@ impl Shared {
         }
         Ok(InputResult::Sent(output))
     }
+
+    pub(super) async fn check_password(&self, id: &str) -> Result<(), AppError> {
+        let screen = self.host.terminal_text(id).await.map_err(|e| {
+            super::http::host_error(
+                e,
+                "mobile.couldn_t_read_the_current_terminal_state",
+                "无法读取终端当前状态",
+            )
+        })?;
+        if looks_like_password_prompt(&screen) {
+            return Err(error(
+                "mobile.password_prompt",
+                "mobile.terminal_is_waiting_for_a_password_or_verification_code_enter",
+                "终端正在等待密码或验证码，请在电脑上输入",
+            ));
+        }
+        Ok(())
+    }
+
+    async fn check_edited(&self, id: &str, dangerous: &mut Vec<String>) {
+        match self.host.terminal_text(id).await {
+            Ok(screen) => {
+                let line = screen
+                    .lines()
+                    .rev()
+                    .find(|line| !line.trim().is_empty())
+                    .unwrap_or("");
+                let command = without_prompt(line);
+                if is_dangerous(command) {
+                    dangerous.push(command.to_owned());
+                }
+            }
+            Err(_) => dangerous.push("无法读取终端编辑后的命令，请核对屏幕后确认".into()),
+        }
+    }
+
+    async fn submit(&self, id: &str, pending: &mut PendingLine, dangerous: &mut Vec<String>) {
+        if pending.edited {
+            self.check_edited(id, dangerous).await;
+        } else {
+            dangerous.extend(dangerous_lines(&pending.text));
+        }
+        *pending = PendingLine::default();
+    }
 }
 
-fn submit(pending: &mut PendingLine, dangerous: &mut Vec<String>) {
-    if pending.edited {
-        dangerous.push("终端编辑后的命令无法完整识别，请核对屏幕后确认".into());
-    } else if is_dangerous(&pending.text) {
-        dangerous.push(pending.text.clone());
+fn without_prompt(line: &str) -> &str {
+    let line = line.trim_start();
+    if is_dangerous(line) {
+        return line;
     }
-    *pending = PendingLine::default();
+    if line.starts_with("PS ")
+        && let Some((_, command)) = line.split_once("> ")
+    {
+        return command;
+    }
+    for prefix in ["$ ", "# ", "> ", "% "] {
+        if let Some(command) = line.strip_prefix(prefix) {
+            return command;
+        }
+    }
+    // 路径或用户名提示符只去掉第一个标记，不能吞掉命令参数里的提示符样文字。
+    for marker in ["$ ", "# ", "% "] {
+        if let Some((_, command)) = line.split_once(marker) {
+            return command;
+        }
+    }
+    line
+}
+
+fn dangerous_lines(text: &str) -> Vec<String> {
+    let mut lines: Vec<_> = text
+        .split(['\r', '\n'])
+        .filter(|line| is_dangerous(line))
+        .map(str::to_owned)
+        .collect();
+    // 包装命令或续行可能只有合起来才命中，仍须检查整个输入。
+    if lines.is_empty() && is_dangerous(text) {
+        lines.push(text.to_owned());
+    }
+    lines
 }
 
 pub(super) fn confirmation(lines: Vec<String>) -> Value {

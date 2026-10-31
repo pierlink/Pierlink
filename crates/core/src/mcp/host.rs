@@ -77,6 +77,21 @@ pub struct Target {
     pub address: Option<String>,
 }
 
+/// 提供给宿主的后台任务快照；命令已脱敏并限制为前 200 个字符，完成记录保留 30 分钟。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct JobView {
+    pub id: String,
+    /// windows 或服务器 ID。
+    pub entry: String,
+    /// 目标 ID。
+    pub target: String,
+    pub command: String,
+    /// Unix 毫秒。
+    pub started_ms: u64,
+    pub running: bool,
+    pub exit_code: Option<i32>,
+}
+
 /// 用户对首次连接或单次操作审批的回答；两种审批的记忆范围不同
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Confirmation {
@@ -216,6 +231,8 @@ pub enum HostEvent {
     SessionClosed(String),
     /// 可见会话集合发生变化，请重新读取 sessions()；不携带数据。
     SessionsChanged,
+    /// 后台任务开始、结束或保留记录过期；宿主重新读取 jobs() 刷新界面。
+    JobsChanged,
     Activity(AuditRecord),
     TerminalOpened {
         session: String,

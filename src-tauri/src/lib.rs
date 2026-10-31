@@ -20,6 +20,7 @@ mod network;
 mod pages;
 mod passwords;
 mod paste_image;
+mod phone_size;
 mod profile;
 mod proxy;
 mod servers;
@@ -56,6 +57,8 @@ fn specta_builder() -> Builder<tauri::Wry> {
         mcp::mcp_token_rotate,
         mcp::mcp_activity,
         mcp::mcp_stop_all,
+        mcp::mcp_jobs,
+        mcp::mcp_job_stop,
         mcp::mcp_confirm_answer,
         mcp::mcp_confirm_pending,
         mcp::mcp_terminal_opened,
@@ -145,6 +148,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
         mobile::mobile_cancel_invite,
         mobile::mobile_revoke,
         mobile::mobile_pair_answer,
+        mobile::mobile_terminal_opened,
         desktop::desktop_detect,
         desktop::desktop_connect,
         desktop::desktop_send,
@@ -388,6 +392,8 @@ pub fn run() {
             app.manage(db);
             // 代理设置：要在任何连接（同步、转发、检查更新）之前生效
             proxy::apply_saved(app.handle());
+            // 手机按手机宽度看终端：太久没续期的恢复成电脑的尺寸
+            terminal::start_phone_size_expiry(app.handle());
             // 密码服务器的内存密码库和 askpass 管道：要在任何连接（同步、转发自动开启）之前建立
             let passwords = passwords::PasswordState::start(app.handle());
             app.manage(passwords);

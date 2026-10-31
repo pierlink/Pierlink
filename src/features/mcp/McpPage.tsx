@@ -4,7 +4,7 @@ import { Monitor, Plus, Server, Trash2 } from "lucide-react";
 import { Banner, Button, Checkbox, Dialog, Notice, Segmented, Select, Switch } from "../../components";
 import { formatError } from "../../errors";
 import { getServersApi, type ServerRecord } from "../servers/api";
-import { defaultServerEntry, getMcpApi, type EntrySettings, type McpActivity, type McpConnectInfo, type McpEntryState, type McpSettings, type McpStatus } from "./api";
+import { defaultServerEntry, getMcpApi, type EntrySettings, type McpActivity, type McpConnectInfo, type McpEntryState, type McpJob, type McpSettings, type McpStatus } from "./api";
 import { CommandLine, EntryPermissions, PortInput } from "./McpParts";
 import "./mcp.css";
 
@@ -17,6 +17,15 @@ type EntryId = string;
  * 两个标签：入口（左边入口列表，右边选中入口的接入命令、审批方式、权限、端口和令牌）、操作记录（全部 AI 操作）。
  * 改动立即保存，按顺序一个接一个保存。
  */
+/**
+ * 打开 AI 接入的总开关。一个入口都还没开时顺带打开本机入口：
+ * 否则一键添加到客户端以后，AI 一连上就被拒，用户不知道还要再开一个开关。
+ */
+function turnOn(settings: McpSettings): McpSettings {
+  const anyEntry = settings.windows.enabled || settings.servers.some((s) => s.entry.enabled);
+  return { ...settings, enabled: true, windows: anyEntry ? settings.windows : { ...settings.windows, enabled: true } };
+}
+
 export function McpPage() {
   const { t } = useTranslation();
   const [settings, setSettings] = useState<McpSettings | null>(null);
@@ -86,7 +95,7 @@ export function McpPage() {
       <header className="pl-panel mcp-page__head">
         <div className="mcp-page__title">
           <h1>{t("nav.mcp")}</h1>
-          <Switch label={t("mcp.enable")} checked={settings.enabled} onChange={(v) => save({ ...settings, enabled: v })} />
+          <Switch label={t("mcp.enable")} checked={settings.enabled} onChange={(v) => save(v ? turnOn(settings) : { ...settings, enabled: false })} />
         </div>
         <Segmented<Tab> label={t("nav.mcp")} value={tab} onChange={setTab} options={[
           { value: "entries", label: t("mcp.tabEntries") },
@@ -95,7 +104,8 @@ export function McpPage() {
         <span className="mcp-page__spacer" />
         {/* 连着的 AI 数和“全部停止”占固定位置：数量变化、按钮出现消失都不挤动别的内容 */}
         <span className="mcp-page__sessions">{t("mcp.connectedCount", { count: sessions.length })}</span>
-        <Button size="sm" variant="danger-ghost" disabled={stopping || sessions.length === 0} onClick={() => void stopAll()}>{t("mcp.stopAll")}</Button>
+        {/* 没有连着的 AI 也能点：后台任务、记住的拒绝都靠它清掉 */}
+        <Button size="sm" variant="danger-ghost" disabled={stopping} title={t("mcp.stopAllHint")} onClick={() => void stopAll()}>{t("mcp.stopAll")}</Button>
       </header>
 
       {/* 出错提示浮在底部提示区，不把列表和详情往下推；点“知道了”或下一次操作时消失 */}
@@ -111,7 +121,7 @@ export function McpPage() {
         <section className="pl-panel mcp-page__off">
           <p>{t("mcp.intro")}</p>
           <p className="set-row__hint">{t("mcp.enableHint")}</p>
-          <Button variant="primary" onClick={() => save({ ...settings, enabled: true })}>{t("mcp.enable")}</Button>
+          <Button variant="primary" onClick={() => save(turnOn(settings))}>{t("mcp.enable")}</Button>
         </section>
       ) : tab === "entries" ? (
         <div className="mcp-page__body">
@@ -376,10 +386,11 @@ function ClientSetup({ serverId, serverName, commands, fileHint }: {
       {shown.map((c) => <CommandLine key={c.text} text={c.text} />)}
       {fileHint && shown.length > 0 && <p className="set-row__hint">{fileHint}</p>}
       <div className="mcp-oneclick__buttons">
-        <Button size="sm" variant="primary" disabled={busy !== null || installed === null || missing} onClick={() => void add()}>
+        {/* 还在检测时也能点（服务器离线时检测要等很久）；没装的话后端报“没检测到”，照常提示 */}
+        <Button size="sm" variant="primary" disabled={busy !== null || missing} onClick={() => void add()}>
           {busy === "add" ? t("mcp.adding") : t("mcp.addOneClick")}
         </Button>
-        <Button size="sm" disabled={busy !== null || installed === null || missing} onClick={() => void remove()}>
+        <Button size="sm" disabled={busy !== null || missing} onClick={() => void remove()}>
           {busy === "remove" ? t("mcp.removing") : t("mcp.remove")}
         </Button>
       </div>
@@ -431,6 +442,48 @@ function loadWidths(): Record<string, number> {
 }
 
 /** “操作记录”标签：全部 AI 操作，可按入口筛选 */
+/**
+ * AI 开的后台任务（如 npm run dev）：还在运行的可以停掉；刚结束的显示退出码。没有任务时不显示。
+ * 任务开始、结束时后端发事件，这里重新拉
+ */
+function JobsList({ serverName, onError }: { serverName: (id: string) => string; onError: (e: string) => void }) {
+  const { t } = useTranslation();
+  const [jobs, setJobs] = useState<McpJob[]>([]);
+  const [stopping, setStopping] = useState<string | null>(null);
+  useEffect(() => {
+    let alive = true;
+    let off: (() => void) | undefined;
+    const load = () => void getMcpApi().then((api) => api.jobs()).then((l) => { if (alive) setJobs(l); }, () => {});
+    load();
+    void getMcpApi().then((api) => api.onJobs(load)).then((u) => { if (alive) off = u; else u(); });
+    return () => { alive = false; off?.(); };
+  }, []);
+  if (jobs.length === 0) return null;
+  const where = (id: string) => (id === "windows" ? t("mcp.targetWindows") : serverName(id));
+  const stop = (id: string) => {
+    setStopping(id);
+    void getMcpApi().then((api) => api.stopJob(id)).then(
+      () => setStopping(null),
+      (e: unknown) => { setStopping(null); onError(formatError(e)); },
+    );
+  };
+  return (
+    <div className="mcp-jobs">
+      <div className="mcp-jobs__title">{t("mcp.jobs.title", { count: jobs.filter((j) => j.running).length })}</div>
+      {jobs.map((j) => (
+        <div key={j.id} className="mcp-job">
+          <span className={`mcp-job__dot${j.running ? " mcp-job__dot--on" : ""}`} aria-hidden="true" />
+          <code className="mcp-job__cmd pl-ellipsis" title={j.command}>{j.command}</code>
+          <span className="mcp-job__meta">
+            {where(j.target)} · {j.running ? t("mcp.jobs.running", { min: Math.max(1, Math.round((Date.now() - j.startedMs) / 60000)) }) : t("mcp.jobs.exited", { code: j.exitCode ?? "-" })}
+          </span>
+          {j.running && <Button size="sm" variant="danger-ghost" disabled={stopping === j.id} onClick={() => stop(j.id)}>{t("mcp.jobs.stop")}</Button>}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function ActivityView({ activity, settings, serverName, onError }: {
   activity: McpActivity[]; settings: McpSettings; serverName: (id: string) => string; onError: (e: string) => void;
 }) {
@@ -466,6 +519,7 @@ function ActivityView({ activity, settings, serverName, onError }: {
   const outcome = (a: McpActivity) => (a.outcome === "ok" ? t("mcp.outcome.ok") : a.outcome === "denied" || a.outcome === "cancelled" ? t(`mcp.outcome.${a.outcome}`) : t("mcp.outcome.failed"));
   return (
     <section className="pl-panel mcp-activity">
+      <JobsList serverName={serverName} onError={onError} />
       <div className="mcp-activity__bar">
         <Select label={t("mcp.filterEntry")} value={filter} onChange={setFilter} options={[
           { value: "", label: t("mcp.filterAll") },

@@ -238,6 +238,9 @@ impl Output {
         ))
     }
     fn recent(&self, count: usize) -> Vec<String> {
+        self.recent_rendered(count, false)
+    }
+    fn recent_rendered(&self, count: usize, formatted: bool) -> Vec<String> {
         if count == 0 {
             return Vec::new();
         }
@@ -246,6 +249,11 @@ impl Output {
         let mut current: Vec<_> = screen.rows(0, cols).collect();
         while current.last().is_some_and(String::is_empty) {
             current.pop();
+        }
+        if formatted {
+            current = (0..current.len())
+                .map(|row| formatted_row(&screen, row as u16))
+                .collect();
         }
         let count = count.min(HISTORY_LINES);
         if current.len() >= count {
@@ -258,11 +266,72 @@ impl Output {
         while offset > 0 {
             screen.set_scrollback(offset);
             let take = offset.min(rows as usize);
-            lines.extend(screen.rows(0, cols).take(take));
+            if formatted {
+                lines.extend((0..take).map(|row| formatted_row(&screen, row as u16)));
+            } else {
+                lines.extend(screen.rows(0, cols).take(take));
+            }
             offset -= take;
         }
         lines.extend(current);
         lines
+    }
+}
+
+// 只按已渲染单元格生成 SGR，不转发原始终端控制序列。
+fn formatted_row(screen: &vt100::Screen, row: u16) -> String {
+    let cols = screen.size().1;
+    let end = (0..cols)
+        .rfind(|&col| {
+            screen
+                .cell(row, col)
+                .is_some_and(|cell| cell.has_contents())
+        })
+        .map_or(0, |col| col + 1);
+    let mut result = String::from("\x1b[0m");
+    let mut previous = String::from("0");
+    for col in 0..end {
+        let Some(cell) = screen.cell(row, col) else {
+            continue;
+        };
+        if cell.is_wide_continuation() {
+            continue;
+        }
+        let mut style = String::from("0");
+        for (enabled, code) in [
+            (cell.bold(), ";1"),
+            (cell.dim(), ";2"),
+            (cell.italic(), ";3"),
+            (cell.underline(), ";4"),
+            (cell.inverse(), ";7"),
+        ] {
+            if enabled {
+                style.push_str(code);
+            }
+        }
+        append_color(&mut style, cell.fgcolor(), 38);
+        append_color(&mut style, cell.bgcolor(), 48);
+        if style != previous {
+            result.push_str("\x1b[");
+            result.push_str(&style);
+            result.push('m');
+            previous = style;
+        }
+        if cell.has_contents() {
+            result.extend(cell.contents().chars().filter(|c| !c.is_control()));
+        } else {
+            result.push(' ');
+        }
+    }
+    result.push_str("\x1b[0m");
+    result
+}
+
+fn append_color(style: &mut String, color: vt100::Color, code: u8) {
+    match color {
+        vt100::Color::Default => {}
+        vt100::Color::Idx(index) => style.push_str(&format!(";{code};5;{index}")),
+        vt100::Color::Rgb(r, g, b) => style.push_str(&format!(";{code};2;{r};{g};{b}")),
     }
 }
 
@@ -300,6 +369,20 @@ impl TerminalManager {
     /// 返回 id 最近 count 行已渲染文字（回滚加当前屏幕），最多 10000 行；不包含末尾空屏行。
     pub fn recent_lines(&self, id: &str, count: usize) -> Result<Vec<String>, AppError> {
         Ok(lock(&self.get(id)?.output).recent(count))
+    }
+
+    /// 返回 id 最近 count 行含 SGR 颜色和样式的文字，选行规则与 recent_lines 相同，最多 10000 行。
+    /// 每行从默认样式开始并以复位结束，只包含 ESC [ … m 控制序列；不存在的终端返回错误。
+    pub fn recent_lines_formatted(&self, id: &str, count: usize) -> Result<Vec<String>, AppError> {
+        Ok(lock(&self.get(id)?.output).recent_rendered(count, true))
+    }
+
+    /// 返回 id 当前是否启用括号粘贴模式；不存在的终端返回错误。
+    pub fn bracketed_paste(&self, id: &str) -> Result<bool, AppError> {
+        Ok(lock(&self.get(id)?.output)
+            .parser
+            .screen()
+            .bracketed_paste())
     }
 
     /// 返回 id 当前累计输出字节数；不复制历史，不存在的终端返回错误。
@@ -478,5 +561,92 @@ mod tests {
         let (window, _) = output.window(7, None, 4, 2, Instant::now()).unwrap();
         assert!(!window.lost);
         assert_eq!(window.data, b"5678");
+    }
+}
+
+#[cfg(test)]
+mod formatted_tests {
+    use super::*;
+
+    fn check_lines(output: &Output, count: usize) -> Vec<String> {
+        let lines = output.recent_rendered(count, true);
+        let sgr = regex::Regex::new("\x1b\\[[0-9;]*m").unwrap();
+        let plain: Vec<_> = lines
+            .iter()
+            .map(|line| {
+                assert!(line.starts_with("\x1b[0m"));
+                assert!(line.ends_with("\x1b[0m"));
+                let text = sgr.replace_all(line, "").into_owned();
+                assert!(!text.chars().any(char::is_control));
+                text
+            })
+            .collect();
+        assert_eq!(plain, output.recent(count));
+        lines
+    }
+
+    #[test]
+    fn 彩色行保留全部样式索引色真彩色和宽字符且不输出其他控制序列() {
+        let mut output = Output::new(40, 4);
+        output.parser.process(
+            concat!(
+                "\x1b[31;44;1;3;4;7m中😀e\u{301}",
+                "\x1b[0;2;38;5;202;48;5;234m暗",
+                "\x1b[0;38;2;1;2;3;48;2;4;5;6m真",
+                "\x1b[0m\x1b[2C后\x1b]52;c;c2VjcmV0\x07",
+                "\x1b]8;;https://example.com\x1b\\链接\x1b]8;;\x1b\\",
+                "\r\n默认"
+            )
+            .as_bytes(),
+        );
+        let lines = check_lines(&output, 10);
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].contains(";1;3;4;7;38;5;1;48;5;4m中😀e\u{301}"));
+        assert!(lines[0].contains(";2;38;5;202;48;5;234m暗"));
+        assert!(lines[0].contains(";38;2;1;2;3;48;2;4;5;6m真"));
+        assert_eq!(lines[1], "\x1b[0m默认\x1b[0m");
+        assert!(!lines[0].contains("example.com"));
+        // 每行单独解析，验证宽字符不重复且每个单元格的样式可还原。
+        let mut parsed = vt100::Parser::new(4, 40, 0);
+        parsed.process(lines[0].as_bytes());
+        for col in 0..20 {
+            let original = output.parser.screen().cell(0, col).unwrap();
+            let actual = parsed.screen().cell(0, col).unwrap();
+            // 光标跳过的空单元格需要输出空格，重新解析后仍应呈现为空白。
+            if original.contents().is_empty() {
+                assert!(actual.contents().trim().is_empty());
+            } else {
+                assert_eq!(actual.contents(), original.contents());
+            }
+            assert_eq!(actual.fgcolor(), original.fgcolor());
+            assert_eq!(actual.bgcolor(), original.bgcolor());
+            assert_eq!(actual.bold(), original.bold());
+            assert_eq!(actual.dim(), original.dim());
+            assert_eq!(actual.italic(), original.italic());
+            assert_eq!(actual.underline(), original.underline());
+            assert_eq!(actual.inverse(), original.inverse());
+        }
+    }
+
+    #[test]
+    fn 彩色回滚选行空行截断及备用屏与纯文本一致() {
+        let mut output = Output::new(6, 3);
+        output
+            .parser
+            .process("\x1b[32m一\r\n\r\n三\r\n四\r\n五\r\n\r\n".as_bytes());
+        for count in [0, 1, 2, 3, 4, 20] {
+            check_lines(&output, count);
+        }
+        let original = output.recent_rendered(20, true);
+        output
+            .parser
+            .process(b"\x1b[?1049h\x1b[H\x1b[2J\x1b[35malt");
+        check_lines(&output, 20);
+        output.parser.process(b"\x1b[?1049l");
+        assert_eq!(output.recent_rendered(20, true), original);
+        for _ in 0..HISTORY_LINES + 5 {
+            output.parser.process(b"x\r\n");
+        }
+        assert_eq!(check_lines(&output, usize::MAX).len(), HISTORY_LINES);
     }
 }

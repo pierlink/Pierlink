@@ -33,8 +33,11 @@ enum Route<'a> {
     Me,
     Overview,
     Terminals,
+    OpenTerminal,
     Screen(&'a str),
     Input(&'a str),
+    Image(&'a str),
+    Size(&'a str),
     Activity,
     Confirms,
     Answer(&'a str),
@@ -51,6 +54,7 @@ impl<'a> Route<'a> {
             ("GET", "/api/me") => Self::Me,
             ("GET", "/api/overview") => Self::Overview,
             ("GET", "/api/terminals") => Self::Terminals,
+            ("POST", "/api/terminals") => Self::OpenTerminal,
             ("GET", "/api/activity") => Self::Activity,
             ("GET", "/api/confirms") => Self::Confirms,
             ("POST", "/api/stop-all") => Self::StopAll,
@@ -68,6 +72,16 @@ impl<'a> Route<'a> {
                         if method == Method::POST && valid_id(id) =>
                     {
                         Self::Input(id)
+                    }
+                    ["", "api", "terminals", id, "image"]
+                        if method == Method::POST && valid_id(id) =>
+                    {
+                        Self::Image(id)
+                    }
+                    ["", "api", "terminals", id, "size"]
+                        if method == Method::POST && valid_id(id) =>
+                    {
+                        Self::Size(id)
                     }
                     ["", "api", "confirms", id] if method == Method::POST && valid_id(id) => {
                         Self::Answer(id)
@@ -89,8 +103,11 @@ impl<'a> Route<'a> {
             Self::Me => ("me", None),
             Self::Overview => ("overview", None),
             Self::Terminals => ("terminals", None),
+            Self::OpenTerminal => ("terminal_open", None),
             Self::Screen(id) => ("terminal_screen", Some(id)),
             Self::Input(id) => ("terminal_input", Some(id)),
+            Self::Image(id) => ("terminal_image", Some(id)),
+            Self::Size(id) => ("terminal_size", Some(id)),
             Self::Activity => ("activity", None),
             Self::Confirms => ("confirms", None),
             Self::Answer(id) => ("answer_confirm", Some(id)),
@@ -103,7 +120,7 @@ impl<'a> Route<'a> {
     }
     fn permission(&self, p: Permissions) -> bool {
         match self {
-            Self::Input(_) => p.input,
+            Self::Input(_) | Self::Image(_) | Self::Size(_) | Self::OpenTerminal => p.input,
             Self::Answer(_) | Self::StopAll => p.confirm,
             Self::Overview
             | Self::Terminals
@@ -138,6 +155,7 @@ impl Audit {
                 target: target.map(str::to_owned),
                 result: "cancelled".into(),
                 peer: peer.to_string(),
+                bytes: None,
             },
         }
     }
@@ -201,7 +219,24 @@ impl Shared {
                 }
                 Some(device)
             };
-            let body = read_body(body, self.limits.idle).await?;
+            let body_limit = if matches!(route, Route::Image(_)) {
+                if let Some(device) = &device {
+                    lock(&self.image_rate).take(&device.id, Instant::now())?;
+                }
+                image::MAX_IMAGE_BODY
+            } else {
+                MAX_BODY
+            };
+            let body = read_body(body, self.limits.idle, body_limit).await?;
+            if matches!(route, Route::Image(_)) {
+                audit.record.bytes = Some(body.len());
+            }
+            // 新开终端：审计记下要开在哪台服务器（本机为 windows）
+            if let Route::OpenTerminal = route
+                && let Ok(request) = parse::<OpenRequest>(&body)
+            {
+                audit.record.target = Some(request.server.unwrap_or_else(|| "windows".into()));
+            }
             if let Route::Pair = route {
                 let _approval = ApprovalWait::new(activity.clone());
                 let pairing: auth::PairRequest = parse(&body)?;
@@ -240,6 +275,7 @@ impl Shared {
                 self.dispatch(
                     &route,
                     parts.uri.query(),
+                    single_header(&parts.headers, header::CONTENT_TYPE.as_str()),
                     &body,
                     device.as_ref(),
                     connection,
@@ -291,6 +327,7 @@ impl Shared {
         self: &Arc<Self>,
         route: &Route<'_>,
         query: Option<&str>,
+        content_type: Option<&str>,
         body: &[u8],
         device: Option<&Device>,
         connection: u64,
@@ -301,7 +338,11 @@ impl Shared {
             }
             Route::Overview => host(self.host.overview()).await?,
             Route::Terminals => host(self.host.terminals()).await?,
-            Route::Screen(id) => host(self.host.terminal_screen(id)).await?,
+            Route::OpenTerminal => {
+                let request: OpenRequest = parse(body)?;
+                host(self.host.open_terminal(open_target(&request)?)).await?
+            }
+            Route::Screen(id) => host(self.host.terminal_screen(id, screen_lines(query)?)).await?,
             Route::Activity => host(self.host.activity(activity_limit(query)?)).await?,
             Route::Confirms => host(self.host.confirms()).await?,
             Route::Answer(id) => {
@@ -334,6 +375,13 @@ impl Shared {
                     ));
                 }
             },
+            Route::Image(id) => {
+                let ext = image::extension(content_type, body)?;
+                self.image(id, body.to_vec(), ext).await?
+            }
+            Route::Size(id) => {
+                host(self.host.terminal_size(id, terminal_size(parse(body)?)?)).await?
+            }
             Route::Logout => {
                 let device = device.ok_or_else(|| {
                     error(
@@ -439,13 +487,22 @@ impl Shared {
 }
 
 async fn host(future: HostFuture<'_, Value>) -> Result<Value, AppError> {
-    future.await.map_err(|_| {
-        error(
-            "mobile.host_failed",
+    future.await.map_err(|e| {
+        host_error(
+            e,
             "mobile.desktop_operation_failed_check_its_status_on_the_computer",
             "桌面操作失败，请在电脑上查看状态",
         )
     })
+}
+/// 宿主的错误：写给手机的（mobile. 开头，如终端已关闭、电脑上没及时打开终端）原样给手机，
+/// 其他的（桌面内部错误）只说失败了，不把内部细节交给手机。
+pub(super) fn host_error(e: AppError, key: &'static str, text: &str) -> AppError {
+    if e.code.starts_with("mobile.") {
+        e
+    } else {
+        error("mobile.host_failed", key, text)
+    }
 }
 async fn next_event(
     subscription: &mut Option<broadcast::Receiver<String>>,
@@ -477,6 +534,56 @@ impl Drop for EventBody {
     }
 }
 
+/// 手机请电脑打开终端：{server: 服务器 ID}，不给或为 null 时打开本机终端
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OpenRequest {
+    #[serde(default)]
+    server: Option<String>,
+}
+
+/// 检查打开终端的请求；返回服务器 ID，本机终端为 None
+fn open_target(request: &OpenRequest) -> Result<Option<&str>, AppError> {
+    match request.server.as_deref() {
+        Some(id) if !valid_id(id) => Err(error(
+            "mobile.invalid_request",
+            "mobile.server_id_is_invalid",
+            "服务器 ID 无效",
+        )),
+        server => Ok(server),
+    }
+}
+
+/// 手机“按手机宽度显示”的请求：{cols, rows} 改尺寸，{restore: true} 恢复
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SizeRequest {
+    cols: Option<u16>,
+    rows: Option<u16>,
+    #[serde(default)]
+    restore: bool,
+}
+
+/// 检查改尺寸的请求；返回要改成的列数和行数，恢复时为 None
+fn terminal_size(request: SizeRequest) -> Result<Option<(u16, u16)>, AppError> {
+    let invalid = || {
+        error(
+            "mobile.invalid_request",
+            "mobile.terminal_size_must_be_20_300_columns_and_5_100_rows",
+            "终端尺寸必须是 20 到 300 列、5 到 100 行，或者只给 restore",
+        )
+    };
+    match (request.restore, request.cols, request.rows) {
+        (true, None, None) => Ok(None),
+        (false, Some(cols), Some(rows))
+            if (20..=300).contains(&cols) && (5..=100).contains(&rows) =>
+        {
+            Ok(Some((cols, rows)))
+        }
+        _ => Err(invalid()),
+    }
+}
+
 fn parse<T: DeserializeOwned>(body: &[u8]) -> Result<T, AppError> {
     serde_json::from_slice(body).map_err(|_| {
         error(
@@ -486,17 +593,17 @@ fn parse<T: DeserializeOwned>(body: &[u8]) -> Result<T, AppError> {
         )
     })
 }
-async fn read_body(mut body: Incoming, timeout: Duration) -> Result<Zeroizing<Vec<u8>>, AppError> {
+async fn read_body(
+    mut body: Incoming,
+    timeout: Duration,
+    limit: usize,
+) -> Result<Zeroizing<Vec<u8>>, AppError> {
     if body
         .size_hint()
         .upper()
-        .is_some_and(|length| length > MAX_BODY as u64)
+        .is_some_and(|length| length > limit as u64)
     {
-        return Err(error(
-            "mobile.body_too_large",
-            "mobile.request_body_exceeds_64_kib",
-            "请求体超过六十四 KiB",
-        ));
+        return Err(body_too_large(limit));
     }
     tokio::time::timeout(timeout, async move {
         let mut bytes = Zeroizing::new(Vec::new());
@@ -509,12 +616,8 @@ async fn read_body(mut body: Incoming, timeout: Duration) -> Result<Zeroizing<Ve
                 )
             })?;
             if let Ok(data) = frame.into_data() {
-                if data.len() > MAX_BODY - bytes.len() {
-                    return Err(error(
-                        "mobile.body_too_large",
-                        "mobile.request_body_exceeds_64_kib",
-                        "请求体超过六十四 KiB",
-                    ));
+                if data.len() > limit - bytes.len() {
+                    return Err(body_too_large(limit));
                 }
                 bytes.extend_from_slice(&data);
             }
@@ -529,6 +632,22 @@ async fn read_body(mut body: Incoming, timeout: Duration) -> Result<Zeroizing<Ve
             "请求体接收超时",
         )
     })?
+}
+fn body_too_large(limit: usize) -> AppError {
+    if limit == image::MAX_IMAGE_BODY {
+        error(
+            "mobile.body_too_large",
+            "mobile.image_body_exceeds_8_mib",
+            "图片请求体超过八 MiB",
+        )
+    } else {
+        error(
+            "mobile.body_too_large",
+            "mobile.request_body_exceeds_64_kib",
+            "请求体超过六十四 KiB",
+        )
+    }
+    .with("limit", limit)
 }
 fn single_header<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
     if headers.get_all(name).iter().count() != 1 {
@@ -584,7 +703,9 @@ fn validate_origin(headers: &HeaderMap, method: &Method) -> Result<(), AppError>
             || origin_authority
                 .port_u16()
                 .unwrap_or(if scheme == "https" { 443 } else { 80 })
-                != authority.port_u16().unwrap_or(80)
+                != authority
+                    .port_u16()
+                    .unwrap_or(if scheme == "https" { 443 } else { 80 })
         {
             return Err(denied());
         }
@@ -625,6 +746,25 @@ fn activity_limit(query: Option<&str>) -> Result<usize, AppError> {
     }
     Ok(limit)
 }
+fn screen_lines(query: Option<&str>) -> Result<usize, AppError> {
+    let Some(query) = query else { return Ok(300) };
+    let invalid = || {
+        error(
+            "mobile.invalid_request",
+            "mobile.screen_lines_must_be_an_integer_from_1_to_2000",
+            "屏幕行数必须为一至二千之间的整数",
+        )
+    };
+    let lines = query
+        .strip_prefix("lines=")
+        .ok_or_else(invalid)?
+        .parse::<usize>()
+        .map_err(|_| invalid())?;
+    if !(1..=2000).contains(&lines) {
+        return Err(invalid());
+    }
+    Ok(lines)
+}
 fn error_status(code: &str) -> StatusCode {
     match code {
         "mobile.unauthorized" | "mobile.invalid_invite" => StatusCode::UNAUTHORIZED,
@@ -636,11 +776,13 @@ fn error_status(code: &str) -> StatusCode {
         "mobile.rate_limited" | "mobile.device_limit" | "mobile.input_limit" => {
             StatusCode::TOO_MANY_REQUESTS
         }
-        "mobile.pair_timeout" => StatusCode::GATEWAY_TIMEOUT,
+        "mobile.pair_timeout" | "mobile.open_timeout" => StatusCode::GATEWAY_TIMEOUT,
+        "mobile.open_failed" => StatusCode::BAD_GATEWAY,
         "mobile.request_timeout" => StatusCode::REQUEST_TIMEOUT,
         "mobile.body_too_large" => StatusCode::PAYLOAD_TOO_LARGE,
-        "mobile.invalid_request" => StatusCode::BAD_REQUEST,
-        "mobile.not_found" => StatusCode::NOT_FOUND,
+        "mobile.invalid_request" | "mobile.invalid_image" => StatusCode::BAD_REQUEST,
+        "mobile.unsupported_image_type" => StatusCode::UNSUPPORTED_MEDIA_TYPE,
+        "mobile.not_found" | "mobile.server_not_found" => StatusCode::NOT_FOUND,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     }
 }
@@ -771,5 +913,121 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for ActivityIo<S> {
     }
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         Pin::new(&mut self.stream).poll_shutdown(cx)
+    }
+}
+
+#[cfg(test)]
+mod origin_tests {
+    use super::*;
+
+    #[test]
+    fn 来源省略端口按协议默认值匹配且主机必须一致() {
+        for (host, origin, allowed) in [
+            ("pc.ts.net", "https://pc.ts.net", true),
+            ("pc.ts.net", "https://pc.ts.net:443", true),
+            ("pc.ts.net:443", "https://pc.ts.net", true),
+            ("pc.ts.net", "http://pc.ts.net", true),
+            ("pc.ts.net", "http://pc.ts.net:80", true),
+            ("pc.ts.net:80", "http://pc.ts.net", true),
+            ("pc.ts.net:12345", "https://pc.ts.net:12345", true),
+            ("[::1]", "https://[::1]", true),
+            ("pc.ts.net", "https://other.ts.net", false),
+            ("pc.ts.net", "https://pc.ts.net:80", false),
+            ("pc.ts.net", "http://pc.ts.net:443", false),
+            ("pc.ts.net:12345", "https://pc.ts.net", false),
+            ("pc.ts.net:80", "https://pc.ts.net", false),
+            ("pc.ts.net", "https://pc.ts.net/other", false),
+            ("pc.ts.net", "https://pc.ts.net?x=1", false),
+        ] {
+            let mut headers = HeaderMap::new();
+            headers.insert(header::HOST, HeaderValue::from_str(host).unwrap());
+            headers.insert(header::ORIGIN, HeaderValue::from_str(origin).unwrap());
+            headers.insert("x-pierlink", HeaderValue::from_static("1"));
+            assert_eq!(
+                validate_origin(&headers, &Method::POST).is_ok(),
+                allowed,
+                "{host} {origin}"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod size_tests {
+    use super::*;
+
+    #[test]
+    fn 打开终端要输入权限_服务器_id_要合法() {
+        let route = Route::new(&Method::POST, "/api/terminals");
+        assert!(matches!(route, Route::OpenTerminal));
+        assert_eq!(route.audit().0, "terminal_open");
+        let view_only = Permissions {
+            view: true,
+            input: false,
+            confirm: true,
+        };
+        assert!(!route.permission(view_only));
+        assert!(route.permission(Permissions {
+            input: true,
+            ..view_only
+        }));
+        assert!(matches!(
+            Route::new(&Method::GET, "/api/terminals"),
+            Route::Terminals
+        ));
+        let open = |json: &str| -> Result<Option<String>, AppError> {
+            let request: OpenRequest = parse(json.as_bytes())?;
+            Ok(open_target(&request)?.map(str::to_owned))
+        };
+        assert_eq!(
+            open(r#"{"server":"srv-1"}"#).unwrap().as_deref(),
+            Some("srv-1")
+        );
+        assert_eq!(open(r#"{"server":null}"#).unwrap(), None);
+        assert_eq!(open("{}").unwrap(), None);
+        for bad in [
+            r#"{"server":"a/b"}"#,
+            r#"{"server":""}"#,
+            r#"{"local":true}"#,
+        ] {
+            assert_eq!(
+                open(bad).unwrap_err().code,
+                "mobile.invalid_request",
+                "{bad}"
+            );
+        }
+    }
+
+    fn request(json: &str) -> Result<Option<(u16, u16)>, AppError> {
+        terminal_size(parse(json.as_bytes())?)
+    }
+
+    #[test]
+    fn 改尺寸要么给列数和行数要么只给恢复() {
+        assert_eq!(request(r#"{"cols":48,"rows":30}"#).unwrap(), Some((48, 30)));
+        assert_eq!(request(r#"{"restore":true}"#).unwrap(), None);
+        assert_eq!(request(r#"{"cols":20,"rows":5}"#).unwrap(), Some((20, 5)));
+        assert_eq!(
+            request(r#"{"cols":300,"rows":100}"#).unwrap(),
+            Some((300, 100))
+        );
+        for bad in [
+            r#"{"cols":19,"rows":30}"#,
+            r#"{"cols":301,"rows":30}"#,
+            r#"{"cols":48,"rows":4}"#,
+            r#"{"cols":48,"rows":101}"#,
+            r#"{"cols":48}"#,
+            r#"{"restore":true,"cols":48,"rows":30}"#,
+            r#"{"restore":false}"#,
+            r#"{}"#,
+            r#"{"cols":48,"rows":30,"extra":1}"#,
+            r#"{"cols":-1,"rows":30}"#,
+        ] {
+            assert_eq!(
+                request(bad).unwrap_err().code,
+                "mobile.invalid_request",
+                "{bad}"
+            );
+        }
     }
 }

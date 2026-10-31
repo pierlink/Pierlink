@@ -25,6 +25,10 @@ pub struct TerminalState {
     owners: Owners,
     /// 会话 ID → 用户终端的元数据（AI 列终端、交给 AI 用）；快速连接不登记
     meta: Mutex<HashMap<String, TerminalMeta>>,
+    /// 手机“按手机宽度显示”时的尺寸归属（电脑界面的尺寸、手机的续期）
+    pub phone: crate::phone_size::PhoneSizes,
+    /// 登记元数据的次序（终端列表按打开顺序排）
+    opened: std::sync::atomic::AtomicU64,
 }
 
 /// 一个终端的元数据：标题、目标、本机 shell、界面报来的当前目录
@@ -39,6 +43,8 @@ pub struct TerminalMeta {
     pub cwd: Option<String>,
     /// AI 自己打开的终端（不算用户终端）
     pub ai_opened: bool,
+    /// 第几个登记的（登记时自动填，列表按它排序）
+    pub opened: u64,
 }
 
 type Owners = Arc<Mutex<HashMap<String, String>>>;
@@ -64,6 +70,8 @@ impl TerminalState {
             shells: Mutex::new(None),
             owners: Arc::new(Mutex::new(HashMap::new())),
             meta: Mutex::new(HashMap::new()),
+            phone: crate::phone_size::PhoneSizes::default(),
+            opened: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -72,7 +80,10 @@ impl TerminalState {
     }
 
     /// 登记终端元数据
-    fn set_meta(&self, id: &str, meta: TerminalMeta) {
+    fn set_meta(&self, id: &str, mut meta: TerminalMeta) {
+        meta.opened = self
+            .opened
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.meta().insert(id.to_owned(), meta);
     }
 
@@ -91,14 +102,16 @@ impl TerminalState {
         }
     }
 
-    /// 还开着的终端的元数据；顺带删掉已退出终端的条目
+    /// 还开着的终端的元数据，按打开顺序；顺带删掉已退出终端的条目
     ///
     /// :return: (会话 ID, 元数据) 列表
     pub fn metas(&self) -> Vec<(String, TerminalMeta)> {
         let owners = self.owners();
         let mut meta = self.meta();
         meta.retain(|id, _| owners.contains_key(id));
-        meta.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+        let mut list: Vec<_> = meta.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+        list.sort_by_key(|(_, m)| m.opened);
+        list
     }
 
     fn owners(&self) -> MutexGuard<'_, HashMap<String, String>> {
@@ -329,6 +342,8 @@ fn forward(
             slot.exited = true;
             if let Some(id) = slot.id.take() {
                 lock_owners(&owners).remove(&id);
+                app.state::<TerminalState>().phone.forget(&id);
+                crate::mobile::notify(&app, "terminals");
             }
         }
         let dto = match event {
@@ -486,6 +501,7 @@ pub async fn terminal_open_local(
             ),
         )?;
         let id = state.finish_open(app, &slot, id, &owner, generation)?;
+        state.phone.desktop_opened(&id, cols, rows);
         state.set_meta(
             &id,
             TerminalMeta {
@@ -494,8 +510,11 @@ pub async fn terminal_open_local(
                 shell: Some(shell_name),
                 cwd: None,
                 ai_opened: false,
+                opened: 0,
             },
         );
+        // 手机上的终端列表跟着刷新
+        crate::mobile::notify(app, "terminals");
         Ok(id)
     })
     .await
@@ -704,6 +723,7 @@ async fn open_remote(
             })?;
         *watch.registration.lock().unwrap_or_else(|p| p.into_inner()) = registration;
         let id = state.finish_open(app, &slot, id, &owner, generation)?;
+        state.phone.desktop_opened(&id, cols, rows);
         if let crate::files::LocDto::Server { server_id } = &loc {
             let title = crate::servers::load(app, server_id)
                 .map(|s| s.name)
@@ -716,12 +736,15 @@ async fn open_remote(
                     shell: None,
                     cwd: None,
                     ai_opened: false,
+                    opened: 0,
                 },
             );
         }
         let owners = state.owners();
         app.state::<crate::files::FilesState>()
             .remember_marker(&id, loc, marker, |x| x == id || owners.contains_key(x));
+        drop(owners);
+        crate::mobile::notify(app, "terminals");
         Ok(id)
     })
     .await
@@ -752,10 +775,17 @@ pub async fn terminal_report_cwd(
 #[tauri::command]
 #[specta::specta]
 pub async fn terminal_write(app: AppHandle, id: String, data: String) -> Result<(), AppError> {
+    let state = app.state::<TerminalState>();
+    // 电脑上有人在打字：手机正按手机宽度显示这个终端时，马上恢复成电脑的尺寸
+    if crate::phone_size::looks_typed(&data)
+        && let crate::phone_size::Resize::To(cols, rows) =
+            state.phone.desktop_typed(&id, std::time::Instant::now())
+    {
+        let _ = state.manager.resize(&id, cols, rows);
+        phone_size_changed(&app, &id, None);
+    }
     // 写入只是放进有界队列，不会阻塞，直接调用
-    app.state::<TerminalState>()
-        .manager
-        .write(&id, data.as_bytes())
+    state.manager.write(&id, data.as_bytes())
 }
 
 /// 调整终端尺寸。
@@ -767,7 +797,52 @@ pub async fn terminal_resize(
     cols: u16,
     rows: u16,
 ) -> Result<(), AppError> {
-    blocking(app, move |_, state| state.manager.resize(&id, cols, rows)).await
+    blocking(app, move |_, state| {
+        match state.phone.desktop_resize(&id, cols, rows) {
+            // 手机正按手机宽度显示：先记下，手机离开后再用
+            crate::phone_size::Resize::Nothing => Ok(()),
+            crate::phone_size::Resize::To(cols, rows) => state.manager.resize(&id, cols, rows),
+        }
+    })
+    .await
+}
+
+/// 手机按手机宽度查看某个终端的状态变了（电脑上的窗格据此显示或收起提示）
+pub const PHONE_SIZE_EVENT: &str = "pierlink://phone-size";
+
+/// 手机宽度的提示：终端 ID 和手机的列数（恢复时为 null）
+#[derive(Clone, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct PhoneSizeDto {
+    pub terminal_id: String,
+    pub cols: Option<u16>,
+}
+
+/// 通知电脑界面：手机开始（cols 有值）或不再按手机宽度查看 id 终端
+pub fn phone_size_changed(app: &AppHandle, id: &str, cols: Option<u16>) {
+    let _ = tauri::Emitter::emit(
+        app,
+        PHONE_SIZE_EVENT,
+        PhoneSizeDto {
+            terminal_id: id.to_owned(),
+            cols,
+        },
+    );
+}
+
+/// 手机“按手机宽度显示”太久没续期（手机锁屏、断网）的终端：每 10 秒检查一次，恢复成电脑的尺寸
+pub fn start_phone_size_expiry(app: &AppHandle) {
+    let app = app.clone();
+    std::thread::spawn(move || {
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(10));
+            let state = app.state::<TerminalState>();
+            for (id, cols, rows) in state.phone.expired(std::time::Instant::now()) {
+                let _ = state.manager.resize(&id, cols, rows);
+                phone_size_changed(&app, &id, None);
+            }
+        }
+    });
 }
 
 /// 确认前端已处理的输出字节数（流量控制）。
@@ -784,8 +859,10 @@ pub async fn terminal_ack(app: AppHandle, id: String, bytes: u32) -> Result<(), 
 #[tauri::command]
 #[specta::specta]
 pub async fn terminal_close(app: AppHandle, id: String) -> Result<(), AppError> {
-    blocking(app, move |_, state| {
+    blocking(app, move |app, state| {
         state.owners().remove(&id);
+        state.phone.forget(&id);
+        crate::mobile::notify(app, "terminals");
         state.manager.close(&id)
     })
     .await

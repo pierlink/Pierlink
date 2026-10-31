@@ -19,6 +19,7 @@ const RETENTION: Duration = Duration::from_secs(30 * 60);
 #[derive(Default)]
 pub(in crate::mcp) struct Jobs {
     jobs: Mutex<HashMap<String, Arc<Job>>>,
+    changed: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 struct Job {
     id: String,
@@ -188,6 +189,46 @@ pub(super) struct Spec {
     pub command: String,
 }
 impl Jobs {
+    pub(in crate::mcp) fn new(host: Arc<dyn McpHost>) -> Self {
+        Self {
+            jobs: Mutex::new(HashMap::new()),
+            changed: Some(Arc::new(move || {
+                host.notify(crate::mcp::HostEvent::JobsChanged)
+            })),
+        }
+    }
+    pub(in crate::mcp) fn views(&self) -> Vec<crate::mcp::JobView> {
+        self.prune(Instant::now());
+        let mut views: Vec<_> = lock(&self.jobs)
+            .values()
+            .map(|job| {
+                let state = lock(&job.state);
+                crate::mcp::JobView {
+                    id: job.id.clone(),
+                    entry: match &job.entry {
+                        Entry::Windows => "windows".into(),
+                        Entry::Server { server_id } => server_id.clone(),
+                    },
+                    target: job.target.id.clone(),
+                    command: job.command.clone(),
+                    started_ms: job.started_ms,
+                    running: state.finished.is_none(),
+                    exit_code: state.exit_code,
+                }
+            })
+            .collect();
+        views.sort_by(|a, b| a.started_ms.cmp(&b.started_ms).then(a.id.cmp(&b.id)));
+        views
+    }
+    pub(in crate::mcp) fn stop_id(&self, id: &str) -> bool {
+        let job = lock(&self.jobs).get(id).cloned();
+        if let Some(job) = job {
+            job.cancel("stopped");
+            true
+        } else {
+            false
+        }
+    }
     pub(super) fn start(
         &self,
         spec: Spec,
@@ -231,9 +272,13 @@ impl Jobs {
             state: Mutex::new(State::default()),
         });
         jobs.insert(id.clone(), job.clone());
+        let changed = self.changed.clone();
         if std::thread::Builder::new()
             .name("MCP 后台任务".into())
             .spawn(move || {
+                if let Some(changed) = &changed {
+                    changed();
+                }
                 let sink_job = job.clone();
                 let sink: OutputSink =
                     Arc::new(move |stderr, bytes| lock(&sink_job.state).push(stderr, bytes));
@@ -267,6 +312,9 @@ impl Jobs {
                     ));
                     value
                 };
+                if let Some(changed) = &changed {
+                    changed();
+                }
                 completed(value);
             })
             .is_err()
@@ -359,11 +407,19 @@ impl Jobs {
         }
     }
     fn prune(&self, now: Instant) {
-        lock(&self.jobs).retain(|_, job| {
-            !lock(&job.state)
-                .finished
-                .is_some_and(|t| now.saturating_duration_since(t) >= RETENTION)
-        });
+        let removed = {
+            let mut jobs = lock(&self.jobs);
+            let before = jobs.len();
+            jobs.retain(|_, job| {
+                !lock(&job.state)
+                    .finished
+                    .is_some_and(|t| now.saturating_duration_since(t) >= RETENTION)
+            });
+            jobs.len() != before
+        };
+        if removed && let Some(changed) = &self.changed {
+            changed();
+        }
     }
     pub(in crate::mcp) fn maintain(&self, host: &dyn McpHost) {
         self.prune(Instant::now());

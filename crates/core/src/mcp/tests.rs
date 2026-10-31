@@ -434,8 +434,12 @@ async fn 旧式版本和工具列表不等待入口授权() {
         let mut client = fixture.client(Entry::Windows);
         client.initialize(version).await;
         let list = client.request("tools/list", json!({})).await;
+        fixture
+            .host
+            .permission_blocked
+            .store(false, Ordering::Release);
         let tools = list["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 20);
+        assert_eq!(tools.len(), 23);
         assert!(
             tools
                 .iter()
@@ -1653,4 +1657,252 @@ fn 可见会话集合过期只通知一次且本机连接不受时间影响() {
             .iter()
             .any(|event| matches!(event, HostEvent::SessionsChanged))
     );
+}
+
+#[tokio::test]
+async fn 文件审批显示修改预览且拒绝时不创建目录和不记录正文() {
+    let fixture = Fixture::new();
+    {
+        let mut permissions = lock(&fixture.host.permissions);
+        permissions.approval = Approval::AskAll;
+        permissions.windows_commands = false;
+        permissions.folders = vec![fixture._dir.path().into()];
+    }
+    let mut client = fixture.client(Entry::Server {
+        server_id: "server-id".into(),
+    });
+    client.initialize("2025-11-25").await;
+    let path = fixture._dir.path().join("src/components/New.tsx");
+    *lock(&fixture.host.action_decision) = Confirmation::Deny;
+    let content = format!("{}\n2\n3\n4\n5\n6\n禁止显示第七行", "甲".repeat(320));
+    let result = client
+        .call("write_file", json!({"file_path":path,"content":content}))
+        .await;
+    assert_eq!(result["result"]["isError"], true);
+    assert!(!fixture._dir.path().join("src").exists());
+    let action = lock(&fixture.host.dangers)[0].clone();
+    assert!(action.contains(&format!("{} 字节", content.len())));
+    assert!(action.contains("…（共 320 字）"));
+    assert!(!action.contains("禁止显示第七行"));
+    assert!(!result.to_string().contains("甲"));
+    *lock(&fixture.host.action_decision) = Confirmation::Allow;
+    assert_eq!(
+        client
+            .call("write_file", json!({"file_path":path,"content":content}))
+            .await["result"]["isError"],
+        false
+    );
+    let replacement = "乙".repeat(350);
+    let result = client
+        .call(
+            "edit_file",
+            json!({"file_path":path,"old_string":"甲".repeat(320),"new_string":replacement}),
+        )
+        .await;
+    assert_eq!(result["result"]["isError"], false);
+    let action = lock(&fixture.host.dangers).last().unwrap().clone();
+    assert!(action.contains("旧文字："));
+    assert!(action.contains("新文字："));
+    assert!(action.contains("…（共 350 字）"));
+    for record in fixture.service.activity(30) {
+        assert!(!record.summary.contains(['甲', '乙']));
+        assert!(record.output_preview.is_none());
+    }
+    let audit_files = std::fs::read_dir(fixture._dir.path()).unwrap();
+    for entry in audit_files {
+        let path = entry.unwrap().path();
+        if path.is_file() {
+            let text = std::fs::read_to_string(path).unwrap();
+            assert!(!text.contains(['甲', '乙']));
+        }
+    }
+    client.close().await;
+}
+
+#[tokio::test]
+async fn 新目录工具按写入审批且删除空目录也确认() {
+    for mode in [Approval::AskAll, Approval::Dangerous, Approval::Auto] {
+        let fixture = Fixture::new();
+        {
+            let mut permissions = lock(&fixture.host.permissions);
+            permissions.approval = mode;
+            permissions.windows_commands = false;
+            permissions.folders = vec![fixture._dir.path().into()];
+        }
+        let mut client = fixture.legacy().await;
+        let path = fixture._dir.path().join("dir");
+        let to = fixture._dir.path().join("renamed");
+        for (name, args) in [
+            ("make_dir", json!({"path":path})),
+            ("make_dir", json!({"path":path})),
+            ("rename_path", json!({"from":path,"to":to})),
+            ("delete_path", json!({"path":to})),
+        ] {
+            let result = client.call(name, args).await;
+            assert_eq!(result["result"]["isError"], false, "{result}");
+        }
+        let expected = match mode {
+            Approval::AskAll => vec![false, false, false, true],
+            Approval::Dangerous => vec![true],
+            Approval::Auto => vec![],
+        };
+        assert_eq!(*lock(&fixture.host.danger_flags), expected);
+        if mode != Approval::Auto {
+            assert!(
+                lock(&fixture.host.dangers)
+                    .last()
+                    .unwrap()
+                    .contains("递归删除：false")
+            );
+        }
+        assert!(!to.exists());
+        client.close().await;
+    }
+}
+
+#[tokio::test]
+async fn 图片以原生内容返回且文本元数据不含编码正文() {
+    let fixture = Fixture::new();
+    lock(&fixture.host.permissions).folders = vec![fixture._dir.path().into()];
+    let path = fixture._dir.path().join("image.png");
+    std::fs::write(&path, b"\x89PNG\r\n\x1a\n").unwrap();
+    let mut client = fixture.legacy().await;
+    let result = client.call("read_file", json!({"file_path":path})).await;
+    let content = result["result"]["content"].as_array().unwrap();
+    let image = content.iter().find(|c| c["type"] == "image").unwrap();
+    assert_eq!(image["mimeType"], "image/png");
+    assert_eq!(image["data"], "iVBORw0KGgo=");
+    assert!(result["result"]["structuredContent"].get("image").is_none());
+    assert!(
+        content
+            .iter()
+            .filter(|c| c["type"] == "text")
+            .all(|c| !c.to_string().contains("iVBORw0KGgo="))
+    );
+    client.close().await;
+}
+
+#[tokio::test]
+async fn 远程命令超时提示进程可能仍在运行() {
+    let fixture = Fixture::new();
+    lock(&fixture.host.output).timed_out = true;
+    let mut client = fixture.legacy().await;
+    let value = client
+        .call(
+            "run_command",
+            json!({"target":"server-id","command":"slow"}),
+        )
+        .await;
+    assert_eq!(
+        value["result"]["structuredContent"]["note"],
+        "远端进程可能仍在运行，可以打开终端查看"
+    );
+    client.close().await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn 宿主可查看并停止不同入口的后台进程树且接收通知() {
+    let fixture = Fixture::new();
+    fixture
+        .service
+        .add_secret(zeroize::Zeroizing::new("hidden-secret".into()));
+    let mut client = fixture.client(Entry::Server {
+        server_id: "server-id".into(),
+    });
+    client.initialize("2025-11-25").await;
+    let before = audit::now_ms();
+    let pid = fixture._dir.path().join("child.pid");
+    let command = format!(
+        "printf hidden-secret; sleep 90 & echo $! > {}; wait",
+        crate::ssh::quote::sh_quote(pid.to_str().unwrap()).unwrap()
+    );
+    let started = client
+        .call(
+            "run_command",
+            json!({"target":"windows","command":command,"background":true}),
+        )
+        .await;
+    let id = started["result"]["structuredContent"]["job_id"]
+        .as_str()
+        .unwrap();
+    let began = Instant::now();
+    loop {
+        if pid.exists()
+            && lock(&fixture.host.events)
+                .iter()
+                .any(|e| matches!(e, HostEvent::JobsChanged))
+        {
+            break;
+        }
+        assert!(began.elapsed() < Duration::from_secs(5));
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let jobs = fixture.service.jobs();
+    assert_eq!(jobs.len(), 1);
+    assert_eq!(jobs[0].id, id);
+    assert_eq!(jobs[0].entry, "server-id");
+    assert_eq!(jobs[0].target, "windows");
+    assert!(jobs[0].started_ms >= before);
+    assert!(jobs[0].running);
+    assert!(!jobs[0].command.contains("hidden-secret"));
+    assert!(jobs[0].command.contains("***"));
+    assert!(!fixture.service.stop_job("missing"));
+    assert!(fixture.service.stop_job(id));
+    let began = Instant::now();
+    loop {
+        if !fixture.service.jobs()[0].running
+            && lock(&fixture.host.events)
+                .iter()
+                .filter(|e| matches!(e, HostEvent::JobsChanged))
+                .count()
+                >= 2
+        {
+            break;
+        }
+        assert!(began.elapsed() < Duration::from_secs(6));
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let child = std::fs::read_to_string(pid).unwrap();
+    let stat = std::fs::read_to_string(format!("/proc/{}/stat", child.trim()));
+    assert!(stat.is_err() || stat.unwrap().split_whitespace().nth(2) == Some("Z"));
+    assert!(fixture.service.stop_job(id));
+    client.close().await;
+}
+
+#[test]
+fn 远程执行取消错误也带进程清理提示() {
+    let fixture = Fixture::new();
+    fixture.host.block.store(true, Ordering::Release);
+    let session = session::Session::new(Entry::Windows, true);
+    let cancelled = Arc::new(AtomicBool::new(false));
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            let started = Instant::now();
+            while fixture.host.started.load(Ordering::Acquire) == 0 {
+                assert!(started.elapsed() < Duration::from_secs(5));
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            cancelled.store(true, Ordering::Release);
+        });
+        let args = json!({"target":"server-id","command":"block"});
+        let result = tools::execute(
+            &fixture.service.shared,
+            &session,
+            "run_command",
+            args.as_object().unwrap(),
+            cancelled.clone(),
+            &mut "",
+        );
+        match result {
+            Err(tools::Failure::Tool(error)) => {
+                assert_eq!(error.code, "mcp.cancelled");
+                assert_eq!(
+                    error.params["note"],
+                    "远端进程可能仍在运行，可以打开终端查看"
+                );
+            }
+            _ => panic!("取消必须返回带提示的工具错误"),
+        }
+    });
 }

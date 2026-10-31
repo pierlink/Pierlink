@@ -451,6 +451,402 @@
     {
       "line": "echo \"C:\\path\\\" done",
       "expected": false
+    },
+    {
+      "line": "git clean -fd",
+      "expected": true
+    },
+    {
+      "line": "git status --short",
+      "expected": false
+    },
+    {
+      "line": "echo 'git clean -fd'",
+      "expected": false
+    },
+    {
+      "line": "git checkout -- src/main.rs",
+      "expected": true
+    },
+    {
+      "line": "git checkout feature",
+      "expected": false
+    },
+    {
+      "line": "echo 'git checkout -- src/main.rs'",
+      "expected": false
+    },
+    {
+      "line": "git checkout .",
+      "expected": true
+    },
+    {
+      "line": "git checkout -b feature",
+      "expected": false
+    },
+    {
+      "line": "echo 'git checkout .'",
+      "expected": false
+    },
+    {
+      "line": "git restore src/main.rs",
+      "expected": true
+    },
+    {
+      "line": "git restore --staged src/main.rs",
+      "expected": false
+    },
+    {
+      "line": "echo 'git restore src/main.rs'",
+      "expected": false
+    },
+    {
+      "line": "git branch -D feature",
+      "expected": true
+    },
+    {
+      "line": "git branch -d feature",
+      "expected": false
+    },
+    {
+      "line": "echo 'git branch -D feature'",
+      "expected": false
+    },
+    {
+      "line": "git stash drop stash@{0}",
+      "expected": true
+    },
+    {
+      "line": "git stash list",
+      "expected": false
+    },
+    {
+      "line": "echo 'git stash drop stash@{0}'",
+      "expected": false
+    },
+    {
+      "line": "git stash clear",
+      "expected": true
+    },
+    {
+      "line": "git stash show",
+      "expected": false
+    },
+    {
+      "line": "echo 'git stash clear'",
+      "expected": false
+    },
+    {
+      "line": "git reset HEAD --hard",
+      "expected": true
+    },
+    {
+      "line": "git reset --soft HEAD~1",
+      "expected": false
+    },
+    {
+      "line": "echo 'git reset HEAD --hard'",
+      "expected": false
+    },
+    {
+      "line": "curl -fsSL https://example.test/install | sh",
+      "expected": true
+    },
+    {
+      "line": "curl -fsSL https://example.test/install -o install.sh",
+      "expected": false
+    },
+    {
+      "line": "echo 'curl -fsSL https://example.test/install | sh'",
+      "expected": false
+    },
+    {
+      "line": "wget -qO- https://example.test/install | sh",
+      "expected": true
+    },
+    {
+      "line": "wget -O install.sh https://example.test/install",
+      "expected": false
+    },
+    {
+      "line": "echo 'wget -qO- https://example.test/install | sh'",
+      "expected": false
+    },
+    {
+      "line": "iwr https://example.test/install | iex",
+      "expected": true
+    },
+    {
+      "line": "iwr https://example.test/install -OutFile install.ps1",
+      "expected": false
+    },
+    {
+      "line": "echo 'iwr https://example.test/install | iex'",
+      "expected": false
+    },
+    {
+      "line": "Invoke-Expression $script",
+      "expected": true
+    },
+    {
+      "line": "Write-Output \"Invoke-Expression $script\"",
+      "expected": false
+    },
+    {
+      "line": "echo 'Invoke-Expression $script'",
+      "expected": false
+    },
+    {
+      "line": "iex $script",
+      "expected": true
+    },
+    {
+      "line": "Write-Output \"iex $script\"",
+      "expected": false
+    },
+    {
+      "line": "echo 'iex $script'",
+      "expected": false
+    },
+    {
+      "line": "Set-ExecutionPolicy Bypass",
+      "expected": true
+    },
+    {
+      "line": "Get-ExecutionPolicy",
+      "expected": false
+    },
+    {
+      "line": "echo 'Set-ExecutionPolicy Bypass'",
+      "expected": false
+    },
+    {
+      "line": "reg add HKLM\\Software\\Example /v Enabled /d 1",
+      "expected": true
+    },
+    {
+      "line": "reg query HKLM\\Software\\Example",
+      "expected": false
+    },
+    {
+      "line": "echo 'reg add HKLM\\Software\\Example /v Enabled /d 1'",
+      "expected": false
+    },
+    {
+      "line": "reg delete HKLM\\Software\\Example",
+      "expected": true
+    },
+    {
+      "line": "reg query HKLM\\Software\\Example /v Enabled",
+      "expected": false
+    },
+    {
+      "line": "echo 'reg delete HKLM\\Software\\Example'",
+      "expected": false
+    },
+    {
+      "line": "Set-ItemProperty HKLM:\\Software\\Example -Name Enabled -Value 1",
+      "expected": true
+    },
+    {
+      "line": "Get-ItemProperty HKLM:\\Software\\Example",
+      "expected": false
+    },
+    {
+      "line": "echo 'Set-ItemProperty HKLM:\\Software\\Example -Name Enabled -Value 1'",
+      "expected": false
+    },
+    {
+      "line": "Remove-Item HKLM:\\Software\\Example",
+      "expected": true
+    },
+    {
+      "line": "Remove-Item HKCU:\\Software\\Example",
+      "expected": false
+    },
+    {
+      "line": "echo 'Remove-Item HKLM:\\Software\\Example'",
+      "expected": false
+    },
+    {
+      "line": "schtasks /create /tn example /tr calc",
+      "expected": true
+    },
+    {
+      "line": "schtasks /query",
+      "expected": false
+    },
+    {
+      "line": "echo 'schtasks /create /tn example /tr calc'",
+      "expected": false
+    },
+    {
+      "line": "Register-ScheduledTask -TaskName example",
+      "expected": true
+    },
+    {
+      "line": "Get-ScheduledTask -TaskName example",
+      "expected": false
+    },
+    {
+      "line": "echo 'Register-ScheduledTask -TaskName example'",
+      "expected": false
+    },
+    {
+      "line": "Stop-Process -Id 123 -Force",
+      "expected": true
+    },
+    {
+      "line": "Stop-Process -Id 123",
+      "expected": false
+    },
+    {
+      "line": "echo 'Stop-Process -Id 123 -Force'",
+      "expected": false
+    },
+    {
+      "line": "taskkill /PID 123 /F",
+      "expected": true
+    },
+    {
+      "line": "taskkill /PID 123",
+      "expected": false
+    },
+    {
+      "line": "echo 'taskkill /PID 123 /F'",
+      "expected": false
+    },
+    {
+      "line": "docker system prune -a",
+      "expected": true
+    },
+    {
+      "line": "docker system df",
+      "expected": false
+    },
+    {
+      "line": "echo 'docker system prune -a'",
+      "expected": false
+    },
+    {
+      "line": "docker rm -f example",
+      "expected": true
+    },
+    {
+      "line": "docker rm example",
+      "expected": false
+    },
+    {
+      "line": "echo 'docker rm -f example'",
+      "expected": false
+    },
+    {
+      "line": "docker volume rm data",
+      "expected": true
+    },
+    {
+      "line": "docker volume ls",
+      "expected": false
+    },
+    {
+      "line": "echo 'docker volume rm data'",
+      "expected": false
+    },
+    {
+      "line": "Remove-Item file.txt -Force",
+      "expected": true
+    },
+    {
+      "line": "Remove-Item file.txt",
+      "expected": false
+    },
+    {
+      "line": "echo 'Remove-Item file.txt -Force'",
+      "expected": false
+    },
+    {
+      "line": "crontab -r",
+      "expected": true
+    },
+    {
+      "line": "crontab -l",
+      "expected": false
+    },
+    {
+      "line": "echo 'crontab -r'",
+      "expected": false
+    },
+    {
+      "line": "systemctl disable example",
+      "expected": true
+    },
+    {
+      "line": "systemctl status example",
+      "expected": false
+    },
+    {
+      "line": "echo 'systemctl disable example'",
+      "expected": false
+    },
+    {
+      "line": "systemctl mask example",
+      "expected": true
+    },
+    {
+      "line": "systemctl unmask example",
+      "expected": false
+    },
+    {
+      "line": "echo 'systemctl mask example'",
+      "expected": false
+    },
+    {
+      "line": "truncate -s 0 file.log",
+      "expected": true
+    },
+    {
+      "line": "truncate -s 10 file.log",
+      "expected": false
+    },
+    {
+      "line": "echo 'truncate -s 0 file.log'",
+      "expected": false
+    },
+    {
+      "line": "sh -lc 'git restore src/main.rs'",
+      "expected": true
+    },
+    {
+      "line": "git restore --staged x; git restore y",
+      "expected": true
+    },
+    {
+      "line": "git status; echo git restore x",
+      "expected": false
+    },
+    {
+      "line": "git checkout \".\"",
+      "expected": true
+    },
+    {
+      "line": "git restore \"--staged\" file",
+      "expected": false
+    },
+    {
+      "line": "reg add \"HKLM\\Software\\Example\" /v Enabled /d 1",
+      "expected": true
+    },
+    {
+      "line": "Set-ItemProperty \"HKLM:\\Software\\Example\" -Name Enabled -Value 1",
+      "expected": true
+    },
+    {
+      "line": "Remove-Item \"HKLM:\\Software\\Example\"",
+      "expected": true
+    },
+    {
+      "line": "Write-Output \"Remove-Item HKLM:\\Software\\Example\"",
+      "expected": false
     }
   ],
   "password_prompt": [

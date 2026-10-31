@@ -122,6 +122,24 @@ async function callNoDialog(agent, name, args = {}, timeoutMs = 120000) {
   if (dialog) throw new Error(`${name} 不该弹确认框：${dialog.slice(0, 200)}`);
   return result;
 }
+/** 调用工具，弹出确认框时记下框里的文字并点 label；返回结果和确认框文字（没弹框时为 null） */
+async function callDialog(agent, name, args, label, timeoutMs = 120000) {
+  let done = false;
+  let result;
+  let dialog = null;
+  agent.request("tools/call", { name, arguments: args }, timeoutMs).then((r) => { done = true; result = r; }, (e) => { done = true; result = { error: { message: String(e) } }; });
+  const end = Date.now() + timeoutMs + 5000;
+  while (!done && Date.now() < end) {
+    const text = await p.js(`(()=>{const d=document.querySelector('.pl-dialog .mcp-confirm')?.closest('.pl-dialog'); return d ? d.innerText.replace(/\\s+/g,' ') : null;})()`).catch(() => null);
+    if (text) {
+      dialog = text;
+      await u.clickText(label, ".pl-dialog");
+      await sleep(500);
+    }
+    await sleep(300);
+  }
+  return { result, dialog };
+}
 /** 工具结果里的结构化内容；工具报错时抛出它给模型看的文字 */
 function ok(r) {
   if (r.error) throw new Error(`请求出错：${JSON.stringify(r.error)}`);
@@ -238,16 +256,19 @@ await rec.step(p, "search：正则搜索带行号和上下文；按文件、计�
   writeFileSync(join(src, "sub", "tool.py"), "x = 1\n# TODO(pl): 第二处\n");
   writeFileSync(join(DEEP, "node_modules", "lib", "dep.js"), "// TODO(pl): 依赖里的\n");
   const content = ok(await call(agent, "search", { pattern: "TODO\\(pl\\)", path: DEEP, output_mode: "content", "-C": 1 }));
-  const hits = content.results.filter((x) => x.match);
-  if (hits.length !== 2 || hits.some((x) => x.path.includes("node_modules"))) throw new Error(`匹配不对（应该 2 处、不含 node_modules）：${JSON.stringify(content).slice(0, 500)}`);
-  if (!hits.every((x) => typeof x.line_number === "number" && x.line_number === 2)) throw new Error(`行号不对：${JSON.stringify(hits)}`);
-  if (content.results.length < 4) throw new Error(`没带上下文行：${JSON.stringify(content.results).slice(0, 300)}`);
+  // content 模式按文件分组：{path, encoding, line_ending, lines: [{line, text, match}]}
+  const groups = content.results;
+  const hits = groups.flatMap((g) => g.lines.filter((x) => x.match).map((x) => ({ ...x, path: g.path })));
+  if (groups.length !== 2 || hits.length !== 2 || groups.some((g) => g.path.includes("node_modules"))) throw new Error(`匹配不对（应该 2 个文件 2 处、不含 node_modules）：${JSON.stringify(content).slice(0, 500)}`);
+  if (!hits.every((x) => x.line === 2)) throw new Error(`行号不对：${JSON.stringify(hits)}`);
+  const lineCount = groups.reduce((n, g) => n + g.lines.length, 0);
+  if (lineCount < 4) throw new Error(`没带上下文行：${JSON.stringify(groups).slice(0, 300)}`);
   const files = ok(await call(agent, "search", { pattern: "TODO\\(pl\\)", path: DEEP }));
   const count = ok(await call(agent, "search", { pattern: "TODO\\(pl\\)", path: DEEP, output_mode: "count", glob: "**/*.py" }));
   if (files.results.length !== 2) throw new Error(`files_with_matches 不对：${JSON.stringify(files)}`);
   if (count.results.length !== 1 || !count.results[0].path.endsWith("tool.py") || count.results[0].count !== 1) throw new Error(`glob 加计数不对：${JSON.stringify(count)}`);
   const bad = failed(await call(agent, "search", { pattern: "([", path: DEEP }));
-  return `2 处匹配，含上下文 ${content.results.length} 行｜坏正则：${bad.slice(0, 80)}`;
+  return `2 处匹配，含上下文 ${lineCount} 行｜坏正则：${bad.slice(0, 80)}`;
 });
 
 await rec.step(p, "find_files 和 list_dir：按 glob 找、新的在前；include_ignored 才看得到忽略的文件", async () => {
@@ -264,6 +285,44 @@ await rec.step(p, "find_files 和 list_dir：按 glob 找、新的在前；inclu
   const text = JSON.stringify(list);
   if (!text.includes("新文件.md") || !text.includes("src")) throw new Error(`列目录不对：${text.slice(0, 300)}`);
   return `找到 ${paths.length} 个 .ts；列目录 ${text.length} 字`;
+});
+
+await rec.step(p, "建目录、重命名、删除：写文件自动建父目录；删文件夹一定弹确认，拒绝就不删；写 .ps1 的确认框里看得到内容；相对 cwd 报错", async () => {
+  if (!agent) throw new Error("没有客户端");
+  const dir = join(DEEP, "新目录");
+  const nested = join(dir, "子 目录", "deep.txt");
+  ok(await call(agent, "write_file", { file_path: nested, content: "auto parents\n" }));
+  if (readFileSync(nested, "utf8") !== "auto parents\n") throw new Error("自动建父目录后写入的内容不对");
+  const made = join(DEEP, "made", "a", "b");
+  ok(await call(agent, "make_dir", { path: made }));
+  ok(await call(agent, "make_dir", { path: made }));
+  if (!existsSync(made)) throw new Error("make_dir 没建出目录");
+  const renamed = join(dir, "renamed.txt");
+  ok(await call(agent, "rename_path", { from: nested, to: renamed }));
+  if (existsSync(nested) || readFileSync(renamed, "utf8") !== "auto parents\n") throw new Error("rename_path 之后文件的位置或内容不对");
+  writeFileSync(nested, "again\n");
+  const exists = failed(await call(agent, "rename_path", { from: nested, to: renamed }));
+  if (readFileSync(renamed, "utf8") !== "auto parents\n") throw new Error("目标已存在时还是被覆盖了");
+  ok(await call(agent, "delete_path", { path: nested }));
+  if (existsSync(nested)) throw new Error("delete_path 没删掉文件");
+  const deny = await callDialog(agent, "delete_path", { path: dir, recursive: true }, "Deny");
+  failed(deny.result);
+  if (!deny.dialog?.includes("新目录") || !existsSync(renamed)) throw new Error(`删文件夹没弹确认，或拒绝后还是删了：${deny.dialog}`);
+  // 注定失败的删除（非空又没给 recursive、授权文件夹本身）不弹确认框，直接告诉 AI
+  const notEmptyText = failed(await callNoDialog(agent, "delete_path", { path: dir }));
+  if (!existsSync(renamed)) throw new Error("没带 recursive 时把非空文件夹删了");
+  const rootText = failed(await callNoDialog(agent, "delete_path", { path: DEEP, recursive: true }));
+  if (!existsSync(DEEP)) throw new Error("授权文件夹本身被删掉了");
+  const removed = await callDialog(agent, "delete_path", { path: dir, recursive: true }, "Allow this time");
+  ok(removed.result);
+  if (!removed.dialog || existsSync(dir)) throw new Error(`recursive 删除没弹确认或文件夹还在：${removed.dialog}`);
+  ok((await callDialog(agent, "delete_path", { path: join(DEEP, "made"), recursive: true }, "Allow this time")).result);
+  const script = join(DEEP, "pl-preview.ps1");
+  const preview = await callDialog(agent, "write_file", { file_path: script, content: "Write-Output 'pl-preview-line'\n" }, "Allow this time");
+  ok(preview.result);
+  if (!preview.dialog?.includes("pl-preview-line")) throw new Error(`写 .ps1 的确认框里看不到要写的内容：${preview.dialog}`);
+  const relative = failed(await call(agent, "run_command", { target: "windows", command: "Get-Location", cwd: "relative-dir" }));
+  return `目标已存在：${exists.slice(0, 60)}｜非空文件夹：${notEmptyText.slice(0, 60)}｜授权文件夹本身：${rootText.slice(0, 60)}｜相对目录：${relative.slice(0, 60)}`;
 });
 
 await rec.step(p, "后台任务：background 立即返回 job_id；job_output 读到输出和退出码；list_jobs；job_stop 结束长任务", async () => {
@@ -388,7 +447,7 @@ await rec.step(p, "服务器入口：服务器上的 AI 读、改几行、搜索
     "assert 'beta' in read['content'], read",
     "call('edit_file', {'file_path': file, 'old_string': 'beta\\ngamma', 'new_string': 'BETA\\nGAMMA'})",
     "found = call('search', {'pattern': 'GAMMA', 'path': folder, 'output_mode': 'content'})",
-    "assert any(x.get('match') for x in found['results']), found",
+    "assert any(l.get('match') for g in found['results'] for l in g['lines']), found",
     "files = call('find_files', {'pattern': '**/server-edit.txt', 'path': folder})",
     "assert len(files['paths']) == 1, files",
     "print('OK', read['line_ending'], len(found['results']))",

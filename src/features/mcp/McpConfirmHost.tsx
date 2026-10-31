@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Banner, Button, Dialog } from "../../components";
+import { localizeAction } from "./actionText";
 import { getMcpApi, type McpAnswer, type McpConfirm } from "./api";
 import "./mcp.css";
 
@@ -9,7 +10,7 @@ import "./mcp.css";
  * 后端 60 秒没有回答按拒绝处理，并通知这里关掉对应的框。默认焦点在“拒绝”上，按 Esc 也是拒绝。
  */
 export function McpConfirmHost() {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const [queue, setQueue] = useState<McpConfirm[]>([]);
   const [busy, setBusy] = useState(false);
 
@@ -68,7 +69,7 @@ export function McpConfirmHost() {
         ) : (
           <>
             <p>{t("mcp.confirmDangerBody", { client, entry, target: head.target === "windows" ? t("mcp.targetWindows") : head.target ?? "" })}</p>
-            <pre className="mcp-confirm__action mono">{head.action}</pre>
+            <pre className="mcp-confirm__action mono">{localizeAction(head.action ?? "", i18n.language)}</pre>
             <p className="mcp-confirm__more">{t(head.entry === "windows" ? "mcp.allowSessionHint" : "mcp.allowSessionHintServer")}</p>
           </>
         )}

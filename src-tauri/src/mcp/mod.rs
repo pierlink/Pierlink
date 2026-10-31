@@ -37,6 +37,8 @@ pub const OPEN_TERMINAL_EVENT: &str = "pierlink://mcp-open-terminal";
 pub const NOTICE_EVENT: &str = "pierlink://mcp-notice";
 /// 服务器入口的运行状态
 pub const ENTRIES_EVENT: &str = "pierlink://mcp-entries";
+/// AI 开的后台任务有变化（开始、结束、被停掉）：界面重新拉列表
+pub const JOBS_EVENT: &str = "pierlink://mcp-jobs";
 
 pub(crate) use entries::TUNNEL_PREFIX;
 
@@ -324,6 +326,53 @@ pub fn shutdown(app: &AppHandle) {
     state.service.stop_all();
 }
 
+/// AI 开的一个后台任务（MCP 页列出来，可以停掉）
+#[derive(Serialize, Type, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct McpJobDto {
+    pub id: String,
+    /// 哪个入口的 AI 开的：windows 或服务器 ID
+    pub entry: String,
+    /// 在哪执行：windows 或服务器 ID
+    pub target: String,
+    /// 命令（已遮掉密码、令牌）
+    pub command: String,
+    /// 开始时间（Unix 毫秒）
+    pub started_ms: f64,
+    pub running: bool,
+    /// 结束了的退出码（还在运行或拿不到时为 null）
+    pub exit_code: Option<i32>,
+}
+
+/// AI 开的后台任务（还在运行的和刚结束的）
+#[tauri::command]
+#[specta::specta]
+pub async fn mcp_jobs(app: AppHandle) -> Result<Vec<McpJobDto>, AppError> {
+    Ok(state(&app)?
+        .service
+        .jobs()
+        .into_iter()
+        .map(|j| McpJobDto {
+            id: j.id,
+            entry: j.entry,
+            target: j.target,
+            command: j.command,
+            started_ms: j.started_ms as f64,
+            running: j.running,
+            exit_code: j.exit_code,
+        })
+        .collect())
+}
+
+/// 停掉 AI 开的一个后台任务（结束它的进程树）
+///
+/// :return: 找到并停掉了返回 true，任务已经不在了返回 false
+#[tauri::command]
+#[specta::specta]
+pub async fn mcp_job_stop(app: AppHandle, id: String) -> Result<bool, AppError> {
+    Ok(state(&app)?.service.stop_job(&id))
+}
+
 /// 在服务器上原样执行一条命令（后台方式：缺密码或验证码时返回错误，不弹框）
 pub(crate) fn run_server_command(
     app: &AppHandle,
@@ -371,14 +420,35 @@ pub(crate) fn run_server_command(
 
 /// AI 要打开终端的目录能不能用：给终端的输入等于打字，路径里的换行会提前回车，把后半截当命令执行。
 /// 在请界面开终端之前检查，免得开出一个用不了的终端。
-pub(crate) fn validate_cwd(cwd: &str) -> Result<(), AppError> {
+pub(crate) fn validate_cwd(cwd: &str, kind: TargetKind) -> Result<(), AppError> {
     if cwd.chars().any(char::is_control) {
         return Err(AppError::new("mcp.invalid_cwd").with_reason(
             "mcp.folder_has_control_characters",
             "目录里不能有换行等控制字符",
         ));
     }
+    // 相对路径会落到 Pierlink 自己的目录（Windows）或登录后的家目录（服务器），AI 往往以为是项目目录
+    if !cwd_is_absolute(cwd, kind) {
+        return Err(AppError::new("mcp.invalid_cwd").with_reason(
+            "mcp.folder_must_be_absolute",
+            "目录必须是绝对路径（Windows 如 D:\\work，服务器如 /home/me 或 ~/work）",
+        ));
+    }
     Ok(())
+}
+
+/// 是不是绝对路径：Windows 要带盘符（D:\ 或 D:/），服务器以 / 或 ~ 开头
+fn cwd_is_absolute(cwd: &str, kind: TargetKind) -> bool {
+    match kind {
+        TargetKind::Windows => {
+            let b = cwd.as_bytes();
+            b.len() >= 3
+                && b[0].is_ascii_alphabetic()
+                && b[1] == b':'
+                && (b[2] == b'\\' || b[2] == b'/')
+        }
+        TargetKind::Server => cwd.starts_with('/') || cwd == "~" || cwd.starts_with("~/"),
+    }
 }
 
 /// 放进 PowerShell 单引号字符串：PowerShell 把 ' 和弯引号 ‘ ’ ‚ ‛ 都当单引号，每个都要写两遍，
@@ -403,7 +473,7 @@ pub(crate) fn change_directory(
     kind: TargetKind,
     cwd: &str,
 ) -> Result<(), AppError> {
-    validate_cwd(cwd)?;
+    validate_cwd(cwd, kind)?;
     let line = match kind {
         TargetKind::Windows => format!("Set-Location -LiteralPath {}\r", ps_single_quoted(cwd)),
         TargetKind::Server => format!("cd -- {}\r", pierlink_core::ssh::quote::sh_quote(cwd)?),
@@ -840,5 +910,34 @@ mod quote_tests {
             ps_single_quoted("\u{201a}\u{201b}"),
             "'\u{201a}\u{201a}\u{201b}\u{201b}'"
         );
+    }
+}
+
+#[cfg(test)]
+mod cwd_tests {
+    use super::{TargetKind, validate_cwd};
+
+    #[test]
+    fn ai终端的目录必须是绝对路径() {
+        for ok in ["D:\\work", "c:/repo", "Z:\\"] {
+            assert!(validate_cwd(ok, TargetKind::Windows).is_ok(), "{ok}");
+        }
+        for bad in [".", "src", "\\\\server\\share", "D:", "/home/me"] {
+            assert_eq!(
+                validate_cwd(bad, TargetKind::Windows).unwrap_err().code,
+                "mcp.invalid_cwd",
+                "{bad}"
+            );
+        }
+        for ok in ["/home/me", "~", "~/work", "/"] {
+            assert!(validate_cwd(ok, TargetKind::Server).is_ok(), "{ok}");
+        }
+        for bad in ["work", "./x", "~me", "D:\\work", "a\nb"] {
+            assert_eq!(
+                validate_cwd(bad, TargetKind::Server).unwrap_err().code,
+                "mcp.invalid_cwd",
+                "{bad}"
+            );
+        }
     }
 }

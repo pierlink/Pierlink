@@ -164,7 +164,7 @@ await rec.step(p, "旧式客户端：握手和工具列表立即回答；第一�
   const info = await agent.initialize("2025-11-25");
   if (info.protocolVersion !== "2025-11-25" || info.serverInfo?.name !== "pierlink") throw new Error(`握手结果不对：${JSON.stringify(info)}`);
   const tools = (await agent.request("tools/list")).result?.tools ?? [];
-  const expected = ["list_targets", "run_command", "open_terminal", "list_terminals", "close_terminal", "terminal_send", "terminal_read", "terminal_screen", "terminal_wait", "read_file", "write_file", "edit_file", "search", "find_files", "list_dir", "job_output", "job_stop", "list_jobs", "sync_status", "sync_wait"];
+  const expected = ["list_targets", "run_command", "open_terminal", "list_terminals", "close_terminal", "terminal_send", "terminal_read", "terminal_screen", "terminal_wait", "read_file", "write_file", "make_dir", "delete_path", "rename_path", "edit_file", "search", "find_files", "list_dir", "job_output", "job_stop", "list_jobs", "sync_status", "sync_wait"];
   const toolNames = tools.map((t) => t.name);
   if (toolNames.length !== expected.length || expected.some((n) => !toolNames.includes(n))) throw new Error(`工具不对：${toolNames.join(",")}`);
   const pending = agent.call("list_targets");
@@ -466,7 +466,7 @@ await rec.step(p, "手机改名；关掉二维码后邀请码作废；手机页�
   return `改名为 e2e-phone-2｜作废的邀请码 ${late.status}｜${js} 按 gzip 发送`;
 });
 
-await rec.step(p, "手机输入：电脑上给权限后能在本机终端执行命令；危险命令要手机二次确认；撤销后手机立即失效", async () => {
+await rec.step(p, "手机输入：电脑上给权限后能在本机终端执行命令；Shift+Tab、方向键后回车、多行粘贴、发图片、按手机宽度显示、新开终端；危险命令要手机二次确认；撤销后手机立即失效", async () => {
   if (!phone?.terminal) throw new Error("没有配对好的手机");
   await p.js(`(()=>{const d=[...document.querySelectorAll('.mobile-dev')].find(x=>x.innerText.includes('e2e-phone')); const l=[...(d?.querySelectorAll('label.pl-check')||[])].find(l=>l.textContent.trim().startsWith('Type into terminals')); const i=l?.querySelector('input'); if(i && !i.checked) i.click();})()`);
   await sleep(800);
@@ -479,13 +479,87 @@ await rec.step(p, "手机输入：电脑上给权限后能在本机终端执行�
     screen = (await phoneFetch("GET", `/api/terminals/${id}/screen`)).json?.text ?? "";
   }
   if (!/^pl-phone-42/m.test(screen)) throw new Error(`手机上没看到输出：${screen.slice(-300)}`);
+  /** 等屏幕上出现 re（最多 15 秒），返回最后读到的屏幕；joined：先把折行接起来再找（长路径可能被终端折成两行） */
+  const waitScreen = async (re, what, joined = false) => {
+    let text = "";
+    for (let i = 0; i < 30; i++) {
+      text = (await phoneFetch("GET", `/api/terminals/${id}/screen`)).json?.text ?? "";
+      if (re.test(joined ? text.replace(/\r?\n/g, "") : text)) return text;
+      await sleep(500);
+    }
+    throw new Error(`${what}：屏幕上没出现 ${re}：${text.slice(-300)}`);
+  };
+  // Shift+Tab 能发（Claude Code 切模式用）
+  const shiftTab = await phoneFetch("POST", `/api/terminals/${id}/input`, { keys: ["Shift+Tab"] });
+  if (shiftTab.status >= 300) throw new Error(`Shift+Tab 发不出去：${shiftTab.status} ${shiftTab.text.slice(0, 200)}`);
+  await phoneFetch("POST", `/api/terminals/${id}/input`, { keys: ["Escape"] });
+  // ↑ 调出上一条（不危险的）命令再回车：不再要求二次确认（Claude Code 的选项菜单就是这样选的）
+  const up = await phoneFetch("POST", `/api/terminals/${id}/input`, { keys: ["ArrowUp"] });
+  const enter = await phoneFetch("POST", `/api/terminals/${id}/input`, { keys: ["Enter"] });
+  if (up.status >= 300 || enter.status !== 200) throw new Error(`方向键后回车应该直接发：${up.status} / ${enter.status} ${enter.text.slice(0, 200)}`);
+  // 多行按粘贴写入，再单独一个回车
+  const pasted = await phoneFetch("POST", `/api/terminals/${id}/input`, { text: 'Write-Output "pl-m$(1+0)"\nWrite-Output "pl-m$(1+1)"', paste: true });
+  const go = await phoneFetch("POST", `/api/terminals/${id}/input`, { keys: ["Enter"] });
+  if (pasted.status >= 300 || go.status >= 300) throw new Error(`多行粘贴失败：${pasted.status} ${pasted.text.slice(0, 200)} / ${go.status}`);
+  await waitScreen(/^pl-m1$[\s\S]*^pl-m2$/m, "多行粘贴");
+  // 读屏：指定行数，带颜色的行
+  const sized = await phoneFetch("GET", `/api/terminals/${id}/screen?lines=20`);
+  if (!Array.isArray(sized.json?.lines) || sized.json.lines.length > 20 || sized.json.lines.length === 0) throw new Error(`读屏行数或带颜色的行不对：${sized.text.slice(0, 200)}`);
+  if ((await phoneFetch("GET", `/api/terminals/${id}/screen?lines=0`)).status !== 400) throw new Error("读屏行数为 0 应该 400");
+  // 发图片：存到本机数据目录，路径粘贴进终端（不执行）
+  const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==", "base64");
+  const img = await fetch(`${phone.base}/api/terminals/${id}/image`, { method: "POST", headers: { "User-Agent": PHONE_UA, Cookie: phone.cookie, "X-Pierlink": "1", "Content-Type": "image/png" }, body: png });
+  if (img.status >= 300) throw new Error(`发图片失败：${img.status} ${(await img.text()).slice(0, 200)}`);
+  await waitScreen(/pierlink-paste-\d{8}-\d{6}-[0-9a-f]{10}\.png/, "图片路径", true);
+  const bad = await fetch(`${phone.base}/api/terminals/${id}/image`, { method: "POST", headers: { "User-Agent": PHONE_UA, Cookie: phone.cookie, "X-Pierlink": "1", "Content-Type": "image/png" }, body: Buffer.from("not a png") });
+  if (bad.status < 400) throw new Error(`文件头不对的图片应该被拒：${bad.status}`);
+  await phoneFetch("POST", `/api/terminals/${id}/input`, { keys: ["Escape"] });
+  // 按手机宽度显示：终端临时改成 60 列，恢复后变回来
+  const fit = await phoneFetch("POST", `/api/terminals/${id}/size`, { cols: 60, rows: 20 });
+  if (fit.status >= 300 || fit.json?.ok !== true) throw new Error(`改尺寸失败：${fit.status} ${fit.text.slice(0, 200)}`);
+  await phoneFetch("POST", `/api/terminals/${id}/input`, { text: '"PLW=$($Host.UI.RawUI.WindowSize.Width)"\r' });
+  await waitScreen(/^PLW=60$/m, "改成 60 列");
+  const restore = await phoneFetch("POST", `/api/terminals/${id}/size`, { restore: true });
+  if (restore.status >= 300) throw new Error(`恢复尺寸失败：${restore.status}`);
+  await phoneFetch("POST", `/api/terminals/${id}/input`, { text: '"PLR=$($Host.UI.RawUI.WindowSize.Width)"\r' });
+  const restored = await waitScreen(/^PLR=\d+$/m, "恢复尺寸");
+  const width = Number(/^PLR=(\d+)$/m.exec(restored)[1]);
+  if (!(width > 60)) throw new Error(`恢复后宽度应该大于 60：${width}`);
+  if ((await phoneFetch("POST", `/api/terminals/${id}/size`, { cols: 10, rows: 20 })).status !== 400) throw new Error("10 列应该 400");
+  // 手机请电脑新开终端：本机终端开好后在列表里、能读屏；有 WSL 服务器时也开一个服务器终端；服务器 ID 不对时 400
+  const opened = await phoneFetch("POST", "/api/terminals", { server: null });
+  if (opened.status >= 300 || !opened.json?.id) throw new Error(`手机新开本机终端失败：${opened.status} ${opened.text.slice(0, 200)}`);
+  const listed = await phoneFetch("GET", "/api/terminals");
+  if (!(listed.json ?? []).some((t) => t.id === opened.json.id && t.kind === "windows")) throw new Error(`新开的终端不在列表里：${listed.text.slice(0, 300)}`);
+  let openedServer = "没有 WSL 服务器";
+  if (HAVE_LINUX) {
+    const servers = (await phoneFetch("GET", "/api/overview")).json?.servers ?? [];
+    const lx = servers.find((x) => x.name === LX_NAME);
+    if (!lx) throw new Error(`概况里没有 ${LX_NAME}：${JSON.stringify(servers).slice(0, 200)}`);
+    const remote = await phoneFetch("POST", "/api/terminals", { server: lx.id });
+    if (remote.status >= 300 || !remote.json?.id) throw new Error(`手机新开服务器终端失败：${remote.status} ${remote.text.slice(0, 200)}`);
+    const rid = encodeURIComponent(remote.json.id);
+    await phoneFetch("POST", `/api/terminals/${rid}/input`, { text: "echo pl-open-$((40+2))\r" });
+    let rs = "";
+    for (let i = 0; i < 30 && !/^pl-open-42$/m.test(rs); i++) {
+      await sleep(500);
+      rs = (await phoneFetch("GET", `/api/terminals/${rid}/screen`)).json?.text ?? "";
+    }
+    if (!/^pl-open-42$/m.test(rs)) throw new Error(`手机新开的服务器终端里没看到输出：${rs.slice(-300)}`);
+    openedServer = "服务器终端也能用";
+  }
+  const badServer = await phoneFetch("POST", "/api/terminals", { server: "a/b" });
+  if (badServer.status !== 400) throw new Error(`服务器 ID 不对应该 400：${badServer.status}`);
+  // 电脑上没有这台服务器：手机收到能看懂的错误码，不是笼统的“电脑上执行失败”
+  const gone = await phoneFetch("POST", "/api/terminals", { server: "pl-no-such-server" });
+  if (gone.status !== 404 || gone.json?.code !== "mobile.server_not_found") throw new Error(`不存在的服务器应该 404 mobile.server_not_found：${gone.status} ${gone.text.slice(0, 200)}`);
   const risky = await phoneFetch("POST", `/api/terminals/${id}/input`, { text: "rm -rf pl-no-such-dir\r" });
   if (risky.status !== 409 || !risky.json?.needs_confirm) throw new Error(`危险命令应该要求确认：${risky.status} ${risky.text.slice(0, 200)}`);
   await u.clickText("Revoke all", ".mobile-set__devices");
   await sleep(800);
   const after = await phoneFetch("GET", "/api/me");
   if (after.status !== 401) throw new Error(`撤销后应该 401：${after.status}`);
-  return "执行了 pl-phone-42；危险命令 409；撤销后 401";
+  return `执行了 pl-phone-42；Shift+Tab、方向键后回车、多行粘贴、读屏行数、发图片、改成 60 列再恢复到 ${width} 列；新开本机终端（${openedServer}）；危险命令 409；撤销后 401`;
 });
 
 p.close();

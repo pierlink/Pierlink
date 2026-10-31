@@ -58,16 +58,137 @@ pub(super) fn shells() -> Vec<(String, std::path::PathBuf)> {
         })
         .collect()
 }
+#[cfg(not(windows))]
 const COMMAND_MAX: usize = 12000;
+
+#[cfg(any(windows, test))]
+fn windows_absolute(path: &str) -> bool {
+    let path = path.replace('\\', "/");
+    let path = path.strip_prefix("//?/").unwrap_or(&path);
+    let path = if path
+        .get(..4)
+        .is_some_and(|p| p.eq_ignore_ascii_case("UNC/"))
+    {
+        format!("//{}", &path[4..])
+    } else {
+        path.to_owned()
+    };
+    let bytes = path.as_bytes();
+    (bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && bytes[2] == b'/')
+        || path.strip_prefix("//").is_some_and(|tail| {
+            let mut parts = tail.split('/');
+            parts.next().is_some_and(|p| !p.is_empty() && p != ".")
+                && parts.next().is_some_and(|p| !p.is_empty())
+        })
+}
+fn invalid_cwd() -> AppError {
+    AppError::new("mcp.invalid_argument").with_reason(
+        "mcp.cwd_must_be_windows_absolute",
+        "cwd 必须是 Windows 绝对路径",
+    )
+}
+fn too_long(max: usize) -> AppError {
+    AppError::new("mcp.command_too_long")
+        .with("max", max)
+        .with_reason(
+            "mcp.command_exceeds_the_length_limit",
+            "命令超过长度限制（max 按 UTF-16 单元计）",
+        )
+}
+
+// 与 Windows 参数数组的引号、反斜杠规则一致，包含程序路径和结尾 NUL。
+#[cfg(any(windows, test))]
+fn command_line_len(program: &Path, args: &[String], raw: bool) -> usize {
+    let program = program.to_string_lossy().encode_utf16().count() + 2;
+    program
+        + 1
+        + args
+            .iter()
+            .map(|arg| {
+                let units = arg.encode_utf16().count();
+                if raw || !arg.is_empty() && !arg.contains([' ', '\t', '"']) {
+                    return units + 1;
+                }
+                let mut extra = 2;
+                let mut slashes = 0;
+                for c in arg.chars() {
+                    if c == '\\' {
+                        slashes += 1;
+                    } else {
+                        if c == '"' {
+                            extra += slashes + 1;
+                        }
+                        slashes = 0;
+                    }
+                }
+                units + extra + slashes + 1
+            })
+            .sum::<usize>()
+}
+#[cfg(any(windows, test))]
+fn windows_args(program: &Path, shell: &str, command: &str) -> Result<Vec<String>, AppError> {
+    let args = match shell {
+        "powershell" | "pwsh" => powershell(command),
+        "cmd" => {
+            if command.contains(['\r', '\n']) {
+                return Err(AppError::new("mcp.process_failed").with_reason(
+                    "mcp.command_prompt_cannot_run_multiline_commands_use_powershell_or_a",
+                    "命令提示符不支持多行命令，请改用 PowerShell 或写成批处理文件",
+                ));
+            }
+            vec![
+                "/d".into(),
+                "/s".into(),
+                "/c".into(),
+                format!("\"chcp 65001 >nul & {command}\""),
+            ]
+        }
+        "git-bash" => vec![
+            "--noprofile".into(),
+            "--norc".into(),
+            "-c".into(),
+            command.into(),
+        ],
+        _ => {
+            return Err(AppError::new("mcp.shell_unavailable")
+                .with_reason("mcp.selected_shell_is_unavailable", "所选 shell 不可用"));
+        }
+    };
+    let limit = if shell == "cmd" { 8000 } else { 32700 };
+    if command_line_len(program, &args, shell == "cmd") > limit {
+        let max = if matches!(shell, "powershell" | "pwsh") {
+            let empty = powershell("");
+            let overhead =
+                command_line_len(program, &empty, false) - empty.last().map_or(0, String::len);
+            let wrapped = powershell_script("").encode_utf16().count();
+            (limit.saturating_sub(overhead) / 4 * 3 / 2).saturating_sub(wrapped)
+        } else {
+            // 命令中需要额外转义的字符也占最终命令行空间。
+            let overhead = command_line_len(program, &args, shell == "cmd")
+                .saturating_sub(command.encode_utf16().count());
+            limit.saturating_sub(overhead)
+        };
+        return Err(too_long(max));
+    }
+    Ok(args)
+}
 pub(super) fn prepare(
     command: &str,
     cwd: Option<&Path>,
     shell: Option<&str>,
 ) -> Result<Prepared, AppError> {
+    #[cfg(not(windows))]
     if command.encode_utf16().count() > COMMAND_MAX {
-        return Err(AppError::new("mcp.command_too_long")
-            .with("max", COMMAND_MAX)
-            .with_reason("mcp.command_exceeds_the_length_limit", "命令超过长度限制"));
+        return Err(too_long(COMMAND_MAX));
+    }
+    if let Some(path) = cwd {
+        #[cfg(windows)]
+        let absolute = windows_absolute(&path.to_string_lossy());
+        #[cfg(not(windows))]
+        let absolute = path.is_absolute();
+        if !absolute {
+            return Err(invalid_cwd());
+        }
     }
     if command.contains('\0') {
         return Err(AppError::new("mcp.invalid_argument").with_reason(
@@ -104,34 +225,7 @@ pub(super) fn prepare(
                     "所选 shell 不可用，请查看 list_targets",
                 )
             })?;
-        let args = match shell {
-            "powershell" | "pwsh" => powershell(command),
-            // cmd.exe 不认 `\"` 转义：整条命令用一对引号包起来原样交给 /s /c（/s 只去掉最外层的引号）
-            "cmd" => {
-                if command.contains(['\r', '\n']) {
-                    return Err(AppError::new("mcp.process_failed").with_reason(
-                        "mcp.command_prompt_cannot_run_multiline_commands_use_powershell_or_a",
-                        "命令提示符不支持多行命令，请改用 PowerShell 或写成批处理文件",
-                    ));
-                }
-                vec![
-                    "/d".into(),
-                    "/s".into(),
-                    "/c".into(),
-                    format!("\"chcp 65001 >nul & {command}\""),
-                ]
-            }
-            "git-bash" => vec![
-                "--noprofile".into(),
-                "--norc".into(),
-                "-c".into(),
-                command.into(),
-            ],
-            _ => {
-                return Err(AppError::new("mcp.shell_unavailable")
-                    .with_reason("mcp.selected_shell_is_unavailable", "所选 shell 不可用"));
-            }
-        };
+        let args = windows_args(&program, shell, command)?;
         Ok(Prepared {
             raw: shell == "cmd",
             program,
@@ -194,13 +288,19 @@ pub(super) fn run_prepared(
     output.duration_ms = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
     Ok(output)
 }
-#[cfg(windows)]
+#[cfg(any(windows, test))]
+fn powershell_script(command: &str) -> String {
+    format!(
+        "[Console]::InputEncoding=[Text.UTF8Encoding]::new($false); [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); $OutputEncoding=[Console]::OutputEncoding; $LASTEXITCODE=0; {command}\n$pierlinkSucceeded=$?; $pierlinkExitCode=$LASTEXITCODE; if ($pierlinkSucceeded) {{ exit 0 }} elseif ($null -ne $pierlinkExitCode -and $pierlinkExitCode -ne 0) {{ exit $pierlinkExitCode }} else {{ exit 1 }}"
+    )
+}
+#[cfg(any(windows, test))]
 fn powershell(command: &str) -> Vec<String> {
     use ssh_key::encoding::base64::{Base64, Encoding};
-    let script = format!(
-        "[Console]::InputEncoding=[Text.UTF8Encoding]::new($false); [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); $OutputEncoding=[Console]::OutputEncoding; $LASTEXITCODE=0; {command}\n$pierlinkSucceeded=$?; $pierlinkExitCode=$LASTEXITCODE; if ($pierlinkSucceeded) {{ exit 0 }} elseif ($null -ne $pierlinkExitCode -and $pierlinkExitCode -ne 0) {{ exit $pierlinkExitCode }} else {{ exit 1 }}"
-    );
-    let bytes: Vec<_> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
+    let bytes: Vec<_> = powershell_script(command)
+        .encode_utf16()
+        .flat_map(u16::to_le_bytes)
+        .collect();
     vec![
         "-NoLogo".into(),
         "-NoProfile".into(),
@@ -418,10 +518,7 @@ mod shell_tests {
             crate::fs_local::plain_canonical(&home().unwrap()).unwrap()
         );
         assert_eq!(
-            prepare(&"x".repeat(COMMAND_MAX + 1), None, None)
-                .err()
-                .unwrap()
-                .code,
+            prepare(&"x".repeat(40000), None, None).err().unwrap().code,
             "mcp.command_too_long"
         );
         assert!(prepare("echo ok", None, Some("invalid")).is_err());
@@ -510,5 +607,77 @@ mod exit_tests {
             .unwrap();
             assert_eq!(result.exit_code, Some(expected), "{command}");
         }
+    }
+}
+
+#[cfg(test)]
+mod length_tests {
+    use super::*;
+    #[test]
+    fn 编码后命令行在边界内且上限可直接重试() {
+        for shell in ["powershell", "pwsh", "cmd", "git-bash"] {
+            for program in [
+                r"C:\Windows\System32\shell.exe",
+                r"C:\Program Files\中文😀\shell.exe",
+            ] {
+                let program = Path::new(program);
+                let error = windows_args(program, shell, &"甲".repeat(40000)).unwrap_err();
+                assert_eq!(error.code, "mcp.command_too_long");
+                let max: usize = error.params["max"].parse().unwrap();
+                let args = windows_args(program, shell, &"甲".repeat(max)).unwrap();
+                let limit = if shell == "cmd" { 8000 } else { 32700 };
+                assert!(command_line_len(program, &args, shell == "cmd") <= limit);
+                assert_eq!(
+                    windows_args(program, shell, &"甲".repeat(max + 1))
+                        .unwrap_err()
+                        .code,
+                    "mcp.command_too_long"
+                );
+                assert!(windows_args(program, shell, &"😀".repeat(max / 2)).is_ok());
+                assert!(windows_args(program, shell, &"😀".repeat(max / 2 + 1)).is_err());
+            }
+        }
+        assert!(
+            windows_args(
+                Path::new("powershell.exe"),
+                "powershell",
+                &"x".repeat(12000)
+            )
+            .is_err()
+        );
+    }
+    #[test]
+    fn 工作目录拒绝相对路径并识别盘符和网络绝对路径() {
+        for path in [".", "src", r"C:work", r"\work", "/work", ""] {
+            assert!(!windows_absolute(path), "{path}");
+        }
+        for path in [
+            r"C:\work",
+            "d:/work",
+            r"\\host\share\work",
+            r"\\?\C:\work",
+            r"\\?\UNC\host\share\work",
+        ] {
+            assert!(windows_absolute(path), "{path}");
+        }
+        for path in [".", "src", "C:work"] {
+            let error = prepare("echo ok", Some(Path::new(path)), None)
+                .err()
+                .unwrap();
+            assert_eq!(error.code, "mcp.invalid_argument");
+            assert_eq!(error.params["reason"], "cwd 必须是 Windows 绝对路径");
+        }
+    }
+    #[test]
+    fn 最终长度包含程序引号参数转义和结束符() {
+        assert_eq!(
+            command_line_len(Path::new("x.exe"), &["a b".into()], false),
+            7 + 1 + 5 + 1
+        );
+        assert_eq!(
+            command_line_len(Path::new("x.exe"), &["a\"b".into()], false),
+            7 + 1 + 6 + 1
+        );
+        assert!(windows_args(Path::new("cmd.exe"), "cmd", "echo a\necho b").is_err());
     }
 }

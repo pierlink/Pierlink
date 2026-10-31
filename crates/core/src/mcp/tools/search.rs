@@ -10,7 +10,7 @@ use globset::{GlobBuilder, GlobMatcher};
 use rmcp::model::JsonObject;
 use serde_json::{Value, json};
 use std::{
-    collections::{BTreeSet, HashSet},
+    collections::{BTreeSet, HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
     sync::atomic::AtomicBool,
@@ -33,20 +33,14 @@ fn glob(pattern: &str) -> Result<GlobMatcher, AppError> {
         .map(|g| g.compile_matcher())
         .map_err(|_| invalid("mcp.invalid_glob_pattern", "glob 模式无效"))
 }
-/// 符号链接和目录联接（Windows 上 is_symlink 两种都算）。OneDrive 占位文件等其他重解析点不算链接：
-/// 它们是普通文件和文件夹，越界与否由 resolve_read 的规范化路径判断。
-fn link(metadata: &fs::Metadata) -> bool {
-    metadata.file_type().is_symlink()
-}
-fn safe_entry(sb: &Sandbox, path: &Path) -> bool {
-    let Some(text) = path.to_str() else {
-        return false;
-    };
-    if sb.resolve_read(text).is_err() || fs::symlink_metadata(path).is_ok_and(|m| link(&m)) {
-        return false;
-    }
-
-    true
+// 每个目录只做一次完整沙箱检查，文件项只检查自身是否为链接。
+fn safe_directory(sb: &Sandbox, path: &Path, cache: &mut HashMap<PathBuf, bool>) -> bool {
+    *cache.entry(path.to_owned()).or_insert_with(|| {
+        path.to_str().is_some_and(|p| sb.resolve_read(p).is_ok())
+            && !path
+                .ancestors()
+                .any(|p| fs::symlink_metadata(p).is_ok_and(|m| files::is_link(&m)))
+    })
 }
 struct Scan {
     paths: Vec<(PathBuf, PathBuf)>,
@@ -59,8 +53,15 @@ fn collect(
     cancelled: &AtomicBool,
     started: Instant,
 ) -> Result<Scan, AppError> {
+    let mut checked = HashMap::new();
     let roots = if let Some(path) = path {
-        vec![sb.resolve_read(path)?]
+        if !safe_directory(sb, Path::new(path), &mut checked) {
+            return Err(invalid(
+                "mcp.search_root_cannot_be_a_link_or_outside_the_allowed",
+                "检索根目录不能是链接或越界路径",
+            ));
+        }
+        vec![PathBuf::from(path)]
     } else {
         sb.folders.clone()
     };
@@ -72,7 +73,7 @@ fn collect(
     let mut scanned = 0;
     for root in roots {
         check_cancel(cancelled)?;
-        if !safe_entry(sb, &root) {
+        if !safe_directory(sb, &root, &mut checked) {
             return Err(invalid(
                 "mcp.search_root_cannot_be_a_link_or_outside_the_allowed",
                 "检索根目录不能是链接或越界路径",
@@ -88,7 +89,7 @@ fn collect(
         }
         let mut stack: Vec<(PathBuf, Vec<std::sync::Arc<ignore::gitignore::Gitignore>>)> = vec![(
             root.clone(),
-            inherited_rules(sb, &root, ignored, cancelled)?,
+            inherited_rules(sb, &root, ignored, cancelled, &mut checked)?,
         )];
         while let Some((directory, mut rules)) = stack.pop() {
             check_cancel(cancelled)?;
@@ -96,10 +97,10 @@ fn collect(
                 result.truncated = true;
                 break;
             }
-            if !safe_entry(sb, &directory) {
+            if !safe_directory(sb, &directory, &mut checked) {
                 continue;
             }
-            if !ignored && let Some(rule) = read_ignore(sb, &directory)? {
+            if !ignored && let Some(rule) = read_ignore(&directory)? {
                 rules.push(std::sync::Arc::new(rule));
             }
             let entries = fs::read_dir(&directory).map_err(|_| {
@@ -117,13 +118,10 @@ fn collect(
                 })?;
                 let path = entry.path();
                 // 包括被忽略的项也计入扫描限额，逐项检查取消，避免忽略大量文件时卡在迭代器里。
-                if !safe_entry(sb, &path) {
-                    continue;
-                }
                 let metadata = fs::symlink_metadata(&path).map_err(|_| {
                     invalid("mcp.couldn_t_read_file_properties", "无法读取文件属性")
                 })?;
-                if link(&metadata) {
+                if files::is_link(&metadata) {
                     continue;
                 }
                 let is_dir = metadata.is_dir();
@@ -165,6 +163,7 @@ fn inherited_rules(
     root: &Path,
     ignored: bool,
     cancelled: &AtomicBool,
+    checked: &mut HashMap<PathBuf, bool>,
 ) -> Result<Vec<std::sync::Arc<ignore::gitignore::Gitignore>>, AppError> {
     if ignored {
         return Ok(Vec::new());
@@ -172,7 +171,7 @@ fn inherited_rules(
     let mut parents = Vec::new();
     for parent in root.ancestors().skip(1) {
         check_cancel(cancelled)?;
-        if parent.to_str().is_none_or(|p| sb.resolve_read(p).is_err()) {
+        if !safe_directory(sb, parent, checked) {
             break;
         }
         parents.push(parent);
@@ -180,16 +179,13 @@ fn inherited_rules(
     let mut rules = Vec::new();
     for parent in parents.into_iter().rev() {
         check_cancel(cancelled)?;
-        if let Some(rule) = read_ignore(sb, parent)? {
+        if let Some(rule) = read_ignore(parent)? {
             rules.push(std::sync::Arc::new(rule));
         }
     }
     Ok(rules)
 }
-fn read_ignore(
-    sb: &Sandbox,
-    directory: &Path,
-) -> Result<Option<ignore::gitignore::Gitignore>, AppError> {
+fn read_ignore(directory: &Path) -> Result<Option<ignore::gitignore::Gitignore>, AppError> {
     let path = directory.join(".gitignore");
     match fs::symlink_metadata(&path) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -199,7 +195,7 @@ fn read_ignore(
                 "无法读取忽略规则属性",
             ));
         }
-        Ok(metadata) if link(&metadata) => {
+        Ok(metadata) if files::is_link(&metadata) => {
             return Err(invalid(
                 "mcp.ignore_rules_cannot_be_a_link",
                 "忽略规则不能是链接",
@@ -207,12 +203,12 @@ fn read_ignore(
         }
         Ok(_) => {}
     }
-    let path = sb.resolve_read(path.to_str().ok_or_else(|| {
-        invalid(
+    if path.to_str().is_none() {
+        return Err(invalid(
             "mcp.ignore_rule_path_is_not_valid_text",
             "忽略规则路径不是有效文字",
-        )
-    })?)?;
+        ));
+    }
     let bytes = files::read_bounded(&path, 64 * 1024)?;
     let text = std::str::from_utf8(&bytes).map_err(|_| {
         invalid(
@@ -303,13 +299,12 @@ pub(super) fn search(
         {
             continue;
         }
-        let path = sb.resolve_read(
-            path.to_str()
-                .ok_or_else(|| invalid("mcp.path_is_not_valid_text", "路径不是有效文字"))?,
-        )?;
-        let meta = fs::metadata(&path)
+        if path.to_str().is_none() {
+            return Err(invalid("mcp.path_is_not_valid_text", "路径不是有效文字"));
+        }
+        let meta = fs::symlink_metadata(&path)
             .map_err(|_| invalid("mcp.couldn_t_read_file_properties", "无法读取文件属性"))?;
-        if meta.len() > FILE_LIMIT as u64 {
+        if files::is_link(&meta) || !meta.is_file() || meta.len() > FILE_LIMIT as u64 {
             continue;
         }
         scanned_bytes += meta.len();
@@ -429,11 +424,12 @@ pub(super) fn search(
                 }
                 for index in selected {
                     check_cancel(cancelled)?;
-                    let mut value = json!({"path":path,"text":lines.get(index).unwrap_or(&""),"match":matched.contains(&index),"encoding":doc.name(),"line_ending":doc.line_ending()});
+                    let mut line = json!({"text":lines.get(index).unwrap_or(&""),"match":matched.contains(&index)});
                     if args.get("-n").and_then(Value::as_bool).unwrap_or(true) {
-                        value["line_number"] = json!(index + 1);
+                        line["line"] = json!(index + 1);
                     }
-                    if !output.push(value) {
+                    let group = json!({"path":path,"encoding":doc.name(),"line_ending":doc.line_ending(),"lines":[]});
+                    if !output.push_line(group, line) {
                         break;
                     }
                 }
@@ -453,6 +449,7 @@ struct Output {
     bytes: usize,
     truncated: bool,
     full: bool,
+    items: u64,
 }
 impl Output {
     fn new(offset: u64, limit: u64) -> Self {
@@ -463,7 +460,43 @@ impl Output {
             bytes: 128,
             truncated: false,
             full: false,
+            items: 0,
         }
+    }
+    fn push_line(&mut self, mut group: Value, line: Value) -> bool {
+        if self.offset > 0 {
+            self.offset -= 1;
+            return true;
+        }
+        let new_group = self
+            .values
+            .last()
+            .is_none_or(|last| last["path"] != group["path"]);
+        let bytes = line.to_string().len()
+            + 1
+            + if new_group {
+                group.to_string().len() + 1
+            } else {
+                0
+            };
+        if self.items >= self.limit || self.bytes + bytes > OUTPUT_LIMIT {
+            self.truncated = true;
+            self.full = true;
+            return false;
+        }
+        self.bytes += bytes;
+        self.items += 1;
+        if new_group {
+            group["lines"] = json!([line]);
+            self.values.push(group);
+        } else if let Some(lines) = self
+            .values
+            .last_mut()
+            .and_then(|v| v["lines"].as_array_mut())
+        {
+            lines.push(line);
+        }
+        true
     }
     fn push(&mut self, value: Value) -> bool {
         if self.offset > 0 {
@@ -471,12 +504,13 @@ impl Output {
             return true;
         }
         let bytes = value.to_string().len() + 1;
-        if self.values.len() as u64 >= self.limit || self.bytes + bytes > OUTPUT_LIMIT {
+        if self.items >= self.limit || self.bytes + bytes > OUTPUT_LIMIT {
             self.truncated = true;
             self.full = true;
             return false;
         }
         self.bytes += bytes;
+        self.items += 1;
         self.values.push(value);
         true
     }
@@ -552,11 +586,11 @@ mod tests {
         let result=search(&sb,&args(json!({"pattern":"needle","-i":true,"type":"rust","glob":"**/*.rs","output_mode":"count"})),&cancel).unwrap();
         assert_eq!(result["results"][0]["count"], 2);
         let result=search(&sb,&args(json!({"pattern":"Needle","path":root.path().join("a.rs"),"output_mode":"content","-A":1,"-B":1})),&cancel).unwrap();
-        assert_eq!(result["results"].as_array().unwrap().len(), 3);
-        assert_eq!(result["results"][0]["line_number"], 1);
+        assert_eq!(result["results"][0]["lines"].as_array().unwrap().len(), 3);
+        assert_eq!(result["results"][0]["lines"][0]["line"], 1);
         let result=search(&sb,&args(json!({"pattern":"Needle","type":"rust","output_mode":"content","-C":1,"-n":false,"offset":1,"head_limit":1})),&cancel).unwrap();
-        assert_eq!(result["results"][0]["text"], "Needle one");
-        assert!(result["results"][0].get("line_number").is_none());
+        assert_eq!(result["results"][0]["lines"][0]["text"], "Needle one");
+        assert!(result["results"][0]["lines"][0].get("line").is_none());
         assert_eq!(result["truncated"], true);
         let result = search(
             &sb,
@@ -564,7 +598,8 @@ mod tests {
             &cancel,
         )
         .unwrap();
-        assert_eq!(result["results"].as_array().unwrap().len(), 2);
+        assert_eq!(result["results"].as_array().unwrap().len(), 1);
+        assert_eq!(result["results"][0]["lines"].as_array().unwrap().len(), 2);
         assert!(search(&sb, &args(json!({"pattern":"["})), &cancel).is_err());
         assert!(
             search(
@@ -597,7 +632,7 @@ mod tests {
             &AtomicBool::new(false),
         )
         .unwrap();
-        assert_eq!(result["results"][0]["text"], "中文");
+        assert_eq!(result["results"][0]["lines"][0]["text"], "中文");
         fs::write(root.path().join("big.txt"), "needle ".repeat(50000)).unwrap();
         let result = search(
             &sb,
@@ -698,5 +733,46 @@ mod tests {
         .unwrap();
         let sb = Sandbox::new(&[root.path().into()]);
         assert!(find_files(&sb, &args(json!({"pattern":"*"})), &AtomicBool::new(false)).is_err());
+    }
+}
+
+#[cfg(test)]
+mod large_directory_tests {
+    use super::*;
+    #[test]
+    fn 大目录检索按文件分组且目录检查缓存复用() {
+        let root = crate::test_support::tempdir();
+        for directory in 0..8 {
+            let dir = root.path().join(format!("dir-{directory:02}"));
+            fs::create_dir(&dir).unwrap();
+            for index in 0..100 {
+                fs::write(
+                    dir.join(format!("file-{index:03}.txt")),
+                    "first needle\nsecond needle\n",
+                )
+                .unwrap();
+            }
+        }
+        let sb = Sandbox::new(&[root.path().into()]);
+        let args = json!({"pattern":"needle","output_mode":"content","head_limit":10000});
+        let result = search(&sb, args.as_object().unwrap(), &AtomicBool::new(false)).unwrap();
+        let groups = result["results"].as_array().unwrap();
+        assert_eq!(groups.len(), 800);
+        assert_eq!(result["truncated"], false);
+        for group in groups {
+            assert_eq!(group["encoding"], "utf-8");
+            assert_eq!(group["lines"].as_array().unwrap().len(), 2);
+            for (index, line) in group["lines"].as_array().unwrap().iter().enumerate() {
+                assert_eq!(line["line"], index + 1);
+                assert_eq!(line["match"], true);
+                assert!(line.get("path").is_none());
+                assert!(line.get("encoding").is_none());
+            }
+        }
+        let mut cache = HashMap::new();
+        for _ in 0..10 {
+            assert!(safe_directory(&sb, root.path(), &mut cache));
+        }
+        assert_eq!(cache.len(), 1);
     }
 }

@@ -66,6 +66,8 @@ export function createPreviewBackend(banner: (spec: OpenSpec) => string, promptF
       if (out) s.emit({ kind: "output", data: enc.encode(out) });
     },
     async checkHostKey(target) {
+      // 模拟连过去核对指纹要花的时间（看连接卡片的动画）
+      await new Promise((r) => setTimeout(r, 700));
       const host = target.kind === "server" ? target.serverId : target.host;
       const port = target.kind === "server" ? 22 : target.port;
       const key = `${host}:${port}`;

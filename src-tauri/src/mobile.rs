@@ -24,12 +24,14 @@ pub const PAIR_EVENT: &str = "pierlink://mobile-pair";
 pub const PAIR_CLOSED_EVENT: &str = "pierlink://mobile-pair-closed";
 /// 手机入口状态或设备列表变了
 pub const CHANGED_EVENT: &str = "pierlink://mobile-changed";
+/// 手机请电脑打开终端：界面按正常流程打开（指纹、密码照常在电脑上处理），结果用 mobile_terminal_opened 回报
+pub const OPEN_TERMINAL_EVENT: &str = "pierlink://mobile-open-terminal";
+/// 等电脑打开终端最多多久（手机入口一个请求最多等 60 秒）
+const OPEN_TERMINAL_TIMEOUT: Duration = Duration::from_secs(45);
 /// 默认端口
 const DEFAULT_PORT: u16 = 48600;
 /// 批准框最多等多久（和 core 的配对期限一致）
 const PAIR_TIMEOUT: Duration = Duration::from_secs(120);
-/// 手机上看的终端最多带多少行（回滚加当前屏幕）
-const SCREEN_LINES: usize = 300;
 /// 手机操作记录保留天数（logs/mobile/日期.jsonl）
 const LOG_RETAIN_DAYS: u32 = 30;
 /// 开着入口但监听失败（如 Tailscale 还没连上）时，隔多久重试一次
@@ -37,7 +39,9 @@ const RETRY_INTERVAL: Duration = Duration::from_secs(30);
 /// 只记录会改变东西的手机操作；只读请求只在出错时记录
 const WRITE_ACTIONS: &[&str] = &[
     "pair",
+    "terminal_open",
     "terminal_input",
+    "terminal_image",
     "answer_confirm",
     "stop_all",
     "logout",
@@ -52,6 +56,15 @@ struct MobileSettings {
 }
 
 /// 请电脑上批准的配对请求
+/// 手机请电脑打开的终端
+#[derive(Serialize, Type, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenTerminalRequestDto {
+    pub id: f64,
+    /// 服务器 ID；本机终端为 null
+    pub server_id: Option<String>,
+}
+
 #[derive(Serialize, Type, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct PairRequestDto {
@@ -120,6 +133,7 @@ pub struct MobileState {
     server: tokio::sync::Mutex<Option<MobileServer>>,
     events: broadcast::Sender<String>,
     pairs: Waiters<PairRequestDto, bool>,
+    opens: Waiters<OpenTerminalRequestDto, Result<String, AppError>>,
     error: Mutex<Option<AppError>>,
     log: OnceLock<Option<MobileLog>>,
 }
@@ -130,6 +144,7 @@ impl Default for MobileState {
             server: tokio::sync::Mutex::new(None),
             events: broadcast::channel(64).0,
             pairs: Waiters::default(),
+            opens: Waiters::default(),
             error: Mutex::new(None),
             log: OnceLock::new(),
         }
@@ -251,6 +266,72 @@ fn url_of(addr: SocketAddr) -> String {
         SocketAddr::V4(a) => format!("http://{}:{}/", a.ip(), a.port()),
         SocketAddr::V6(a) => format!("http://[{}]:{}/", a.ip(), a.port()),
     }
+}
+
+/// 按粘贴写入终端（和电脑上粘贴一样）：终端开了括号粘贴就包上标记，里面的换行写成回车；
+/// 末尾的回车放在结束标记之后，表示粘贴完再提交
+fn write_paste(
+    manager: &pierlink_core::terminal::TerminalManager,
+    id: &str,
+    text: &str,
+) -> Result<(), AppError> {
+    let (body, enter) = match text.strip_suffix('\r') {
+        Some(body) => (body, true),
+        None => (text, false),
+    };
+    let body = body.replace("\r\n", "\r").replace('\n', "\r");
+    let data = if manager.bracketed_paste(id)? {
+        format!("\x1b[200~{body}\x1b[201~")
+    } else {
+        body
+    };
+    manager.write(id, data.as_bytes())?;
+    if enter {
+        manager.write(id, b"\r")?;
+    }
+    Ok(())
+}
+
+/// 本机终端里用的图片路径：WSL 写成 /mnt/盘符/…，Git Bash 写成 /盘符/…，其他（PowerShell、命令提示符）
+/// 原样，有空格等特殊字符时加单引号
+fn local_shell_path(shell: Option<&str>, path: &str) -> String {
+    let shell = shell.unwrap_or("").to_ascii_lowercase();
+    let drive = path
+        .as_bytes()
+        .first()
+        .filter(|c| c.is_ascii_alphabetic() && path.as_bytes().get(1) == Some(&b':'));
+    if let Some(drive) = drive.filter(|_| shell.contains("wsl") || shell.contains("bash")) {
+        let rest = path[2..].replace('\\', "/");
+        let prefix = if shell.contains("wsl") { "/mnt/" } else { "/" };
+        let unix = format!("{prefix}{}{rest}", (*drive as char).to_ascii_lowercase());
+        return if unix
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "/._-".contains(c))
+        {
+            unix
+        } else {
+            format!("'{}'", unix.replace('\'', "'\\''"))
+        };
+    }
+    if path
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || ":\\/._-".contains(c))
+    {
+        path.to_owned()
+    } else {
+        format!("'{}'", path.replace('\'', "''"))
+    }
+}
+
+/// 终端屏幕上最后一行有字的内容（手机的终端列表里帮着认出是哪个终端）；读不到时为 None
+fn last_line(manager: &pierlink_core::terminal::TerminalManager, id: &str) -> Option<String> {
+    let screen = manager.screen_text(id).ok()?;
+    let line = screen
+        .lines()
+        .rev()
+        .map(str::trim)
+        .find(|l| !l.is_empty())?;
+    Some(line.chars().take(120).collect())
 }
 
 /// 手机页面文件所在目录（安装包里的资源；开发时用工作目录里打出来的 dist-mobile）
@@ -566,6 +647,29 @@ pub async fn mobile_pair_answer(app: AppHandle, id: f64, allow: bool) -> Result<
     Ok(app.state::<MobileState>().pairs.answer(id as u64, allow))
 }
 
+/// 界面回报手机要的终端打开了没有
+///
+/// :param id: 打开请求的编号
+/// :param terminal_id: 打开了的终端会话 ID
+/// :param error: 没打开的原因
+/// :return: 手机已经不等了（超时、断开）时返回 false
+#[tauri::command]
+#[specta::specta]
+pub async fn mobile_terminal_opened(
+    app: AppHandle,
+    id: f64,
+    terminal_id: Option<String>,
+    error: Option<crate::mcp::McpErrorInput>,
+) -> Result<bool, AppError> {
+    let result = match (terminal_id, error) {
+        (Some(terminal), _) => Ok(terminal),
+        (None, Some(error)) => Err(error.into()),
+        (None, None) => Err(AppError::new("mobile.open_failed")
+            .with_reason("mobile.terminal_was_not_opened", "终端没有打开")),
+    };
+    Ok(app.state::<MobileState>().opens.answer(id as u64, result))
+}
+
 /// 手机能看到和能做的事：都在电脑上执行，手机只发请求
 struct TauriMobileHost {
     app: AppHandle,
@@ -582,6 +686,34 @@ fn blocking<T: Send + 'static>(
             .await
             .map_err(failed)?
     })
+}
+
+/// 终端在电脑上已经关掉：换成写给手机的 mobile.not_found（其他错误原样，入口只告诉手机“失败了”）
+fn closed_as_missing<T: Send + 'static>(future: HostFuture<'static, T>) -> HostFuture<'static, T> {
+    Box::pin(async move {
+        future.await.map_err(|e| {
+            if e.code == "terminal.not_found" {
+                AppError::new("mobile.not_found")
+            } else {
+                e
+            }
+        })
+    })
+}
+
+/// 界面没打开手机要的终端：换成写给手机的 mobile.open_failed，带上原来的错误码和界面写好的说明
+fn open_failed(e: AppError) -> AppError {
+    if e.code.starts_with("mobile.") {
+        return e;
+    }
+    let message = e
+        .params
+        .get("message")
+        .cloned()
+        .unwrap_or_else(|| e.code.clone());
+    AppError::new("mobile.open_failed")
+        .with("code", &e.code)
+        .with("message", message)
 }
 
 /// 丢弃时把标记置为“已取消”
@@ -657,6 +789,57 @@ impl MobileHost for TauriMobileHost {
         })
     }
 
+    fn open_terminal<'a>(&'a self, server: Option<&'a str>) -> HostFuture<'a, Value> {
+        let server = server.map(str::to_owned);
+        // 手机中途断开时入口会丢弃这个等待：不再等界面回报（终端照样在电脑上打开）
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let guard = CancelOnDrop(cancelled.clone());
+        let waiting = blocking(&self.app, move |app| {
+            if let Some(id) = &server {
+                crate::servers::load(app, id).map_err(|e| {
+                    if e.code == "server.not_found" {
+                        AppError::new("mobile.server_not_found")
+                    } else {
+                        open_failed(e)
+                    }
+                })?;
+            }
+            // 窗口缩到托盘或最小化时网页不渲染，终端打不开：和 AI 打开终端一样先把主窗口显示出来
+            crate::app_shell::show_main(app);
+            let emitter = app.clone();
+            let (_, answer) = app.state::<MobileState>().opens.ask(
+                |id| OpenTerminalRequestDto {
+                    id: id as f64,
+                    server_id: server.clone(),
+                },
+                |dto| {
+                    if let Err(e) = emitter.emit(OPEN_TERMINAL_EVENT, dto) {
+                        eprintln!("请界面打开手机要的终端失败: 错误={e}");
+                    }
+                },
+                OPEN_TERMINAL_TIMEOUT,
+                &cancelled,
+            );
+            let id = answer
+                .unwrap_or_else(|| {
+                    Err(AppError::new("mobile.open_timeout").with_reason(
+                        "mobile.pc_did_not_open_the_terminal_in_time",
+                        "电脑上没有及时打开终端：可能在等确认主机指纹或输入密码，请到电脑上处理",
+                    ))
+                })
+                .map_err(open_failed)?;
+            eprintln!(
+                "手机打开终端: 服务器={}, 终端={id}",
+                server.as_deref().unwrap_or("本机")
+            );
+            Ok(json!({ "id": id }))
+        });
+        Box::pin(async move {
+            let _guard = guard;
+            waiting.await
+        })
+    }
+
     fn overview(&self) -> HostFuture<'_, Value> {
         blocking(&self.app, |app| {
             let servers = app.state::<DbState>().with(|db| db.list_servers())?;
@@ -705,8 +888,8 @@ impl MobileHost for TauriMobileHost {
                 .into_iter()
                 .map(|s| (s.id, s.name))
                 .collect();
-            let list: Vec<Value> = app
-                .state::<TerminalState>()
+            let state = app.state::<TerminalState>();
+            let list: Vec<Value> = state
                 .metas()
                 .into_iter()
                 .map(|(id, m)| {
@@ -715,8 +898,10 @@ impl MobileHost for TauriMobileHost {
                         "title": m.title,
                         "kind": if m.server_id.is_some() { "server" } else { "windows" },
                         "server": m.server_id.as_ref().and_then(|s| names.get(s)),
-                        "busy": Value::Null,
+                        "busy": state.manager.busy(&id).ok().flatten(),
                         "ai": m.ai_opened,
+                        "cwd": m.cwd,
+                        "last": last_line(&state.manager, &id),
                     })
                 })
                 .collect();
@@ -724,31 +909,35 @@ impl MobileHost for TauriMobileHost {
         })
     }
 
-    fn terminal_screen<'a>(&'a self, id: &'a str) -> HostFuture<'a, Value> {
+    fn terminal_screen<'a>(&'a self, id: &'a str, lines: usize) -> HostFuture<'a, Value> {
         let id = id.to_owned();
-        blocking(&self.app, move |app| {
+        closed_as_missing(blocking(&self.app, move |app| {
             let manager = &app.state::<TerminalState>().manager;
-            let lines = manager.recent_lines(&id, SCREEN_LINES)?;
+            let plain = manager.recent_lines(&id, lines)?;
+            // 同样的行带颜色码（只有 SGR），手机按颜色显示
+            let colored = manager.recent_lines_formatted(&id, lines)?;
             let screen = manager.screen_text(&id)?;
             Ok(json!({
-                "text": lines.join("\n"),
+                "text": plain.join("\n"),
+                "lines": colored,
                 "password": pierlink_core::mcp::safety::looks_like_password_prompt(&screen),
             }))
-        })
+        }))
     }
 
     fn terminal_text<'a>(&'a self, id: &'a str) -> HostFuture<'a, String> {
         let id = id.to_owned();
-        blocking(&self.app, move |app| {
+        closed_as_missing(blocking(&self.app, move |app| {
             app.state::<TerminalState>().manager.screen_text(&id)
-        })
+        }))
     }
 
     fn terminal_input<'a>(&'a self, id: &'a str, input: TerminalInput) -> HostFuture<'a, Value> {
         let id = id.to_owned();
         let text = input.text.clone();
+        let paste = input.paste;
         let keys = input.keys.clone().unwrap_or_default();
-        blocking(&self.app, move |app| {
+        closed_as_missing(blocking(&self.app, move |app| {
             let manager = &app.state::<TerminalState>().manager;
             // 写之前再看一次：屏幕在等密码时不发文字（密码只能在电脑上输入）
             if let Some(text) = text.as_deref().filter(|t| !t.is_empty()) {
@@ -757,11 +946,85 @@ impl MobileHost for TauriMobileHost {
                 ) {
                     return Err(AppError::new("mobile.password_prompt"));
                 }
-                manager.write(&id, text.as_bytes())?;
+                if paste {
+                    write_paste(manager, &id, text)?;
+                } else {
+                    manager.write(&id, text.as_bytes())?;
+                }
             }
             for key in &keys {
                 let bytes = pierlink_core::mcp::tools::terminal::key_bytes(key_name(key))?;
                 manager.write(&id, &bytes)?;
+            }
+            Ok(json!({ "ok": true }))
+        }))
+    }
+
+    fn terminal_image<'a>(
+        &'a self,
+        id: &'a str,
+        bytes: Vec<u8>,
+        ext: &'static str,
+    ) -> HostFuture<'a, Value> {
+        let id = id.to_owned();
+        blocking(&self.app, move |app| {
+            let state = app.state::<TerminalState>();
+            let meta = state
+                .metas()
+                .into_iter()
+                .find(|(x, _)| *x == id)
+                .map(|(_, m)| m)
+                .ok_or_else(|| AppError::new("mobile.not_found"))?;
+            // 存到终端所在的机器：服务器终端传到那台服务器的 /tmp，本机终端存到本机
+            let path = match &meta.server_id {
+                Some(server_id) => crate::paste_image::store_remote(
+                    app,
+                    &crate::files::LocDto::Server {
+                        server_id: server_id.clone(),
+                    },
+                    &bytes,
+                    ext,
+                )?,
+                None => local_shell_path(
+                    meta.shell.as_deref(),
+                    &crate::paste_image::store_local(app, &bytes, ext)?,
+                ),
+            };
+            // 写之前再看一次：终端在等密码时不写
+            if pierlink_core::mcp::safety::looks_like_password_prompt(
+                &state.manager.screen_text(&id)?,
+            ) {
+                return Err(AppError::new("mobile.password_prompt"));
+            }
+            write_paste(&state.manager, &id, &path)?;
+            Ok(json!({ "ok": true }))
+        })
+    }
+
+    fn terminal_size<'a>(&'a self, id: &'a str, size: Option<(u16, u16)>) -> HostFuture<'a, Value> {
+        let id = id.to_owned();
+        blocking(&self.app, move |app| {
+            let state = app.state::<TerminalState>();
+            if !state.metas().iter().any(|(x, _)| *x == id) {
+                return Err(AppError::new("mobile.not_found"));
+            }
+            let resize = match size {
+                Some((cols, rows)) => {
+                    match state
+                        .phone
+                        .phone_fit(&id, cols, rows, std::time::Instant::now())
+                    {
+                        Some(r) => r,
+                        // 电脑上刚有人在这个终端里打过字：先不改
+                        None => return Ok(json!({ "ok": false })),
+                    }
+                }
+                None => state.phone.phone_restore(&id),
+            };
+            if let crate::phone_size::Resize::To(cols, rows) = resize {
+                state.manager.resize(&id, cols, rows)?;
+                // 电脑上的窗格提示“手机正以多少列查看”（恢复时收起）
+                crate::terminal::phone_size_changed(app, &id, size.map(|(cols, _)| cols));
             }
             Ok(json!({ "ok": true }))
         })
@@ -819,16 +1082,17 @@ impl MobileHost for TauriMobileHost {
             return;
         }
         eprintln!(
-            "手机操作: 设备={}, 来源={}, 动作={}, 目标={}, 结果={}",
+            "手机操作: 设备={}, 来源={}, 动作={}, 目标={}, 结果={}, 字节数={}",
             r.device_name,
             r.peer,
             r.action,
             r.target.as_deref().unwrap_or("-"),
-            r.result
+            r.result,
+            r.bytes.map_or("-".to_owned(), |b| b.to_string())
         );
         record(
             &self.app,
-            json!({ "action": r.action, "device": r.device_name, "peer": r.peer, "target": r.target, "result": r.result }),
+            json!({ "action": r.action, "device": r.device_name, "peer": r.peer, "target": r.target, "result": r.result, "bytes": r.bytes }),
         );
     }
 
@@ -839,7 +1103,34 @@ impl MobileHost for TauriMobileHost {
 
 #[cfg(test)]
 mod tests {
-    use super::kind_of;
+
+    #[test]
+    fn 手机发的图片在本机终端里按终端的写法给路径() {
+        let path = r"C:\Users\me\AppData\Local\com.pierlink.desktop\paste\pierlink-paste-1.png";
+        assert_eq!(local_shell_path(Some("PowerShell 7"), path), path);
+        assert_eq!(
+            local_shell_path(Some("Ubuntu (WSL)"), path),
+            "/mnt/c/Users/me/AppData/Local/com.pierlink.desktop/paste/pierlink-paste-1.png"
+        );
+        assert_eq!(
+            local_shell_path(Some("Git Bash"), path),
+            "/c/Users/me/AppData/Local/com.pierlink.desktop/paste/pierlink-paste-1.png"
+        );
+        assert_eq!(
+            local_shell_path(None, r"C:\Users\John Smith\x.png"),
+            r"'C:\Users\John Smith\x.png'"
+        );
+        assert_eq!(
+            local_shell_path(Some("Git Bash"), r"C:\Users\John Smith\x.png"),
+            "'/c/Users/John Smith/x.png'"
+        );
+        assert_eq!(
+            local_shell_path(None, r"C:\it's\x.png"),
+            r"'C:\it''s\x.png'"
+        );
+    }
+
+    use super::{kind_of, local_shell_path};
 
     #[test]
     fn 只把私网地址当成可选() {

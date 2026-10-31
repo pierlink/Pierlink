@@ -8,14 +8,14 @@ import "@xterm/xterm/css/xterm.css";
 import "./terminal.css";
 import { currentTerminalTheme } from "./theme";
 import { needsPasteConfirm, parseOsc7, parseOsc99 } from "./util";
-import { ConnectProgress, ConnectSteps, stageIndex, type Step } from "./ConnectProgress";
+import { ConnectCard, ConnectSteps, STEPS, stepIndex, stepOf, type Step } from "./ConnectProgress";
 import { findFakeCursor } from "./imeAnchor";
 import { useSettings } from "../settings/store";
 import { useContextMenu } from "../../components";
 import { formatError, isAppError } from "../../errors";
 import { endedFromOpenError, endedLine, endsInline, type Ended } from "./ended";
 import { getServersApi, notifyServersChanged } from "../servers/api";
-import type { OpenSpec, TerminalBackend } from "./types";
+import type { Connecting, OpenSpec, TerminalBackend } from "./types";
 import { Button } from "../../components";
 import { readClipboardText, writeClipboardText } from "../shell/clipboard";
 import { commands } from "../../bindings/commands";
@@ -69,6 +69,16 @@ interface Props {
   fileDrop?: boolean;
   /** 显示命令预测（设置开着、这台服务器没关、没交给 AI） */
   prediction?: boolean;
+  /** 连接卡片上的服务器名 */
+  connectTitle?: string;
+  /** 手机正按手机宽度查看这个终端（手机的列数）：顶上提示，在这里打字就恢复 */
+  phoneCols?: number;
+  /** 窗格里连接服务器时核对指纹的进度：没通过（phase 不是 go）时先不打开会话，只显示卡片 */
+  precheck?: Connecting | null;
+  /** 连接卡片上点“取消” */
+  onCancelConnect?: () => void;
+  /** 核对指纹失败后点“重试”或按 Enter */
+  onRetryConnect?: () => void;
 }
 
 /** 从外部操作终端：粘贴、输入都走终端自己的输入通道（广播、回车计数照常生效） */
@@ -90,14 +100,18 @@ export interface TermHandle {
  * 会话断开或退出后，终端内容留着，最下面写一行说明，按 Enter 重新连接；登录失败、没能打开时盖上一块提示，
  * 提供“重新连接”和“关闭标签”。不自动重连，也不自动关闭标签（设计 3.9）。
  */
-export function TerminalView({ backend, spec, visible, confirmPaste, openLink, onStatus, onError, onCloseTab, closeLabel, onCwd, onCommand, onSession, broadcasting, onInput, onOutput, onToggleBroadcast, onHandle, cwd, onSplit, canSplit, fileDrop, prediction }: Props) {
+export function TerminalView({ backend, spec, visible, confirmPaste, openLink, onStatus, onError, onCloseTab, closeLabel, onCwd, onCommand, onSession, broadcasting, onInput, onOutput, onToggleBroadcast, onHandle, cwd, onSplit, canSplit, fileDrop, prediction, connectTitle, phoneCols, precheck, onCancelConnect, onRetryConnect }: Props) {
   const { t } = useTranslation();
   const host = useRef<HTMLDivElement>(null);
   // 回调放进 ref，避免它们变化时重建终端
   const { settings } = useSettings();
   const opts = settings.terminal;
-  const cb = useRef({ confirmPaste, openLink, onStatus, onError, onCwd, onCommand, onSession, t, opts, broadcasting, onInput, onOutput, onToggleBroadcast, onHandle, cwd, onSplit, canSplit, prediction });
-  cb.current = { confirmPaste, openLink, onStatus, onError, onCwd, onCommand, onSession, t, opts, broadcasting, onInput, onOutput, onToggleBroadcast, onHandle, cwd, onSplit, canSplit, prediction };
+  const cb = useRef({ confirmPaste, openLink, onStatus, onError, onCwd, onCommand, onSession, t, opts, broadcasting, onInput, onOutput, onToggleBroadcast, onHandle, cwd, onSplit, canSplit, prediction, precheck, onRetryConnect });
+  cb.current = { confirmPaste, openLink, onStatus, onError, onCwd, onCommand, onSession, t, opts, broadcasting, onInput, onOutput, onToggleBroadcast, onHandle, cwd, onSplit, canSplit, prediction, precheck, onRetryConnect };
+  /** 指纹还没核对通过：先不打开会话 */
+  const held = !!precheck && precheck.phase !== "go";
+  /** 会话已经开始打开（核对通过后只开一次；之后的重新连接走 reopen） */
+  const startedRef = useRef(false);
   const predictionRef = useRef<Prediction | null>(null);
   const termRef = useRef<Terminal | null>(null);
   // 粘贴要走多行确认，函数在终端创建时生成，经 ref 给右键菜单用
@@ -109,10 +123,10 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
   const [notice, setNotice] = useState<string | null>(null);
   const [ended, setEnded] = useState<Ended | null>(null);
   /**
-   * 连接服务器的进度：当前一步（后端还没报过时为 null，只显示秒数）和开始时间；
+   * 连接服务器的进度：当前一步、这一步和整个连接开始的时间（performance.now()）；
    * failed 表示连接停在这一步（显示在失败提示块上）
    */
-  const [steps, setSteps] = useState<{ stage: Step | null; start: number; failed: boolean } | null>(null);
+  const [steps, setSteps] = useState<{ at: Step; stepStart: number; start: number; failed: boolean; done?: boolean } | null>(null);
   /** 内置 SSH 连不上或密钥没通过：提供“改用系统 OpenSSH 重试”（只对保存过的服务器） */
   const offerOpenSsh = spec.kind === "server" && (ended?.kind === "failed" || ended?.kind === "authFailed") && !!ended.builtin;
   /** 把这台服务器改成系统 OpenSSH（原因写进服务器设置），再重新连接 */
@@ -282,11 +296,15 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
     let earlyBytes = 0;
     let exited = false;
     let disposed = false;
-    // 这次连接走到的最后一步（会话可以用了以后为 null）；连接中进度还盖在终端上时 covering 为 true；
-    // stageSeen：收到过后端报的阶段（系统 OpenSSH 建不了日志时一个都不报，失败时就不标停在哪一步）
-    let lastStage: Step | null = null;
+    // 这次连接走到的最后一步（会话可以用了以后为 null）；连接卡片还盖在终端上时 covering 为 true；
+    // stageSeen：收到过后端报的阶段（系统 OpenSSH 建不了日志时一个都不报）；
+    // floor：已经走过的步数（窗格里先核对过指纹时从“登录”开始，后端再报的“连接”不倒退）
+    let lastStep: Step | null = null;
     let covering = false;
     let stageSeen = false;
+    let floor = 0;
+    // 核对指纹的那一段只接一次（之后按 Enter 重新连接是新的一次连接，从头算）
+    let precheckUsed = false;
     // 用户点了“断开”：结束后写“已断开”，不当成断网；连接过程中点的，连上后马上关掉
     let manual = false;
     // 这次连接收到多少输出、按了几次回车（带钩子连上就退出时判断是不是钩子的问题）
@@ -303,8 +321,9 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
       kitty.reset();
       covering = false;
       // 连接没成功（还没到会话可用）：失败提示块上标出停在哪一步
-      setSteps(lastStage && stageSeen && (e.kind === "failed" || e.kind === "authFailed") ? { stage: lastStage, start: 0, failed: true } : null);
-      lastStage = null;
+      const failedAt = lastStep;
+      setSteps(failedAt && (stageSeen || floor > 0) && (e.kind === "failed" || e.kind === "authFailed") ? { at: failedAt, stepStart: 0, start: 0, failed: true } : null);
+      lastStep = null;
       setEnded(e);
       if (!endsInline(e)) return;
       const tr = cb.current.t;
@@ -328,32 +347,42 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
       tail = "";
       setEnded(null);
       earlyBytes = 0;
-      lastStage = spec.kind === "local" ? null : "resolve";
-      covering = lastStage !== null;
+      const pre = cb.current.precheck;
+      const fromPrecheck = !precheckUsed && !!pre && pre.phase === "go";
+      precheckUsed = true;
+      floor = fromPrecheck ? stepIndex("auth") : 0;
+      lastStep = spec.kind === "local" ? null : STEPS[floor];
+      covering = lastStep !== null;
       stageSeen = false;
       delete el.dataset.stage;
-      setSteps(lastStage ? { stage: null, start: performance.now(), failed: false } : null);
+      const now = performance.now();
+      setSteps(lastStep ? { at: lastStep, stepStart: now, start: fromPrecheck && pre ? pre.start : now, failed: false } : null);
       cb.current.onStatus?.("running");
       try {
         const newId = await backend.open(spec, term.cols, term.rows, (e) => {
           if (disposed) return;
           if (e.kind === "stage") {
-            if (!lastStage) return;
+            if (!lastStep) return;
             // 走到哪一步也写在宿主元素上（端到端测试据此确认后端的阶段送到了界面）
             el.dataset.stage = e.stage;
-            // 秒数从第一次报阶段算起：密码框（在连接前弹）开着的时间不算
-            const first = !stageSeen;
             stageSeen = true;
-            if (e.stage === "ready") {
-              lastStage = null;
+            const step = stepOf(e.stage);
+            if (step === null) {
+              lastStep = null;
+              // 连好了：四段先填满，淡出后再收起
+              if (covering) {
+                setSteps((cur) => (cur && !cur.failed ? { ...cur, done: true } : cur));
+                setTimeout(() => { if (!disposed) setSteps((cur) => (cur?.done ? null : cur)); }, 340);
+              } else setSteps(null);
               covering = false;
-              setSteps(null);
               return;
             }
-            if (!first && stageIndex(e.stage) <= stageIndex(lastStage)) return;
-            const next: Step = e.stage;
-            lastStage = next;
-            if (covering) setSteps((cur) => (cur && !cur.failed ? { ...cur, stage: next, start: first ? performance.now() : cur.start } : cur));
+            // 只往前走；跳过的步（内置 SSH 不单独报“验证主机”）一起算走过
+            const index = Math.max(stepIndex(step), floor);
+            if (index <= stepIndex(lastStep)) return;
+            const next = STEPS[index];
+            lastStep = next;
+            if (covering) setSteps((cur) => (cur && !cur.failed ? { ...cur, at: next, stepStart: performance.now() } : cur));
             return;
           }
           if (e.kind === "output") {
@@ -503,6 +532,11 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
       // 图片还在上传时按了回车、Ctrl+C、Ctrl+Z：传完就不粘贴了（终端已经往下走，路径会粘到别的地方）
       if (imagePending && !data.startsWith("\x1b[200~") && /[\r\n\x03\x1a]/.test(data)) imageGeneration++;
       prediction.onUserData(data);
+      // 核对指纹没通过：按 Enter 重新核对
+      if (cb.current.precheck?.phase === "failed") {
+        if (data === "\r") cb.current.onRetryConnect?.();
+        return;
+      }
       // 会话已结束：按 Enter 等于点“重新连接”
       if (exited) {
         if (data === "\r") reopen();
@@ -612,7 +646,11 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
     const mo = new MutationObserver(() => { term.options.theme = currentTerminalTheme(); });
     mo.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
 
-    void open();
+    // 窗格里先核对指纹的：通过后由下面的 effect 打开（之前空终端里不显示光标）
+    if (!cb.current.precheck || cb.current.precheck.phase === "go") {
+      startedRef.current = true;
+      void open();
+    } else term.write("\x1b[?25l");
     cb.current.onHandle?.({
       paste: (text) => term.paste(text),
       input: (data) => term.input(data, true),
@@ -666,6 +704,25 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
     }
   }, [opts.cursorStyle, opts.cursorWidth, opts.cursorBlink, opts.scrollback, opts.fontSize]);
 
+  // 窗格里核对指纹通过：开始登录、启动终端（卡片接着显示，不重新出现）
+  useEffect(() => {
+    if (held || !precheck || startedRef.current) return;
+    startedRef.current = true;
+    reopenRef.current(false);
+  }, [held, precheck]);
+
+  /**
+   * 连接卡片显示什么：核对指纹时按 TerminalArea 给的阶段；之后按会话自己的进度。
+   * 核对刚通过、会话还没开始的那一下也接着显示（同一张卡片，不闪）
+   */
+  const remote = spec.kind !== "local";
+  const card = !remote || ended ? null
+    : held && precheck && precheck.phase !== "failed"
+      ? { at: (precheck.phase === "confirm" ? "verify" : "connect") as Step, stepStart: precheck.stepStart, start: precheck.start }
+      : steps && !steps.failed ? steps
+      : precheck?.phase === "go" && !startedRef.current ? { at: "auth" as Step, stepStart: precheck.stepStart, start: precheck.start }
+      : null;
+
   return (
     <div
       className="term-pane"
@@ -713,12 +770,27 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
       }}
     >
       <div ref={host} className="term-host" />
-      {steps && !steps.failed && !ended && <ConnectProgress stage={steps.stage} start={steps.start} />}
+      {card && <ConnectCard title={connectTitle ?? ""} at={card.at} stepStart={card.stepStart} start={card.start} done={"done" in card && !!card.done} onCancel={onCancelConnect} />}
+      {precheck?.phase === "failed" && (
+        // 核对指纹没通过（连不上、指纹变了等）：和登录失败同样的提示块，“重新连接”重新核对
+        <div className="term-ended term-ended--failed" role="alert">
+          <div className="term-ended__box">
+            <ConnectSteps at={precheck.failedAt ?? "connect"} failed />
+            <div className="term-ended__title">{t("terminal.endedFailed")}</div>
+            <div className="term-ended__detail">{precheck.error}</div>
+            <div className="term-ended__actions">
+              <Button onClick={() => onCloseTab?.()}>{closeLabel ?? t("terminal.closeTab")}</Button>
+              <Button variant="primary" autoFocus onClick={() => onRetryConnect?.()}>{t("terminal.reconnect")}</Button>
+            </div>
+            <div className="term-ended__hint">{t("terminal.endedEnterHint")}</div>
+          </div>
+        </div>
+      )}
       {ended && !endsInline(ended) && (
         // 登录失败、没能打开：盖住终端内容，说明原因并提供按钮
         <div className={`term-ended term-ended--${ended.kind}`} role="alert">
           <div className="term-ended__box">
-            {steps?.failed && steps.stage && <ConnectSteps stage={steps.stage} failed />}
+            {steps?.failed && <ConnectSteps at={steps.at} failed />}
             <div className="term-ended__title">
               {ended.kind === "passwordNeeded" ? t("terminal.endedPasswordNeeded")
                 : ended.kind === "authFailed" ? t("terminal.endedAuth")
@@ -751,6 +823,7 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
         </div>
       )}
       {fileDrop && <div className="term-filedrop" aria-hidden="true"><span>{t("terminal.fileDrop")}</span></div>}
+      {phoneCols ? <div className="term-phone" role="status">{t("terminal.phoneView", { cols: phoneCols })}</div> : null}
       {notice && (
         <div className="term-notice" role="status">
           {notice}

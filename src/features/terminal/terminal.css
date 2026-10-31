@@ -121,40 +121,57 @@
 }
 @keyframes pl-fade-in { from { opacity: 0; } to { opacity: 1; } }
 
-/* ---------- 连接进度：解析、连接、认证、会话 ---------- */
-.conn-progress {
-  position: absolute; inset: 0; z-index: 4; display: grid; place-content: center;
+/* ---------- 连接卡片：连接、验证主机、登录、启动终端 ---------- */
+/* 外层盖满窗格但不挡鼠标（给读屏播报）；卡片 120 毫秒后淡入 */
+.conn-card-wrap {
+  position: absolute; inset: 0; z-index: 4; display: grid; place-content: center; padding: 16px;
   pointer-events: none;
 }
-/* 淡入放在内容上：外层一挂上就在（给读屏播报），内容 250 毫秒后才出来 */
-.conn-progress__body { display: grid; justify-items: center; gap: 12px; animation: pl-fade-in 160ms ease-out; }
-.conn-steps { display: flex; align-items: flex-start; margin: 0; padding: 0; list-style: none; }
-.conn-step { position: relative; display: flex; flex-direction: column; align-items: center; gap: 6px; width: 72px; }
-/* 节点之间的连线画在后一个节点的左边；前一步走完了，线就亮起来 */
-.conn-step + .conn-step::before {
-  content: ""; position: absolute; top: 9px; right: calc(50% + 12px); width: calc(100% - 24px); height: 2px;
-  border-radius: 1px; background: var(--border-strong);
+.conn-card {
+  pointer-events: auto; box-sizing: border-box; width: min(360px, calc(100vw - 32px)); padding: 14px 16px 12px;
+  display: grid; gap: 12px; border-radius: var(--r-xl); border: 1px solid var(--border-strong);
+  background: var(--panel-solid); box-shadow: var(--shadow-pop);
+  animation: conn-card-in 180ms ease-out;
 }
-.conn-step--done + .conn-step::before { background: var(--accent); }
-.conn-step__dot {
-  display: grid; place-items: center; box-sizing: border-box; width: 20px; height: 20px; border-radius: 50%;
-  border: 2px solid var(--border-strong); background: var(--bg-solid); color: #fff;
+.conn-card__head { display: flex; align-items: baseline; gap: 12px; }
+.conn-card__title { flex: 1; min-width: 0; font-weight: 600; font-size: var(--fs-sm); color: var(--text); }
+.conn-card__secs { flex: none; min-width: 4.5ch; text-align: right; font-size: var(--fs-sm); color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.conn-card__actions { display: flex; justify-content: flex-end; margin: -2px -6px -4px 0; }
+@keyframes conn-card-in { from { opacity: 0; transform: translateY(4px) scale(0.98); } to { opacity: 1; transform: none; } }
+/* 连好了：最后一段补满后淡出 */
+.conn-card--done { pointer-events: none; animation: conn-card-out 240ms ease-in 60ms forwards; }
+@keyframes conn-card-out { to { opacity: 0; transform: translateY(-2px) scale(0.99); } }
+
+/* 四段进度条：走过的填满，当前一段按时间渐近填充并带一道流光，停住的那段标红 */
+.conn-track { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin: 0; padding: 0; list-style: none; }
+.conn-seg { display: grid; gap: 7px; min-width: 0; }
+.conn-seg__bar {
+  position: relative; height: 4px; border-radius: 2px; overflow: hidden;
+  background: color-mix(in srgb, var(--text) 12%, transparent);
 }
-.conn-step--done .conn-step__dot { border-color: var(--accent); background: var(--accent); }
-.conn-step--now .conn-step__dot {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 22%, transparent);
-  animation: conn-pulse 1.2s ease-in-out infinite;
+.conn-seg__fill {
+  position: absolute; inset: 0; border-radius: inherit; background: var(--accent);
+  transform-origin: left center; transition: transform 220ms ease-out;
 }
-.conn-step--failed .conn-step__dot { border-color: var(--danger); background: var(--danger); }
-.conn-step__label { font-size: var(--fs-xs); color: var(--text-dim); white-space: nowrap; }
-.conn-step--done .conn-step__label, .conn-step--now .conn-step__label { color: var(--text); }
-.conn-step--failed .conn-step__label { color: var(--danger); }
-.conn-progress__time { display: flex; gap: 8px; font-size: var(--fs-sm); color: var(--text-muted); }
-.conn-progress__secs { min-width: 4.5ch; font-variant-numeric: tabular-nums; }
-/* 失败提示块上的进度：和标题之间留点空 */
-.term-ended__box .conn-steps { margin-bottom: 4px; }
-@keyframes conn-pulse { 50% { box-shadow: 0 0 0 7px color-mix(in srgb, var(--accent) 8%, transparent); } }
+/* 当前一段的宽度每帧都在变：不要过渡，免得落后半拍 */
+.conn-seg--now .conn-seg__fill { transition: none; }
+.conn-seg--now .conn-seg__bar::after {
+  content: ""; position: absolute; inset: 0; width: 40%;
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, #fff 45%, transparent), transparent);
+  animation: conn-shine 1.3s ease-in-out infinite;
+}
+.conn-seg--failed .conn-seg__fill { background: var(--danger); }
+.conn-seg__label { font-size: var(--fs-xs); color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.conn-seg--done .conn-seg__label { color: var(--text-muted); }
+.conn-seg--now .conn-seg__label { color: var(--text); font-weight: 600; }
+.conn-seg--failed .conn-seg__label { color: var(--danger); font-weight: 600; }
+@keyframes conn-shine { from { transform: translateX(-100%); } to { transform: translateX(250%); } }
+@media (prefers-reduced-motion: reduce) {
+  .conn-card, .conn-card--done { animation: none; }
+  .conn-seg--now .conn-seg__bar::after { animation: none; display: none; }
+}
+/* 失败提示块上的进度：和标题之间留点空，宽度和卡片一致 */
+.term-ended__box .conn-track { width: min(360px, 100%); margin: 0 auto 4px; }
 
 /* ---------- 分屏 ---------- */
 .pane-grid { position: relative; flex: 1; min-height: 0; }
@@ -273,3 +290,10 @@ body.pane-checking, body.pane-checking * { cursor: progress !important; }
   opacity: 0.85;
 }
 .term-ghost > span { display: inline-block; flex: none; overflow: hidden; }
+
+/* 手机正按手机宽度查看这个终端：放在右上角（终端变窄后右边是空的），不和顶部居中的提示叠在一起 */
+.term-phone {
+  position: absolute; top: 8px; right: 12px; z-index: 3; max-width: calc(50% - 12px);
+  padding: 4px 12px; border-radius: 999px; border: 1px solid var(--border-strong); background: var(--panel-solid);
+  color: var(--text-muted); font-size: var(--fs-xs); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; pointer-events: none;
+}

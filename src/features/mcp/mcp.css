@@ -109,3 +109,12 @@
 .mcp-pop__act--out { cursor: pointer; }
 .mcp-pop__act--out:hover { background: var(--hover); }
 .mcp-pop__out { max-height: 220px; overflow: auto; margin: 2px 0 6px; padding: 6px 8px; border-radius: var(--r-sm); background: var(--chip); font-size: var(--fs-xs); white-space: pre-wrap; word-break: break-all; }
+
+/* 后台任务（操作记录页的最上面） */
+.mcp-jobs { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border-radius: var(--r-lg); background: var(--card); border: 1px solid var(--border); }
+.mcp-jobs__title { font-size: var(--fs-sm); font-weight: 600; }
+.mcp-job { display: flex; align-items: center; gap: 10px; min-height: 30px; }
+.mcp-job__dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--text-dim); }
+.mcp-job__dot--on { background: var(--ok); }
+.mcp-job__cmd { flex: 1; min-width: 0; font-size: var(--fs-sm); }
+.mcp-job__meta { flex: none; font-size: var(--fs-xs); color: var(--text-muted); }
