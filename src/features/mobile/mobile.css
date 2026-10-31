@@ -1,0 +1,27 @@
+/* 设置页“手机” */
+.mobile-pad { padding: 10px 16px; margin: 0; }
+.mobile-set__address { min-width: 260px; }
+.mobile-set__state { margin: 0; padding: 4px 16px 12px; min-height: 18px; font-size: var(--fs-xs); color: var(--text-muted); }
+.mobile-set__state--on { color: var(--ok); }
+.mobile-set__state--error { color: var(--danger); }
+.mobile-set__pair { position: relative; display: flex; gap: 16px; align-items: center; padding: 12px 16px; border-top: 1px solid var(--border); }
+.mobile-set__pair--idle { justify-content: space-between; }
+.mobile-set__close { position: absolute; top: 8px; right: 10px; }
+.mobile-set__code-row { display: inline-flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%; }
+.mobile-set__code, .mobile-set__url { user-select: text; }
+.mobile-set__url { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mobile-set__actions { margin-top: 2px; }
+.mobile-set__qr { flex: none; display: grid; place-items: center; width: 168px; height: 168px; border-radius: var(--r-md); background: var(--chip); color: var(--text-dim); }
+.mobile-set__qr-img { flex: none; width: 156px; height: 156px; background: #fff; border-radius: 6px; padding: 6px; box-sizing: border-box; }
+.mobile-set__qr-img svg { width: 100%; height: 100%; display: block; }
+.mobile-set__pair-text { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; min-width: 0; padding-right: 28px; }
+.mobile-set__pair--idle .mobile-set__pair-text { padding-right: 0; }
+.mobile-set__code { font-size: 22px; letter-spacing: 3px; font-weight: 600; }
+.mobile-set__devices { display: flex; flex-direction: column; gap: 8px; padding: 12px 16px 14px; border-top: 1px solid var(--border); }
+.mobile-set__devices-head { display: flex; align-items: center; justify-content: space-between; font-weight: 600; }
+.mobile-dev { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--r-md); }
+.mobile-dev__head { display: flex; align-items: center; gap: 10px; }
+.mobile-dev__name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mobile-dev__input { height: 26px; width: 220px; max-width: 100%; }
+.mobile-dev__spacer { flex: 1; }
+.mobile-dev__perms { display: flex; flex-wrap: wrap; gap: 4px 18px; }

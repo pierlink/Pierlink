@@ -1,0 +1,58 @@
+[package]
+name = "pierlink-core"
+description = "Pierlink 平台无关的核心逻辑（可在 Linux 上编译和测试）"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+ignore = "=0.4.33"
+globset = "=0.4.20"
+encoding_rs = "=0.8.42"
+# 终端的后端屏幕（给以后的 MCP 读屏幕用）
+vt100 = "=0.16.2"
+pierlink-ssh-engine = { path = "../ssh-engine" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+specta.workspace = true
+rusqlite = { workspace = true, features = ["backup"] }
+rusqlite_migration.workspace = true
+uuid.workspace = true
+rand.workspace = true
+regex.workspace = true
+portable-pty.workspace = true
+ureq.workspace = true
+sha2.workspace = true
+flate2 = "=1.1.10"
+tar = "=0.4.46"
+quick-xml.workspace = true
+zeroize = "1.9.1"
+tempfile.workspace = true
+hmac = "0.13.0"
+sha1 = "0.11.0"
+ssh-key = { version = "=0.7.0-rc.11", default-features = false, features = ["std", "ed25519", "encryption"] }
+# MCP 服务：官方 Rust SDK，同时支持旧式握手和 2026-07-28 的无握手协议。几乎每周发版、接口有废弃，锁定版本；
+# 只开服务端、字节流传输（命名管道）和 Streamable HTTP（服务器入口），不要宏
+rmcp = { version = "=3.7.0", default-features = false, features = ["server", "transport-async-rw", "transport-streamable-http-server"] }
+tokio = { version = "1", features = ["rt-multi-thread", "rt", "net", "io-util", "io-std", "sync", "time", "macros"] }
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http = "1"
+http-body-util = "0.1"
+bytes = "1"
+# 同步冲突“对比两个版本”的文本差异
+similar = "=3.2.0"
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+keyring-core.workspace = true
+windows-native-keyring-store.workspace = true
+windows-sys = { workspace = true, features = ["Win32_NetworkManagement_IpHelper", "Win32_Networking_WinSock", "Win32_Globalization", "Win32_System_Registry", "Win32_System_Console", "Win32_System_Pipes", "Win32_Storage_FileSystem", "Win32_System_Diagnostics_ToolHelp", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_System_DataExchange", "Win32_System_Memory", "Win32_Security_Authorization", "Win32_System_IO"] }
+
+[dev-dependencies]
+tempfile.workspace = true
+pierlink-ssh-engine = { path = "../ssh-engine", features = ["test-support"] }

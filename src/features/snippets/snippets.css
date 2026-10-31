@@ -1,0 +1,13 @@
+/* 工具面板“片段”页 */
+.snip { display: flex; flex-direction: column; gap: 10px; }
+.snip__hint { margin: 0; color: var(--text-dim); font-size: var(--fs-xs); }
+.snip__hint--warn { color: var(--warn); }
+.snip__section { display: flex; flex-direction: column; gap: 8px; }
+.snip__section h3 { margin: 4px 0 0; }
+.snip__item { display: flex; flex-direction: column; gap: 6px; padding: 10px; border-radius: var(--r-md); border: 1px solid var(--border); background: var(--field); }
+.snip__title { display: flex; align-items: center; gap: 6px; font-weight: 600; min-width: 0; }
+.snip__body { margin: 0; font-size: var(--fs-xs); color: var(--text-muted); white-space: pre-wrap; word-break: break-all; max-height: 4.8em; overflow: hidden; }
+.snip__body--preview { max-height: 200px; overflow: auto; padding: 8px; border-radius: var(--r-md); background: var(--field); border: 1px solid var(--border); color: var(--text); }
+.snip__actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.snip-form { display: flex; flex-direction: column; gap: 10px; min-width: 420px; }
+.snip-form__body { resize: vertical; min-height: 96px; font-size: var(--fs-sm); }

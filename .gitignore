@@ -1,0 +1,21 @@
+.trash/
+logs/
+__pycache__/
+.env
+node_modules
+dist/
+target/
+*.log
+# 打包时下载的 Syncthing 二进制，不进仓库
+src-tauri/resources/syncthing/
+# 前端与 Tauri 构建产物
+src-tauri/target/
+src-tauri/gen/schemas/
+*.tsbuildinfo
+# 测试运行中的临时目录（正常结束会自动删除）
+pierlink-tests-*/
+
+# 随安装包分发的程序（由 scripts/fetch-bundled.mjs 下载生成）及下载缓存
+src-tauri/resources
+.cache-downloads/
+dist-mobile/

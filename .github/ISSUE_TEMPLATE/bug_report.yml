@@ -1,0 +1,49 @@
+name: Bug report / 问题反馈
+description: Something doesn't work as expected / 有功能不正常
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please do not paste passwords, private keys or tokens. Security issues: see SECURITY.md.
+        请不要贴出密码、私钥或令牌。安全问题请按 SECURITY.md 私下报告。
+  - type: input
+    id: version
+    attributes:
+      label: Pierlink version / 版本
+      description: Settings → About / 设置 → 关于
+      placeholder: "0.7.1"
+    validations:
+      required: true
+  - type: input
+    id: windows
+    attributes:
+      label: Windows version / Windows 版本
+      placeholder: "Windows 11 24H2"
+    validations:
+      required: true
+  - type: input
+    id: server
+    attributes:
+      label: Server OS (if related) / 服务器系统（如果相关）
+      placeholder: "Ubuntu 22.04, x86_64"
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened / 发生了什么
+      description: What did you expect, and what happened instead? / 你期望什么，实际发生了什么？
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce / 复现步骤
+      placeholder: |
+        1.
+        2.
+        3.
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or screenshots / 日志或截图
+      description: Click "Logs" at the bottom right of the window to open the log folder. / 点窗口右下角“日志”可以打开日志文件夹。
