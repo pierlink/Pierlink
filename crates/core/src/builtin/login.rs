@@ -366,7 +366,8 @@ impl ConnectionManager {
         {
             return Err(AppError::new("ssh.two_factor_required"));
         }
-        if method == AuthMethod::Password && !(request.interactive && request.progress.is_some()) {
+        // 先取得密码再开始连接，避免用户输入时间占用客户端和服务器的认证时限。
+        if method == AuthMethod::Password {
             login.password()?;
         }
         let callbacks = login.callbacks.clone();

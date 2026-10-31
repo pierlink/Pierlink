@@ -28,6 +28,8 @@ export interface ServerActions {
   /** 打开或关闭这台服务器的命令预测 */
   onTogglePrediction: (id: string) => void;
   onCopyAddress: (id: string) => void;
+  /** 只复制 IP（或主机名），不带用户名和端口 */
+  onCopyIp: (id: string) => void;
   onDeploy: (id: string) => void;
   onDedicatedKey: (id: string) => void;
 }
@@ -65,6 +67,7 @@ export function ServerSidebar({ servers, selectedId, onSelect, actions }: { serv
     { kind: "separator", id: "s1" },
     { id: "edit", label: t("menu.edit"), shortcut: "F2", onSelect: () => actions.onEdit(s.id) },
     { id: "copyAddr", label: t("menu.copyAddress"), onSelect: () => actions.onCopyAddress(s.id) },
+    { id: "copyIp", label: t("menu.copyIp"), onSelect: () => actions.onCopyIp(s.id) },
     { kind: "separator", id: "s2" },
     { id: "deploy", label: t("menu.deploySync"), onSelect: () => actions.onDeploy(s.id) },
     // 导入自 ssh config 的服务器由用户在 ssh config 里管理密钥

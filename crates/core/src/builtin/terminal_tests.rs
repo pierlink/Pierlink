@@ -456,7 +456,23 @@ fn 内置终端阶段回调与事件支持复用且就绪先于退出() {
 }
 
 #[test]
-fn 内置终端认证失败或取消都停在认证且不发就绪() {
+fn 内置终端取得密码后才开始建立连接() {
+    let (f, requests) = fixture();
+    let engine = Engine::new().unwrap();
+    let callbacks = f.callbacks.clone();
+    *f.manager.pool.connector.lock().unwrap() = Some(Arc::new(move |_, _, options, auth| {
+        assert_eq!(callbacks.passwords.load(Ordering::SeqCst), 1);
+        connect_terminal(&engine, options, auth, requests.clone(), None)
+    }));
+    let manager = TerminalManager::new();
+    let (id, rx) = open(&f, &manager);
+    assert_eq!(f.callbacks.passwords.load(Ordering::SeqCst), 1);
+    manager.close(&id).unwrap();
+    assert!(exited(&rx).1);
+}
+
+#[test]
+fn 内置终端密码错误停在认证且取消密码不报告阶段() {
     use terminal::ConnectStage::*;
     for cancel in [false, true] {
         let (mut f, _) = fixture();
@@ -488,10 +504,15 @@ fn 内置终端认证失败或取消都停在认证且不发就绪() {
                 "ssh.auth_failed"
             }
         );
-        assert_eq!(
-            rx.try_iter().collect::<Vec<_>>(),
-            [TerminalEvent::Stage(Auth)]
-        );
+        let expected = if cancel {
+            vec![]
+        } else {
+            vec![TerminalEvent::Stage(Auth)]
+        };
+        assert_eq!(rx.try_iter().collect::<Vec<_>>(), expected);
+        if cancel {
+            assert!(f.callbacks.host_keys.lock().unwrap().is_empty());
+        }
     }
 }
 

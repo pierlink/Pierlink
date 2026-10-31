@@ -57,14 +57,18 @@ export function ConnectProgress({ stage, start }: { stage: Step; start: number }
     return () => clearInterval(timer);
   }, []);
   const elapsed = Math.max(0, now - start);
-  if (elapsed < SHOW_AFTER) return null;
+  // 播报区域一开始就在，内容晚一点出来：读屏软件才会念（动态插入的播报区域很多读屏不念）
   return (
     <div className="conn-progress" role="status">
-      <ConnectSteps stage={stage} />
-      <div className="conn-progress__time">
-        {t("terminal.stages.connecting")}
-        <span className="conn-progress__secs mono" aria-hidden="true">{t("terminal.stages.seconds", { s: (elapsed / 1000).toFixed(1) })}</span>
-      </div>
+      {elapsed >= SHOW_AFTER && (
+        <>
+          <ConnectSteps stage={stage} />
+          <div className="conn-progress__time">
+            {t("terminal.stages.connecting")}
+            <span className="conn-progress__secs mono" aria-hidden="true">{t("terminal.stages.seconds", { s: (elapsed / 1000).toFixed(1) })}</span>
+          </div>
+        </>
+      )}
     </div>
   );
 }

@@ -53,6 +53,18 @@ fn spec(server: &sshd::Server, target: &str, extra: &[&str], config_dir: &Path) 
     }
 }
 
+fn assert_no_verbose(output: &str) {
+    for prefix in [
+        "debug1:",
+        "Authenticated to ",
+        "Authenticated with partial success",
+        "Transferred: sent ",
+        "Bytes per second: ",
+    ] {
+        assert!(!output.contains(prefix), "终端不应显示日志：{prefix}");
+    }
+}
+
 fn run(spec: TerminalSpec, password: bool) -> (Vec<ConnectStage>, String, Option<i32>) {
     let manager = TerminalManager::new();
     let (tx, rx) = mpsc::channel();
@@ -66,7 +78,7 @@ fn run(spec: TerminalSpec, password: bool) -> (Vec<ConnectStage>, String, Option
         .unwrap();
     let mut stages = Vec::new();
     let mut output = Vec::new();
-    let mut answered = false;
+    let mut answered = 0;
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {
         match rx
@@ -77,17 +89,57 @@ fn run(spec: TerminalSpec, password: bool) -> (Vec<ConnectStage>, String, Option
             TerminalEvent::Output(bytes) => {
                 manager.ack(&id, bytes.len()).unwrap();
                 output.extend(bytes);
-                if password && !answered && String::from_utf8_lossy(&output).contains("password:") {
+                if password
+                    && String::from_utf8_lossy(&output)
+                        .matches("password:")
+                        .count()
+                        > answered
+                {
                     manager.write(&id, b"incorrect-test-password\r").unwrap();
-                    answered = true;
+                    answered += 1;
                 }
             }
             TerminalEvent::Exited { code, .. } => {
                 assert!(rx.try_recv().is_err());
-                return (stages, String::from_utf8_lossy(&output).into_owned(), code);
+                let output = String::from_utf8_lossy(&output).into_owned();
+                assert_no_verbose(&output);
+                return (stages, output, code);
             }
         }
     }
+}
+
+#[test]
+#[ignore = "需要本机 sshd、伪终端和随机监听端口"]
+fn 真实openssh密码重试先回显错误再显示下一次提示() {
+    let server = server("Match all\n PasswordAuthentication yes");
+    let logs = server.root.path().join("terminal");
+    let (stages, output, code) = run(
+        spec(
+            &server,
+            "direct",
+            &[
+                "-o",
+                "PubkeyAuthentication=no",
+                "-o",
+                "PreferredAuthentications=password",
+                "-o",
+                "NumberOfPasswordPrompts=2",
+            ],
+            &logs,
+        ),
+        true,
+    );
+    assert_eq!(stages.last(), Some(&ConnectStage::Auth));
+    assert_eq!(code, Some(255));
+    let prompts: Vec<_> = output
+        .match_indices("password:")
+        .map(|(at, _)| at)
+        .collect();
+    assert_eq!(prompts.len(), 2);
+    let error = output.find("Permission denied, please try again.").unwrap();
+    assert!(prompts[0] < error && error < prompts[1], "{output}");
+    assert_eq!(fs::read_dir(&logs).unwrap().count(), 0);
 }
 
 #[test]
@@ -227,6 +279,16 @@ fn 真实日志片段覆盖直连与代理格式() {
         let mut events = VecDeque::new();
         parser.feed(&bytes, &mut events);
         parser.finish(&mut events);
+        let output: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                TerminalEvent::Output(bytes) => Some(bytes.as_slice()),
+                _ => None,
+            })
+            .flatten()
+            .copied()
+            .collect();
+        assert_no_verbose(&String::from_utf8_lossy(&output));
         let stages: Vec<_> = events
             .into_iter()
             .filter_map(|e| match e {

@@ -11,7 +11,7 @@ import type { ServerView } from "./types";
 import { Banner, Button, Dialog, Notice } from "../../components";
 import { formatError, isAppError } from "../../errors";
 import { inTauri } from "../shell/TitleBar";
-import { serverAddress, type ServerRecord } from "../servers/api";
+import { getServersApi, serverAddress, type ServerRecord } from "../servers/api";
 import { ServerDialog } from "../servers/ServerDialog";
 import { useServers } from "../servers/useServers";
 import { DeployFlow } from "../sync/DeployFlow";
@@ -104,6 +104,16 @@ export function WorkspacePage() {
   const panelServer = paneView ?? (selected ? views.find((s) => s.id === selected) ?? null : null);
   const byId = (id: string) => records.find((r) => r.id === id);
   const fail = (title: string) => (e: unknown) => setModal({ kind: "error", title, text: formatError(e) });
+  const showCopied = () => { setCopied(true); setTimeout(() => setCopied(false), 1500); };
+  /** 复制服务器的 IP（或主机名）；导入自 ssh config 的服务器用 ssh -G 解析出的实际地址 */
+  const copyIp = (id: string) => {
+    const s = byId(id);
+    if (!s) return;
+    const host = s.source === "ssh_config"
+      ? getServersApi().then((api) => api.resolve(id)).then((r) => r.hostname)
+      : Promise.resolve(s.host ?? "");
+    host.then((h) => (h ? writeClipboardText(h).then(showCopied) : undefined)).catch(fail(t("servers.copyIpFailed")));
+  };
 
   return (
     <div className="ws">
@@ -133,8 +143,9 @@ export function WorkspacePage() {
             onDeploy: (id) => { const s = byId(id); if (s) setModal({ kind: "deploy", server: s }); },
             onCopyAddress: (id) => {
               const s = byId(id);
-              if (s) void writeClipboardText(serverAddress(s)).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500); });
+              if (s) void writeClipboardText(serverAddress(s)).then(showCopied);
             },
+            onCopyIp: copyIp,
           }}
         />
         <TerminalArea
@@ -154,6 +165,7 @@ export function WorkspacePage() {
             onPage={(page) => setPanel((x) => ({ ...x, page }))}
             onClose={() => setPanel((x) => ({ ...x, open: false }))}
             server={panelServer}
+            onCopyIp={copyIp}
             follow={paneView ? "pane" : "sidebar"}
             serverPage={panelServer ? <ForwardsSection serverId={panelServer.id} /> : null}
             snippetsPage={(

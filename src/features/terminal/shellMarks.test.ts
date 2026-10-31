@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parse133, parseMark, ShellTracker, type TermLike } from "./shellMarks";
+import { parse133, parseMark, launchesShell, ShellTracker, type TermLike } from "./shellMarks";
 
 /** 只放 ASCII 的假终端：每行一段文字，可以标成折行续行 */
 function fakeTerm(cols = 40) {
@@ -76,24 +76,37 @@ describe("提示符标记", () => {
     expect(s.input(term)).toBeNull();
   });
 
-  it("在提示符下回车后算命令在运行，回到提示符为止；不在提示符下回车不算", () => {
+  it("在提示符下回车后算命令在运行并记下命令，回到提示符为止；不在提示符下回车不算", () => {
     const { t, term } = fakeTerm();
     const s = new ShellTracker();
-    s.enter();
+    s.enter(term);
     expect(s.running).toBe(false);
     t.put(0, "user@h:~$ ");
     s.onMark({ kind: "inputStart" }, term, "/home/u");
     t.put(0, "user@h:~$ claude");
-    s.enter();
+    s.enter(term);
     expect(s.running).toBe(true);
+    expect(s.command).toBe("claude");
     expect(s.input(term)).toBeNull();
     s.onMark({ kind: "commandEnd", exit: 0 }, term, "/home/u");
     expect(s.running).toBe(false);
     s.onMark({ kind: "inputStart" }, term, "/home/u");
-    s.enter();
+    s.enter(term);
     expect(s.running).toBe(true);
     s.restart();
     expect(s.running).toBe(false);
+  });
+
+  it("认出会进到另一个 shell 的命令；拿不准时按 shell 处理", () => {
+    for (const c of ["ssh old-box", "sudo -i", "sudo apt update", "su -", "docker exec -it web bash", "kubectl exec -it p -- sh",
+      "tmux", "screen -r", "exec bash --norc", "env -i bash", "FOO=1 zsh", "/usr/bin/ssh h", "\\ssh h", "cd /srv && bash", "mosh h", "wsl"]) {
+      expect(launchesShell(c), c).toBe(true);
+    }
+    for (const c of ["claude", "codex --full-auto", "python3", "cat", "vim notes.md", "time make", "nohup node app.js", "less log"]) {
+      expect(launchesShell(c), c).toBe(false);
+    }
+    expect(launchesShell(null)).toBe(true);
+    expect(launchesShell("   ")).toBe(true);
   });
 
   it("续行提示符（PS2）后面的 B 不取输入，下一个主提示符照常", () => {

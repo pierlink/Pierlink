@@ -15,6 +15,16 @@ pub(super) struct Log {
     events: VecDeque<TerminalEvent>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Pump {
+    /// 暂无新字节或受输出窗口限制，需要等待。
+    Pending,
+    /// 已读取或送达一批日志，可继续排空。
+    Progress,
+    /// 进程结束后的日志及回显均已排空。
+    Drained,
+}
+
 impl Log {
     pub(super) fn create(directory: &Path) -> Option<Self> {
         std::fs::create_dir_all(directory).ok()?;
@@ -23,9 +33,7 @@ impl Log {
             .suffix(".log")
             .tempfile_in(directory)
             .ok()?;
-        // 在 ssh 开始写入前限制权限；失败时丢弃空文件并照常连接。
-        #[cfg(windows)]
-        crate::keys::windows::permissions(file.path(), false).ok()?;
+        // 与临时 SSH 配置一致：Windows 继承用户数据目录 ACL，Unix 由 tempfile 设置 0600。
         file.path().to_str()?;
         Some(Self {
             path: file.into_temp_path(),
@@ -61,7 +69,17 @@ impl Log {
         }
     }
 
-    pub(super) fn pump(&mut self, session: &Session, callback: &Callback, finished: bool) -> bool {
+    /// 无参数；返回当前阶段空闲时读取日志的间隔。
+    pub(super) fn interval(&self) -> Duration {
+        Duration::from_millis(if self.parser.last == Some(ConnectStage::Ready) {
+            250
+        } else {
+            50
+        })
+    }
+
+    /// 按 session 的输出窗口向 callback 送达日志；finished 表示进程已结束，返回本轮排空状态。
+    pub(super) fn pump(&mut self, session: &Session, callback: &Callback, finished: bool) -> Pump {
         let eof = self.events.is_empty() && self.read(finished);
         while let Some(event) = self.events.pop_front() {
             let event = match event {
@@ -74,7 +92,7 @@ impl Log {
                     };
                     if capacity == 0 {
                         self.events.push_front(TerminalEvent::Output(bytes));
-                        return false;
+                        return Pump::Pending;
                     }
                     if bytes.len() > capacity {
                         let tail = bytes.split_off(capacity);
@@ -87,7 +105,13 @@ impl Log {
             };
             session.emit(callback, event);
         }
-        finished && eof
+        if finished && eof {
+            Pump::Drained
+        } else if eof {
+            Pump::Pending
+        } else {
+            Pump::Progress
+        }
     }
 }
 
@@ -95,7 +119,7 @@ impl Log {
 struct Parser {
     line: Vec<u8>,
     last: Option<ConnectStage>,
-    // 超长行分块回显，调试行整行丢弃；内存不随日志增长。
+    // 超长行分块回显，调试和 VERBOSE 行整行丢弃；内存不随日志增长。
     continued: Option<bool>,
 }
 
@@ -141,11 +165,9 @@ impl Parser {
         if complete && line.last() == Some(&b'\r') {
             line.pop();
         }
-        let debug = self.continued.unwrap_or_else(|| {
-            [b"debug1:".as_slice(), b"debug2:", b"debug3:"]
-                .iter()
-                .any(|p| line.starts_with(p))
-        });
+        let debug = [b"debug1:".as_slice(), b"debug2:", b"debug3:"]
+            .iter()
+            .any(|p| line.starts_with(p));
         if debug && self.continued.is_none() && self.last != Some(ConnectStage::Ready) {
             // 只识别调试前缀后的消息，普通诊断中的相同文字不能推进阶段。
             let message = String::from_utf8_lossy(&line[7..]);
@@ -172,15 +194,25 @@ impl Parser {
                 self.stage(ConnectStage::Session, events);
             }
         }
-        if !debug {
-            // 新版 OpenSSH 的认证成功消息也可能是非调试级别，仍须原样回显。
+        let mut hidden = self.continued.unwrap_or(debug);
+        if !debug && self.continued.is_none() {
+            // VERBOSE 没有 debug 前缀；认证成功仍推进阶段，但不回显这些状态与统计。
             if self.last != Some(ConnectStage::Ready)
-                && self.continued.is_none()
                 && (line.starts_with(b"Authenticated to ")
                     || line.starts_with(b"Authentication succeeded"))
             {
                 self.stage(ConnectStage::Session, events);
             }
+            hidden = [
+                b"Authenticated to ".as_slice(),
+                b"Authenticated with partial success",
+                b"Transferred: sent ",
+                b"Bytes per second: ",
+            ]
+            .iter()
+            .any(|prefix| line.starts_with(prefix));
+        }
+        if !hidden {
             if complete {
                 line.extend_from_slice(b"\r\n");
             }
@@ -189,7 +221,7 @@ impl Parser {
             }
         }
         if !complete {
-            self.continued = Some(debug);
+            self.continued = Some(hidden);
         }
     }
 }

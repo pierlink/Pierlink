@@ -494,9 +494,18 @@ fn dispatch(
     }
     let mut ended = false;
     let mut exited_at = None;
+    let mut log_state = ssh_log::Pump::Pending;
     loop {
+        // 退出后有日志可读就连续排空；正常空闲轮询在就绪后放宽间隔。
+        let wait = if exited_at.is_some() && log_state == ssh_log::Pump::Progress {
+            Duration::ZERO
+        } else {
+            log.as_ref()
+                .map_or(Duration::from_millis(200), ssh_log::Log::interval)
+        };
+        let mut outputs = Vec::new();
         let mut output = Vec::new();
-        match rx.recv_timeout(Duration::from_millis(if log.is_some() { 50 } else { 200 })) {
+        match rx.recv_timeout(wait) {
             Ok(chunk) => output = chunk,
             Err(mpsc::RecvTimeoutError::Disconnected) => ended = true,
             Err(mpsc::RecvTimeoutError::Timeout) => (),
@@ -510,10 +519,7 @@ fn dispatch(
             match rx.recv_timeout(Duration::from_millis(4).saturating_sub(start.elapsed())) {
                 Ok(chunk) => {
                     if output.len() + chunk.len() > CHUNK {
-                        session.emit(
-                            &callback,
-                            TerminalEvent::Output(std::mem::take(&mut output)),
-                        );
+                        outputs.push(std::mem::take(&mut output));
                     }
                     output.extend(chunk);
                 }
@@ -521,7 +527,7 @@ fn dispatch(
             }
         }
         if !output.is_empty() {
-            session.emit(&callback, TerminalEvent::Output(output));
+            outputs.push(output);
         }
         session.stop_if_stale(Instant::now());
         let status = lock(&session.child).poll();
@@ -537,10 +543,17 @@ fn dispatch(
             master.shutdown();
         }
         let closed = lock(&session.flow).closed;
-        let log_drained = log
-            .as_mut()
-            .is_none_or(|log| log.pump(session, &callback, status.is_some()));
-        if status.is_some() && (ended || closed || drain_expired) && log_drained {
+        // ssh 先写诊断日志再写下一个终端提示，本轮日志必须先于所有已收集的终端块送达。
+        log_state = log.as_mut().map_or(ssh_log::Pump::Drained, |log| {
+            log.pump(session, &callback, status.is_some())
+        });
+        for output in outputs {
+            session.emit(&callback, TerminalEvent::Output(output));
+        }
+        if status.is_some()
+            && (ended || closed || drain_expired)
+            && log_state == ssh_log::Pump::Drained
+        {
             // 进程已结束且日志已排空，先删除日志再通知退出。
             drop(log.take());
             lock(&session.flow).stopped = true;
@@ -560,9 +573,12 @@ fn dispatch(
             );
             break;
         }
-        if ended && (status.is_none() || !log_drained) {
+        if ended && (status.is_none() || log_state == ssh_log::Pump::Pending) {
             // 读取端已关闭时 recv 不再阻塞；日志背压或等待进程退出仍须让出线程。
-            thread::sleep(Duration::from_millis(if log.is_some() { 50 } else { 200 }));
+            thread::sleep(
+                log.as_ref()
+                    .map_or(Duration::from_millis(200), ssh_log::Log::interval),
+            );
         }
     }
 }

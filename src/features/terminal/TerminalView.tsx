@@ -9,6 +9,7 @@ import "./terminal.css";
 import { currentTerminalTheme } from "./theme";
 import { needsPasteConfirm, parseOsc7, parseOsc99 } from "./util";
 import { ConnectProgress, ConnectSteps, stageIndex, type Step } from "./ConnectProgress";
+import { findFakeCursor } from "./imeAnchor";
 import { useSettings } from "../settings/store";
 import { useContextMenu } from "../../components";
 import { formatError, isAppError } from "../../errors";
@@ -120,6 +121,7 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
       notifyServersChanged();
       reopenRef.current(true);
     } catch (e) {
+      setSteps(null);
       setEnded({ kind: "failed", text: formatError(e) });
     }
   };
@@ -217,18 +219,62 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
     term.parser.registerCsiHandler({ prefix: "?", final: "l" }, watchCursor(false));
     // 软复位会把光标显示出来
     term.parser.registerCsiHandler({ intermediates: "!", final: "p" }, () => { cursorHidden = false; return false; });
-    /** 前台是程序而不是 shell 提示符：全屏程序、开了鼠标上报、藏了光标自己画，或钩子显示有命令在运行 */
+    /**
+     * 前台是程序而不是 shell 提示符（粘贴多行时据此决定要不要提醒）。装了提示符钩子时只信钩子：
+     * 有命令在运行，并且不是 ssh、sudo -i、tmux 这类会进到另一个 shell 的命令。没装钩子时，主屏上藏了光标
+     * 自己画、或开了鼠标上报的程序才算（如 Claude Code）；全屏的 vim、tmux、screen 不算，仍按 shell 提醒。
+     */
     const inProgram = () =>
-      term.buffer.active.type === "alternate" || term.modes.mouseTrackingMode !== "none" || cursorHidden || prediction.running;
+      prediction.integrated
+        ? prediction.programRunning
+        : term.buffer.active.type !== "alternate" && (cursorHidden || term.modes.mouseTrackingMode !== "none");
+
+    // 输入法：程序藏了真实光标、自己画一个反色格当光标（Claude Code 等）时，组字框和候选框放到这一格。
+    // xterm 按真实光标摆放它们；Windows 自带的 ConPTY 在光标隐藏时不报光标位置，真实光标会停在别处，
+    // 拼音就画到了另一行。只在屏幕上恰好有一个单独的反色格时才挪，否则照 xterm 原样。
+    let want: { left: string; top: string } | null = null;
+    const applyIme = () => {
+      if (!want) return;
+      for (const node of [term.textarea, el.querySelector<HTMLElement>(".composition-view")]) {
+        if (node && (node.style.left !== want.left || node.style.top !== want.top)) {
+          node.style.left = want.left;
+          node.style.top = want.top;
+        }
+      }
+    };
+    const anchorIme = () => {
+      want = null;
+      const area = term.textarea;
+      if (!cursorHidden || !area || document.activeElement !== area) return;
+      const at = findFakeCursor(term.buffer.active, term.cols, term.rows);
+      const screen = el.querySelector<HTMLElement>(".xterm-screen");
+      if (!at || !screen) return;
+      want = { left: `${(at.x * screen.clientWidth) / term.cols}px`, top: `${(at.y * screen.clientHeight) / term.rows}px` };
+      applyIme();
+    };
+    // xterm 在渲染、光标移动、组字更新时会把它们放回真实光标处（组字时还会在下一轮事件循环再放一次）：
+    // 渲染、光标移动时紧跟着重新找；它一改这两个元素的位置，就在同一轮任务里改回来，不会画出错位的一帧
+    const keepIme = new MutationObserver(applyIme);
+    for (const node of [term.textarea, el.querySelector<HTMLElement>(".composition-view")]) {
+      if (node) keepIme.observe(node, { attributes: true, attributeFilter: ["style"] });
+    }
+    term.onRender(anchorIme);
+    term.onCursorMove(anchorIme);
+    const imeEvents = ["focus", "compositionstart", "compositionupdate"] as const;
+    for (const name of imeEvents) term.textarea?.addEventListener(name, anchorIme);
+    const dropIme = () => { want = null; };
+    term.textarea?.addEventListener("blur", dropIme);
 
     let id: string | null = null;
     // 会话 ID 返回之前就到达的输出，先累计字节数，拿到 ID 后再一并确认（否则流量控制会少算）
     let earlyBytes = 0;
     let exited = false;
     let disposed = false;
-    // 这次连接走到的最后一步（会话可以用了以后为 null）；连接中进度还盖在终端上时 covering 为 true
+    // 这次连接走到的最后一步（会话可以用了以后为 null）；连接中进度还盖在终端上时 covering 为 true；
+    // stageSeen：收到过后端报的阶段（系统 OpenSSH 建不了日志时一个都不报，失败时就不标停在哪一步）
     let lastStage: Step | null = null;
     let covering = false;
+    let stageSeen = false;
     // 用户点了“断开”：结束后写“已断开”，不当成断网；连接过程中点的，连上后马上关掉
     let manual = false;
     // 这次连接收到多少输出、按了几次回车（带钩子连上就退出时判断是不是钩子的问题）
@@ -245,7 +291,7 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
       kitty.reset();
       covering = false;
       // 连接没成功（还没到会话可用）：失败提示块上标出停在哪一步
-      setSteps(lastStage && (e.kind === "failed" || e.kind === "authFailed") ? { stage: lastStage, start: 0, failed: true } : null);
+      setSteps(lastStage && stageSeen && (e.kind === "failed" || e.kind === "authFailed") ? { stage: lastStage, start: 0, failed: true } : null);
       lastStage = null;
       setEnded(e);
       if (!endsInline(e)) return;
@@ -272,6 +318,8 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
       earlyBytes = 0;
       lastStage = spec.kind === "local" ? null : "resolve";
       covering = lastStage !== null;
+      stageSeen = false;
+      delete el.dataset.stage;
       setSteps(lastStage ? { stage: lastStage, start: performance.now(), failed: false } : null);
       cb.current.onStatus?.("running");
       try {
@@ -279,16 +327,21 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
           if (disposed) return;
           if (e.kind === "stage") {
             if (!lastStage) return;
+            // 走到哪一步也写在宿主元素上（端到端测试据此确认后端的阶段送到了界面）
+            el.dataset.stage = e.stage;
+            // 秒数从第一次报阶段算起：密码框（在连接前弹）开着的时间不算
+            const first = !stageSeen;
+            stageSeen = true;
             if (e.stage === "ready") {
               lastStage = null;
               covering = false;
               setSteps(null);
               return;
             }
-            if (stageIndex(e.stage) <= stageIndex(lastStage)) return;
+            if (!first && stageIndex(e.stage) <= stageIndex(lastStage)) return;
             const next: Step = e.stage;
             lastStage = next;
-            if (covering) setSteps((cur) => (cur && !cur.failed ? { ...cur, stage: next } : cur));
+            if (covering) setSteps((cur) => (cur && !cur.failed ? { ...cur, stage: next, start: first ? performance.now() : cur.start } : cur));
             return;
           }
           if (e.kind === "output") {
@@ -433,6 +486,8 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
     // 没有选中时 Ctrl+C 照常发给程序（中断）；Ctrl+V、Ctrl+Shift+V 粘贴；Ctrl+Shift+B 开关广播输入。
     // 拦下的按键要阻止浏览器默认动作：Ctrl+V 在浏览器里本身就是粘贴，不阻止会再粘贴一次（粘贴两份）
     term.attachCustomKeyEventHandler((ev) => {
+      // 会话结束后 Tab 交给浏览器：焦点能移到右下角的“关闭”“重新连接”
+      if (exited && ev.key === "Tab") return false;
       // 正在显示命令预测时，→ 补全整条、Ctrl+→ 补一个词
       const predicted = prediction.handleKey(ev);
       if (predicted !== null) return predicted;
@@ -523,6 +578,9 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
       ro.disconnect();
       mo.disconnect();
       term.textarea?.removeEventListener("paste", onPaste, true);
+      for (const name of imeEvents) term.textarea?.removeEventListener(name, anchorIme);
+      term.textarea?.removeEventListener("blur", dropIme);
+      keepIme.disconnect();
       el.removeEventListener("mousedown", onRightButton, true);
       el.removeEventListener("mouseup", onRightButton, true);
       if (id) void backend.close(id);

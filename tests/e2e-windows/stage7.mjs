@@ -188,7 +188,11 @@ await rec.step(p, "改成系统 OpenSSH：新开的终端由 ssh.exe 连接，�
   if (!(logged >= 1)) throw new Error("ssh.exe 的命令行里没有 -o LogLevel=DEBUG1 -E 日志文件");
   const text = await p.js(`[...document.querySelectorAll('.pane-slot')].filter(s=>s.style.display!=='none').map(s=>s.querySelector('.xterm-rows')?.innerText||'').join('\\n')`);
   if (/debug\d:/.test(text)) throw new Error(`终端里出现了 ssh 的调试信息：${text.slice(0, 400)}`);
-  return `ssh.exe 进程 ${before} → ${after}，带调试日志的 ${logged} 个`;
+  if (/^(Authenticated to|Transferred: sent|Bytes per second:)/m.test(text)) throw new Error(`终端里出现了 ssh 的 VERBOSE 信息：${text.slice(0, 400)}`);
+  // ssh 还在写日志时 Pierlink 就能读到：连接的各步一直报到“就绪”
+  const stage = await p.js(`[...document.querySelectorAll('.pane-slot')].filter(s=>s.style.display!=='none').map(s=>s.querySelector('.term-host')?.dataset.stage||'').join(',')`);
+  if (!/\bready\b/.test(stage)) throw new Error(`系统 OpenSSH 终端的连接阶段没报到就绪：${stage || "（一个都没有）"}`);
+  return `ssh.exe 进程 ${before} → ${after}，带调试日志的 ${logged} 个，阶段 ${stage}`;
 });
 
 await rec.step(p, "改回内置 SSH：新开的终端不再启动 ssh.exe，照常能用", async () => {

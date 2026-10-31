@@ -10,7 +10,7 @@
 .ws__tool-server { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .ws__tool-name { font-size: var(--fs-lg); font-weight: 600; min-width: 0; }
 .ws__tool-follow { margin-left: auto; flex: none; font-size: var(--fs-xs); color: var(--text-dim); }
-.ws__tool-addr { font-size: var(--fs-sm); color: var(--text-muted); margin-top: -6px; }
+.ws__tool-addr { display: flex; align-items: center; gap: 2px; min-width: 0; font-size: var(--fs-sm); color: var(--text-muted); margin-top: -6px; }
 .ws__tool-empty { color: var(--text-dim); font-size: var(--fs-sm); margin: 8px 0; }
 @media (max-width: 1180px) {
   /* 浮起来时从标签栏下面开始，不压住标签和右上角的按钮 */

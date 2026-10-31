@@ -123,7 +123,7 @@
 
 /* ---------- 连接进度：解析、连接、认证、会话 ---------- */
 .conn-progress {
-  position: absolute; inset: 0; z-index: 3; display: grid; place-content: center; justify-items: center; gap: 12px;
+  position: absolute; inset: 0; z-index: 4; display: grid; place-content: center; justify-items: center; gap: 12px;
   pointer-events: none; animation: pl-fade-in 160ms ease-out;
 }
 .conn-steps { display: flex; align-items: flex-start; margin: 0; padding: 0; list-style: none; }

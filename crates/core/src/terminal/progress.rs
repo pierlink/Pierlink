@@ -23,7 +23,7 @@ pub(crate) fn ordered(callback: ConnectProgress) -> ConnectProgress {
             return;
         }
         *previous = Some(stage);
-        drop(previous);
+        // 检查与送达共用同一把锁，防止并发回调把较后的阶段先送达。
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| callback(stage)));
     })
 }
@@ -31,6 +31,56 @@ pub(crate) fn ordered(callback: ConnectProgress) -> ConnectProgress {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn 并发阶段必须等前一回调送达后才送达() {
+        let (entered, started) = mpsc::channel();
+        let (release, resume) = mpsc::channel();
+        let resume = Mutex::new(resume);
+        let (sent, received) = mpsc::channel();
+        let report = ordered(Arc::new(move |stage| {
+            if stage == ConnectStage::Auth {
+                entered.send(()).unwrap();
+                lock(&resume).recv_timeout(Duration::from_secs(5)).unwrap();
+            }
+            sent.send(stage).unwrap();
+        }));
+        thread::scope(|scope| {
+            scope.spawn(|| report(ConnectStage::Auth));
+            started.recv_timeout(Duration::from_secs(5)).unwrap();
+            let (calling, called) = mpsc::channel();
+            let report = &report;
+            scope.spawn(move || {
+                calling.send(()).unwrap();
+                report(ConnectStage::Session);
+            });
+            called.recv_timeout(Duration::from_secs(5)).unwrap();
+            let premature = received.recv_timeout(Duration::from_millis(100));
+            // 先释放回调，失败时也保证两个线程都能退出。
+            release.send(()).unwrap();
+            assert_eq!(premature, Err(mpsc::RecvTimeoutError::Timeout));
+        });
+        assert_eq!(
+            received.try_iter().collect::<Vec<_>>(),
+            [ConnectStage::Auth, ConnectStage::Session]
+        );
+    }
+
+    #[test]
+    fn 回调异常后仍能报告后续阶段() {
+        let stages = Arc::new(Mutex::new(Vec::new()));
+        let observed = stages.clone();
+        let report = ordered(Arc::new(move |stage| {
+            if stage == ConnectStage::Auth {
+                panic!("模拟回调异常");
+            }
+            lock(&observed).push(stage);
+        }));
+        report(ConnectStage::Auth);
+        report(ConnectStage::Resolve);
+        report(ConnectStage::Ready);
+        assert_eq!(*lock(&stages), [ConnectStage::Ready]);
+    }
 
     #[test]
     fn 阶段只前进且按蛇形名称序列化() {

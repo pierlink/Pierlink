@@ -924,7 +924,7 @@ mod tests {
                         assert!(closed_by_user, "mode={mode} 后代 PID={pid} 退出原因错误");
                         break;
                     }
-                    TerminalEvent::Output(_) => (),
+                    TerminalEvent::Output(_) | TerminalEvent::Stage(_) => (),
                 }
             }
         }

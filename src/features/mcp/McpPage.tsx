@@ -253,7 +253,8 @@ function EntryDetail({ id, settings, servers, status, info, serverName, sessions
         <div className="mcp-detail__card">
           <h3>{t("mcp.clientsTitle")}</h3>
           {/* 服务器上的手动命令从 ~/.pierlink/mcp.json 取令牌：入口连上之前这个文件还没写 */}
-          <ClientSetup serverId={windows ? null : id} serverName={serverName(id)} commands={commands}
+          {/* 换了入口就重建：上一个入口还在添加、移除时，结果不会显示到新入口上 */}
+          <ClientSetup key={id} serverId={windows ? null : id} serverName={serverName(id)} commands={commands}
             fileHint={server && st ? (st.fileWritten ? t("mcp.fileWritten") : t("mcp.fileNotWritten")) : undefined} />
           {server && (
             <div className="mcp-detail__row">
@@ -363,7 +364,7 @@ function ClientSetup({ serverId, serverName, commands, fileHint }: {
       <Segmented<ClientKey>
         label={t("mcp.clientsTitle")}
         value={client}
-        options={clients.map((c) => ({ value: c, label: installed && !installed[c] ? `${CLIENT_NAMES[c]} · ${t("mcp.notInstalled")}` : CLIENT_NAMES[c] }))}
+        options={clients.map((c) => ({ value: c, label: CLIENT_NAMES[c] }))}
         onChange={(c) => { if (busy) return; picked.current = true; setClient(c); setResult(null); }}
       />
       {missing && (

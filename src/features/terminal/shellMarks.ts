@@ -77,6 +77,36 @@ export interface InputAt {
   room: number;
 }
 
+/** 会进到另一个 shell 的命令（嵌套 shell、远程登录、切用户、容器、终端复用器等） */
+const SHELL_LAUNCHERS = new Set([
+  "ssh", "mosh", "telnet", "rlogin", "su", "sudo", "doas", "pkexec", "runuser", "newgrp", "sg",
+  "bash", "sh", "zsh", "fish", "dash", "ksh", "mksh", "csh", "tcsh", "nu", "xonsh", "elvish", "pwsh", "powershell", "cmd",
+  "tmux", "screen", "byobu", "zellij", "abduco", "dtach",
+  "docker", "podman", "nerdctl", "kubectl", "oc", "lxc", "incus", "machinectl", "systemd-nspawn", "toolbox", "distrobox",
+  "nix-shell", "nix", "chroot", "wsl", "vagrant", "multipass", "script", "expect",
+]);
+/** 写在命令前面、本身不决定跑什么的词 */
+const PREFIXES = new Set(["exec", "command", "builtin", "nohup", "time", "env", "nice", "ionice", "stdbuf"]);
+
+/**
+ * 这条命令会不会进到另一个 shell。拿不准时当成会（偏保守：粘贴多行时仍按 shell 的规则提醒）。
+ * 用 ;、&&、|| 和管道连起来的几段，有一段会就算会。
+ * @param command 提示符下输入的命令；取不到时为 null
+ * @returns true 表示按 shell 处理
+ */
+export function launchesShell(command: string | null): boolean {
+  if (!command?.trim()) return true;
+  return command.split(/[;&|]+/).some((part) => {
+    for (const raw of part.trim().split(/\s+/)) {
+      if (!raw || /^[A-Za-z_][A-Za-z0-9_]*=/.test(raw)) continue; // 环境变量赋值
+      const word = raw.replace(/^\\/, "").replace(/^.*\//, ""); // 去掉别名转义和路径
+      if (PREFIXES.has(word) || word.startsWith("-")) continue; // 前缀和它们的选项
+      return SHELL_LAUNCHERS.has(word);
+    }
+    return false;
+  });
+}
+
 /**
  * 跟踪一个终端里 shell 的提示符：知道现在是不是在提示符下、输入从哪一格开始。
  * 只认 B 标记之后的输入；提示符被盖掉（Ctrl+R、清屏）、换到全屏程序、光标不在输入末尾时都不给输入。
@@ -88,6 +118,8 @@ export class ShellTracker {
   native = false;
   /** 在提示符下按了回车、还没等到下一个提示符：前台有命令在运行 */
   running = false;
+  /** 正在运行的那条命令（按回车时提示符后的输入）；取不到时为 null */
+  command: string | null = null;
   /** 最近一个提示符是续行提示符：等下一个主提示符再取输入 */
   private secondary = false;
   private anchor: { marker: { readonly line: number; readonly isDisposed: boolean; dispose(): void }; col: number; prompt: string } | null = null;
@@ -127,9 +159,15 @@ export class ShellTracker {
     }
   }
 
-  /** 用户按了回车：在提示符下按的，算有命令开始运行，直到下一个提示符 */
-  enter(): void {
-    if (this.anchor && !this.anchor.marker.isDisposed) this.running = true;
+  /**
+   * 用户按了回车：在提示符下按的，算有命令开始运行，直到下一个提示符；记下这条命令。
+   * @param term 终端（取按回车时提示符后的输入）
+   */
+  enter(term: TermLike): void {
+    if (this.anchor && !this.anchor.marker.isDisposed) {
+      this.running = true;
+      this.command = this.input(term)?.text.trim() || null;
+    }
     this.leave();
   }
 

@@ -427,8 +427,14 @@ async function clickClient(client, button) {
   await u.waitFor(`[...document.querySelectorAll('.mcp-detail .pl-seg [role=tab]')].some(b=>b.getAttribute('aria-selected')==='true' && b.textContent.trim().startsWith(${JSON.stringify(client)}))`, `选中 ${client} 的标签`);
   // 只是切换标签，不能添加任何东西
   if (await p.js(`!!(document.querySelector('.mcp-oneclick__result')?.innerText||'').trim()`)) return "切换标签就出了结果";
-  const found = await p.js(`(()=>{const b=[...document.querySelectorAll('.mcp-oneclick__buttons button')].find(b=>b.textContent.trim()===${JSON.stringify(button)}); if(!b) return false; if(b.disabled) return 'disabled'; b.click(); return true;})()`);
-  if (found !== true) return found === "disabled" ? "按钮是灰的" : "没有这个按钮";
+  // 检测客户端（服务器要连过去查）期间按钮是灰的：等它能点，最多 60 秒
+  const btn = `[...document.querySelectorAll('.mcp-oneclick__buttons button')].find(b=>b.textContent.trim()===${JSON.stringify(button)})`;
+  try {
+    await u.waitFor(`!!${btn} && !${btn}.disabled`, `${client} 的“${button}”能点`, 60000);
+  } catch {
+    return (await p.js(`!!${btn}`)) ? "按钮是灰的" : "没有这个按钮";
+  }
+  await p.js(`${btn}.click()`);
   const re = `(Added to ${client}|Couldn't add to ${client}|${client} wasn't found|Removed from ${client}|Couldn't remove from ${client}|Pierlink wasn't in ${client})[^\\n]*`;
   return await u.waitFor(`(()=>{const m=(document.querySelector('.mcp-oneclick__result')?.innerText||'').match(new RegExp(${JSON.stringify(re)})); return m ? m[0] : null;})()`, `点 ${client} 的“${button}”后的结果`, 120000);
 }

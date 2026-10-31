@@ -187,6 +187,7 @@
     "openInSplit": "Open in split",
     "edit": "Edit…",
     "copyAddress": "Copy address",
+    "copyIp": "Copy IP",
     "copySshCommand": "Copy ssh command",
     "testConnection": "Test connection",
     "favorite": "Add to favorites",
@@ -572,7 +573,8 @@
         "sync_task": "sync task",
         "home_folder_not_found": "couldn't find the user folder",
         "address_or_token_has_unsupported_characters": "the address or token has unsupported characters",
-        "couldn_t_write_the_config_on_the_server": "couldn't write the config on the server"
+        "couldn_t_write_the_config_on_the_server": "couldn't write the config on the server",
+        "client_remove_command_failed": "the client's own remove command failed"
       },
       "mobile": {
         "web_asset_reader_task_failed": "web asset reader task failed",
@@ -2254,7 +2256,8 @@
     "builtinNeedsUsername": "Built-in SSH needs a user name. If you leave it empty, this server connects through system OpenSSH instead (signing in with your Windows user name).",
     "engineNote": "Note: {{note}}",
     "engineSwitchHint": "After saving, open built-in SSH terminals to this server disconnect and need reconnecting.",
-    "login": "Log in"
+    "login": "Log in",
+    "copyIpFailed": "Couldn't get this server's address"
   },
   "versions": {
     "title": "Old versions and deleted files of {{name}}",
@@ -2789,7 +2792,7 @@
     "enable": "Turn on AI access",
     "enableHint": "When off, every entry is closed and connected AI is refused on its next action",
     "windowsEntry": "Local entry (AI on this PC)",
-    "windowsEntryHint": "Use one-click add, or run the command below once in a terminal; Pierlink must be running.",
+    "windowsEntryHint": "Pick a client and click Add, or run its command below once in a terminal; Pierlink must be running.",
     "pipeUnavailable": "The local entry isn't available right now",
     "remembered": "This entry is set to \"Always allow\"",
     "forget": "Ask every time again",
@@ -2872,7 +2875,6 @@
     },
     "serverRiskShort": "Root on this server can get the token and use the targets you tick; we recommend turning this on only for servers you trust.",
     "resizeColumn": "Drag to resize the column",
-    "addOnServer": "Add to Claude Code on the server",
     "adding": "Adding…",
     "added": "Added to {{client}}. Restart it to take effect",
     "addedCursor": "Written to {{path}}; Cursor loads it automatically",
@@ -2882,13 +2884,11 @@
     "rotated": "Token rotated; the old one no longer works. One-click setups are redone and take effect once the client reconnects (for example /mcp in Claude Code)",
     "clientMissing": "{{client}} wasn't found on this PC. Reopen this page after installing it, or copy a command below to add it manually",
     "serverClientMissing": "{{client}} wasn't found on {{server}}. Reopen this page after installing it there, or copy a command below",
-    "detecting": "Checking…",
     "showOutput": "Show output",
     "stderr": "Error output:",
     "fileWritten": "~/.pierlink/mcp.json on the server is ready",
     "fileNotWritten": "~/.pierlink/mcp.json is written once the entry connects; commands copied before that get no token",
     "clientsTitle": "Add to AI clients",
-    "notInstalled": "not installed",
     "manualLocal": "To add it yourself, run this in a terminal on this computer:",
     "manualCursor": "To add it yourself, merge this into ~/.cursor/mcp.json. Other MCP clients can use the same config.",
     "manualServer": "To add it yourself, run this on the server:",
