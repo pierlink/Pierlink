@@ -98,6 +98,15 @@ await rec.step(p, "打开默认本机终端：从用户主目录开始，能输�
   return (await u.termText()).split("\n").filter(Boolean).slice(-3).join(" / ");
 });
 
+await rec.step(p, "终端光标在闪（系统要求减少动画时也闪），竖线默认 2 像素", async () => {
+  await u.click(".xterm-screen");
+  // 光标在闪：后半秒取到的是“灭”的样子（没有阴影），等到“亮”的时候再取（动画坏了也直接取，让下面报错）
+  const r = await u.waitFor(`(()=>{const c=document.querySelector('.xterm-rows.xterm-focus .xterm-cursor'); if(!c) return null; const s=getComputedStyle(c); if(s.animationName!=='none' && !/2px 0px 0px 0px inset/.test(s.boxShadow)) return null; return {name:s.animationName,dur:s.animationDuration,count:s.animationIterationCount,shadow:s.boxShadow,reduced:matchMedia('(prefers-reduced-motion: reduce)').matches};})()`, "获得焦点的终端光标（亮的时候）", 8000);
+  if (r.name === "none" || r.dur !== "1s" || r.count !== "infinite") throw new Error(`光标不闪：${JSON.stringify(r)}`);
+  if (!/2px 0px 0px 0px inset/.test(r.shadow)) throw new Error(`光标粗细不对：${r.shadow}`);
+  return `系统要求减少动画=${r.reduced}；闪烁动画 ${r.dur} × ${r.count}`;
+});
+
 await rec.step(p, "切到设置页再切回来，终端和内容都还在", async () => {
   await u.clickText("Settings", "nav");
   await sleep(500);

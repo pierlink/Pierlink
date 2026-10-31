@@ -137,11 +137,18 @@ export function recorder(outDir) {
       const started = Date.now();
       let ok = true;
       let detail = "";
+      // 一步最多 10 分钟：卡住时只记这一步失败，后面的步骤照常跑，日志和截图也能留下来
+      let timer;
       try {
-        detail = (await fn()) ?? "";
+        detail = (await Promise.race([
+          fn(),
+          new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("这一步超过 10 分钟没有结束")), 10 * 60 * 1000); }),
+        ])) ?? "";
       } catch (e) {
         ok = false;
         detail = e?.stack ?? String(e);
+      } finally {
+        clearTimeout(timer);
       }
       try {
         // target 可以是连接，或返回当前连接的函数（应用重启后连接会换）

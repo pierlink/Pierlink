@@ -73,6 +73,12 @@
         "block": "Block",
         "underline": "Underline"
       },
+      "cursorWidth": "Cursor thickness",
+      "cursorWidthOption": {
+        "1": "Thin",
+        "2": "Medium",
+        "3": "Thick"
+      },
       "cursorBlink": "Blinking cursor",
       "scrollback": "Scrollback lines",
       "scrollbackHint": "How many lines of history each terminal keeps; more uses more memory",

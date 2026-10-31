@@ -1236,6 +1236,105 @@ mod reading_tests {
 
     #[cfg(unix)]
     #[test]
+    fn 管理器静止后消费残缺转义且后续字节从原游标读取() {
+        for (fragment, tail) in [
+            (b"\x1b".as_slice(), b"[31mred".as_slice()),
+            (b"\x1b[31;", b"1mred"),
+            (b"\x1b( ", b"Bred"),
+            (b"\x1bO", b"Ared"),
+            (b"\x1bN", b"Ared"),
+        ] {
+            let (manager, id) = manager();
+            let now = Instant::now();
+            let data = [b"$ ", fragment].concat();
+            manager.feed_output_at(&id, &data, now).unwrap();
+            let first = read_chunk_at(
+                &manager,
+                &id,
+                Some(0),
+                None,
+                now + Duration::from_millis(999),
+            )
+            .unwrap()
+            .0;
+            assert_eq!(first.text, "$ ");
+            assert_eq!(first.cursor, 2);
+            assert!(first.more);
+            let later = now + Duration::from_secs(1);
+            let ready = read_chunk_at(&manager, &id, Some(first.cursor), None, later)
+                .unwrap()
+                .0;
+            assert_eq!(ready.text, "");
+            assert_eq!(ready.cursor, data.len() as u64);
+            assert!(!ready.more);
+            manager.feed_output_at(&id, tail, later).unwrap();
+            let next = read_chunk_at(&manager, &id, Some(ready.cursor), None, later)
+                .unwrap()
+                .0;
+            assert_eq!(next.text, String::from_utf8_lossy(tail));
+            assert_eq!(next.cursor, (data.len() + tail.len()) as u64);
+            assert!(!next.more && !next.lost);
+            manager.close(&id).unwrap();
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn 管理器静止后替换半个中文且等待命中与后续续读不丢字节() {
+        let bytes = "中".as_bytes();
+        let pattern = Regex::new("�").unwrap();
+        for split in 1..bytes.len() {
+            let (manager, id) = manager();
+            let now = Instant::now();
+            let data = [b"$ ", &bytes[..split]].concat();
+            manager.feed_output_at(&id, &data, now).unwrap();
+            let first = read_chunk_at(
+                &manager,
+                &id,
+                Some(0),
+                None,
+                now + Duration::from_millis(999),
+            )
+            .unwrap()
+            .0;
+            assert_eq!(first.text, "$ ");
+            assert_eq!(first.cursor, 2);
+            assert!(first.more);
+            let later = now + Duration::from_secs(1);
+            let ready = read_chunk_at(&manager, &id, Some(first.cursor), None, later)
+                .unwrap()
+                .0;
+            assert_eq!(ready.text, "�");
+            assert_eq!(ready.cursor, data.len() as u64);
+            assert!(!ready.more);
+            let waited = wait_with_clock(
+                &manager,
+                &id,
+                Some(&pattern),
+                None,
+                Some(first.cursor),
+                Duration::ZERO,
+                || false,
+                || later,
+            )
+            .unwrap();
+            assert!(waited.matched && !waited.timed_out);
+            assert_eq!(waited.text, "�");
+            assert_eq!(waited.cursor, ready.cursor);
+            let tail = [&bytes[split..], b"red"].concat();
+            manager.feed_output_at(&id, &tail, later).unwrap();
+            let next = read_chunk_at(&manager, &id, Some(ready.cursor), None, later)
+                .unwrap()
+                .0;
+            assert_eq!(next.text, String::from_utf8_lossy(&tail));
+            assert_eq!(next.cursor, (data.len() + tail.len()) as u64);
+            assert!(!next.more && !next.lost);
+            manager.close(&id).unwrap();
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn 管理器读取未终止字符串注入时间后等待命中且新增输出不丢失() {
         let pattern = Regex::new(r"\$ ").unwrap();
         for kind in *b"]PX^_" {

@@ -148,8 +148,7 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
       lineHeight: 1.25,
       cursorBlink: opts.cursorBlink,
       cursorStyle: opts.cursorStyle,
-      // 竖线光标默认只有 1 像素，不好找
-      cursorWidth: 2,
+      cursorWidth: opts.cursorWidth,
       scrollback: opts.scrollback,
       allowTransparency: true,
       allowProposedApi: true,
@@ -495,13 +494,14 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
     const term = termRef.current;
     if (!term) return;
     term.options.cursorStyle = opts.cursorStyle;
+    term.options.cursorWidth = opts.cursorWidth;
     term.options.cursorBlink = opts.cursorBlink;
     term.options.scrollback = opts.scrollback;
     if (term.options.fontSize !== opts.fontSize) {
       term.options.fontSize = opts.fontSize;
       resizeRef.current();
     }
-  }, [opts.cursorStyle, opts.cursorBlink, opts.scrollback, opts.fontSize]);
+  }, [opts.cursorStyle, opts.cursorWidth, opts.cursorBlink, opts.scrollback, opts.fontSize]);
 
   return (
     <div

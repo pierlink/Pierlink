@@ -30,11 +30,13 @@ export async function clipboardSequence(): Promise<number | null> {
  * 把文字写进剪贴板。在应用里由后端直接写系统剪贴板：网页方式要求窗口在前台，程序发来的复制请求
  * （OSC 52、远程桌面同步）可能在窗口不在前台时到达，那时会失败。浏览器预览里用网页接口。
  * @param text 要写入的文字
+ * @returns 写完时剪贴板的变化序号（Windows）；拿不到时为 null
  */
-export async function writeClipboardText(text: string): Promise<void> {
-  if (!inTauri) return navigator.clipboard.writeText(text);
+export async function writeClipboardText(text: string): Promise<number | null> {
+  if (!inTauri) { await navigator.clipboard.writeText(text); return null; }
   const r = await commands.clipboardWriteText(text);
   if (r.status === "error") throw r.error;
+  return r.data;
 }
 
 /**

@@ -4,8 +4,8 @@
  * 免得把远程自己复制的文件、图片冲掉。
  *
  * 不发的情况：
- * - 本机剪贴板里是刚从远程复制过来的文字：发回去会把远程剪贴板里的文件、图片换成文字；
- * - 拿不到变化序号（不是 Windows）时，和上次发过的文字一样。
+ * - 本机剪贴板的这次变化是我们把远程复制的文字写进来造成的：发回去会把远程剪贴板里的文件、图片换成文字；
+ * - 拿不到变化序号（不是 Windows）时，和上次发过的文字一样，或就是远程来的文字。
  */
 
 /** 同步要用到的读写（测试里换成假的） */
@@ -23,6 +23,8 @@ export interface ClipboardIo {
 export class ClipboardSync {
   /** 最近一次从远程复制过来的文字（之后本机发过别的就作废） */
   private remote: string | null = null;
+  /** 远程来的文字写进本机剪贴板后的变化序号：只有这一次变化是我们自己写的，不发回去 */
+  private echo: number | null = null;
   /** 最近一次发过去的文字（只在拿不到变化序号时用来判断变没变） */
   private sent: string | null = null;
   /** 上次看过的变化序号 */
@@ -34,6 +36,7 @@ export class ClipboardSync {
   /** 新的连接：远程剪贴板里有什么不知道，本机剪贴板里的文字再发一次 */
   reset(): void {
     this.remote = null;
+    this.echo = null;
     this.sent = null;
     this.seen = null;
   }
@@ -44,7 +47,17 @@ export class ClipboardSync {
    */
   fromRemote(text: string): void {
     this.remote = text;
+    this.echo = null;
     this.sent = null;
+  }
+
+  /**
+   * 远程来的文字已经写进本机剪贴板。知道写完时的序号后，只跳过这一次变化：
+   * 之后本机又复制了同样的文字（比如远程又复制了文件，想把这段文字贴过去），照样发。
+   * @param seq 写完时的变化序号；拿不到时为 null（只能按内容判断）
+   */
+  written(seq: number | null): void {
+    this.echo = seq;
   }
 
   /**
@@ -62,6 +75,10 @@ export class ClipboardSync {
     if (!this.io.ready()) return;
     const seq = await this.io.sequence();
     if (seq === null ? poll : seq === this.seen) return;
+    if (seq !== null && seq === this.echo) {
+      this.seen = seq;
+      return;
+    }
     let text: string;
     try {
       text = await this.io.read();
@@ -70,7 +87,10 @@ export class ClipboardSync {
       return;
     }
     if (!this.io.ready()) return;
-    if (!text || text === this.remote || (seq === null && text === this.sent)) {
+    // 还不知道写完时的序号（正在写、或拿不到序号），或这次看的序号比写进去的早（读的时候刚好写进来）时，
+    // 按内容认出远程来的文字
+    const early = this.echo === null || (seq !== null && seq < this.echo);
+    if (!text || (early && text === this.remote) || (seq === null && text === this.sent)) {
       this.seen = seq;
       return;
     }
@@ -80,5 +100,6 @@ export class ClipboardSync {
     this.sent = text;
     // 远程剪贴板现在是这段文字了：之后本机再复制之前从远程来的文字，也要发过去
     this.remote = null;
+    this.echo = null;
   }
 }

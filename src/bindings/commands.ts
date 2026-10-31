@@ -156,8 +156,11 @@ export const commands = {
 	 *  远程桌面每秒看一次它，变了才去读剪贴板，免得一直占着剪贴板、和别的程序抢。其他系统和取不到时返回 None
 	 */
 	clipboardSequence: () => __TAURI_INVOKE<number | null>("clipboard_sequence"),
-	/**  把文字写进系统剪贴板（网页方式要求窗口在前台，程序在窗口不在前台时发来的复制请求会失败） */
-	clipboardWriteText: (text: string) => typedError<null, AppError>(__TAURI_INVOKE("clipboard_write_text", { text })),
+	/**
+	 *  把文字写进系统剪贴板（网页方式要求窗口在前台，程序在窗口不在前台时发来的复制请求会失败）。
+	 *  返回写完时剪贴板的变化序号（Windows）：远程桌面据此认出“这次变化是我们自己写的”，不把它发回远程
+	 */
+	clipboardWriteText: (text: string) => typedError<number | null, AppError>(__TAURI_INVOKE("clipboard_write_text", { text })),
 	/**  用系统默认浏览器打开网址（只允许 http 和 https） */
 	openInBrowser: (url: string) => typedError<null, AppError>(__TAURI_INVOKE("open_in_browser", { url })),
 	/**  家目录：本机为用户目录，服务器为登录后的初始目录。 */

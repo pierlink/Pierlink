@@ -73,6 +73,12 @@
         "block": "方块",
         "underline": "下划线"
       },
+      "cursorWidth": "光标粗细",
+      "cursorWidthOption": {
+        "1": "细",
+        "2": "中",
+        "3": "粗"
+      },
       "cursorBlink": "光标闪烁",
       "scrollback": "回滚行数",
       "scrollbackHint": "每个终端保留多少行历史输出；越大越占内存",

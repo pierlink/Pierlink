@@ -23,6 +23,12 @@ fn string_sequence_len(bytes: &[u8]) -> Option<usize> {
 /// 清理 bytes 中的 CSI、OSC 和其他 ESC 序列，宽松解码 UTF-8，并将 CRLF 转成 LF。
 /// 字符串类序列最多清理 4 KiB，防止缺失终止符吞掉后续输出；返回清理后的文字。
 pub fn strip_ansi(bytes: &[u8]) -> String {
+    strip_ansi_settled(bytes, false)
+}
+
+/// 按 settled 指定的末尾静止状态清理 bytes，返回宽松解码并统一换行后的文字。
+/// 静止后未结束的字符串只丢弃引导符，正文按普通输出继续清理。
+pub(super) fn strip_ansi_settled(bytes: &[u8], settled: bool) -> String {
     let mut plain = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while i < bytes.len() {
@@ -45,7 +51,8 @@ pub fn strip_ansi(bytes: &[u8]) -> String {
             }
             b']' | b'P' | b'X' | b'^' | b'_' => {
                 let start = i - 2;
-                i = start + string_sequence_len(&bytes[start..]).unwrap_or(bytes.len() - start);
+                i = start
+                    + token_len_settled(&bytes[start..], settled).unwrap_or(bytes.len() - start);
             }
             b'O' | b'N' => {
                 if i < bytes.len() {
@@ -68,11 +75,6 @@ pub fn strip_ansi(bytes: &[u8]) -> String {
 
 /// 返回首个完整 UTF-8 字符或控制序列的字节长度；末尾未接收完整时返回 None。
 pub(super) fn token_len(bytes: &[u8]) -> Option<usize> {
-    token_len_settled(bytes, false)
-}
-
-/// settled 表示已收到历史末尾且静止满一秒；此时孤立的字符串引导符可单独消费。
-pub(super) fn token_len_settled(bytes: &[u8], settled: bool) -> Option<usize> {
     let first = *bytes.first()?;
     if first != 0x1b {
         if bytes.starts_with(b"\r\n") {
@@ -105,9 +107,7 @@ pub(super) fn token_len_settled(bytes: &[u8], settled: bool) -> Option<usize> {
             .iter()
             .position(|b| (0x40..=0x7e).contains(b))
             .map(|end| end + 3),
-        b']' | b'P' | b'X' | b'^' | b'_' => {
-            string_sequence_len(bytes).or_else(|| settled.then_some(2))
-        }
+        b']' | b'P' | b'X' | b'^' | b'_' => string_sequence_len(bytes),
         b'O' | b'N' => (bytes.len() >= 3).then_some(3),
         0x20..=0x2f => bytes[2..]
             .iter()
@@ -115,6 +115,18 @@ pub(super) fn token_len_settled(bytes: &[u8], settled: bool) -> Option<usize> {
             .map(|end| end + 3),
         _ => Some(2),
     }
+}
+
+/// 返回 bytes 首个单位的长度；settled 表示已到历史末尾且静止满一秒。
+/// 静止后残缺单位消费全部剩余字节，字符串只消费引导符；空输入仍返回 None。
+pub(super) fn token_len_settled(bytes: &[u8], settled: bool) -> Option<usize> {
+    token_len(bytes).or(if !settled || bytes.is_empty() {
+        None
+    } else if matches!(bytes, [0x1b, b']' | b'P' | b'X' | b'^' | b'_', ..]) {
+        Some(2)
+    } else {
+        Some(bytes.len())
+    })
 }
 
 /// 对齐时最多回看 4 KiB，避免大段终端历史使每次增量读取线性变慢。
@@ -165,6 +177,52 @@ pub fn truncate_head_tail(bytes: &[u8], limit: usize) -> (Vec<u8>, bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn 末尾残缺单位仅在静止后整体消费并宽松解码() {
+        for bytes in [
+            b"\x1b".as_slice(),
+            b"\x1b[",
+            b"\x1b[31;",
+            b"\x1b(",
+            b"\x1b( ",
+            b"\x1bO",
+            b"\x1bN",
+            &[0xc2],
+            &[0xe4],
+            &[0xe4, 0xb8],
+            &[0xf0],
+            &[0xf0, 0x9f],
+            &[0xf0, 0x9f, 0x98],
+        ] {
+            assert_eq!(token_len_settled(bytes, false), None, "{bytes:?}");
+            assert_eq!(
+                token_len_settled(bytes, true),
+                Some(bytes.len()),
+                "{bytes:?}"
+            );
+            let expected = if bytes[0] == 0x1b { "" } else { "�" };
+            assert_eq!(strip_ansi(bytes), expected, "{bytes:?}");
+            assert_eq!(strip_ansi_settled(bytes, true), expected, "{bytes:?}");
+        }
+        for settled in [false, true] {
+            assert_eq!(token_len_settled(b"", settled), None);
+            assert_eq!(strip_ansi_settled(b"", settled), "");
+            assert_eq!(token_len_settled(b"\x1b[31mred", settled), Some(5));
+            assert_eq!(token_len_settled("中a".as_bytes(), settled), Some(3));
+        }
+    }
+
+    #[test]
+    fn 静止清理字符串只丢引导符且保留宽松解码规则() {
+        for kind in *b"]PX^_" {
+            let bytes = [vec![0x1b, kind], b"abc\r\n\xe4\xb8".to_vec()].concat();
+            assert_eq!(strip_ansi_settled(&bytes, false), "");
+            assert_eq!(strip_ansi_settled(&bytes, true), "abc\n�");
+            let terminated = [&bytes, b"\x1b\\done".as_slice()].concat();
+            assert_eq!(strip_ansi_settled(&terminated, true), "done");
+        }
+    }
+
     #[test]
     fn 字符串控制序列到达上限后继续读取且清理规则一致() {
         for kind in *b"]PX^_" {

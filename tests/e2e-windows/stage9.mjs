@@ -143,8 +143,14 @@ const getWindowsClipboard = () => {
   const b64 = execFileSync("powershell.exe", ["-NoProfile", "-Command", "$t = Get-Clipboard -Raw; if ($null -eq $t) { $t = '' }; [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($t))"], { encoding: "utf8" }).trim();
   return Buffer.from(b64, "base64").toString("utf8");
 };
-/** 在 :5 桌面里复制一段文字（xclip 在后台占着剪贴板，直到别人换掉它） */
-const copyOnRemote = (text, target = "") => execFileSync("wsl.exe", ["-d", LX.wsl, "-u", "pl", "--", "sh", "-c", `printf %s '${text}' | DISPLAY=:5 XAUTHORITY="$HOME/.vnc-e2e/x5.auth" xclip -selection clipboard${target ? ` -t ${target}` : ""} -i >/dev/null 2>&1`], { timeout: 15000 });
+/**
+ * 在 :5 桌面里复制一段文字：xclip 在后台一直占着剪贴板，直到别人换掉它。
+ * 不能同步等 wsl.exe：后台的 xclip 让它一直不返回（execFileSync 的超时也拦不住），所以不等，过一会儿再看
+ */
+const copyOnRemote = async (text, target = "") => {
+  spawn("wsl.exe", ["-d", LX.wsl, "-u", "pl", "--", "sh", "-c", `printf %s '${text}' | DISPLAY=:5 XAUTHORITY="$HOME/.vnc-e2e/x5.auth" xclip -selection clipboard${target ? ` -t ${target}` : ""} -i >/dev/null 2>&1`], { stdio: "ignore" }).on("error", () => undefined);
+  await sleep(2000);
+};
 
 await rec.step(p, "在桌面画面里按 Ctrl+V：远程剪贴板收到 Windows 剪贴板的文字；断开重连后同样的文字也能再发过去", async () => {
   if (!vnc) return "跳过";
@@ -177,7 +183,7 @@ await rec.step(p, "剪贴板自动同步：Windows 复制后不按 Ctrl+V，点�
     polled = "不点画面也同步了";
   }
   // 远程剪贴板里放一段非文字的内容（像在远程复制了文件）
-  copyOnRemote("PLRICH", "text/x-pierlink");
+  await copyOnRemote("PLRICH", "text/x-pierlink");
   await sleep(1000);
   if (remoteClipboard("text/x-pierlink") !== "PLRICH") throw new Error("没能在远程剪贴板里放进非文字的内容");
   await u.click(".desk__screen canvas");
@@ -191,7 +197,7 @@ await rec.step(p, "剪贴板自动同步：Windows 复制后不按 Ctrl+V，点�
 
 await rec.step(p, "剪贴板：远程复制的文字到了 Windows；Windows 换过别的再复制回这段文字，远程照样收到；剪贴板里是中文时重新连接，远程收到的是中文", async () => {
   if (!vnc) return "跳过";
-  copyOnRemote("PLFROMREMOTE");
+  await copyOnRemote("PLFROMREMOTE");
   const deadline = Date.now() + 10000;
   let got = "";
   while (Date.now() < deadline && (got = getWindowsClipboard()) !== "PLFROMREMOTE") await sleep(500);

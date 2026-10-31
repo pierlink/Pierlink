@@ -273,7 +273,7 @@ export function DesktopPane({ serverId, visible, title, controls, windowTitle, s
       const text = (e as CustomEvent<{ text: string }>).detail?.text;
       if (!text) return;
       clip.fromRemote(text);
-      void writeClipboardText(text).catch(() => {});
+      void writeClipboardText(text).then((seq) => clip.written(seq), () => {});
     });
   }, [clip, disconnect, serverId, t]);
 
