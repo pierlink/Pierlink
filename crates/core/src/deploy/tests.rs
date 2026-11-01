@@ -1093,7 +1093,6 @@ fn 清单兼容默认字段及短回退路径() {
 
 #[test]
 fn d9_程序文件被替换后仍可停止() {
-    use std::os::unix::process::CommandExt;
     let root = tempdir();
     let (program, cmd) = shell(root.path());
     let id = uuid::Uuid::new_v4().to_string();
@@ -1102,7 +1101,8 @@ fn d9_程序文件被替换后仍可停止() {
     fs::create_dir_all(&state).unwrap();
     fs::create_dir_all(&binary_dir).unwrap();
     let binary = binary_dir.join("syncthing");
-    fs::copy("/bin/sleep", &binary).unwrap();
+    // 用 sh 的副本跑一个循环：有的系统的 sleep 是按程序名分派的多合一程序，改了名字的副本一启动就退出
+    fs::copy("/bin/sh", &binary).unwrap();
     let manifest = model::Manifest {
         info: InstanceInfo {
             id: id.clone(),
@@ -1125,10 +1125,11 @@ fn d9_程序文件被替换后仍可停止() {
             let _ = self.0.wait();
         }
     }
+    // 停止脚本按命令行里的 --home=… 和程序路径找进程：--home 作为 sh 的 $0 放在参数里
     let mut child = Child(
         std::process::Command::new(&binary)
-            .arg0(format!("--home={}/home", state.display()))
-            .arg("60")
+            .args(["-c", "while :; do sleep 1; done"])
+            .arg(format!("--home={}/home", state.display()))
             .spawn()
             .unwrap(),
     );

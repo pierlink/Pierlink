@@ -57,6 +57,10 @@ pub trait MobileHost: Send + Sync + 'static {
     ) -> HostFuture<'a, bool> {
         Box::pin(async { Ok(false) })
     }
+    /// 无参数；电脑界面现在用的深浅色（"dark" / "light"），不知道时为 None。手机页面默认跟着它。
+    fn theme(&self) -> Option<String> {
+        None
+    }
     /// 无参数；返回服务器和同步概览 JSON（建议对象）。
     fn overview(&self) -> HostFuture<'_, Value> {
         Box::pin(async { Ok(json!({})) })

@@ -27,9 +27,15 @@ function save(s: AppSettings) {
   }
 }
 
+/** 把电脑界面现在的深浅色报给手机入口（手机页面默认跟着电脑）；浏览器预览里不报 */
+function reportTheme(actual: "dark" | "light") {
+  if (typeof window === "undefined" || !("__TAURI_INTERNALS__" in window)) return;
+  void import("../../bindings/commands").then(({ commands }) => commands.mobileSetTheme(actual)).catch(() => {});
+}
+
 /** 把主题和语言应用到界面上 */
 export function applySettings(s: AppSettings) {
-  applyTheme(s.theme);
+  reportTheme(applyTheme(s.theme));
   const lang = s.language === "system" ? pickLanguage(navigator.language) : s.language;
   if (i18n.language !== lang) void i18n.changeLanguage(lang);
   document.documentElement.lang = lang;
@@ -57,7 +63,7 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (settings.theme !== "system") return;
     const mq = window.matchMedia?.("(prefers-color-scheme: dark)");
-    const onChange = () => applyTheme("system");
+    const onChange = () => reportTheme(applyTheme("system"));
     mq?.addEventListener("change", onChange);
     return () => mq?.removeEventListener("change", onChange);
   }, [settings.theme]);

@@ -241,11 +241,7 @@ pub(super) fn execute(
             )?;
             Ok(json!({"terminal_id":id}))
         }
-        "list_terminals" => list_terminals(
-            shared,
-            &info.entry,
-            &terminal_targets(&permissions, &targets),
-        ),
+        "list_terminals" => list_terminals(shared, &terminal_targets(&permissions, &targets)),
         "close_terminal" | "terminal_send" | "terminal_read" | "terminal_screen"
         | "terminal_wait" => terminal_call(
             shared,
@@ -289,40 +285,15 @@ pub(super) fn terminal_targets(permissions: &Permissions, targets: &[Target]) ->
         .cloned()
         .collect()
 }
-fn list_terminals(
-    shared: &Shared,
-    entry: &super::Entry,
-    targets: &[Target],
-) -> Result<Value, Failure> {
+fn list_terminals(shared: &Shared, targets: &[Target]) -> Result<Value, Failure> {
     shared.registry.reap(shared.host.as_ref());
-    let registered = shared.registry.list(entry, targets);
-    let mut users = shared.host.user_terminals()?;
-    users.retain(|terminal| {
-        !terminal.target_id.is_empty()
-            && targets
-                .iter()
-                .any(|target| target.id == terminal.target_id && target.kind == terminal.kind)
-    });
-    for user in &mut users {
-        user.handed_over = registered.iter().any(|terminal| {
-            terminal.terminal_id == user.terminal_id
-                && matches!(
-                    terminal.source,
-                    terminals::TerminalSource::HandedOver { .. }
-                )
-        });
-        if user.kind == TargetKind::Server {
-            user.busy = None;
-            user.shell = None;
-        }
-    }
     let mut ai = Vec::new();
-    for info in registered {
-        let Some(access) = shared.registry.get(&info.terminal_id, entry, targets) else {
+    for info in shared.registry.list(targets) {
+        let Some(access) = shared.registry.get(&info.terminal_id, targets) else {
             continue;
         };
         let cwd = shared.host.terminal_cwd(&info.terminal_id)?;
-        // 宿主查询目录期间可能收回终端，不能返回已撤销的内容。
+        // 宿主查询目录期间终端可能被关掉，不能返回已关闭的终端。
         if access.check().is_err() {
             continue;
         }
@@ -333,9 +304,9 @@ fn list_terminals(
         value["cwd"] = json!(cwd);
         ai.push(value);
     }
-    Ok(json!({"ai_terminals": ai, "user_terminals": users}))
+    Ok(json!({"ai_terminals": ai}))
 }
-/// 运行 f 期间同时盯着 revoked：调用被取消或终端被收回时，f 看到的取消标志都会立起来
+/// 运行 f 期间同时盯着 revoked：调用被取消或终端被关掉时，f 看到的取消标志都会立起来
 fn with_revocation<T>(
     cancelled: &AtomicBool,
     revoked: &AtomicBool,
@@ -359,6 +330,56 @@ fn with_revocation<T>(
         watcher.thread().unpark();
         result
     })
+}
+/// 前台命令运行期间每半秒核对一次权限：入口关闭、或收回了这个目标的执行权限时，
+/// 立起交给 f 的停止标志（命令随之结束），并返回 true。用户取消也会立起停止标志。
+fn with_permission_watch<T>(
+    shared: &Shared,
+    entry: &super::Entry,
+    target: &Target,
+    cancelled: &AtomicBool,
+    f: impl FnOnce(&Arc<AtomicBool>) -> T,
+) -> (T, bool) {
+    let stop = Arc::new(AtomicBool::new(false));
+    let revoked = AtomicBool::new(false);
+    let done = AtomicBool::new(false);
+    let result = std::thread::scope(|scope| {
+        let watcher = scope.spawn(|| {
+            let mut next_check = std::time::Instant::now();
+            while !done.load(Ordering::Acquire) {
+                if cancelled.load(Ordering::Acquire) {
+                    stop.store(true, Ordering::Release);
+                    break;
+                }
+                if std::time::Instant::now() >= next_check {
+                    next_check = std::time::Instant::now() + Duration::from_millis(500);
+                    if !command_allowed(shared.host.as_ref(), entry, target) {
+                        revoked.store(true, Ordering::Release);
+                        stop.store(true, Ordering::Release);
+                        break;
+                    }
+                }
+                // f 结束时会叫醒它
+                std::thread::park_timeout(Duration::from_millis(50));
+            }
+        });
+        let result = f(&stop);
+        done.store(true, Ordering::Release);
+        watcher.thread().unpark();
+        result
+    });
+    (result, revoked.load(Ordering::Acquire))
+}
+/// 这个入口现在还能不能在 target 上执行命令；读不到设置时按允许处理（不因读取失败中断命令）
+fn command_allowed(host: &dyn super::McpHost, entry: &super::Entry, target: &Target) -> bool {
+    match host.permissions(entry) {
+        Ok(Some(permissions)) => match target.kind {
+            TargetKind::Windows => permissions.windows_commands,
+            TargetKind::Server => permissions.servers.contains(&target.id),
+        },
+        Ok(None) => false,
+        Err(_) => true,
+    }
 }
 /// Windows 目标可能只因为允许了文件夹才出现：执行命令和开本机终端还要单独的“执行命令”权限
 fn windows_commands_allowed(permissions: &Permissions, target: &Target) -> Result<(), AppError> {
@@ -463,32 +484,43 @@ fn run_command(
             json!({"job_id":job_id,"cwd":cwd,"shell":shell,"running":true,"output_streaming":target.kind==TargetKind::Windows}),
         );
     }
-    let output = match prepared {
-        Some(prepared) => local::run_prepared(&prepared, limits, &cancelled, None),
-        None => shared.host.run_server_command(
-            &target.id,
-            command,
-            string(args, "cwd"),
-            limits,
-            cancelled.clone(),
-        ),
-    }
-    .inspect_err(|error| login_needed(shared.host.as_ref(), target, error))
-    .map_err(|error| {
-        if target.kind == TargetKind::Server
-            && (cancelled.load(Ordering::Acquire)
-                || error.code.contains("timeout")
-                || error.code == "mcp.cancelled")
-        {
-            error.with_text(
-                "note",
-                "mcp.remote_process_may_still_run",
-                "远端进程可能仍在运行，可以打开终端查看",
+    let entry = approval.session.snapshot().entry;
+    let (output, revoked) =
+        with_permission_watch(shared, &entry, target, &cancelled, |stop| match &prepared {
+            Some(prepared) => local::run_prepared(prepared, limits, stop, None),
+            None => shared.host.run_server_command(
+                &target.id,
+                command,
+                string(args, "cwd"),
+                limits,
+                stop.clone(),
+            ),
+        });
+    if revoked {
+        return Err(AppError::new("mcp.target_denied")
+            .with_reason(
+                "mcp.command_permission_was_revoked_and_the_command_stopped",
+                "执行命令的权限已收回，命令已停止",
             )
-        } else {
-            error
-        }
-    })?;
+            .into());
+    }
+    let output = output
+        .inspect_err(|error| login_needed(shared.host.as_ref(), target, error))
+        .map_err(|error| {
+            if target.kind == TargetKind::Server
+                && (cancelled.load(Ordering::Acquire)
+                    || error.code.contains("timeout")
+                    || error.code == "mcp.cancelled")
+            {
+                error.with_text(
+                    "note",
+                    "mcp.remote_process_may_still_run",
+                    "远端进程可能仍在运行，可以打开终端查看",
+                )
+            } else {
+                error
+            }
+        })?;
     let stopped = cancelled.load(Ordering::Acquire);
     if target.kind != TargetKind::Server {
         check_cancel(&cancelled)?;
@@ -521,7 +553,7 @@ fn terminal_call(
     let id = required(args, "terminal_id");
     let registered = shared
         .registry
-        .get(id, &approval.session.snapshot().entry, targets)
+        .get(id, targets)
         .ok_or_else(|| schema::invalid("mcp.ai_terminal_does_not_exist", "AI 终端不存在"))?;
     registered.check()?;
     let target = targets

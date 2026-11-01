@@ -89,6 +89,11 @@ jobs:
         run: |
           sudo apt-get update -q
           sudo apt-get install -y -q tigervnc-standalone-server x11-xserver-utils x11-utils xauth socat openssh-server
+          # 记下软件源里 TigerVNC 的版本、程序位置和 -version 的输出（测试机系统升级后对照用）
+          dpkg-query -W tigervnc-standalone-server || true
+          dpkg -L tigervnc-standalone-server | grep -E '/bin/|vnc' | head -20 || true
+          ls -l /usr/bin/Xtigervnc /usr/bin/Xvnc 2>&1 || true
+          (timeout 10 /usr/bin/Xtigervnc -version < /dev/null 2>&1; echo "Xtigervnc -version 退出码 $?") | head -12 || true
           # 这几项要从软件源下载，软件源偶尔慢或断：失败时重跑一次
           # 免 root 轻量桌面要从软件源下几十 MB、在这里常超时：已在真实的精简服务器上验收，这里跳过
           run_real() { PIERLINK_TEST_TIGERVNC=/usr/bin/Xtigervnc PIERLINK_TEST_APT=1 cargo test -p pierlink-core --lib vnc::real_tests -- --ignored --test-threads=1 --skip 免_root_轻量桌面; }

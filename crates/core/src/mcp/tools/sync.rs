@@ -247,7 +247,7 @@ mod tests {
         fn targets(&self, _: &Entry, _: &Permissions) -> Result<Vec<Target>, AppError> {
             unreachable!()
         }
-        fn remembered(&self, _: &Entry) -> bool {
+        fn confirm_connections(&self, _: &Entry) -> bool {
             false
         }
         fn confirm_connect(

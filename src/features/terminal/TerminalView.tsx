@@ -9,11 +9,11 @@ import "./terminal.css";
 import { currentTerminalTheme } from "./theme";
 import { needsPasteConfirm, parseOsc7, parseOsc99 } from "./util";
 import { ConnectCard, ConnectSteps, STEPS, stepIndex, stepOf, type Step } from "./ConnectProgress";
-import { findFakeCursor } from "./imeAnchor";
+import { findFakeCursor, placeIme } from "./imeAnchor";
 import { useSettings } from "../settings/store";
 import { useContextMenu } from "../../components";
 import { formatError, isAppError } from "../../errors";
-import { endedFromOpenError, endedLine, endsInline, type Ended } from "./ended";
+import { MODES_OFF, endedFromOpenError, endedLine, endsInline, type Ended } from "./ended";
 import { getServersApi, notifyServersChanged } from "../servers/api";
 import type { Connecting, OpenSpec, TerminalBackend } from "./types";
 import { Button } from "../../components";
@@ -251,14 +251,25 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
     // 输入法：程序藏了真实光标、自己画一个反色格当光标（Claude Code 等）时，组字框和候选框放到这一格。
     // xterm 按真实光标摆放它们；Windows 自带的 ConPTY 在光标隐藏时不报光标位置，真实光标会停在别处，
     // 拼音就画到了另一行。只在屏幕上恰好有一个单独的反色格时才挪，否则照 xterm 原样。
-    let want: { left: string; top: string } | null = null;
+    let want: { left: number; top: number } | null = null;
+    // 取到两位小数：浏览器读回 style 时会截短位数，取整后读回的值和写入的一样，才能比较出“没变”
+    const px = (v: number) => `${Math.round(v * 100) / 100}px`;
+    // 拼音快到右边界时组字框会伸出终端：整体往左挪到贴着右边，输入框跟着挪（候选框也就留在终端里）。
+    // 只改左右位置，不动高度和行：确认后的字照常由程序换行。位置一次算好再写（见 placeIme），
+    // 观察者因为这次写入重新进来时没有要改的，不会和“对准假光标”来回改个不停
     const applyIme = () => {
-      if (!want) return;
-      for (const node of [term.textarea, el.querySelector<HTMLElement>(".composition-view")]) {
-        if (node && (node.style.left !== want.left || node.style.top !== want.top)) {
-          node.style.left = want.left;
-          node.style.top = want.top;
-        }
+      const view = el.querySelector<HTMLElement>(".composition-view");
+      const screen = el.querySelector<HTMLElement>(".xterm-screen");
+      const active = !!view?.classList.contains("active") && !!screen;
+      if (!want && !active) return;
+      const current = parseFloat(view?.style.left ?? "") || 0;
+      const at = placeIme(want, current, active && view ? view.offsetWidth : null, screen?.clientWidth ?? 0);
+      const left = at.left === null ? null : px(at.left);
+      const top = at.top === null ? null : px(at.top);
+      for (const node of [term.textarea, view]) {
+        if (!node) continue;
+        if (left !== null && node.style.left !== left) node.style.left = left;
+        if (top !== null && node.style.top !== top) node.style.top = top;
       }
     };
     const anchorIme = () => {
@@ -268,9 +279,7 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
       const at = findFakeCursor(term.buffer.active, term.cols, term.rows);
       const screen = el.querySelector<HTMLElement>(".xterm-screen");
       if (!at || !screen) return;
-      // 取到两位小数：浏览器读回 style 时会截短位数，取整后读回的值和写入的一样，才能比较出“没变”
-      const px = (v: number) => `${Math.round(v * 100) / 100}px`;
-      want = { left: px((at.x * screen.clientWidth) / term.cols), top: px((at.y * screen.clientHeight) / term.rows) };
+      want = { left: (at.x * screen.clientWidth) / term.cols, top: (at.y * screen.clientHeight) / term.rows };
       applyIme();
     };
     // xterm 在渲染、光标移动、组字更新时会把它们放回真实光标处（组字时还会在下一轮事件循环再放一次）：
@@ -288,6 +297,16 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
     term.onCursorMove(scanSoon);
     const imeEvents = ["focus", "compositionstart", "compositionupdate"] as const;
     for (const name of imeEvents) term.textarea?.addEventListener(name, anchorIme);
+    // 组字框挪到右边界以内：xterm 在组字更新后的下一轮事件循环里才量组字框的宽度、摆好位置，
+    // 观察者会在它改位置时立即改回；这里再补一次，宽度变了（多打了几个字母）也能跟上
+    const clampSoon = () => requestAnimationFrame(applyIme);
+    term.textarea?.addEventListener("compositionupdate", clampSoon);
+    // 兜底：万一有容器还是被滚动了（旧版 WebView 不认 overflow: clip），立刻滚回去
+    const unscroll = (e: Event) => {
+      const t = e.currentTarget as HTMLElement;
+      if (t.scrollLeft || t.scrollTop) { t.scrollLeft = 0; t.scrollTop = 0; }
+    };
+    el.addEventListener("scroll", unscroll);
     const dropIme = () => { want = null; };
     term.textarea?.addEventListener("blur", dropIme);
 
@@ -319,6 +338,8 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
     const end = (e: Ended) => {
       prediction.reset();
       kitty.reset();
+      // 关掉程序开的鼠标上报等模式（排在已收到的输出后面处理）：断线时程序来不及关，别留给重连后的 shell
+      term.write(MODES_OFF);
       covering = false;
       // 连接没成功（还没到会话可用）：失败提示块上标出停在哪一步
       const failedAt = lastStep;
@@ -668,6 +689,8 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
       term.textarea?.removeEventListener("paste", onPaste, true);
       for (const name of imeEvents) term.textarea?.removeEventListener(name, anchorIme);
       term.textarea?.removeEventListener("blur", dropIme);
+      term.textarea?.removeEventListener("compositionupdate", clampSoon);
+      el.removeEventListener("scroll", unscroll);
       keepIme.disconnect();
       if (imeFrame) cancelAnimationFrame(imeFrame);
       el.removeEventListener("mousedown", onRightButton, true);

@@ -12,6 +12,7 @@ const OPEN_TERMINAL_EVENT = "pierlink://mcp-open-terminal";
 const NOTICE_EVENT = "pierlink://mcp-notice";
 const ENTRIES_EVENT = "pierlink://mcp-entries";
 const JOBS_EVENT = "pierlink://mcp-jobs";
+const SETTINGS_EVENT = "pierlink://mcp-settings";
 
 /** tauri-specta 对可能失败的命令返回 {status, data|error}；这里统一转成“成功返回数据、失败抛出错误” */
 function unwrap<T>(r: { status: "ok"; data: T } | { status: "error"; error: unknown }): T {
@@ -29,7 +30,11 @@ function toAppError(error: unknown): AppError | null {
 export const tauriMcpApi: McpApi = {
   getSettings: async () => unwrap(await commands.mcpSettingsGet()) as McpSettings,
   setSettings: async (s) => unwrap(await commands.mcpSettingsSet(s)) as McpSettings,
-  status: async () => unwrap(await commands.mcpStatus()) as McpStatus,
+  // 时间戳在绑定里是 number | null（f64 可能不是有限数）：实际总有值，缺了按 0 处理
+  status: async () => {
+    const s = unwrap(await commands.mcpStatus());
+    return { ...s, sessions: s.sessions.map((x) => ({ ...x, lastActiveMs: x.lastActiveMs ?? 0 })) } as McpStatus;
+  },
   connectInfo: async () => unwrap(await commands.mcpConnectInfo()) as McpConnectInfo,
   rotateToken: async (serverId) => { unwrap(await commands.mcpTokenRotate(serverId)); },
   activity: async (limit) => unwrap(await commands.mcpActivity(limit)) as McpActivity[],
@@ -43,9 +48,6 @@ export const tauriMcpApi: McpApi = {
   openLogFolder: async () => { unwrap(await commands.mcpOpenLogFolder()); },
   pickFolder: async () => unwrap(await commands.pickFolder()),
   setUserControl: async (terminalId, takenOver) => { unwrap(await commands.terminalSetUserControl(terminalId, takenOver)); },
-  handoverEntries: async (terminalId) => unwrap(await commands.mcpHandoverEntries(terminalId)),
-  handOver: async (terminalId, entry) => { unwrap(await commands.mcpHandOver(terminalId, entry)); },
-  takeBack: async (terminalId) => { unwrap(await commands.mcpTakeBack(terminalId)); },
   installLocal: async (client) => unwrap(await commands.mcpInstallLocal(client)).detail,
   installServer: async (serverId, client) => { unwrap(await commands.mcpInstallServer(serverId, client)); },
   removeLocal: async (client) => unwrap(await commands.mcpRemoveLocal(client)).removed,
@@ -58,6 +60,7 @@ export const tauriMcpApi: McpApi = {
   onActivity: (cb) => listen<McpActivity>(ACTIVITY_EVENT, (e) => cb(e.payload)),
   onConfirm: (cb) => listen<McpConfirm>(CONFIRM_EVENT, (e) => cb(e.payload)),
   onConfirmClosed: (cb) => listen<number>(CONFIRM_CLOSED_EVENT, (e) => cb(e.payload)),
+  onSettings: (cb) => listen(SETTINGS_EVENT, () => cb()),
   onOpenTerminal: (cb) => listen<McpOpenTerminal>(OPEN_TERMINAL_EVENT, (e) => cb(e.payload)),
   onNotice: (cb) => listen<McpNotice>(NOTICE_EVENT, (e) => cb(e.payload)),
   onEntries: (cb) => listen<McpEntryState[]>(ENTRIES_EVENT, (e) => cb(e.payload)),

@@ -333,9 +333,12 @@ impl Shared {
         connection: u64,
     ) -> Result<HttpResponse, AppError> {
         let value = match route {
-            Route::Me => {
-                json!(device.map(|d| json!({"id":d.id,"name":d.name,"permissions":d.permissions})))
-            }
+            Route::Me => json!(device.map(|d| json!({
+                "id": d.id,
+                "name": d.name,
+                "permissions": d.permissions,
+                "theme": self.host.theme(),
+            }))),
             Route::Overview => host(self.host.overview()).await?,
             Route::Terminals => host(self.host.terminals()).await?,
             Route::OpenTerminal => {
@@ -448,7 +451,7 @@ impl Shared {
                         Bytes::from_static(b": heartbeat\n\n")
                     }
                     event = next_event(&mut subscription) => match event {
-                        Ok(name) if matches!(name.as_str(), "confirms" | "terminals" | "overview" | "activity") => Bytes::from(format!("event: {name}\ndata: {{}}\n\n")),
+                        Ok(name) if matches!(name.as_str(), "confirms" | "terminals" | "overview" | "activity" | "theme") => Bytes::from(format!("event: {name}\ndata: {{}}\n\n")),
                         Ok(_) => continue,
                         Err(broadcast::error::RecvError::Closed) => { subscription = None; continue; }
                         Err(broadcast::error::RecvError::Lagged(_)) => break,

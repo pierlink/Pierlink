@@ -288,7 +288,6 @@ fn merge_mcp(
         let mut e = entry.clone();
         e.server_id = server_id;
         e.entry.enabled = false;
-        e.entry.remembered = false;
         e.entry.servers = remap(&entry.entry.servers);
         current.servers.push(e);
         added += 1;

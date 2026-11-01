@@ -150,7 +150,7 @@ await rec.step(p, "MCP 页打开总开关和本机入口：允许执行命令、
   await openMcpPage();
   await turnOn("Turn on AI access");
   await u.waitFor(`!!document.querySelector('.mcp-detail')`, "本机入口的详情");
-  await turnOn("Local entry (AI on this PC)");
+  await turnOn("Let AI on this computer connect");
   await addFolder(FOLDER);
   if (HAVE_LINUX) await check(LX_NAME);
   const cmd = await u.waitFor(`[...document.querySelectorAll('.mcp-detail .mcp-cmd code')].map(c=>c.textContent).find(t=>t.startsWith('claude mcp add'))`, "接入命令");
@@ -159,7 +159,7 @@ await rec.step(p, "MCP 页打开总开关和本机入口：允许执行命令、
 });
 
 let agent = null;
-await rec.step(p, "旧式客户端：握手和工具列表立即回答；第一次调用工具时弹确认框，点“总是允许”", async () => {
+await rec.step(p, "旧式客户端：握手和工具列表立即回答；本机入口不弹连接确认，直接能用", async () => {
   agent = new Agent();
   const info = await agent.initialize("2025-11-25");
   if (info.protocolVersion !== "2025-11-25" || info.serverInfo?.name !== "pierlink") throw new Error(`握手结果不对：${JSON.stringify(info)}`);
@@ -167,9 +167,8 @@ await rec.step(p, "旧式客户端：握手和工具列表立即回答；第一�
   const expected = ["list_targets", "run_command", "open_terminal", "list_terminals", "close_terminal", "terminal_send", "terminal_read", "terminal_screen", "terminal_wait", "read_file", "write_file", "make_dir", "delete_path", "rename_path", "edit_file", "search", "find_files", "list_dir", "job_output", "job_stop", "list_jobs", "sync_status", "sync_wait"];
   const toolNames = tools.map((t) => t.name);
   if (toolNames.length !== expected.length || expected.some((n) => !toolNames.includes(n))) throw new Error(`工具不对：${toolNames.join(",")}`);
-  const pending = agent.call("list_targets");
-  const dialog = await answerConfirm("Always allow", "第一次连接的确认框");
-  let targets = structured(await pending);
+  let targets = structured(await agent.call("list_targets"));
+  if (await p.js(`!!document.querySelector('.pl-dialog .mcp-confirm')`)) throw new Error("本机入口不该弹连接确认框");
   let names = targets.map((t) => t.target);
   // 前一步刚保存的入口权限可能还没生效：最多等 10 秒
   for (let i = 0; i < 20 && HAVE_LINUX && !names.includes(LX_NAME); i++) {
@@ -178,7 +177,7 @@ await rec.step(p, "旧式客户端：握手和工具列表立即回答；第一�
     names = targets.map((t) => t.target);
   }
   if (!names.includes("windows") || (HAVE_LINUX && !names.includes(LX_NAME))) throw new Error(`目标不对：${names}`);
-  return `${dialog.slice(0, 120)}｜目标：${names.join(", ")}`;
+  return `没有弹确认框｜目标：${names.join(", ")}`;
 });
 
 await rec.step(p, "run_command：本机 PowerShell 和 WSL 服务器都原样返回输出和退出码", async () => {
@@ -226,15 +225,16 @@ await rec.step(p, "AI 打开终端：界面出现 AI 标签，发送命令并等
   const opened = structured(await agent.call("open_terminal", { target: LX_NAME, cwd: "/tmp" }, 150000));
   const id = opened.terminal_id;
   await u.waitFor(`!!document.querySelector('.ai-badge')`, "标签上的 AI 标记");
-  structured(await agent.call("terminal_send", { terminal_id: id, text: "echo pl-ai-$((40+2)) $(pwd)", keys: ["Enter"] }));
-  const waited = structured(await agent.call("terminal_wait", { terminal_id: id, pattern: "pl-ai-42 /tmp", timeout_secs: 30 }));
+  // 从发送前的位置开始等：输出可能在开始等之前就到了（和工具说明里的用法一样）
+  const sent = structured(await agent.call("terminal_send", { terminal_id: id, text: "echo pl-ai-$((40+2)) $(pwd)", keys: ["Enter"] }));
+  const waited = structured(await agent.call("terminal_wait", { terminal_id: id, pattern: "pl-ai-42 /tmp", since: sent.cursor, timeout_secs: 30 }));
   if (!waited.matched) throw new Error(`没等到输出：${JSON.stringify(waited).slice(0, 300)}`);
   const listed = structured(await agent.call("list_terminals"));
   if (!JSON.stringify(listed).includes(id)) throw new Error("list_terminals 里没有刚打开的终端");
   return `终端 ${id.slice(0, 8)}…`;
 });
 
-await rec.step(p, "交给 AI：AI 列出你开的本机终端；交出后 AI 能输入并读到输出；收回后不能再操作", async () => {
+await rec.step(p, "终端标题栏没有“交给 AI”；AI 只看得到自己开的终端", async () => {
   if (!agent) throw new Error("没有客户端");
   await u.clickText("Workspace", "header nav");
   // CI 屏幕只有 1024 宽，工具面板浮在终端上会挡住窗格标题栏右边的按钮：先收起
@@ -244,33 +244,11 @@ await rec.step(p, "交给 AI：AI 列出你开的本机终端；交出后 AI 能
   await u.click('.tabbar .pl-split__main');
   const visiblePane = `[...document.querySelectorAll('.pane-slot')].filter(s=>s.style.display!=='none')`;
   await u.waitFor(`${visiblePane}.some(s=>/PS /.test(s.querySelector('.xterm-rows')?.innerText||''))`, "PowerShell 提示符", 30000);
+  if (await p.js(`!!document.querySelector('.pane__btn[aria-label="Hand to AI…"]')`)) throw new Error("窗格标题栏还有“交给 AI”按钮");
   const listed = structured(await agent.call("list_terminals"));
-  const users = (listed.user_terminals ?? []).filter((t) => t.kind === "windows");
-  if (!users.length) throw new Error(`list_terminals 里没有用户的本机终端：${JSON.stringify(listed).slice(0, 300)}`);
-  if (users.some((t) => "cwd" in t || "address" in t)) throw new Error(`交出前不应给目录或地址：${JSON.stringify(users)}`);
-  // 只有本机入口开着：点窗格标题栏的 AI 按钮直接交出（前面阶段恢复的本机终端也在列表里，交出后按标记找这一个）
-  await p.js(`${visiblePane}.map(s=>s.querySelector('.pane__btn[aria-label="Hand to AI…"]')).find(Boolean)?.click()`);
-  await u.waitFor(`${visiblePane}.some(s=>!!s.querySelector('.pane__ai'))`, "窗格标题栏显示已交给 AI", 15000);
-  const after = structured(await agent.call("list_terminals"));
-  const mine = (after.user_terminals ?? []).find((t) => t.handed_over);
-  if (!mine) throw new Error(`交出后 list_terminals 里没有标成已交出的终端：${JSON.stringify(after).slice(0, 300)}`);
-  if (!(after.ai_terminals ?? []).some((t) => t.terminal_id === mine.terminal_id && "cwd" in t)) throw new Error(`交出后应在 ai_terminals 里并带目录：${JSON.stringify(after).slice(0, 400)}`);
-  // 先记下输出位置，再发送；等输出时从这里开始找（输出可能在开始等之前就到了）
-  const start = structured(await agent.call("terminal_read", { terminal_id: mine.terminal_id }));
-  // 交出后的第一次回车：终端里可能有交出前没回车的文字，要用户确认一次
-  const sending = agent.call("terminal_send", { terminal_id: mine.terminal_id, text: 'Write-Output "pl-ho-$(40+2)"', keys: ["Enter"] });
-  const unknownConfirm = await answerConfirm("Allow this time", "交出后第一次回车的确认框");
-  if (!/unknown|未知/i.test(unknownConfirm)) throw new Error(`确认框没说明内容未知：${unknownConfirm}`);
-  structured(await sending);
-  const waited = structured(await agent.call("terminal_wait", { terminal_id: mine.terminal_id, pattern: "(?m)^pl-ho-42", since: start.cursor, timeout_secs: 30 }));
-  if (!waited.matched) throw new Error(`没等到输出：${JSON.stringify(waited).slice(0, 300)}`);
-  // 收回：AI 不能再往里输入，终端还开着
-  await u.clickText("Take back", ".pane__ai");
-  await u.waitFor(`!${visiblePane}.some(s=>!!s.querySelector('.pane__ai'))`, "AI 标记消失", 15000);
-  // 收回后这个终端对 AI 来说不存在了：可能以请求错误或工具错误的形式拒绝，两种都算
-  const r = await agent.call("terminal_send", { terminal_id: mine.terminal_id, text: "Write-Output nope", keys: ["Enter"] });
-  const denied = r.error ? r.error.message : toolError(r);
-  return `交出 ${mine.title}，读到 pl-ho-42；收回后：${denied.slice(0, 80)}`;
+  if ("user_terminals" in listed) throw new Error(`list_terminals 不该再列用户的终端：${JSON.stringify(listed).slice(0, 300)}`);
+  if ((listed.ai_terminals ?? []).some((t) => "source" in t)) throw new Error(`ai_terminals 不该再带来源：${JSON.stringify(listed).slice(0, 300)}`);
+  return `AI 终端 ${listed.ai_terminals?.length ?? 0} 个`;
 });
 
 await rec.step(p, "新式（2026-07-28）客户端：不握手，server/discover 和带 _meta 的调用", async () => {
@@ -289,9 +267,9 @@ await rec.step(p, "新式（2026-07-28）客户端：不握手，server/discover
   }
 });
 
-await rec.step(p, "标题栏显示 AI 已连接；点“全部停止”后客户端被断开", async () => {
+await rec.step(p, "标题栏写着 AI 已连接（不显示连接数）；点“全部停止”后客户端被断开", async () => {
   if (!agent) throw new Error("没有客户端");
-  await u.waitFor(`/AI · [1-9]/.test(document.querySelector('.mcp-btn')?.innerText||'')`, "标题栏的 AI 状态");
+  await u.waitFor(`/AI (connected|is working)/.test(document.querySelector('.mcp-btn')?.innerText||'')`, "标题栏的 AI 状态");
   await u.click(".mcp-btn");
   await u.clickText("Stop all", ".mcp-pop");
   const deadline = Date.now() + 15000;
@@ -304,7 +282,7 @@ await rec.step(p, "标题栏显示 AI 已连接；点“全部停止”后客户
   return `桥接程序退出码 ${agent.exited}`;
 });
 
-await rec.step(p, "服务器入口：WSL 里的 AI 带令牌连 127.0.0.1:47821，在 Windows 上执行命令（第一次要确认）", async () => {
+await rec.step(p, "服务器入口：WSL 里的 AI 带令牌连 127.0.0.1:47821，在 Windows 上执行命令（默认不确认；打开“连上来时先问我”后要确认）", async () => {
   if (!HAVE_LINUX) throw new Error("没有 WSL 里的 Linux 服务器");
   await openMcpPage();
   // 左边列表“添加服务器入口”：勾上 pl-linux 添加，添加后自动选中它
@@ -315,7 +293,7 @@ await rec.step(p, "服务器入口：WSL 里的 AI 带令牌连 127.0.0.1:47821�
   await u.clickText("Add 1", ".pl-dialog");
   const lxRow = `[...document.querySelectorAll('.mcp-row')].find(r=>r.innerText.includes(${JSON.stringify(LX_NAME)}))`;
   await u.waitFor(`!!${lxRow}`, "服务器入口出现在列表里");
-  await check("Allow running commands on this PC");
+  await check("Run commands on this Windows computer");
   await u.waitFor(`/Running/.test(${lxRow}?.querySelector('.task-row__detail')?.textContent||'')`, "服务器入口运行中", 60000);
   // 在 WSL 里用 python 当 HTTP 客户端：读 ~/.pierlink/mcp.json 里的地址和令牌。
   // 用 wsl.exe -e 直接执行，不经过 bash（否则脚本里的 $(...) 会先被 bash 当成命令替换）
@@ -333,17 +311,26 @@ await rec.step(p, "服务器入口：WSL 里的 AI 带令牌连 127.0.0.1:47821�
     "_, body = post({'jsonrpc': '2.0', 'id': 2, 'method': 'tools/call', 'params': {'name': 'run_command', 'arguments': {'target': 'windows', 'command': 'Write-Output \"pl-srv-$(40+2)\"'}}}, extra)",
     "print(body)",
   ].join("\n");
-  const child = spawn("wsl.exe", ["-d", LX.wsl, "-u", LX.user, "-e", "python3", "-c", script], { stdio: ["ignore", "pipe", "pipe"] });
-  let out = "";
-  let err = "";
-  child.stdout.on("data", (d) => { out += d; });
-  child.stderr.on("data", (d) => { err += d; });
-  const done = new Promise((r) => child.on("exit", r));
-  const dialog = await answerConfirm("Allow this time", "服务器入口第一次连接的确认框");
-  const code = await Promise.race([done, sleep(120000).then(() => "超时")]);
-  if (code !== 0) throw new Error(`WSL 里的客户端失败（${code}）：${err.slice(-500)}`);
-  if (!out.includes("pl-srv-42")) throw new Error(`结果里没有 pl-srv-42：${out.slice(0, 500)}`);
-  return `${dialog.slice(0, 80)}｜${out.slice(0, 120)}`;
+  /** 在 WSL 里跑一次客户端；answer 给了就等连接确认框并点它 */
+  const runAgent = async (answer) => {
+    const child = spawn("wsl.exe", ["-d", LX.wsl, "-u", LX.user, "-e", "python3", "-c", script], { stdio: ["ignore", "pipe", "pipe"] });
+    let out = "";
+    let err = "";
+    child.stdout.on("data", (d) => { out += d; });
+    child.stderr.on("data", (d) => { err += d; });
+    const done = new Promise((r) => child.on("exit", r));
+    const dialog = answer ? await answerConfirm(answer, "服务器入口的连接确认框") : "";
+    const code = await Promise.race([done, sleep(120000).then(() => "超时")]);
+    if (code !== 0) throw new Error(`WSL 里的客户端失败（${code}）：${err.slice(-500)}`);
+    if (!out.includes("pl-srv-42")) throw new Error(`结果里没有 pl-srv-42：${out.slice(0, 500)}`);
+    return { out, dialog };
+  };
+  // 默认不问：直接执行
+  const first = await runAgent(null);
+  // 打开“AI 连上来时先问我”：之前记住的允许作废，新连接要确认
+  await check("Ask me before an AI can connect");
+  const second = await runAgent("Allow this time");
+  return `默认直接执行｜打开确认后：${second.dialog.slice(0, 80)}｜${first.out.slice(0, 80)}`;
 });
 
 await rec.step(p, "服务器入口：令牌不对时被拒绝", async () => {
@@ -423,6 +410,8 @@ await rec.step(p, "手机配对：输入邀请码后电脑上弹出批准框，�
   if (again.status < 400) throw new Error("邀请码应该只能用一次");
   const me = await phoneFetch("GET", "/api/me");
   if (!me.json?.permissions?.view || me.json.permissions.input || me.json.permissions.confirm) throw new Error(`新设备默认权限不对：${me.text}`);
+  // 电脑界面启动时报了自己的深浅色，手机页面默认跟着它
+  if (!["dark", "light"].includes(me.json?.theme)) throw new Error(`/api/me 没带电脑的深浅色：${me.text}`);
   const overview = await phoneFetch("GET", "/api/overview");
   if (!Array.isArray(overview.json?.servers)) throw new Error(`概况不对：${overview.text.slice(0, 200)}`);
   const terms = await phoneFetch("GET", "/api/terminals");

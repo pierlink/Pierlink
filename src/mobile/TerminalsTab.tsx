@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
-import { ArrowDown, ArrowLeft, Bot, ImagePlus, MoreHorizontal, Plus, ShieldAlert } from "lucide-react";
+import { ArrowDown, ArrowLeft, Bot, Eye, ImagePlus, MoreHorizontal, Plus, ShieldAlert } from "lucide-react";
 import { api, ApiError, type InputRequest, type Me, type OverviewServer, type Screen, type TerminalItem } from "./api";
 import { handleError } from "./App";
 import { parseSgrLine, stripSgr, type Style } from "./ansi";
@@ -53,18 +53,37 @@ function fitSize(screen: HTMLElement): { cols: number; rows: number } {
   return { cols: Math.max(20, Math.min(300, Math.floor(width / w) - 1)), rows: Math.max(8, Math.min(100, Math.floor(height / h))) };
 }
 
-/** 终端：电脑上开着的终端列表，点开全屏看；有输入权限时可以打字、按键、发图片 */
-export function TerminalsTab({ me, version, onAuthLost, pending, onOpenConfirms }: {
+/** 正在看的终端：切到别的标签再切回来时接着看它（页面刷新后不保留） */
+let lastOpen: TerminalItem | null = null;
+
+/** 终端：电脑上开着的终端列表，点开看；有输入权限时可以打字、按键、发图片 */
+export function TerminalsTab({ me, version, onAuthLost, pending, onOpenConfirms, home }: {
   me: Me;
   version: number;
   onAuthLost: () => void;
   /** 等着回答的确认数（终端页顶上提示） */
   pending: number;
   onOpenConfirms: () => void;
+  /** 在终端标签上又点了一次“终端”：回到列表（每点一次加一） */
+  home: number;
 }) {
   const { t } = useTranslation();
   const [list, setList] = useState<TerminalItem[] | null>(null);
-  const [open, setOpen] = useState<TerminalItem | null>(null);
+  const [open, setOpenState] = useState<TerminalItem | null>(() => lastOpen);
+  const setOpen = (next: TerminalItem | null | ((o: TerminalItem | null) => TerminalItem | null)) => {
+    setOpenState((o) => {
+      const value = typeof next === "function" ? next(o) : next;
+      lastOpen = value;
+      return value;
+    });
+  };
+  // 又点了一次“终端”标签：回到列表
+  const homeSeen = useRef(home);
+  useEffect(() => {
+    if (home === homeSeen.current) return;
+    homeSeen.current = home;
+    setOpen(null);
+  }, [home]);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   /** 新开终端：选服务器的面板（servers 为 null 时还在读）、正在打开的名字、打开失败的原因 */
@@ -479,6 +498,12 @@ function TerminalView({ me, term, pending, onOpenConfirms, onBack, onAuthLost }:
     if (typing.current && document.activeElement !== textRef.current) textRef.current?.focus();
   };
   const sendCancel = () => { if (longTimer.current) clearTimeout(longTimer.current); longFired.current = true; };
+  /** 点键盘栏、选项按钮时不让输入框失焦：键盘开着就一直开着，可以接着按、接着打字 */
+  const holdFocus = (e: ReactPointerEvent) => {
+    e.preventDefault();
+    typing.current = document.activeElement === textRef.current;
+  };
+  const refocus = () => { if (typing.current && document.activeElement !== textRef.current) textRef.current?.focus(); };
 
   const pickImage = async (file: File | undefined) => {
     if (!file) return;
@@ -558,14 +583,14 @@ function TerminalView({ me, term, pending, onOpenConfirms, onBack, onAuthLost }:
           {choices && canType && (
             <div className="m-choices" role="group" aria-label={t("mobile.terminals.choices")}>
               {choices.map((c) => (
-                <button key={c.key} type="button" className={`m-choice${c.current ? " m-choice--current" : ""}`} onClick={() => choose(c)}>
+                <button key={c.key} type="button" className={`m-choice${c.current ? " m-choice--current" : ""}`} onPointerDown={holdFocus} onClick={() => { choose(c); refocus(); }}>
                   <span className="m-choice__key">{c.key}</span><span className="m-choice__label">{c.label}</span>
                 </button>
               ))}
             </div>
           )}
           <div className="m-keys">
-            {KEYS.map((k) => <button key={k.key} type="button" className="m-key" disabled={!canType} onClick={() => press(k.key)}>{k.label}</button>)}
+            {KEYS.map((k) => <button key={k.key} type="button" className="m-key" disabled={!canType} onPointerDown={holdFocus} onClick={() => { press(k.key); refocus(); }}>{k.label}</button>)}
           </div>
           <div className="m-term__line">
             <button type="button" className="m-icon-btn m-icon-btn--field" aria-label={t("mobile.terminals.image")} disabled={!canType || uploading} onClick={() => fileRef.current?.click()}><ImagePlus size={20} /></button>
@@ -599,7 +624,7 @@ function TerminalView({ me, term, pending, onOpenConfirms, onBack, onAuthLost }:
           </div>
         </div>
       ) : (
-        <p className="m-muted m-term__noinput">{t("mobile.terminals.noInput")}</p>
+        <p className="m-muted m-term__noinput"><Eye size={15} aria-hidden="true" />{t("mobile.terminals.noInput")}</p>
       )}
       <p className={`m-status${status?.ok ? " m-status--ok" : ""}`} role="status">{status?.text ?? ""}</p>
     </div>

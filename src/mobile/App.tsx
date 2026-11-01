@@ -9,6 +9,7 @@ import { TerminalsTab } from "./TerminalsTab";
 import { ConfirmsTab } from "./ConfirmsTab";
 import { ActivityTab } from "./ActivityTab";
 import { useVisualViewport } from "./viewport";
+import { setPcTheme } from "./theme";
 
 type Tab = "overview" | "terminals" | "confirms" | "activity";
 
@@ -28,6 +29,8 @@ export function MobileApp() {
   const [online, setOnline] = useState(true);
   const [changes, setChanges] = useState<Changes>({ overview: 0, terminals: 0, confirms: 0, activity: 0 });
   const [pending, setPending] = useState(0);
+  /** 在终端标签上再点“终端”：回到终端列表 */
+  const [termHome, setTermHome] = useState(0);
 
   const loadMe = useCallback(() => {
     // 401/403：没配对或被撤销，回到配对；网络错误时保留当前状态（第一次就连不上时显示“连不上电脑”）
@@ -37,13 +40,17 @@ export function MobileApp() {
     }));
   }, []);
   useEffect(loadMe, [loadMe]);
+  // 电脑的深浅色（默认跟着它）
+  const pcTheme = me && me !== "loading" && me !== "unreachable" ? me.theme : null;
+  useEffect(() => setPcTheme(pcTheme), [pcTheme]);
 
   // 电脑上改权限或撤销会断开连接；重连后重新读一次自己的权限（被撤销就回到配对）
   const authed = !!me && me !== "loading" && me !== "unreachable";
   useEffect(() => {
     if (!authed) return;
     return api.events((name) => {
-      if (name === "reconnected") loadMe();
+      // 重连后、电脑换了深浅色：重新读一次自己的信息
+      if (name === "reconnected" || name === "theme") loadMe();
       setChanges((c) => (name === "reconnected"
         ? { overview: c.overview + 1, terminals: c.terminals + 1, confirms: c.confirms + 1, activity: c.activity + 1 }
         : name in c ? { ...c, [name]: c[name as keyof Changes] + 1 } : c));
@@ -93,13 +100,14 @@ export function MobileApp() {
       </header>
       <main className="m-main">
         {tab === "overview" && <OverviewTab me={me} version={changes.overview} onAuthLost={onAuthLost} onSignedOut={() => setMe(null)} />}
-        {tab === "terminals" && <TerminalsTab me={me} version={changes.terminals} onAuthLost={onAuthLost} pending={pending} onOpenConfirms={() => setTab("confirms")} />}
+        {tab === "terminals" && <TerminalsTab me={me} version={changes.terminals} onAuthLost={onAuthLost} pending={pending} onOpenConfirms={() => setTab("confirms")} home={termHome} />}
         {tab === "confirms" && <ConfirmsTab me={me} version={changes.confirms} onAuthLost={onAuthLost} />}
         {tab === "activity" && <ActivityTab version={changes.activity} onAuthLost={onAuthLost} />}
       </main>
       <nav className="m-tabs" aria-label="Pierlink">
         {tabs.map((x) => (
-          <button key={x.id} type="button" className="m-tabs__item" aria-current={tab === x.id ? "page" : undefined} onClick={() => setTab(x.id)}>
+          <button key={x.id} type="button" className="m-tabs__item" aria-current={tab === x.id ? "page" : undefined}
+            onClick={() => { if (x.id === "terminals" && tab === "terminals") setTermHome((n) => n + 1); setTab(x.id); }}>
             <span className="m-tabs__icon"><x.icon size={20} aria-hidden="true" />{x.badge ? <span className="m-badge">{x.badge}</span> : null}</span>
             {x.label}
           </button>

@@ -28,8 +28,6 @@ const KNOWN_MISSING = new Set([
   "mcp.not_found",
   "mcp.password_prompt",
   "mcp.path_denied",
-  "mcp.terminal_close_denied",
-  "mcp.terminal_not_handed_over",
   "mcp.terminal_registered",
   "mobile.host_unavailable",
   "mobile.invalid_request",

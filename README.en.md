@@ -54,9 +54,9 @@ English · [简体中文](README.md)
 ### AI access (MCP)
 - **An AI on a server works as if it were installed on Windows**: no Claude Code on Windows needed. The server-side AI can read, edit by line, and search the Windows folders you allow, and build, run and start background tasks on Windows. File encodings and line endings are kept as they are (GBK, UTF-16, CRLF), and long builds aren't cut off
 - The AI can see which folders it may use, which shells exist, and where a synced server path lives on Windows; how to use that is up to the AI
-- Hand an open terminal to an AI and take it back any time
+- The AI can open a visible terminal to work in, and you can take it over at any time
 - Risky actions (like `rm -rf` or a force push) need your confirmation; choose the approval mode; every step is logged
-- One-click setup for Claude Code / Codex / Cursor, and for Claude Code / Codex / Gemini CLI on a server; the title bar shows what the AI just did and its command output
+- One-click setup for Claude Code / Codex / Cursor, and for Claude Code / Codex / Gemini CLI on a server; the title bar always shows whether an AI is working, what it just did and its command output, with a one-click stop
 
 ![MCP page: entries, one-click setup, approval mode and permissions](assets/readme/mcp-en.png)
 
@@ -70,7 +70,7 @@ English · [简体中文](README.md)
 ### Phone access
 <img src="assets/readme/phone-en.png" alt="Answering an AI confirmation on a phone" width="240" align="right">
 
-- Away from your PC, answer AI confirmations, check server status and type commands in open terminals from your phone's browser
+- Away from your PC, talk to Claude Code on your servers from your phone's browser (laid out for the phone's width, options as buttons, photos you can send), answer AI confirmations and check server status; the theme follows the PC
 - Connects to your PC over Tailscale or your LAN — never exposed to the internet, and no Pierlink relay service involved
 - Pair with a QR code and approve on the PC; per-phone permissions and names, revocable any time
 - Works on iPhone and Android, no app to install

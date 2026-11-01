@@ -78,3 +78,10 @@ export function endedLine(text: string, warn: boolean, alt: boolean): string {
   // 说明下面多空两行：右下角的按钮条约占三行高，不挡住说明
   return `${reset}\r\n\x1b[${warn ? "33" : "90"}m${text}\x1b[0m\r\n\r\n\r\n\x1b[?25l`;
 }
+
+/**
+ * 会话结束时写给终端的“关掉程序开的模式”：鼠标上报（各种编码）、焦点上报、括号粘贴、应用光标键和小键盘。
+ * 连接断开时程序（如 screen 里的 Claude Code）来不及自己关，这些模式会留给按 Enter 重连后的新 shell，
+ * 鼠标一动 shell 就收到一串“35;33;34M”。只改模式，不动画面内容，也不退出全屏画面。
+ */
+export const MODES_OFF = "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1005l\x1b[?1006l\x1b[?1015l\x1b[?1016l\x1b[?1004l\x1b[?2004l\x1b[?1l\x1b>";

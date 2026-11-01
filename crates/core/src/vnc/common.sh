@@ -49,6 +49,13 @@ prune_uploads() {
         [ "$age" -le 604800 ] || rm -rf -- "$staged"
     done
 }
+# 版本说明：TigerVNC 1.15 起“-version”什么都不输出（退出码仍是 0），这时从程序文件里找“TigerVNC 版本号”字样。
+# 参数是程序路径和 -version 的输出；输出里已有版本号时原样返回，找不到时也原样返回。
+version_banner() {
+    case "$2" in *[0-9].[0-9]*) printf '%s' "$2"; return 0;; esac
+    found=$(LC_ALL=C grep -a -o -m 1 'TigerVNC [0-9][0-9]*\.[0-9][0-9]*\(\.[0-9][0-9]*\)\{0,1\}' "$1" 2>/dev/null | head -n 1)
+    if [ -n "$found" ]; then printf 'Xvnc %s' "$found"; else printf '%s' "$2"; fi
+}
 # 在超时后回收本调用启动的进程。
 bounded() (
     limit=$1; shift

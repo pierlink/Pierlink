@@ -192,6 +192,7 @@ binary={}
 binary_environment "$binary"
 [ -x "$binary" ] || fail not_tigervnc
 output=$(bounded 5 "$binary" -version 2>&1) || fail not_tigervnc
+output=$(version_banner "$binary" "$output")
 printf '{{"version":'; json "$output"; printf '}}'
 "#,
             sh_quote(path)?

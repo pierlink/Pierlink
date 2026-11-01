@@ -1,6 +1,8 @@
 //! Windows 命名管道：服务端（Pierlink 主程序）和桥接端（`Pierlink.exe --mcp`）。
 //! 权限做法和 askpass 管道相同：DACL 只给 SYSTEM 和当前用户、拒绝远程客户端、核对对方进程的程序路径。
-use super::{UNAVAILABLE, answer_unavailable, relay};
+//! Pierlink 以管理员身份运行时，管道另加高完整性标签：只有同样以管理员身份运行的程序能连，
+//! 普通程序不能借它拿到管理员权限。
+use super::{ELEVATED_ONLY, UNAVAILABLE, answer_unavailable, relay};
 use crate::error::AppError;
 use sha2::{Digest, Sha256};
 use std::{
@@ -15,12 +17,15 @@ use tokio::net::windows::named_pipe::{
     ClientOptions, NamedPipeClient, NamedPipeServer, ServerOptions,
 };
 use windows_sys::Win32::{
-    Foundation::{CloseHandle, ERROR_FILE_NOT_FOUND, ERROR_PIPE_BUSY, HANDLE, LocalFree},
+    Foundation::{
+        CloseHandle, ERROR_ACCESS_DENIED, ERROR_FILE_NOT_FOUND, ERROR_PIPE_BUSY, HANDLE, LocalFree,
+    },
     Security::{
         Authorization::{
             ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
         },
-        GetTokenInformation, SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER, TokenUser,
+        GetTokenInformation, SECURITY_ATTRIBUTES, TOKEN_ELEVATION, TOKEN_QUERY, TOKEN_USER,
+        TokenElevation, TokenUser,
     },
     System::{
         Pipes::{GetNamedPipeClientProcessId, GetNamedPipeServerProcessId},
@@ -127,6 +132,28 @@ fn process_sid(process: HANDLE) -> Result<String, AppError> {
     }
 }
 
+/// 当前进程是不是以管理员身份（提升后）运行；读不出来按否处理
+pub fn process_elevated() -> bool {
+    // SAFETY：GetCurrentProcess 返回伪句柄；令牌句柄由 OwnedHandle 关闭；输出缓冲区大小和传入的一致
+    unsafe {
+        let mut token = null_mut();
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
+            return false;
+        }
+        let token = OwnedHandle(token);
+        let mut elevation = TOKEN_ELEVATION { TokenIsElevated: 0 };
+        let mut length = 0;
+        GetTokenInformation(
+            token.0,
+            TokenElevation,
+            (&mut elevation as *mut TOKEN_ELEVATION).cast(),
+            size_of::<TOKEN_ELEVATION>() as u32,
+            &mut length,
+        ) != 0
+            && elevation.TokenIsElevated != 0
+    }
+}
+
 fn current_user_sid() -> Result<String, AppError> {
     // SAFETY：GetCurrentProcess 返回伪句柄，不需要关闭
     process_sid(unsafe { GetCurrentProcess() })
@@ -167,7 +194,16 @@ pub fn pipe_name() -> Result<String, AppError> {
 }
 
 fn security() -> Result<Security, AppError> {
-    let sddl = wide(&format!("D:P(A;;GA;;;SY)(A;;GA;;;{})", current_user_sid()?));
+    // 管理员身份运行时加高完整性标签（NW：低于高完整性的进程不能写入，也就连不上）
+    let label = if process_elevated() {
+        "S:(ML;;NW;;;HI)"
+    } else {
+        ""
+    };
+    let sddl = wide(&format!(
+        "D:P(A;;GA;;;SY)(A;;GA;;;{}){label}",
+        current_user_sid()?
+    ));
     let mut descriptor = null_mut();
     // SAFETY：sddl 以 0 结尾；输出的描述符由 LocalAllocation 释放
     if unsafe {
@@ -296,6 +332,13 @@ async fn connect(name: &str) -> Result<NamedPipeClient, AppError> {
             {
                 tokio::time::sleep(Duration::from_millis(200)).await;
             }
+            Err(e) if e.raw_os_error() == Some(ERROR_ACCESS_DENIED as i32) => {
+                eprintln!("连接 Pierlink 的 MCP 管道被拒绝：Pierlink 以管理员身份运行");
+                return Err(AppError::new("mcp.pipe_elevated_only").with_reason(
+                    "mcp.pierlink_runs_as_administrator",
+                    "Pierlink 以管理员身份运行",
+                ));
+            }
             Err(e) => {
                 eprintln!("连接 Pierlink 的 MCP 管道失败: 错误={e}");
                 return Err(failed(
@@ -310,6 +353,7 @@ async fn connect(name: &str) -> Result<NamedPipeClient, AppError> {
 async fn bridge() -> i32 {
     let stdin = tokio::io::stdin();
     let stdout = tokio::io::stdout();
+    let mut message = UNAVAILABLE;
     let pipe = match (pipe_name(), own_executable(), current_user_sid()) {
         (Ok(name), Ok(expected), Ok(user)) => match connect(&name).await {
             Ok(pipe) if server_is_ours(&pipe, &expected, &user) => Some(pipe),
@@ -317,12 +361,17 @@ async fn bridge() -> i32 {
                 eprintln!("MCP 管道的另一头不是本用户的 Pierlink，拒绝连接");
                 None
             }
-            Err(_) => None,
+            Err(e) => {
+                if e.code == "mcp.pipe_elevated_only" {
+                    message = ELEVATED_ONLY;
+                }
+                None
+            }
         },
         _ => None,
     };
     let Some(pipe) = pipe else {
-        return match answer_unavailable(stdin, stdout, UNAVAILABLE).await {
+        return match answer_unavailable(stdin, stdout, message).await {
             Ok(()) => 1,
             Err(e) => {
                 eprintln!("回答 agent 失败: 错误={e}");

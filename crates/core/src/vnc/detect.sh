@@ -44,6 +44,7 @@ binary_version=
 for candidate in "$(command -v Xtigervnc)" "$(command -v Xvnc)" "$HOME"/.local/share/pierlink/vnc/*/Xtigervnc "$HOME"/.local/share/pierlink/vnc/*/Xvnc "$HOME"/.local/share/pierlink/vnc/*/usr/bin/Xtigervnc "$HOME"/.local/share/pierlink/vnc/*/usr/bin/Xvnc; do
     [ -x "$candidate" ] || continue
     version=$(binary_environment "$candidate"; detect_bounded "$candidate" -version 2>&1) || continue
+    version=$(version_banner "$candidate" "$version")
     case "$version" in *TigerVNC*)
         valid=$(printf %s "$version" | awk 'match($0,/[0-9]+\.[0-9]+/) {v=substr($0,RSTART,RLENGTH);split(v,a,".");if(a[1]>1 || (a[1]==1 && a[2]>=9)) print "yes";exit}')
         [ "$valid" = yes ] || continue
@@ -104,7 +105,7 @@ for proc in "$proc_root"/[0-9]*; do
     printf ',"display_arg":'; value "$display"
     printf ',"security_arg":'; value "$security"
     printf ',"version":'
-    case "$comm" in Xvnc) value "$(detect_bounded "$proc/exe" -version 2>&1)";; *) printf '""';; esac
+    case "$comm" in Xvnc) value "$(version_banner "$proc/exe" "$(detect_bounded "$proc/exe" -version 2>&1)")";; *) printf '""';; esac
     printf ',"cgroup":'; file "$proc/cgroup"
     printf ',"tcp":'; awk -v ids="$inodes" 'BEGIN {split(ids,a);for(i in a) wanted[a[i]]=1} $10 in wanted && $4=="0A"' "$proc_root/net/tcp" | json_stream
     printf ',"tcp6":'; awk -v ids="$inodes" 'BEGIN {split(ids,a);for(i in a) wanted[a[i]]=1} $10 in wanted && $4=="0A"' "$proc_root/net/tcp6" | json_stream

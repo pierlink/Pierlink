@@ -1,5 +1,7 @@
+import type { MobileThemePref } from "./theme";
+
 /**
- * 手机上的显示偏好（字号、自动换行），只存在这台手机的浏览器里。
+ * 手机上的显示偏好（字号、自动换行、深浅色），只存在这台手机的浏览器里。
  * 私密浏览、禁用存储时读写会失败：当成没存过，不影响使用。
  */
 
@@ -13,10 +15,14 @@ export interface Prefs {
   wrap: boolean;
   /** 看终端时把电脑上的终端临时改成手机的宽度，Claude Code 等按手机宽度重新排版（离开后恢复） */
   fit: boolean;
+  /** 深浅色：默认跟随电脑（终端内容多半是按电脑上的配色写的） */
+  theme: MobileThemePref;
 }
 
+const THEMES: readonly MobileThemePref[] = ["pc", "phone", "dark", "light"];
+
 const KEY = "pierlink.mobile.prefs";
-const DEFAULTS: Prefs = { font: 1, wrap: true, fit: true };
+const DEFAULTS: Prefs = { font: 1, wrap: true, fit: true, theme: "pc" };
 
 export function loadPrefs(): Prefs {
   try {
@@ -26,6 +32,7 @@ export function loadPrefs(): Prefs {
       font,
       wrap: typeof raw?.wrap === "boolean" ? raw.wrap : DEFAULTS.wrap,
       fit: typeof raw?.fit === "boolean" ? raw.fit : DEFAULTS.fit,
+      theme: THEMES.includes(raw?.theme as MobileThemePref) ? (raw?.theme as MobileThemePref) : DEFAULTS.theme,
     };
   } catch {
     return DEFAULTS;

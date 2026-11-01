@@ -1,6 +1,7 @@
 //! 单个客户端的授权、取消和生命周期。
 use super::{
-    ClientInfo, Confirmation, Entry, HostEvent, McpHost, Permissions, SessionInfo, Target, lock,
+    ClientInfo, Confirmation, Entry, HostEvent, McpHost, Permissions, SessionInfo, SessionStatus,
+    Target, lock,
 };
 use crate::error::AppError;
 use std::sync::{
@@ -8,7 +9,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
     mpsc,
 };
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::{Semaphore, watch};
 
 pub(super) struct Session {
@@ -65,6 +66,20 @@ impl Session {
     pub(super) fn idle_since(&self) -> Option<Instant> {
         let calls = lock(&self.calls);
         (!calls.iter().any(|call| call.strong_count() > 0)).then(|| *lock(&self.last_request))
+    }
+    /// 界面用的状态：是否有调用正在进行、最后一次请求的时间（Unix 毫秒）。
+    pub(super) fn status(&self, now: Instant) -> SessionStatus {
+        let idle = self.idle_since();
+        let since = idle.map_or(Duration::ZERO, |last| now.saturating_duration_since(last));
+        let wall = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .saturating_sub(since);
+        SessionStatus {
+            info: self.snapshot(),
+            busy: idle.is_none(),
+            last_active_ms: u64::try_from(wall.as_millis()).unwrap_or(u64::MAX),
+        }
     }
     /// 按 now 判断会话是否应显示：最近五分钟有请求或仍有调用，且尚未停止。
     pub(super) fn is_recent(&self, now: Instant) -> bool {
@@ -132,10 +147,10 @@ impl Session {
         }
         if decision.is_none() {
             let info = self.snapshot();
-            let answer = if host.remembered(&info.entry) {
-                Confirmation::Allow
-            } else {
+            let answer = if host.confirm_connections(&info.entry) {
                 host.confirm_connect(&info, targets, cancelled)?
+            } else {
+                Confirmation::Allow
             };
             *decision = Some(match answer {
                 Confirmation::Allow | Confirmation::AllowAlways => true,

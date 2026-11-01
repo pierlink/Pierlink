@@ -72,26 +72,6 @@ export const commands = {
 	 */
 	terminalSetUserControl: (id: string, takenOver: boolean) => typedError<null, AppError>(__TAURI_INVOKE("terminal_set_user_control", { id, takenOver })),
 	/**
-	 *  能接手这个终端的入口（已打开、并且有这个终端目标的权限）
-	 * 
-	 *  :param terminal_id: 终端 ID
-	 *  :return: 入口列表；终端不能交出（快速连接、AI 自己开的）时为空
-	 */
-	mcpHandoverEntries: (terminalId: string) => typedError<McpHandoverEntryDto[], AppError>(__TAURI_INVOKE("mcp_handover_entries", { terminalId })),
-	/**
-	 *  把用户终端交给某个入口的 AI：AI 能往里输入、读输出，用户随时可以收回
-	 * 
-	 *  :param terminal_id: 终端 ID
-	 *  :param entry: "windows" 或服务器 ID
-	 */
-	mcpHandOver: (terminalId: string, entry: string) => typedError<null, AppError>(__TAURI_INVOKE("mcp_hand_over", { terminalId, entry })),
-	/**
-	 *  收回交给 AI 的终端（终端继续开着）
-	 * 
-	 *  :param terminal_id: 终端 ID
-	 */
-	mcpTakeBack: (terminalId: string) => typedError<null, AppError>(__TAURI_INVOKE("mcp_take_back", { terminalId })),
-	/**
 	 *  把本机入口加进 Claude Code、Codex 或 Cursor
 	 * 
 	 *  :param client: claude / codex / cursor
@@ -350,6 +330,12 @@ export const commands = {
 	/**  删除转发（先关闭隧道） */
 	forwardDelete: (id: string) => typedError<null, AppError>(__TAURI_INVOKE("forward_delete", { id })),
 	mobileStatus: () => typedError<MobileStatusDto_Serialize, AppError>(__TAURI_INVOKE("mobile_status")),
+	/**
+	 *  电脑界面报告现在用的深浅色；变了就通知手机页面重新读
+	 * 
+	 *  :param theme: "dark" 或 "light"
+	 */
+	mobileSetTheme: (theme: string) => typedError<null, AppError>(__TAURI_INVOKE("mobile_set_theme", { theme })),
 	/**
 	 *  打开或关闭手机入口、改监听地址和端口（只接受本机私网地址）
 	 * 
@@ -1187,37 +1173,37 @@ export type EndpointModeInput = {
 /** 服务器的连接方式；实际分派还需检查功能是否支持内置。 */
 export type Engine = "builtin" | "openssh";
 
-/**  一个入口的权限和“总是允许”（默认全部关闭） */
+/**  一个入口的权限和连接确认（默认全部关闭） */
 export type EntrySettingsDto = EntrySettingsDto_Serialize | EntrySettingsDto_Deserialize;
 
-/**  一个入口的权限和“总是允许”（默认全部关闭） */
+/**  一个入口的权限和连接确认（默认全部关闭） */
 export type EntrySettingsDto_Deserialize = {
 	enabled?: boolean,
 	/**  审批方式 */
 	approval?: ApprovalDto,
-	/**  允许在 Windows 本机执行命令（等于把这个 Windows 账户交出去） */
+	/**  允许在 Windows 本机执行命令（PowerShell 能读写整个 Windows 账户，不受文件夹限制） */
 	windowsCommands?: boolean,
 	/**  本机文件工具允许的文件夹（绝对路径） */
 	folders?: string[],
 	/**  允许操作的服务器 ID */
 	servers?: string[],
-	/**  用户选过“总是允许”：第一次连接不再问 */
-	remembered?: boolean,
+	/**  新连接先请用户确认（只对服务器入口有效；默认不问，旧设置里的“总是允许”不再使用） */
+	confirmConnections?: boolean,
 };
 
-/**  一个入口的权限和“总是允许”（默认全部关闭） */
+/**  一个入口的权限和连接确认（默认全部关闭） */
 export type EntrySettingsDto_Serialize = {
 	enabled: boolean,
 	/**  审批方式 */
 	approval: ApprovalDto,
-	/**  允许在 Windows 本机执行命令（等于把这个 Windows 账户交出去） */
+	/**  允许在 Windows 本机执行命令（PowerShell 能读写整个 Windows 账户，不受文件夹限制） */
 	windowsCommands: boolean,
 	/**  本机文件工具允许的文件夹（绝对路径） */
 	folders: string[],
 	/**  允许操作的服务器 ID */
 	servers: string[],
-	/**  用户选过“总是允许”：第一次连接不再问 */
-	remembered: boolean,
+	/**  新连接先请用户确认（只对服务器入口有效；默认不问，旧设置里的“总是允许”不再使用） */
+	confirmConnections: boolean,
 };
 
 export type EstimateConflictDto = {
@@ -1815,14 +1801,6 @@ export type McpErrorInput_Serialize = {
 	params: { [key in string]: string },
 };
 
-/**  可以接手某个终端的入口 */
-export type McpHandoverEntryDto = {
-	/**  "windows" 或服务器 ID */
-	entry: string,
-	/**  "windows"（界面翻译）或服务器名称 */
-	label: string,
-};
-
 /**  一键接入的结果 */
 export type McpInstallDto = {
 	/**  claude / codex / cursor */
@@ -1893,6 +1871,10 @@ export type McpSessionDto = {
 	entry: string,
 	/**  客户端自报的名称和版本（不可信） */
 	client: string,
+	/**  有操作正在进行 */
+	busy: boolean,
+	/**  最后一次操作的时间（Unix 毫秒） */
+	lastActiveMs: number | null,
 };
 
 /**  AI 接入的全部设置 */
@@ -1927,6 +1909,8 @@ export type McpStatusDto_Deserialize = {
 	pipeRunning: boolean,
 	/**  命名管道建不起来的原因 */
 	pipeError?: string | null,
+	/**  Pierlink 以管理员身份运行（AI 执行的命令也带管理员权限） */
+	elevated: boolean,
 	sessions: McpSessionDto[],
 	entries: McpEntryStateDto_Deserialize[],
 };
@@ -1937,6 +1921,8 @@ export type McpStatusDto_Serialize = {
 	pipeRunning: boolean,
 	/**  命名管道建不起来的原因 */
 	pipeError: string | null,
+	/**  Pierlink 以管理员身份运行（AI 执行的命令也带管理员权限） */
+	elevated: boolean,
 	sessions: McpSessionDto[],
 	entries: McpEntryStateDto_Serialize[],
 };

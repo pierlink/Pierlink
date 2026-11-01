@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { addFolder, normalizeFolder, pickPowerShell, removeFolder, toggleServer } from "./model";
 import type { EntrySettings } from "./api";
 
-const entry: EntrySettings = { enabled: true, approval: "dangerous", windowsCommands: false, folders: [], servers: [], remembered: false };
+const entry: EntrySettings = { enabled: true, approval: "dangerous", windowsCommands: false, folders: [], servers: [], confirmConnections: false };
 
 describe("AI 接入设置", () => {
   it("文件夹去掉引号和末尾斜杠，盘符根目录保留", () => {

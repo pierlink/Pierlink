@@ -14,7 +14,7 @@ use crate::terminal::TerminalState;
 use host::TauriHost;
 use pierlink_core::error::AppError;
 use pierlink_core::mcp::{
-    AuditRecord, Confirmation, Entry, McpService, RunLimits, RunOutput, SessionInfo, TargetKind,
+    AuditRecord, Confirmation, Entry, McpService, RunLimits, RunOutput, SessionStatus, TargetKind,
 };
 use pierlink_core::terminal::InputSource;
 use serde::{Deserialize, Serialize};
@@ -31,6 +31,8 @@ pub const ACTIVITY_EVENT: &str = "pierlink://mcp-activity";
 pub const CONFIRM_EVENT: &str = "pierlink://mcp-confirm";
 /// 确认请求已失效（超时、取消），界面关掉对应的框
 pub const CONFIRM_CLOSED_EVENT: &str = "pierlink://mcp-confirm-closed";
+/// 设置在后台被改了（确认框里点了“以后不再问”）：界面重新读设置
+pub const SETTINGS_EVENT: &str = "pierlink://mcp-settings";
 /// 请界面打开一个 AI 终端
 pub const OPEN_TERMINAL_EVENT: &str = "pierlink://mcp-open-terminal";
 /// 其他提示（要登录、AI 终端在等密码、AI 终端打开或结束）
@@ -66,6 +68,10 @@ pub struct McpSessionDto {
     pub entry: String,
     /// 客户端自报的名称和版本（不可信）
     pub client: String,
+    /// 有操作正在进行
+    pub busy: bool,
+    /// 最后一次操作的时间（Unix 毫秒）
+    pub last_active_ms: f64,
 }
 
 /// 一次工具调用（已脱敏）
@@ -104,6 +110,8 @@ pub struct McpStatusDto {
     pub pipe_running: bool,
     /// 命名管道建不起来的原因
     pub pipe_error: Option<String>,
+    /// Pierlink 以管理员身份运行（AI 执行的命令也带管理员权限）
+    pub elevated: bool,
     pub sessions: Vec<McpSessionDto>,
     pub entries: Vec<McpEntryStateDto>,
 }
@@ -173,12 +181,14 @@ fn client_text(name: &str, version: &str) -> String {
         .to_owned()
 }
 
-impl From<SessionInfo> for McpSessionDto {
-    fn from(s: SessionInfo) -> Self {
+impl From<SessionStatus> for McpSessionDto {
+    fn from(s: SessionStatus) -> Self {
         Self {
-            id: s.id,
-            entry: entry_text(&s.entry),
-            client: client_text(&s.client.name, &s.client.version),
+            id: s.info.id,
+            entry: entry_text(&s.info.entry),
+            client: client_text(&s.info.client.name, &s.info.client.version),
+            busy: s.busy,
+            last_active_ms: s.last_active_ms as f64,
         }
     }
 }
@@ -231,9 +241,10 @@ impl McpState {
         McpStatusDto {
             pipe_running: pipe.running,
             pipe_error: pipe.error,
+            elevated: pierlink_core::mcp::pipe::process_elevated(),
             sessions: self
                 .service
-                .sessions()
+                .session_statuses()
                 .into_iter()
                 .map(Into::into)
                 .collect(),
@@ -510,9 +521,28 @@ pub async fn mcp_settings_set(
     app: AppHandle,
     settings: McpSettingsDto,
 ) -> Result<McpSettingsDto, AppError> {
-    let saved = settings::save(&app, settings)?;
-    apply_entries(&app);
-    Ok(saved)
+    // 读写数据库、重启入口、等确认锁都可能阻塞：放到阻塞线程里做
+    tauri::async_runtime::spawn_blocking(move || {
+        let before = settings::load(&app);
+        let saved = settings::save(&app, settings)?;
+        apply_entries(&app);
+        // 刚打开“连上来时先问我”的服务器入口：忘掉之前记住的允许，下一次操作就会问
+        if let Ok(state) = state(&app) {
+            for s in &saved.servers {
+                let was = before
+                    .servers
+                    .iter()
+                    .find(|b| b.server_id == s.server_id)
+                    .is_some_and(|b| b.entry.confirm_connections);
+                if s.entry.confirm_connections && !was {
+                    state.service.forget_connection_decision(&s.server_id);
+                }
+            }
+        }
+        Ok(saved)
+    })
+    .await
+    .map_err(|e| AppError::new("mcp.task_failed").with("reason", e.to_string()))?
 }
 
 /// 整体状态：Windows 入口是否在运行、连着的客户端、服务器入口
@@ -659,7 +689,7 @@ pub async fn mcp_terminal_opened(
     let opened = terminal_id.clone();
     let result = match (terminal_id, error) {
         (Some(terminal), _) => {
-            // AI 自己开的终端不算用户终端，不出现在“交给 AI”的列表里
+            // 标成 AI 打开的终端：界面和手机上显示 AI 标记
             app.state::<TerminalState>()
                 .update_meta(&terminal, |m| m.ai_opened = true);
             Ok(terminal)
@@ -669,142 +699,12 @@ pub async fn mcp_terminal_opened(
             .with_reason("mcp.terminal_not_open", "终端没有打开")),
     };
     let delivered = state(&app)?.host.terminals.answer(id as u64, result);
-    // AI 已经等不及走了（比如用户过了很久才确认指纹）：这个终端交还给用户，能在“交给 AI”里重新交出去
+    // AI 已经等不及走了（比如用户过了很久才确认指纹）：这个终端算用户自己的，去掉 AI 标记
     if !delivered && let Some(terminal) = opened {
         app.state::<TerminalState>()
             .update_meta(&terminal, |m| m.ai_opened = false);
     }
     Ok(delivered)
-}
-
-/// 可以接手某个终端的入口
-#[derive(Serialize, Type, Clone, Debug)]
-#[serde(rename_all = "camelCase")]
-pub struct McpHandoverEntryDto {
-    /// "windows" 或服务器 ID
-    pub entry: String,
-    /// "windows"（界面翻译）或服务器名称
-    pub label: String,
-}
-
-fn entry_from_text(entry: &str) -> Entry {
-    if entry == "windows" {
-        Entry::Windows
-    } else {
-        Entry::Server {
-            server_id: entry.to_owned(),
-        }
-    }
-}
-
-/// 终端对应的目标：本机终端是 windows，服务器终端是服务器 ID；没登记或是 AI 自己开的返回 None
-fn terminal_target(app: &AppHandle, terminal_id: &str) -> Option<(TargetKind, String)> {
-    let (_, meta) = app
-        .state::<TerminalState>()
-        .metas()
-        .into_iter()
-        .find(|(id, m)| id == terminal_id && !m.ai_opened)?;
-    Some(match meta.server_id {
-        Some(server) => (TargetKind::Server, server),
-        None => (TargetKind::Windows, "windows".to_owned()),
-    })
-}
-
-/// 入口有没有操作这个目标终端的权限（本机终端要“执行命令”，服务器终端要勾了这台服务器）
-fn entry_allows(permissions: &pierlink_core::mcp::Permissions, kind: TargetKind, id: &str) -> bool {
-    match kind {
-        TargetKind::Windows => permissions.windows_commands,
-        TargetKind::Server => permissions.servers.iter().any(|s| s == id),
-    }
-}
-
-/// 能接手这个终端的入口（已打开、并且有这个终端目标的权限）
-///
-/// :param terminal_id: 终端 ID
-/// :return: 入口列表；终端不能交出（快速连接、AI 自己开的）时为空
-#[tauri::command]
-#[specta::specta]
-pub async fn mcp_handover_entries(
-    app: AppHandle,
-    terminal_id: String,
-) -> Result<Vec<McpHandoverEntryDto>, AppError> {
-    let Some((kind, id)) = terminal_target(&app, &terminal_id) else {
-        return Ok(Vec::new());
-    };
-    let settings = settings::load(&app);
-    let mut entries = vec![Entry::Windows];
-    entries.extend(settings.servers.iter().map(|s| Entry::Server {
-        server_id: s.server_id.clone(),
-    }));
-    let state = state(&app)?;
-    Ok(entries
-        .into_iter()
-        .filter(|e| {
-            settings
-                .permissions(e)
-                .is_some_and(|p| entry_allows(&p, kind, &id))
-        })
-        .map(|e| McpHandoverEntryDto {
-            label: state.host.label_of(&e),
-            entry: entry_text(&e),
-        })
-        .collect())
-}
-
-/// 把用户终端交给某个入口的 AI：AI 能往里输入、读输出，用户随时可以收回
-///
-/// :param terminal_id: 终端 ID
-/// :param entry: "windows" 或服务器 ID
-#[tauri::command]
-#[specta::specta]
-pub async fn mcp_hand_over(
-    app: AppHandle,
-    terminal_id: String,
-    entry: String,
-) -> Result<(), AppError> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let (kind, id) = terminal_target(&app, &terminal_id).ok_or_else(|| {
-            AppError::new("mcp.terminal_not_found")
-                .with_reason("mcp.terminal_cannot_be_handed_to_ai", "这个终端不能交给 AI")
-        })?;
-        let entry = entry_from_text(&entry);
-        let state = state(&app)?;
-        let permissions = settings::load(&app).permissions(&entry).ok_or_else(|| {
-            AppError::new("mcp.entry_disabled")
-                .with_reason("mcp.this_mcp_entry_is_disabled", "这个 MCP 入口未启用")
-        })?;
-        let target = state
-            .host
-            .targets_for(&entry, &permissions)?
-            .into_iter()
-            .find(|t| t.kind == kind && t.id == id)
-            .ok_or_else(|| {
-                AppError::new("mcp.target_denied").with_reason(
-                    "mcp.this_entry_cannot_operate_on_the_terminal_target",
-                    "这个入口没有终端目标的操作权限",
-                )
-            })?;
-        state.service.hand_over(&terminal_id, entry, target)?;
-        eprintln!("AI 接入：终端交给 AI，终端={terminal_id}");
-        Ok(())
-    })
-    .await
-    .map_err(|e| AppError::new("mcp.task_failed").with("reason", e.to_string()))?
-}
-
-/// 收回交给 AI 的终端（终端继续开着）
-///
-/// :param terminal_id: 终端 ID
-#[tauri::command]
-#[specta::specta]
-pub async fn mcp_take_back(app: AppHandle, terminal_id: String) -> Result<(), AppError> {
-    tauri::async_runtime::spawn_blocking(move || {
-        state(&app)?.service.take_back(&terminal_id)?;
-        eprintln!("AI 接入：收回终端，终端={terminal_id}");
-        Ok(())
-    })
-    .await
-    .map_err(|e| AppError::new("mcp.task_failed").with("reason", e.to_string()))?
 }
 
 // ---------- 给手机入口用 ----------
@@ -858,6 +758,13 @@ pub(crate) fn recent_activity(app: &AppHandle, limit: usize) -> Vec<McpActivityD
 /// 连着的 AI 数
 pub(crate) fn session_count(app: &AppHandle) -> usize {
     state(app).map(|s| s.service.sessions().len()).unwrap_or(0)
+}
+
+/// 有没有 AI 正在操作（有调用在进行）
+pub(crate) fn session_busy(app: &AppHandle) -> bool {
+    state(app)
+        .map(|s| s.service.session_statuses().iter().any(|x| x.busy))
+        .unwrap_or(false)
 }
 
 /// 用资源管理器打开审计日志所在的文件夹

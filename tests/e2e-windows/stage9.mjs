@@ -150,7 +150,9 @@ const getWindowsClipboard = () => {
  */
 const copyOnRemote = async (text, target = "") => {
   const file = `/tmp/pl-clip-${Date.now()}.txt`;
-  spawn("wsl.exe", ["-d", LX.wsl, "-u", "pl", "--", "sh", "-c", `printf %s '${text}' > ${file} && DISPLAY=:5 XAUTHORITY="$HOME/.vnc-e2e/x5.auth" setsid -f xclip -selection clipboard${target ? ` -t ${target}` : ""} -i ${file} </dev/null >/dev/null 2>&1`], { stdio: "ignore" }).on("error", () => undefined);
+  // xclip 留在前台占着剪贴板（-quiet），这次 wsl.exe 就一直开着：新版 WSL 在 wsl.exe 退出时会结束它启动的后台进程，
+  // 用 setsid -f 放到后台的 xclip 跟着没了，非文字内容就读不回来。别的程序接管剪贴板后 xclip 自己退出
+  spawn("wsl.exe", ["-d", LX.wsl, "-u", "pl", "--", "sh", "-c", `printf %s '${text}' > ${file} && DISPLAY=:5 XAUTHORITY="$HOME/.vnc-e2e/x5.auth" exec xclip -quiet -selection clipboard${target ? ` -t ${target}` : ""} -i ${file} </dev/null >/dev/null 2>&1`], { stdio: "ignore" }).on("error", () => undefined);
   const deadline = Date.now() + 15000;
   let got = "";
   while (Date.now() < deadline) {

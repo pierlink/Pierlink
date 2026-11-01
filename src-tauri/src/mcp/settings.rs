@@ -32,21 +32,21 @@ impl From<ApprovalDto> for Approval {
     }
 }
 
-/// 一个入口的权限和“总是允许”（默认全部关闭）
+/// 一个入口的权限和连接确认（默认全部关闭）
 #[derive(Serialize, Deserialize, Type, Clone, Debug, PartialEq, Eq, Default)]
 #[serde(rename_all = "camelCase", default)]
 pub struct EntrySettingsDto {
     pub enabled: bool,
     /// 审批方式
     pub approval: ApprovalDto,
-    /// 允许在 Windows 本机执行命令（等于把这个 Windows 账户交出去）
+    /// 允许在 Windows 本机执行命令（PowerShell 能读写整个 Windows 账户，不受文件夹限制）
     pub windows_commands: bool,
     /// 本机文件工具允许的文件夹（绝对路径）
     pub folders: Vec<String>,
     /// 允许操作的服务器 ID
     pub servers: Vec<String>,
-    /// 用户选过“总是允许”：第一次连接不再问
-    pub remembered: bool,
+    /// 新连接先请用户确认（只对服务器入口有效；默认不问，旧设置里的“总是允许”不再使用）
+    pub confirm_connections: bool,
 }
 
 /// 一台服务器上的入口
@@ -152,15 +152,19 @@ pub fn save(app: &AppHandle, settings: McpSettingsDto) -> Result<McpSettingsDto,
     Ok(settings)
 }
 
-/// 把某个入口标为“总是允许”或取消
+/// 打开或关闭某个入口的连接确认
 ///
 /// :param app: 应用句柄
 /// :param entry: 入口
-/// :param remembered: 是否总是允许
-pub fn set_remembered(app: &AppHandle, entry: &Entry, remembered: bool) -> Result<(), AppError> {
+/// :param confirm: 新连接是否先请用户确认
+pub fn set_confirm_connections(
+    app: &AppHandle,
+    entry: &Entry,
+    confirm: bool,
+) -> Result<(), AppError> {
     let mut settings = load(app);
     if let Some(e) = settings.entry_mut(entry) {
-        e.remembered = remembered;
+        e.confirm_connections = confirm;
     }
     save(app, settings).map(|_| ())
 }

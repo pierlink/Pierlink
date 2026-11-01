@@ -164,6 +164,35 @@ impl McpService {
         );
     }
 
+    /// 忘掉 server_id 入口这一代令牌上记住的连接确认结果，不断开连接：下一次调用重新按设置决定要不要问。
+    /// 用户刚打开“连上来时先问我”时调用。调用正在判断时稍等一下（最多约 100 毫秒）；
+    /// 正在等用户确认时不动（那次的结果由用户决定）。
+    pub fn forget_connection_decision(&self, server_id: &str) {
+        let group = {
+            let entries = lock(&self.http_entries);
+            let Some(worker) = entries.get(server_id) else {
+                return;
+            };
+            lock(&worker.current).group.clone()
+        };
+        for _ in 0..20 {
+            match group.confirmation.try_lock() {
+                Ok(mut decision) => {
+                    *decision = None;
+                    return;
+                }
+                Err(std::sync::TryLockError::Poisoned(error)) => {
+                    *error.into_inner() = None;
+                    return;
+                }
+                Err(std::sync::TryLockError::WouldBlock) => {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+            }
+        }
+        eprintln!("没有清掉记住的连接确认：有确认正在进行，入口={server_id}");
+    }
+
     /// 无参数、无返回值；断开各 HTTP 入口的连接与会话，保留端口和令牌供后续连接。
     pub(super) fn reset_http_sessions(&self) {
         for (server_id, worker) in lock(&self.http_entries).iter() {

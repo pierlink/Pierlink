@@ -249,6 +249,25 @@ async fn 协议规定缺少接受头和不同版本的获取行为() {
 }
 
 #[tokio::test]
+async fn 打开连接确认后忘掉记住的允许下一次调用重新确认() {
+    let f = Fixture::new();
+    let port = start(&f);
+    let mut modern = HttpClient::connect(port).await;
+    for _ in 0..2 {
+        let reply = modern
+            .request("POST", &modern_headers(), &call(Some("2026-07-28")))
+            .await;
+        assert_eq!(reply.status, 200, "{}", reply.body);
+    }
+    assert_eq!(f.host.confirmations.load(Ordering::Acquire), 1);
+    f.service.forget_connection_decision("server-id");
+    let reply = modern
+        .request("POST", &modern_headers(), &call(Some("2026-07-28")))
+        .await;
+    assert_eq!(reply.status, 200, "{}", reply.body);
+    assert_eq!(f.host.confirmations.load(Ordering::Acquire), 2);
+}
+#[tokio::test]
 async fn 旧式会话与现代调用复用确认权限和审计() {
     let f = Fixture::new();
     let port = start(&f);

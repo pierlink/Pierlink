@@ -31,6 +31,9 @@ impl Default for MockHost {
     }
 }
 impl MobileHost for MockHost {
+    fn theme(&self) -> Option<String> {
+        Some("dark".into())
+    }
     fn approve_pairing<'a>(&'a self, name: &'a str, peer: IpAddr) -> HostFuture<'a, bool> {
         Box::pin(async move {
             self.approvals.fetch_add(1, Ordering::SeqCst);
@@ -668,13 +671,13 @@ async fn 三项权限独立拦截且查询结果原样透传() {
             403
         );
     }
-    assert_eq!(
-        entry
-            .request("GET", "/api/me", &cookie, json!(null))
-            .await
-            .json()["permissions"]["input"],
-        true
-    );
+    let me = entry
+        .request("GET", "/api/me", &cookie, json!(null))
+        .await
+        .json();
+    assert_eq!(me["permissions"]["input"], true);
+    // 手机页面默认跟着电脑的深浅色
+    assert_eq!(me["theme"], "dark");
     assert_eq!(
         entry
             .request(

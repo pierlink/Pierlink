@@ -97,7 +97,7 @@ pub struct JobView {
 pub enum Confirmation {
     /// 首次连接：允许这个会话；操作审批：只允许这次操作
     Allow,
-    /// 首次连接：以后这个入口都允许；操作审批：这次连接的操作不再询问
+    /// 连接确认：以后这个入口的连接不再询问；操作审批：这次连接的操作不再询问
     AllowAlways,
     Deny,
     /// 没人回应、超时或取消；不得记住为拒绝
@@ -112,6 +112,16 @@ pub struct SessionInfo {
     pub client: ClientInfo,
     /// 会话建立时读到的权限快照
     pub permissions: Permissions,
+}
+
+/// 界面上显示的会话状态
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionStatus {
+    pub info: SessionInfo,
+    /// 有调用正在进行
+    pub busy: bool,
+    /// 最后一次请求的时间（Unix 毫秒）；调用进行中时为当前时间
+    pub last_active_ms: u64,
 }
 
 /// 执行命令的限制
@@ -143,21 +153,6 @@ pub struct TerminalOpenRequest {
     /// 打开后先切到这个目录（远程终端以自动化输入发一行 cd，会回显）
     pub cwd: Option<String>,
     pub title: Option<String>,
-}
-
-/// 用户打开的终端元数据；不含地址、目录和终端内容。快速连接等无目标的终端不返回。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct UserTerminal {
-    pub terminal_id: String,
-    pub title: String,
-    pub kind: TargetKind,
-    pub target_id: String,
-    /// 本机 shell 名称；服务器终端为 None。
-    pub shell: Option<String>,
-    /// 只查询本机终端；服务器终端或无法判断时为 None。
-    pub busy: Option<bool>,
-    /// 工具结果会按当前入口的登记重新计算，宿主的值仅供界面使用。
-    pub handed_over: bool,
 }
 
 /// 一台服务器在某个同步任务里的状态
@@ -238,16 +233,6 @@ pub enum HostEvent {
         session: String,
         terminal_id: String,
     },
-    /// 用户终端已交给指定入口；界面显示 AI 标记。
-    TerminalHandedOver {
-        terminal_id: String,
-        entry: Entry,
-    },
-    /// 用户终端已收回，进程仍然运行；界面移除 AI 标记。
-    TerminalTakenBack {
-        terminal_id: String,
-        entry: Entry,
-    },
     /// 终端 ID
     TerminalClosed(String),
     /// 服务器要密码或验证码才能连：工具已返回错误，界面提示用户登录
@@ -267,9 +252,10 @@ pub trait McpHost: Send + Sync + 'static {
     fn permissions(&self, entry: &Entry) -> Result<Option<Permissions>, AppError>;
     /// 按权限列出能操作的目标（不在权限里的服务器不返回）
     fn targets(&self, entry: &Entry, permissions: &Permissions) -> Result<Vec<Target>, AppError>;
-    /// 这个入口是否已被用户“总是允许”
-    fn remembered(&self, entry: &Entry) -> bool;
-    /// 第一次工具调用前请用户确认；AllowAlways 由宿主自己记住。60 秒不答由宿主按 NoAnswer 返回
+    /// 这个入口的新连接要不要先请用户确认（用户在入口设置里打开；默认不问）
+    fn confirm_connections(&self, entry: &Entry) -> bool;
+    /// 要确认的入口上，第一次工具调用前请用户确认；AllowAlways 表示以后不再问，由宿主自己记住。
+    /// 60 秒不答由宿主按 NoAnswer 返回
     fn confirm_connect(
         &self,
         session: &SessionInfo,
@@ -302,10 +288,6 @@ pub trait McpHost: Send + Sync + 'static {
         request: TerminalOpenRequest,
         cancelled: &AtomicBool,
     ) -> Result<String, AppError>;
-    /// 无参数；返回用户仍开着的终端元数据，失败返回 AppError。未接入的宿主默认返回空列表。
-    fn user_terminals(&self) -> Result<Vec<UserTerminal>, AppError> {
-        Ok(Vec::new())
-    }
     /// 返回 terminal_id 当前目录；未知为 None。core 仅为当前入口可操作的终端调用此方法。
     fn terminal_cwd(&self, _terminal_id: &str) -> Result<Option<String>, AppError> {
         Ok(None)

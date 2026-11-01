@@ -1,7 +1,6 @@
 import { inTauri } from "../shell/TitleBar";
 import type { AppError } from "../../errors";
 
-/** 一个入口的权限和“总是允许” */
 /** 审批方式：ask_all 每次都问；dangerous 只问危险操作（默认）；auto 全自动、只记录 */
 export type McpApproval = "ask_all" | "dangerous" | "auto";
 
@@ -15,8 +14,8 @@ export interface EntrySettings {
   folders: string[];
   /** 允许操作的服务器 ID */
   servers: string[];
-  /** 已“总是允许”（第一次连接不再问） */
-  remembered: boolean;
+  /** 新连接先请用户确认（只对服务器入口有效，默认不问） */
+  confirmConnections: boolean;
 }
 
 /** 一台服务器上的入口 */
@@ -40,6 +39,10 @@ export interface McpSession {
   entry: string;
   /** 客户端自报的名称和版本（不可信） */
   client: string;
+  /** 有操作正在进行 */
+  busy: boolean;
+  /** 最后一次操作的时间（Unix 毫秒） */
+  lastActiveMs: number;
 }
 
 export interface McpEntryState {
@@ -56,6 +59,8 @@ export interface McpStatus {
   /** Windows 入口在运行（agent 能连上来） */
   pipeRunning: boolean;
   pipeError: string | null;
+  /** Pierlink 以管理员身份运行（AI 执行的命令也带管理员权限） */
+  elevated: boolean;
   sessions: McpSession[];
   entries: McpEntryState[];
 }
@@ -82,7 +87,7 @@ export interface McpActivity {
 /** 请用户确认的内容 */
 export interface McpConfirm {
   id: number;
-  /** connect：第一次连接；dangerous：危险命令或危险的文件写入；action：“每次都问”方式下的普通操作 */
+  /** connect：新连接（入口设置了“每次连接都问”）；dangerous：危险命令或危险的文件写入；action：“每次都问”方式下的普通操作 */
   kind: "connect" | "dangerous" | "action";
   entry: string;
   client: string;
@@ -104,15 +109,7 @@ export type McpNotice =
   | { kind: "loginNeeded"; serverId: string }
   | { kind: "passwordPrompt"; terminalId: string }
   | { kind: "terminalOpened"; terminalId: string }
-  | { kind: "terminalClosed"; terminalId: string }
-  | { kind: "terminalHandedOver"; terminalId: string; entry: string; entryLabel: string }
-  | { kind: "terminalTakenBack"; terminalId: string };
-
-/** 能接手某个终端的入口：entry 是 "windows" 或服务器 ID，label 是 "windows"（要翻译）或服务器名称 */
-export interface McpHandoverEntry {
-  entry: string;
-  label: string;
-}
+  | { kind: "terminalClosed"; terminalId: string };
 
 /** 给用户复制的接入命令 */
 export interface McpConnectInfo {
@@ -163,12 +160,6 @@ export interface McpApi {
   pickFolder(): Promise<string | null>;
   /** 用户接管终端（拒绝 AI 的输入）或交还给 AI */
   setUserControl(terminalId: string, takenOver: boolean): Promise<void>;
-  /** 能接手这个终端的入口（已打开且有这个终端目标的权限）；终端不能交出时为空 */
-  handoverEntries(terminalId: string): Promise<McpHandoverEntry[]>;
-  /** 把用户终端交给某个入口的 AI */
-  handOver(terminalId: string, entry: string): Promise<void>;
-  /** 收回交给 AI 的终端（终端继续开着） */
-  takeBack(terminalId: string): Promise<void>;
   /** 一键把本机入口加进 claude / codex / cursor；返回用的程序或改的文件 */
   installLocal(client: "claude" | "codex" | "cursor"): Promise<string>;
   /** 在服务器上把这台服务器的入口加进 Claude Code、Codex 或 Gemini CLI */
@@ -187,6 +178,8 @@ export interface McpApi {
   onActivity(cb: (a: McpActivity) => void): Promise<() => void>;
   onConfirm(cb: (c: McpConfirm) => void): Promise<() => void>;
   onConfirmClosed(cb: (id: number) => void): Promise<() => void>;
+  /** 设置在后台被改了（确认框里点了“以后不再问”） */
+  onSettings(cb: () => void): Promise<() => void>;
   onOpenTerminal(cb: (r: McpOpenTerminal) => void): Promise<() => void>;
   onNotice(cb: (n: McpNotice) => void): Promise<() => void>;
   onEntries(cb: (entries: McpEntryState[]) => void): Promise<() => void>;
@@ -198,24 +191,24 @@ export interface McpApi {
 export function defaultSettings(): McpSettings {
   return {
     enabled: false,
-    windows: { enabled: false, approval: "dangerous", windowsCommands: true, folders: [], servers: [], remembered: false },
+    windows: { enabled: false, approval: "dangerous", windowsCommands: true, folders: [], servers: [], confirmConnections: false },
     servers: [],
   };
 }
 
 /** 服务器入口的默认设置：不给 Windows 命令、不给文件夹、不给其他服务器 */
 export function defaultServerEntry(serverId: string): ServerEntrySettings {
-  return { serverId, port: 47821, entry: { enabled: true, approval: "dangerous", windowsCommands: false, folders: [], servers: [], remembered: false } };
+  return { serverId, port: 47821, entry: { enabled: true, approval: "dangerous", windowsCommands: false, folders: [], servers: [], confirmConnections: false } };
 }
 
 /** 浏览器预览的示例数据（#mcp 打开 MCP 板块时用，方便看样稿） */
 function sampleSettings(): McpSettings {
   return {
     enabled: true,
-    windows: { enabled: true, approval: "dangerous", windowsCommands: true, folders: ["D:\\work\\pierlink", "D:\\work\\demo"], servers: ["s1", "s3"], remembered: true },
+    windows: { enabled: true, approval: "dangerous", windowsCommands: true, folders: ["D:\\work\\pierlink", "D:\\work\\demo"], servers: ["s1", "s3"], confirmConnections: false },
     servers: [
-      { serverId: "s1", port: 47821, entry: { enabled: true, approval: "ask_all", windowsCommands: false, folders: [], servers: [], remembered: false } },
-      { serverId: "s5", port: 47821, entry: { enabled: false, approval: "dangerous", windowsCommands: false, folders: [], servers: [], remembered: false } },
+      { serverId: "s1", port: 47821, entry: { enabled: true, approval: "dangerous", windowsCommands: true, folders: ["D:\\work\\web-app"], servers: [], confirmConnections: false } },
+      { serverId: "s5", port: 47821, entry: { enabled: false, approval: "dangerous", windowsCommands: false, folders: [], servers: [], confirmConnections: true } },
     ],
   };
 }
@@ -250,8 +243,11 @@ function previewApi(): McpApi {
     getSettings: async () => settings,
     setSettings: async (s) => { settings = s; return s; },
     status: async () => ({
-      pipeRunning: true, pipeError: null,
-      sessions: sample ? [{ id: "a", entry: "windows", client: "Claude Code 2.1" }, { id: "b", entry: "windows", client: "Cursor 1.4" }, { id: "c", entry: "s1", client: "Claude Code 2.1" }] : [],
+      pipeRunning: true, pipeError: null, elevated: false,
+      sessions: sample ? [
+        { id: "a", entry: "windows", client: "Claude Code 2.1", busy: false, lastActiveMs: Date.now() - 180_000 },
+        { id: "c", entry: "s1", client: "Claude Code 2.1", busy: true, lastActiveMs: Date.now() },
+      ] : [],
       entries: sample ? [{ serverId: "s1", state: "running", port: 47821, error: null, fileWritten: true }] : [],
     }),
     connectInfo: async () => ({
@@ -279,9 +275,6 @@ function previewApi(): McpApi {
     openLogFolder: async () => {},
     pickFolder: async () => "D:\\work\\new-project",
     setUserControl: async () => {},
-    handoverEntries: async () => (sample ? [{ entry: "windows", label: "windows" }, { entry: "s1", label: "gpu-01" }] : [{ entry: "windows", label: "windows" }]),
-    handOver: async () => {},
-    takeBack: async () => {},
     reportCwd: async () => {},
     installLocal: async (client) => { await new Promise((r) => setTimeout(r, 600)); if (client === "codex") throw { code: "mcp.client_not_found", params: { client: "codex" } }; return client === "cursor" ? "C:\\Users\\you\\.cursor\\mcp.json" : "C:\\Users\\you\\.local\\bin\\claude.exe"; },
     installServer: async () => { await new Promise((r) => setTimeout(r, 900)); },
@@ -293,6 +286,7 @@ function previewApi(): McpApi {
     onActivity: noop,
     onConfirm: async (cb) => { confirms.add(cb); return () => { confirms.delete(cb); }; },
     onConfirmClosed: noop,
+    onSettings: noop,
     onOpenTerminal: noop,
     onNotice: noop,
     onEntries: noop,

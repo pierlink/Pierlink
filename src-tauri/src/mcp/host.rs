@@ -9,7 +9,7 @@ use crate::data::DbState;
 use pierlink_core::error::AppError;
 use pierlink_core::mcp::{
     Confirmation, Entry, HostEvent, McpHost, Permissions, RunLimits, RunOutput, SessionInfo,
-    SyncTaskState, Target, TargetKind, TerminalOpenRequest, UserTerminal,
+    SyncTaskState, Target, TargetKind, TerminalOpenRequest,
 };
 use pierlink_core::storage::Server;
 use serde::Serialize;
@@ -71,18 +71,6 @@ pub enum McpNoticeDto {
     /// AI 终端已结束或被关掉
     #[serde(rename_all = "camelCase")]
     TerminalClosed { terminal_id: String },
-    /// 用户终端已交给某个入口的 AI
-    #[serde(rename_all = "camelCase")]
-    TerminalHandedOver {
-        terminal_id: String,
-        /// "windows" 或服务器 ID
-        entry: String,
-        /// 入口说明："windows"（界面翻译）或服务器名称
-        entry_label: String,
-    },
-    /// 用户终端已收回（终端还开着）
-    #[serde(rename_all = "camelCase")]
-    TerminalTakenBack { terminal_id: String },
 }
 
 /// Tauri 这边的宿主
@@ -99,20 +87,6 @@ impl TauriHost {
             confirms: Waiters::default(),
             terminals: Waiters::default(),
         }
-    }
-
-    /// 入口说明（给界面用）
-    pub(super) fn label_of(&self, entry: &Entry) -> String {
-        self.entry_label(entry)
-    }
-
-    /// 入口能看到的目标（和 AI 调工具时一样）
-    pub(super) fn targets_for(
-        &self,
-        entry: &Entry,
-        permissions: &Permissions,
-    ) -> Result<Vec<Target>, AppError> {
-        McpHost::targets(self, entry, permissions)
     }
 
     fn servers(&self) -> Result<Vec<Server>, AppError> {
@@ -247,10 +221,12 @@ impl McpHost for TauriHost {
         Ok(targets)
     }
 
-    fn remembered(&self, entry: &Entry) -> bool {
-        settings::load(&self.app)
-            .entry(entry)
-            .is_some_and(|e| e.remembered)
+    fn confirm_connections(&self, entry: &Entry) -> bool {
+        // 本机入口只接受这个 Windows 账户自己的程序，它们本来就能运行 PowerShell，问了也拦不住
+        matches!(entry, Entry::Server { .. })
+            && settings::load(&self.app)
+                .entry(entry)
+                .is_some_and(|e| e.confirm_connections)
     }
 
     fn confirm_connect(
@@ -276,13 +252,16 @@ impl McpHost for TauriHost {
         );
         // 60 秒没人点或客户端取消：算“没人回应”，下次再问；只有用户点“拒绝”才记住
         let answer = answer.unwrap_or(Confirmation::NoAnswer);
-        if answer == Confirmation::AllowAlways
-            && let Err(e) = settings::set_remembered(&self.app, &session.entry, true)
-        {
-            eprintln!("记住 AI 接入的允许失败: 错误={}", e.code);
+        if answer == Confirmation::AllowAlways {
+            match settings::set_confirm_connections(&self.app, &session.entry, false) {
+                Ok(()) => {
+                    let _ = self.app.emit(super::SETTINGS_EVENT, ());
+                }
+                Err(e) => eprintln!("关闭连接确认失败: 错误={}", e.code),
+            }
         }
         eprintln!(
-            "AI 接入第一次连接: 入口={}, 结果={answer:?}",
+            "AI 接入新连接确认: 入口={}, 结果={answer:?}",
             self.entry_label(&session.entry)
         );
         Ok(answer)
@@ -367,35 +346,6 @@ impl McpHost for TauriHost {
         Ok(id)
     }
 
-    fn user_terminals(&self) -> Result<Vec<UserTerminal>, AppError> {
-        let state = self.app.state::<crate::terminal::TerminalState>();
-        Ok(state
-            .metas()
-            .into_iter()
-            .filter(|(_, m)| !m.ai_opened)
-            .map(|(id, m)| {
-                let (kind, target_id) = match &m.server_id {
-                    Some(server) => (TargetKind::Server, server.clone()),
-                    None => (TargetKind::Windows, "windows".to_owned()),
-                };
-                // 只查本机终端有没有在跑程序（服务器终端要连过去查，太慢）
-                let busy = match kind {
-                    TargetKind::Windows => state.manager.busy(&id).ok().flatten(),
-                    TargetKind::Server => None,
-                };
-                UserTerminal {
-                    terminal_id: id,
-                    title: m.title,
-                    kind,
-                    target_id,
-                    shell: m.shell,
-                    busy,
-                    handed_over: false,
-                }
-            })
-            .collect())
-    }
-
     fn terminal_cwd(&self, terminal_id: &str) -> Result<Option<String>, AppError> {
         let state = self.app.state::<crate::terminal::TerminalState>();
         Ok(state
@@ -446,18 +396,6 @@ impl McpHost for TauriHost {
             HostEvent::PasswordPrompt { terminal_id } => self
                 .app
                 .emit(NOTICE_EVENT, McpNoticeDto::PasswordPrompt { terminal_id }),
-            HostEvent::TerminalHandedOver { terminal_id, entry } => self.app.emit(
-                NOTICE_EVENT,
-                McpNoticeDto::TerminalHandedOver {
-                    terminal_id,
-                    entry_label: self.entry_label(&entry),
-                    entry: super::entry_text(&entry),
-                },
-            ),
-            HostEvent::TerminalTakenBack { terminal_id, .. } => self.app.emit(
-                NOTICE_EVENT,
-                McpNoticeDto::TerminalTakenBack { terminal_id },
-            ),
             HostEvent::JobsChanged => self.app.emit(super::JOBS_EVENT, ()),
         };
         if let Err(e) = result {

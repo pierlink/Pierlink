@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
-import { Bot, Columns2, FolderOpen, Gauge, Monitor, Plug, Radio, Rows2, Unplug, X } from "lucide-react";
+import { Columns2, FolderOpen, Gauge, Monitor, Plug, Radio, Rows2, Unplug, X } from "lucide-react";
 import { Button, Dialog, Menu, TextField, type MenuEntry } from "../../components";
 import { formatError } from "../../errors";
 import { TabBar } from "../workspace/TabBar";
@@ -57,8 +57,6 @@ interface Pane {
   restored: boolean;
   /** AI 打开的终端：request 为还没回报的打开请求编号；takenOver 为用户已接管；waiting 为 AI 在等用户输入密码 */
   ai?: { request: number | null; takenOver: boolean; waiting: boolean };
-  /** 用户交给 AI 的终端：交给了哪个入口（entry 是 "windows" 或服务器 ID，label 是显示名） */
-  handover?: { entry: string; label: string };
   /** 服务器终端右上角的概况是否显示（隐藏时采样不停） */
   overview: boolean;
   /** 服务器桌面（VNC）窗格，不是终端 */
@@ -261,7 +259,6 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
   const [pending, setPending] = useState<Pending | null>(null);
   const [splitMenu, setSplitMenu] = useState<{ x: number; y: number; tab: string; pane: string; dir: Dir } | null>(null);
   // “交给 AI”菜单：选哪个入口的 AI 接手
-  const [aiMenu, setAiMenu] = useState<{ x: number; y: number; entries: MenuEntry[] } | null>(null);
   const seq = useRef(restored.seq);
   // 异步回调里要读最新的标签和窗格
   const tabsRef = useRef<Tab[]>([]);
@@ -703,11 +700,6 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
     let alive = true;
     let off: (() => void) | undefined;
     void getMcpApi().then((api) => api.onNotice((n) => {
-      if (n.kind === "terminalHandedOver" || n.kind === "terminalTakenBack") {
-        const pane = Object.values(panesRef.current).find((x) => x.session === n.terminalId);
-        if (pane) updatePane(pane.id, () => ({ handover: n.kind === "terminalHandedOver" ? { entry: n.entry, label: entryName(n.entry, n.entryLabel) } : undefined }));
-        return;
-      }
       if (n.kind !== "passwordPrompt") return;
       const pane = Object.values(panesRef.current).find((x) => x.session === n.terminalId && x.ai);
       if (pane) updatePane(pane.id, (x) => ({ ai: x.ai && { ...x.ai, waiting: true } }));
@@ -715,45 +707,6 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
     return () => { alive = false; off?.(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-  /** 入口的显示名：本机入口翻译，服务器入口用服务器名称 */
-  const entryName = (entry: string, label: string) => (entry === "windows" ? t("mcp.entryWindows") : label);
-  /** 把用户终端交给某个入口的 AI；成功后窗格显示 AI 标记（后端事件也会再设一次） */
-  const handOver = (paneId: string, session: string, entry: string, label: string) => {
-    void getMcpApi().then((api) => api.handOver(session, entry)).then(
-      () => updatePane(paneId, () => ({ handover: { entry, label } })),
-      (e: unknown) => showBroadcastNotice(t("terminal.handover.failed", { reason: formatError(e) })),
-    );
-  };
-  /** 打开“交给 AI”菜单：列出能接手这个终端的入口；没有时只显示原因 */
-  const openHandoverMenu = (el: Element, paneId: string) => {
-    const session = panesRef.current[paneId]?.session;
-    if (!session) return;
-    const r = el.getBoundingClientRect();
-    void getMcpApi().then((api) => api.handoverEntries(session)).then((list) => {
-      // 只有一个入口能接手时直接交，不用再选
-      if (list.length === 1) { handOver(paneId, session, list[0].entry, entryName(list[0].entry, list[0].label)); return; }
-      const entries: MenuEntry[] = list.length === 0
-        // 没有能接手的入口：用会自动换行的说明，长句子也能看全
-        ? [{ kind: "hint", id: "none", label: t("terminal.handover.none") }]
-        : [
-            { kind: "header", id: "h", label: t("terminal.handover.menuHeader") },
-            ...list.map((x) => {
-              const label = entryName(x.entry, x.label);
-              return { id: `e-${x.entry}`, label, onSelect: () => handOver(paneId, session, x.entry, label) };
-            }),
-          ];
-      setAiMenu({ x: Math.max(8, r.right - 300), y: r.bottom + 4, entries });
-    }, (e: unknown) => showBroadcastNotice(t("terminal.handover.failed", { reason: formatError(e) })));
-  };
-  /** 收回交给 AI 的终端 */
-  const takeBack = (paneId: string) => {
-    const session = panesRef.current[paneId]?.session;
-    if (!session) return;
-    void getMcpApi().then((api) => api.takeBack(session)).then(
-      () => updatePane(paneId, () => ({ handover: undefined })),
-      (e: unknown) => showBroadcastNotice(t("terminal.handover.failed", { reason: formatError(e) })),
-    );
-  };
   /** 把当前目录报给后端（AI 列终端时显示）；还没有会话时不报 */
   const reportCwd = (session: string | null, cwd: string | null) => {
     if (!session) return;
@@ -777,7 +730,7 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
     if (session && p?.ai && p.ai.request !== null) {
       reportAiOpen(p.ai.request, session, null, id);
       updatePane(id, (x) => ({ session, ai: x.ai && { ...x.ai, request: null } }));
-    } else updatePane(id, () => ({ session, handover: undefined }));
+    } else updatePane(id, () => ({ session }));
     if (session && p?.cwd) reportCwd(session, p.cwd);
   };
   /** 终端打开失败：AI 还在等这个终端时回报原因 */
@@ -1216,7 +1169,7 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
       status: ids.some((id) => isConnecting(panes[id])) ? "connecting"
         : ids.some((id) => panes[id]?.status === "running" && panes[id]?.connecting?.phase !== "failed") ? "online" : "offline",
       badge: ids.length > 1 ? t("terminal.paneCount", { count: ids.length }) : undefined,
-      ai: ids.some((id) => !!panes[id]?.ai || !!panes[id]?.handover),
+      ai: ids.some((id) => !!panes[id]?.ai),
     }];
   });
   tabViewsRef.current = tabViews;
@@ -1326,16 +1279,9 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
                         {multi && <strong>{p.title}</strong>}
                         {p.cwd && <span className="mono">{p.cwd}</span>}
                       </span>
-                        {p.handover && (
-                          <span className="pane__ai" title={t("terminal.handover.chipTitle")}>
-                            <span className="ai-badge">AI</span>
-                            <span className="pl-ellipsis">{p.handover.entry === "windows" ? t("terminal.handover.chipWindows") : t("terminal.handover.chip", { name: p.handover.label })}</span>
-                            <button type="button" className="pane__ai-back" onClick={() => takeBack(id)}>{t("terminal.handover.takeBack")}</button>
-                          </span>
-                        )}
-                        {p.spec.kind !== "local" && !p.handover && !(p.ai && !p.ai.takenOver) && (() => {
+                        {p.spec.kind !== "local" && !(p.ai && !p.ai.takenOver) && (() => {
                           // 服务器终端的“连接 / 断开”：连着时断开（内容留着），没连着时连接（和按 Enter 一样）。
-                          // AI 正在用的终端不给：断开后 AI 那边收不了尾，要断开先收回
+                          // AI 正在用的终端不给：断开后 AI 那边收不了尾，要断开先接管
                           const live = !p.restored && p.status === "running";
                           const label = live ? t("terminal.disconnect") : t("terminal.connect");
                           return (
@@ -1351,12 +1297,6 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
                             </button>
                           );
                         })()}
-                        {!p.handover && !p.ai && p.session && p.spec.kind !== "quick" && (
-                          <button type="button" className="pane__btn" title={t("terminal.handover.button")} aria-label={t("terminal.handover.button")} aria-haspopup="menu"
-                            onClick={(e) => openHandoverMenu(e.currentTarget, id)}>
-                            <Bot size={14} />
-                          </button>
-                        )}
                         {p.spec.kind === "server" && !p.restored && (
                           <button type="button" className={`pane__btn${p.overview ? " pane__btn--on" : ""}`} aria-pressed={p.overview}
                             title={p.overview ? t("monitor.hide") : t("monitor.show")} aria-label={t("monitor.show")}
@@ -1488,7 +1428,7 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
                       onSplit={(dir) => splitSame(tab.key, id, dir)}
                       canSplit={(dir) => canSplit(id, dir)}
                       fileDrop={fileDrop === id}
-                      prediction={settings.terminal.commandPrediction && !(p.ai && !p.ai.takenOver) && !p.handover
+                      prediction={settings.terminal.commandPrediction && !(p.ai && !p.ai.takenOver)
                         && !(p.spec.kind === "server" && servers.find((x) => p.spec.kind === "server" && x.id === p.spec.serverId)?.noPrediction)}
                       broadcasting={inBroadcast}
                       onInput={inBroadcast ? (data) => onBroadcastInput(tab.key, id, data) : undefined}
@@ -1522,7 +1462,6 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
         </>
       )}
       <TransferCenter />
-      {aiMenu && <Menu x={aiMenu.x} y={aiMenu.y} entries={aiMenu.entries} label={t("terminal.handover.button")} onClose={() => setAiMenu(null)} />}
       {splitMenu && <Menu x={splitMenu.x} y={splitMenu.y} entries={splitEntries(splitMenu)} label={t("terminal.splitChoose")} onClose={() => setSplitMenu(null)} />}
 
       {pending?.kind === "danger" && (

@@ -136,6 +136,8 @@ pub struct MobileState {
     opens: Waiters<OpenTerminalRequestDto, Result<String, AppError>>,
     error: Mutex<Option<AppError>>,
     log: OnceLock<Option<MobileLog>>,
+    /// 电脑界面现在用的深浅色（界面启动和切换时报上来）；手机页面默认跟着它
+    theme: Mutex<Option<String>>,
 }
 
 impl Default for MobileState {
@@ -147,6 +149,7 @@ impl Default for MobileState {
             opens: Waiters::default(),
             error: Mutex::new(None),
             log: OnceLock::new(),
+            theme: Mutex::new(None),
         }
     }
 }
@@ -449,6 +452,30 @@ pub async fn mobile_status(app: AppHandle) -> Result<MobileStatusDto, AppError> 
     Ok(status(&app).await)
 }
 
+/// 电脑界面报告现在用的深浅色；变了就通知手机页面重新读
+///
+/// :param theme: "dark" 或 "light"
+#[tauri::command]
+#[specta::specta]
+pub fn mobile_set_theme(app: AppHandle, theme: String) -> Result<(), AppError> {
+    if theme != "dark" && theme != "light" {
+        return Err(AppError::new("mobile.invalid_theme").with("theme", theme));
+    }
+    let Some(state) = app.try_state::<MobileState>() else {
+        return Ok(());
+    };
+    let changed = {
+        let mut current = lock(&state.theme);
+        let changed = current.as_deref() != Some(theme.as_str());
+        *current = Some(theme);
+        changed
+    };
+    if changed {
+        notify(&app, "theme");
+    }
+    Ok(())
+}
+
 /// 打开或关闭手机入口、改监听地址和端口（只接受本机私网地址）
 ///
 /// :param enabled: 是否打开
@@ -738,6 +765,12 @@ fn key_name(key: &str) -> &str {
 }
 
 impl MobileHost for TauriMobileHost {
+    fn theme(&self) -> Option<String> {
+        self.app
+            .try_state::<MobileState>()
+            .and_then(|state| lock(&state.theme).clone())
+    }
+
     fn approve_pairing<'a>(
         &'a self,
         device_name: &'a str,
@@ -874,6 +907,7 @@ impl MobileHost for TauriMobileHost {
                 "sync": sync,
                 "ai": {
                     "sessions": crate::mcp::session_count(app),
+                    "busy": crate::mcp::session_busy(app),
                     "pending": crate::mcp::pending_confirms(app).len(),
                 },
             }))

@@ -1,7 +1,7 @@
 // MCP 逐个工具检查的 Windows 端到端测试：像 AI 助手一样把 20 个工具里 stage8 没覆盖到的都用一遍
 // （改几行、搜索、找文件、后台任务、终端读屏），服务器入口上的文件工具（服务器上的 AI 操作 Windows 文件），
 // 以及“一键添加”到真实安装的 Claude Code、Codex：用它们自己的命令检查配置能读、能连上。
-// 在 stage8.mjs 之后运行：那里已经打开了 AI 接入、本机入口（总是允许）和 pl-linux 的服务器入口。
+// 在 stage8.mjs 之后运行：那里已经打开了 AI 接入、本机入口和 pl-linux 的服务器入口（stage8 最后打开了它的连接确认）。
 //
 // 环境变量：PIERLINK_EXE、E2E_OUT（必填）；PIERLINK_TEST_LINUX_*（同 stage6.mjs，没有时跳过服务器相关步骤）
 // 每一步截图；某一步失败不中断后面的步骤。全部通过时退出码为 0。
@@ -190,15 +190,15 @@ function wslPython(script, args = [], timeout = 180000) {
 await rec.step(p, "准备：本机入口和 pl-linux 的服务器入口都授权一个带空格和中文的文件夹", async () => {
   await openMcpPage();
   await turnOn("Turn on AI access");
-  await selectEntry("This PC");
-  await turnOn("Local entry (AI on this PC)");
+  await selectEntry("This computer");
+  await turnOn("Let AI on this computer connect");
   await addFolder(DEEP);
-  await check("Allow running commands on this PC");
+  await check("Run commands on this Windows computer");
   if (HAVE_LINUX) {
     await check(LX_NAME);
     // 服务器入口在 stage8 里加过；这里给它也授权这个文件夹，服务器上的 AI 才能操作里面的文件
     await selectEntry(LX_NAME);
-    await check("Allow running commands on this PC");
+    await check("Run commands on this Windows computer");
     await addFolder(DEEP);
   }
   return DEEP;
@@ -463,7 +463,7 @@ await rec.step(p, "服务器入口：服务器上的 AI 读、改几行、搜索
   const end = Date.now() + 180000;
   while (code === null && Date.now() < end) {
     if (await p.js(`!!document.querySelector('.pl-dialog .mcp-confirm')`).catch(() => false)) {
-      await u.clickText("Always allow", ".pl-dialog");
+      await u.clickText("Allow this time", ".pl-dialog");
       await sleep(500);
     }
     await sleep(400);
@@ -503,11 +503,11 @@ await rec.step(p, "一键添加到本机 Claude Code、Codex：点标签只切�
   const clients = [["claude", "Claude Code"], ["codex", "Codex"]].filter(([cmd]) => have(cmd));
   if (!clients.length) return "跳过：这台机器上没装 Claude Code、Codex";
   await openMcpPage();
-  await selectEntry("This PC");
+  await selectEntry("This computer");
   // 页面打开时检测客户端；装好客户端后要重新打开页面
   await u.clickText("Workspace", "header nav");
   await openMcpPage();
-  await selectEntry("This PC");
+  await selectEntry("This computer");
   const results = [];
   for (const [cmd, name] of clients) {
     const shown = await clickClient(name, "Add");

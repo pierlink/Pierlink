@@ -623,6 +623,28 @@ fn 安装缺库或版本命令失败时保留已装程序() {
 }
 
 #[test]
+fn 版本命令不输出时从程序文件里认出_tigervnc_1_15() {
+    let (root, program, cmd) = local();
+    let binary = root.path().join("Xtigervnc");
+    // TigerVNC 1.15 的 -version 什么都不输出、退出码为 0；版本字样只在程序文件里
+    script_file(
+        &binary,
+        "#!/bin/sh\n# Xvnc TigerVNC 1.15.0 - built Dec 28 2025\nexit 0\n",
+    );
+    let found = desktop::verify_binary(&program, &cmd, binary.to_str().unwrap()).unwrap();
+    assert_eq!(found.flavor, Flavor::TigerVnc);
+    assert_eq!(found.version, (1, 15, 0));
+    // 文件里也没有版本字样：仍然认不出
+    script_file(&binary, "#!/bin/sh\nexit 0\n");
+    assert_eq!(
+        desktop::verify_binary(&program, &cmd, binary.to_str().unwrap())
+            .unwrap_err()
+            .code,
+        "vnc.not_tigervnc"
+    );
+}
+
+#[test]
 fn 所有远程脚本符合_posix_shell_语法() {
     let (_root, program, mut cmd) = local();
     cmd.args = vec!["-n".into()];

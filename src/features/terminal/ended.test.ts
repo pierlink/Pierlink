@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import "../../i18n";
-import { endedFromOpenError, endedLine, endsInline } from "./ended";
+import { MODES_OFF, endedFromOpenError, endedLine, endsInline } from "./ended";
 
 const err = (code: string, params: Record<string, string> = {}) => ({ code, params });
 
@@ -54,5 +54,13 @@ describe("断开和退出时写进终端的一行", () => {
     expect(main).toContain("\x1b[90m已断开");
     // 关掉鼠标上报：断开后点终端不再往外发鼠标序列
     expect(main).toContain("\x1b[?1000l");
+  });
+});
+
+describe("会话结束时关掉程序开的模式", () => {
+  it("关掉三种鼠标上报和数字编码、焦点上报；不退出全屏画面、不清屏", () => {
+    for (const mode of ["1000", "1002", "1003", "1006", "1015", "1004", "2004"]) expect(MODES_OFF).toContain(`\x1b[?${mode}l`);
+    expect(MODES_OFF).not.toContain("1049");
+    expect(MODES_OFF).not.toContain("\x1b[2J");
   });
 });

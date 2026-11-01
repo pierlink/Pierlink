@@ -10,9 +10,17 @@ import "./mcp.css";
 /** 需要用户处理的提示（要登录、AI 终端在等密码） */
 type Attention = { key: string; text: string };
 
+/** 距现在多久：刚刚 / N 分钟前 / N 小时前 */
+export function agoText(t: (key: string, o?: Record<string, unknown>) => string, ms: number, now: number): string {
+  const min = Math.floor(Math.max(0, now - ms) / 60000);
+  if (min < 1) return t("mcp.ago.now");
+  if (min < 60) return t("mcp.ago.minutes", { count: min });
+  return t("mcp.ago.hours", { count: Math.floor(min / 60) });
+}
+
 /**
- * 标题栏上的 AI 接入状态：有 agent 连着或有需要处理的提示时出现。
- * 点开看连着的客户端、需要处理的提示、最近的操作；“全部停止”取消所有操作、断开所有 agent。
+ * 标题栏上的 AI 接入状态：有 AI 通过 Pierlink 操作这台电脑或服务器、或有需要处理的提示时出现。
+ * 文字直接说状态（“AI 正在操作”“AI 已连接”），不显示连接数；点开看是哪个 AI、在做什么，可以全部停止。
  */
 export function McpIndicator() {
   const { t } = useTranslation();
@@ -24,27 +32,39 @@ export function McpIndicator() {
   const [names, setNames] = useState<Record<string, string>>({});
   const [open, setOpen] = useState(false);
   const [stopping, setStopping] = useState(false);
+  // 弹出框开着时每 30 秒刷新一次“几分钟前”
+  const [now, setNow] = useState(() => Date.now());
   // 最近两分钟有过操作：服务器入口的无握手客户端两次请求之间没有会话，也要让标题栏一直能看到
   const [recent, setRecent] = useState(false);
   const recentTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const btn = useRef<HTMLButtonElement>(null);
+  const refreshRef = useRef<() => void>(() => {});
   const pop = useRef<HTMLDivElement>(null);
   const namesRef = useRef(names);
   namesRef.current = names;
 
   const serverName = (id: string) => (id === "windows" ? t("mcp.targetWindows") : namesRef.current[id] ?? id);
+  /** 连接从哪个入口来：本机入口写“这台电脑”，服务器入口写服务器名 */
+  const entryName = (id: string) => (id === "windows" ? t("mcp.entryWindows") : namesRef.current[id] ?? id);
 
   useEffect(() => {
     let alive = true;
     const offs: (() => void)[] = [];
     const keep = (u: () => void) => { if (alive) offs.push(u); else u(); };
-    const refresh = async () => {
+    const load = async () => {
       const api = await getMcpApi();
       try {
         const s = await api.status();
         if (alive) setSessions(s.sessions);
       } catch { /* 后端还没准备好：下次事件再取 */ }
     };
+    // 一连串调用会连着发事件：合并成一次读取
+    let soon: ReturnType<typeof setTimeout> | null = null;
+    const refresh = () => {
+      if (soon) clearTimeout(soon);
+      soon = setTimeout(() => { soon = null; void load(); }, 150);
+    };
+    refreshRef.current = refresh;
     const noticeText = (n: McpNotice): Attention | null =>
       n.kind === "loginNeeded" ? { key: `login-${n.serverId}`, text: t("mcp.noticeLogin", { server: serverName(n.serverId) }) }
         : n.kind === "passwordPrompt" ? { key: `pw-${n.terminalId}`, text: t("mcp.noticePassword") }
@@ -67,25 +87,39 @@ export function McpIndicator() {
       (list) => { if (alive) setNames(Object.fromEntries(list.map((s) => [s.id, s.name]))); },
       () => {},
     );
-    return () => { alive = false; offs.forEach((u) => u()); if (recentTimer.current) clearTimeout(recentTimer.current); };
+    return () => { alive = false; offs.forEach((u) => u()); if (recentTimer.current) clearTimeout(recentTimer.current); if (soon) clearTimeout(soon); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
     if (!open) return;
+    setNow(Date.now());
+    const tick = setInterval(() => setNow(Date.now()), 30000);
     void getMcpApi().then((api) => api.activity(30)).then(setActivity, () => {});
     const onDown = (e: MouseEvent) => {
       const target = e.target as Node;
+      // 在停留的提示框里选文字不算点到外面
+      if (target instanceof Element && target.closest(".pl-tip")) return;
       if (!pop.current?.contains(target) && !btn.current?.contains(target)) setOpen(false);
     };
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
+    // 停留的提示框开着时 Esc 只关提示框
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape" && !document.querySelector(".pl-tip--hold")) setOpen(false); };
     window.addEventListener("mousedown", onDown, true);
     window.addEventListener("keydown", onKey, true);
     return () => {
+      clearInterval(tick);
       window.removeEventListener("mousedown", onDown, true);
       window.removeEventListener("keydown", onKey, true);
     };
   }, [open]);
+
+  // 显示“正在操作”时每 1.2 秒复查一次：很快就结束的调用不一定有结束的事件
+  const anyBusy = sessions.some((s) => s.busy);
+  useEffect(() => {
+    if (!anyBusy) return;
+    const t = setInterval(() => refreshRef.current(), 1200);
+    return () => clearInterval(t);
+  }, [anyBusy]);
 
   if (!sessions.length && !attention.length && !recent && !open) return null;
 
@@ -101,21 +135,26 @@ export function McpIndicator() {
   };
   const r = btn.current?.getBoundingClientRect();
   const time = (ms: number) => new Date(ms).toLocaleTimeString();
+  const busy = sessions.some((s) => s.busy);
+  // 状态直接写在按钮上：正在操作 / 已连接（最近有操作也算）/ 只有要处理的提示
+  const label = busy ? t("mcp.indicatorBusy")
+    : sessions.length || recent ? t("mcp.indicatorConnected")
+      : t("mcp.indicatorAttention");
 
   return (
     <>
       <button
         ref={btn}
         type="button"
-        className={`xfer-btn mcp-btn${sessions.length ? " xfer-btn--busy" : ""}`}
+        className={`xfer-btn mcp-btn${sessions.length || busy ? " xfer-btn--busy" : ""}`}
         aria-expanded={open}
         aria-haspopup="dialog"
-        aria-label={t("mcp.indicator")}
-        title={t("mcp.indicator")}
+        aria-label={label}
+        title={t("mcp.indicatorHint")}
         onClick={() => { setOpen(!open); if (!open) setAttention([]); }}
       >
-        <Bot size={14} />
-        <span className="xfer-btn__text">{sessions.length ? t("mcp.connected", { count: sessions.length }) : t("mcp.indicatorShort")}</span>
+        {busy ? <span className="mcp-btn__pulse" aria-hidden="true" /> : <Bot size={14} />}
+        <span className="xfer-btn__text">{label}</span>
         {attention.length > 0 && <span className="xfer-btn__dot" aria-hidden="true" />}
       </button>
       {open && r && createPortal(
@@ -125,12 +164,18 @@ export function McpIndicator() {
             {/* 最近有操作也给按钮：服务器入口的无握手客户端两次请求之间没有会话，被拒绝的决定也要靠它重置 */}
             {(sessions.length > 0 || recent) && <Button size="sm" variant="danger-ghost" disabled={stopping} onClick={() => void stopAll()}>{t("mcp.stopAll")}</Button>}
           </div>
-          <div className="mcp-pop__body">
+          <div className="mcp-pop__body" data-pl-tip-hold="">
+            <div className="mcp-pop__hint">{t("mcp.popHint")}</div>
             {attention.map((a) => <div key={a.key} className="mcp-pop__attention"><CircleAlert size={13} />{a.text}</div>)}
             <div className="mcp-pop__section">{t("mcp.sessions")}</div>
             {sessions.length === 0
-              ? <div className="xfer-pop__empty">{t(recent ? "mcp.noSessionsRecent" : "mcp.noSessions")}</div>
-              : sessions.map((s) => <div key={s.id} className="mcp-pop__row pl-ellipsis">{s.client || t("mcp.unknownClient")} · {serverName(s.entry)}</div>)}
+              ? <div className="xfer-pop__empty">{t("mcp.noSessions")}</div>
+              : sessions.map((s) => (
+                <div key={s.id} className="mcp-pop__session">
+                  <span className="pl-ellipsis">{s.client || t("mcp.unknownClient")} · {entryName(s.entry)}</span>
+                  <span className={`mcp-pop__state${s.busy ? " mcp-pop__state--busy" : ""}`}>{s.busy ? t("mcp.busyNow") : agoText(t, s.lastActiveMs, now)}</span>
+                </div>
+              ))}
             <div className="mcp-pop__section">{t("mcp.recent")}</div>
             {activity.length === 0
               ? <div className="xfer-pop__empty">{t("mcp.noActivity")}</div>

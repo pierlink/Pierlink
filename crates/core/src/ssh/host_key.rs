@@ -243,9 +243,13 @@ fn parse_prompt(text: &str) -> Result<Option<HostKeyInfo>, AppError> {
         .rsplit_once("The authenticity of host '")
         .and_then(|(_, s)| s.split_once("' "))
         .map(|(s, _)| s);
+    // OpenSSH 10 以前是“ED25519 key fingerprint is SHA256:….”，之后是“… key fingerprint is: SHA256:…”（有冒号、没句号）
     let key = text.lines().find_map(|line| {
-        let (kind, fingerprint) = line.trim().split_once(" key fingerprint is SHA256:")?;
-        let fingerprint = fingerprint.strip_suffix('.')?;
+        let line = line.trim();
+        let (kind, fingerprint) = line
+            .split_once(" key fingerprint is SHA256:")
+            .and_then(|(kind, rest)| Some((kind, rest.strip_suffix('.')?)))
+            .or_else(|| line.split_once(" key fingerprint is: SHA256:"))?;
         if !kind.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
             || fingerprint.len() != 43
             || !fingerprint
@@ -1113,6 +1117,15 @@ mod tests {
         let info = parse_prompt(&text).unwrap().unwrap();
         assert_eq!(info.host, "[host]:2222 (127.0.0.1)");
         assert_eq!(info.key_type, "ED25519");
+        // OpenSSH 10 起这一行有冒号、没有句号
+        let newer = format!(
+            "The authenticity of host 'host (127.0.0.1)' can't be established.\r\nED25519 key fingerprint is: SHA256:{}\r\nThis key is not known by any other names.\r\nAre you sure you want to continue connecting (yes/no/[fingerprint])? ",
+            "b".repeat(43)
+        );
+        let info = parse_prompt(&newer).unwrap().unwrap();
+        assert_eq!(info.host, "host (127.0.0.1)");
+        assert_eq!(info.key_type, "ED25519");
+        assert_eq!(info.fingerprint, format!("SHA256:{}", "b".repeat(43)));
         assert_eq!(
             parse_prompt("REMOTE HOST IDENTIFICATION HAS CHANGED")
                 .unwrap_err()

@@ -3,10 +3,12 @@
  * POST 都带 X-Pierlink 头（入口据此拒绝跨站请求）。地址里带 ?mock 时用示例数据（开发预览）。
  */
 
-export interface Me { name: string; permissions: { view: boolean; input: boolean; confirm: boolean } }
+/** theme：电脑界面现在用的深浅色（电脑还没报过时为空） */
+export interface Me { name: string; permissions: { view: boolean; input: boolean; confirm: boolean }; theme?: "dark" | "light" | null }
 export interface OverviewServer { id: string; name: string; online: boolean | null; cpu: number | null; mem: number | null }
 export interface OverviewSync { id: string; name: string; state: string; percent: number | null }
-export interface Overview { servers: OverviewServer[]; sync: OverviewSync[]; ai: { sessions: number; pending: number } }
+/** ai：sessions 连着的 AI 数，busy 有 AI 正在操作（旧版电脑没有这一项），pending 等着确认的数 */
+export interface Overview { servers: OverviewServer[]; sync: OverviewSync[]; ai: { sessions: number; busy?: boolean; pending: number } }
 /** 一个打开着的终端；cwd、busy、last 是电脑端能给时才有（当前目录、是否有程序在跑、最后一行） */
 export interface TerminalItem { id: string; title: string; kind: "windows" | "server"; server: string | null; busy: boolean | null; ai: boolean; cwd?: string | null; last?: string | null }
 /** 屏幕：text 是纯文字；lines 是同样的行带颜色码（电脑端支持时才有）；password 表示在等密码 */
@@ -88,7 +90,7 @@ function mockScreen(id: string): Screen {
 
 export const api = {
   me: async (): Promise<Me> => {
-    if (mock) { if (!mockPaired && !location.search.includes("paired")) throw new ApiError(401, null); return { name: "iPhone", permissions: { view: true, input: true, confirm: true } }; }
+    if (mock) { if (!mockPaired && !location.search.includes("paired")) throw new ApiError(401, null); return { name: "iPhone", permissions: { view: true, input: !location.search.includes("readonly"), confirm: true }, theme: location.search.includes("pclight") ? "light" : "dark" }; }
     return request("GET", "/api/me");
   },
   pair: async (code: string, deviceName: string): Promise<void> => {
@@ -97,7 +99,7 @@ export const api = {
   },
   logout: async (): Promise<void> => { if (!mock) await request("POST", "/api/logout", {}); },
   overview: async (): Promise<Overview> => {
-    if (mock) return { servers: [{ id: "s1", name: "gpu-dev", online: true, cpu: 34, mem: 61 }, { id: "s2", name: "hk-web-01", online: false, cpu: null, mem: null }], sync: [{ id: "t1", name: "web-api", state: "syncing", percent: 62 }, { id: "t2", name: "notes", state: "paused", percent: null }], ai: { sessions: 2, pending: mockConfirms.length } };
+    if (mock) return { servers: [{ id: "s1", name: "gpu-dev", online: true, cpu: 34, mem: 61 }, { id: "s2", name: "hk-web-01", online: false, cpu: null, mem: null }], sync: [{ id: "t1", name: "web-api", state: "syncing", percent: 62 }, { id: "t2", name: "notes", state: "paused", percent: null }], ai: { sessions: 2, busy: true, pending: mockConfirms.length } };
     return request("GET", "/api/overview");
   },
   terminals: async (): Promise<TerminalItem[]> => {
@@ -168,7 +170,7 @@ export const api = {
         if (dropped) { dropped = false; onEvent("reconnected"); }
       };
       source.onmessage = (e) => onEvent(String(e.data));
-      for (const name of ["confirms", "terminals", "overview", "activity"]) source.addEventListener(name, () => onEvent(name));
+      for (const name of ["confirms", "terminals", "overview", "activity", "theme"]) source.addEventListener(name, () => onEvent(name));
       source.onerror = () => {
         onState(false);
         dropped = true;

@@ -54,9 +54,9 @@
 ### AI 接入（MCP）
 - **AI 跑在服务器上，像装在 Windows 上一样干活**：Windows 不用装 Claude Code，服务器上的 AI 就能读写、按行修改、搜索你允许的 Windows 文件夹，在 Windows 上编译、运行、开后台任务；文件的编码和换行原样保留（GBK、UTF-16、CRLF 都行），长时间的编译不会被中途掐断
 - AI 能查到自己能在哪些文件夹干活、有哪些 shell、同步的服务器路径对应 Windows 哪里；怎么做由 AI 自己决定
-- 可以把开着的终端交给 AI，随时收回
+- AI 可以自己开一个看得见的终端干活，你随时能接管
 - 危险操作（如 `rm -rf`、强制推送）要你确认；审批方式可选；每一步都有操作记录
-- 一键添加到 Claude Code / Codex / Cursor，服务器上的 Claude Code / Codex / Gemini CLI 也能一键接上；标题栏能看到 AI 刚做了什么和命令输出
+- 一键添加到 Claude Code / Codex / Cursor，服务器上的 Claude Code / Codex / Gemini CLI 也能一键接上；标题栏随时看得到 AI 在不在操作、刚做了什么和命令输出，一键全部停止
 
 ![MCP 页：入口、一键添加、审批方式和权限](assets/readme/mcp-zh.png)
 
@@ -70,7 +70,7 @@
 ### 手机连接
 <img src="assets/readme/phone-zh.png" alt="在手机上回答 AI 的确认" width="240" align="right">
 
-- 不在电脑前时，用手机浏览器回答 AI 的确认、查看服务器状态、在开着的终端里敲命令
+- 不在电脑前时，用手机浏览器和服务器上的 Claude Code 对话（按手机宽度显示、选项变成按钮、能发图片），回答 AI 的确认、查看服务器状态；深浅色跟随电脑
 - 经 Tailscale 或局域网连到你的电脑，不对公网开放，也没有 Pierlink 自己的中转服务
 - 二维码配对，电脑上批准；每台手机单独授权、可改名，随时撤销
 - iPhone、Android 都能用，不用装 App

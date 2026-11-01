@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { findFakeCursor, type BufferLike } from "./imeAnchor";
+import { findFakeCursor, placeIme, type BufferLike } from "./imeAnchor";
 
 /**
  * 用字符串画一屏：每行一个字符串，`#` 是反色格，`W` 是反色的宽字符（占两格，第二格是占位），`w` 是普通宽字符。
@@ -46,5 +46,28 @@ describe("找假光标", () => {
   it("只看可见区域，行号相对可见区域", () => {
     const b = screen(["# 回滚区里的", "line", "> x#"], 1);
     expect(findFakeCursor(b, 20, 2)).toEqual({ x: 3, y: 1 });
+  });
+});
+
+describe("组字框的位置", () => {
+  it("没有假光标、离右边还远：不改", () => {
+    expect(placeIme(null, 100, 187, 811)).toEqual({ left: null, top: null });
+  });
+  it("快到右边界：往左挪到贴着右边；挪完再算一次不再改", () => {
+    expect(placeIme(null, 756, 187, 811)).toEqual({ left: 624, top: null });
+    expect(placeIme(null, 624, 187, 811)).toEqual({ left: null, top: null });
+  });
+  it("对准假光标后再夹在右边以内；写过以后再算还是同一个值（不会来回改）", () => {
+    const anchor = { left: 780, top: 340 };
+    const first = placeIme(anchor, 756, 187, 811);
+    expect(first).toEqual({ left: 624, top: 340 });
+    // 观察者因为写入重新进来：现在的位置已经是 624
+    expect(placeIme(anchor, first.left!, 187, 811)).toEqual(first);
+  });
+  it("组字框没在用：只对准假光标", () => {
+    expect(placeIme({ left: 780, top: 20 }, 10, null, 811)).toEqual({ left: 780, top: 20 });
+  });
+  it("组字框比屏幕还宽：贴着左边", () => {
+    expect(placeIme(null, 300, 900, 811)).toEqual({ left: 0, top: null });
   });
 });

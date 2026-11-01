@@ -1,13 +1,10 @@
 //! 共用 MCP 服务：独立运行时、字节流传输、工具分发与审计。
 use super::{
-    AuditRecord, ClientInfo, Entry, HostEvent, McpHost, SessionHandle, SessionInfo, Target,
+    AuditRecord, Entry, HostEvent, McpHost, SessionHandle, SessionInfo,
     audit::{Audit, now_ms, sanitize_record},
     lock,
     session::Session,
-    tools::{
-        self, Failure, Registry,
-        terminals::{AiTerminal, TerminalSource},
-    },
+    tools::{self, Failure, Registry},
 };
 use crate::{error::AppError, terminal::TerminalManager};
 use rmcp::{
@@ -70,9 +67,29 @@ impl Shared {
         sessions
     }
 
-    /// 按 now 比较并更新 previous；集合变化时通知宿主并返回 true。
-    pub(super) fn sessions_changed(&self, previous: &mut HashSet<String>, now: Instant) -> bool {
-        let current = self.sessions_at(now).into_iter().map(|s| s.id).collect();
+    /// 按 now 返回可见会话的界面状态，结果按 ID 排序。
+    pub(super) fn statuses_at(&self, now: Instant) -> Vec<super::SessionStatus> {
+        let visible: HashSet<_> = self.sessions_at(now).into_iter().map(|s| s.id).collect();
+        let mut statuses: Vec<_> = lock(&self.sessions)
+            .values()
+            .filter(|session| visible.contains(&lock(&session.info).id))
+            .map(|session| session.status(now))
+            .collect();
+        statuses.sort_by(|a, b| a.info.id.cmp(&b.info.id));
+        statuses
+    }
+
+    /// 按 now 比较并更新 previous（会话 ID 和是否有调用在进行）；变化时通知宿主并返回 true。
+    pub(super) fn sessions_changed(
+        &self,
+        previous: &mut HashSet<(String, bool)>,
+        now: Instant,
+    ) -> bool {
+        let current = self
+            .statuses_at(now)
+            .into_iter()
+            .map(|s| (s.info.id, s.busy))
+            .collect();
         if *previous == current {
             return false;
         }
@@ -205,6 +222,10 @@ impl McpService {
     pub fn sessions(&self) -> Vec<SessionInfo> {
         self.shared.sessions_at(Instant::now())
     }
+    /// 无参数；返回同一批会话的界面状态（有没有调用在进行、最后一次请求的时间），按 ID 排序。
+    pub fn session_statuses(&self) -> Vec<super::SessionStatus> {
+        self.shared.statuses_at(Instant::now())
+    }
     /// 返回至多 limit 条已脱敏操作，新的在前；内存总量最多 30 条。
     pub fn activity(&self, limit: usize) -> Vec<AuditRecord> {
         lock(&self.shared.activity)
@@ -213,59 +234,7 @@ impl McpService {
             .cloned()
             .collect()
     }
-    /// 将 terminal_id 对应的用户终端交给 entry，target 必须与宿主元数据和该入口权限一致。
-    /// 成功后发送 TerminalHandedOver 并记录审计；无目标、未授权或重复交出返回 AppError。
-    pub fn hand_over(
-        &self,
-        terminal_id: &str,
-        entry: Entry,
-        target: Target,
-    ) -> Result<(), AppError> {
-        let permissions = self.shared.host.permissions(&entry)?.ok_or_else(|| {
-            AppError::new("mcp.entry_disabled")
-                .with_reason("mcp.this_mcp_entry_is_disabled", "这个 MCP 入口未启用")
-        })?;
-        let targets = self.shared.host.targets(&entry, &permissions)?;
-        let target = tools::terminal_targets(&permissions, &targets)
-            .into_iter()
-            .find(|allowed| allowed.id == target.id && allowed.kind == target.kind)
-            .ok_or_else(|| {
-                AppError::new("mcp.target_denied").with_reason(
-                    "mcp.this_entry_cannot_operate_on_the_terminal_target",
-                    "这个入口没有终端目标的操作权限",
-                )
-            })?;
-        if !self.shared.host.user_terminals()?.iter().any(|terminal| {
-            terminal.terminal_id == terminal_id
-                && terminal.target_id == target.id
-                && terminal.kind == target.kind
-                && !terminal.target_id.is_empty()
-        }) {
-            return Err(AppError::new("mcp.terminal_not_found").with_reason(
-                "mcp.user_terminal_is_missing_or_its_target_does_not_match",
-                "用户终端不存在或目标不匹配",
-            ));
-        }
-        let info = self.shared.registry.hand_over(
-            terminal_id,
-            entry,
-            target,
-            self.shared.host.as_ref(),
-        )?;
-        self.shared.audit_handover("hand_over", &info);
-        Ok(())
-    }
-    /// 收回 terminal_id，取消此登记的待执行输入和等待调用，保留终端进程。
-    /// 成功后发送 TerminalTakenBack 并记录审计；未交出返回 AppError。
-    pub fn take_back(&self, terminal_id: &str) -> Result<(), AppError> {
-        let info = self
-            .shared
-            .registry
-            .take_back(terminal_id, self.shared.host.as_ref())?;
-        self.shared.audit_handover("take_back", &info);
-        Ok(())
-    }
-    /// 无参数、无返回值；取消调用、断开连接，关闭 AI 创建的终端，用户交出的终端只收回。
+    /// 无参数、无返回值；取消调用、断开连接，关闭 AI 创建的终端。
     pub fn stop_all(&self) {
         self.reset_http_sessions();
         let sessions: Vec<_> = lock(&self.shared.sessions).values().cloned().collect();
@@ -273,9 +242,7 @@ impl McpService {
             session.cancel();
         }
         self.shared.jobs.cancel_entry(None);
-        for info in self.shared.registry.close_all(self.shared.host.as_ref()) {
-            self.shared.audit_handover("take_back", &info);
-        }
+        self.shared.registry.close_all(self.shared.host.as_ref());
     }
     /// 无参数；返回各入口后台任务的脱敏快照，按开始时间排序，已完成记录保留 30 分钟。
     pub fn jobs(&self) -> Vec<super::JobView> {
@@ -437,6 +404,8 @@ impl ServerHandler for Handler {
     ) -> Result<CallToolResponse, ErrorData> {
         let started = Instant::now();
         let cancelled = self.session.call_flag();
+        // 有调用开始：界面马上显示“AI 正在操作”（结束由每秒的比较和界面自己的复查发现）
+        self.shared.host.notify(HostEvent::SessionsChanged);
         if context.ct.is_cancelled() {
             cancelled.store(true, Ordering::Release);
         }
@@ -543,31 +512,6 @@ impl Drop for CallGuard {
     }
 }
 impl Shared {
-    fn audit_handover(&self, tool: &str, info: &AiTerminal) {
-        let TerminalSource::HandedOver { entry } = &info.source else {
-            return;
-        };
-        let mut record = AuditRecord {
-            output_preview: None,
-            time_ms: now_ms(),
-            session: String::new(),
-            entry: entry.clone(),
-            client: ClientInfo::default(),
-            tool: tool.into(),
-            target: Some(info.target.id.clone()),
-            summary: info.terminal_id.clone(),
-            outcome: "ok".into(),
-            approval: "user".into(),
-            exit_code: None,
-            duration_ms: 0,
-        };
-        let secrets = lock(&self.secrets);
-        let secret_refs: Vec<&str> = secrets.iter().map(|secret| secret.as_str()).collect();
-        sanitize_record(&mut record, &secret_refs);
-        bound(&mut record.summary, 2048);
-        drop(secrets);
-        self.record_activity(record);
-    }
     pub(super) fn job_completed(&self, info: &SessionInfo, approval: &str, value: Value) {
         let secrets = lock(&self.secrets);
         let refs: Vec<_> = secrets.iter().map(|s| s.as_str()).collect();

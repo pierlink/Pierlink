@@ -28,6 +28,8 @@
   flex: 1;
   min-height: 0;
   padding: var(--sp-2) var(--sp-1) var(--sp-1) var(--sp-3);
+  /* clip 不是滚动容器：输入法组字时隐藏输入框变宽，浏览器也没法把整个终端往左挪 */
+  overflow: clip;
 }
 .term-notice {
   position: absolute;
@@ -185,10 +187,10 @@
 .pane--multi { inset: 3px; border: 1px solid var(--border); border-radius: var(--r-md); overflow: hidden; transition: border-color var(--dur-fast); }
 .pane--active { border-color: color-mix(in srgb, var(--accent) 55%, var(--border)); }
 .pane__body { position: relative; flex: 1; min-height: 0; display: flex; }
-.pane__term { position: relative; flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
+.pane__term { position: relative; flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: clip; }
 /* 终端宽度跟随窗格，不能被 xterm 画布撑开（否则拆分后旧终端不缩小） */
 .pane__term > .term-pane { min-width: 0; }
-.pane__term .term-host { min-width: 0; overflow: hidden; }
+.pane__term .term-host { min-width: 0; overflow: clip; }
 
 /* 窗格标题栏：左边是标题和当前目录，右边是按钮（文件、分屏、关闭）。独占一行，不盖住终端内容 */
 .pane__bar {

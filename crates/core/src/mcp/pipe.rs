@@ -8,7 +8,17 @@ use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWrite
 #[path = "pipe/windows.rs"]
 mod platform;
 #[cfg(windows)]
-pub use platform::{pipe_name, run_bridge, serve};
+pub use platform::{pipe_name, process_elevated, run_bridge, serve};
+
+/// 当前进程是不是以管理员身份运行；只有 Windows 上会是 true
+#[cfg(not(windows))]
+pub fn process_elevated() -> bool {
+    false
+}
+
+/// Pierlink 以管理员身份运行、agent 没有时回给 agent 的说明
+pub const ELEVATED_ONLY: &str =
+    "Pierlink 正以管理员身份运行：请也以管理员身份运行这个 AI，或用普通方式重新打开 Pierlink";
 
 /// 连不上 Pierlink 时回给 agent 的说明
 pub const UNAVAILABLE: &str =

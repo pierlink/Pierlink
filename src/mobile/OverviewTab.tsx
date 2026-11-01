@@ -2,6 +2,10 @@ import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { api, type Me, type Overview } from "./api";
 import { handleError } from "./App";
+import { loadPrefs, savePrefs } from "./prefs";
+import { setThemePref, type MobileThemePref } from "./theme";
+
+const THEME_CHOICES: readonly MobileThemePref[] = ["pc", "phone", "dark", "light"];
 
 /** 概况：服务器在线和资源、同步任务、AI 连接；有确认权限时可以全部停止 AI；最下面可以在这台手机上退出 */
 export function OverviewTab({ me, version, onAuthLost, onSignedOut }: { me: Me; version: number; onAuthLost: () => void; onSignedOut: () => void }) {
@@ -10,6 +14,12 @@ export function OverviewTab({ me, version, onAuthLost, onSignedOut }: { me: Me; 
   const [error, setError] = useState<string | null>(null);
   const [stopping, setStopping] = useState<"idle" | "ask" | "busy" | "done">("idle");
   const [leaving, setLeaving] = useState<"idle" | "ask" | "busy">("idle");
+  const [theme, setTheme] = useState<MobileThemePref>(() => loadPrefs().theme);
+  const pickTheme = (next: MobileThemePref) => {
+    setTheme(next);
+    savePrefs({ ...loadPrefs(), theme: next });
+    setThemePref(next);
+  };
 
   useEffect(() => {
     let alive = true;
@@ -64,7 +74,10 @@ export function OverviewTab({ me, version, onAuthLost, onSignedOut }: { me: Me; 
           </section>
           <section className="m-card">
             <h2>{t("mobile.overview.ai")}</h2>
-            <p>{t("mobile.overview.aiState", { sessions: data.ai.sessions, pending: data.ai.pending })}</p>
+            <p>
+              {data.ai.busy ? t("mcp.indicatorBusy") : data.ai.sessions ? t("mcp.indicatorConnected") : t("mobile.overview.aiNone")}
+              {data.ai.pending > 0 ? t("mobile.overview.aiPending", { count: data.ai.pending }) : ""}
+            </p>
             {me.permissions.confirm && (
               stopping === "ask" ? (
                 <div className="m-actions">
@@ -81,6 +94,16 @@ export function OverviewTab({ me, version, onAuthLost, onSignedOut }: { me: Me; 
           </section>
         </>
       )}
+      <section className="m-card">
+        <h2>{t("mobile.theme.title")}</h2>
+        <div className="m-seg" role="radiogroup" aria-label={t("mobile.theme.title")}>
+          {THEME_CHOICES.map((x) => (
+            <button key={x} type="button" role="radio" aria-checked={theme === x} className={`m-seg__item${theme === x ? " m-seg__item--on" : ""}`} onClick={() => pickTheme(x)}>
+              {t(`mobile.theme.${x}`)}
+            </button>
+          ))}
+        </div>
+      </section>
       <section className="m-signout">
         {leaving === "ask" ? (
           <div className="m-actions">

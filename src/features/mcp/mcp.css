@@ -9,7 +9,16 @@
 .mcp-pop { width: min(440px, calc(100vw - 16px)); }
 .mcp-pop__body { overflow: auto; padding: 8px 12px 12px; display: flex; flex-direction: column; gap: 4px; scrollbar-width: thin; }
 .mcp-pop__section { margin-top: 8px; color: var(--text-dim); font-size: var(--fs-xs); font-weight: 600; }
-.mcp-pop__row { font-size: var(--fs-sm); }
+.mcp-pop__hint { color: var(--text-muted); font-size: var(--fs-xs); }
+.mcp-pop__session { display: flex; align-items: baseline; gap: 8px; min-width: 0; font-size: var(--fs-sm); }
+.mcp-pop__state { flex: none; margin-left: auto; color: var(--text-dim); font-size: var(--fs-xs); }
+.mcp-pop__state--busy { color: var(--accent); }
+/* 标题栏按钮：AI 正在操作时用一个呼吸的圆点代替图标 */
+.mcp-btn__pulse { position: relative; width: 14px; height: 14px; flex: none; }
+.mcp-btn__pulse::before, .mcp-btn__pulse::after { content: ""; position: absolute; inset: 4px; border-radius: 50%; background: var(--accent); }
+.mcp-btn__pulse::after { inset: 1px; opacity: 0.5; animation: mcp-pulse 1.4s ease-out infinite; }
+@keyframes mcp-pulse { from { transform: scale(0.5); opacity: 0.6; } to { transform: scale(1.2); opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .mcp-btn__pulse::after { animation: none; opacity: 0.35; } }
 .mcp-pop__attention { display: flex; align-items: center; gap: 6px; padding: 6px 8px; border-radius: var(--r-md); background: color-mix(in srgb, var(--danger) 12%, transparent); color: var(--danger); font-size: var(--fs-xs); }
 .mcp-pop__act { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: var(--fs-xs); color: var(--text-muted); }
 .mcp-pop__act--bad { color: var(--danger); }
@@ -36,7 +45,6 @@
 .mcp-perms__add { display: flex; align-items: flex-end; gap: 8px; flex-wrap: wrap; }
 .mcp-perms__add .pl-field { flex: 1; min-width: 220px; }
 .mcp-perms__servers { display: flex; flex-wrap: wrap; gap: 6px 16px; }
-.mcp-remembered { display: flex; align-items: center; gap: 8px; font-size: var(--fs-xs); color: var(--text-muted); }
 
 /* AI 打开的终端：标签上的“AI”标记、窗格顶部的提示条 */
 .ai-badge { display: inline-flex; align-items: center; padding: 0 5px; height: 16px; border-radius: 8px; background: var(--accent-soft); color: var(--accent); font-size: 10px; font-weight: 700; letter-spacing: 0.04em; flex: none; }
@@ -57,6 +65,16 @@
 .mcp-page__sessions { min-width: 9em; text-align: right; font-size: var(--fs-sm); color: var(--text-muted); font-variant-numeric: tabular-nums; }
 .mcp-page__off { flex: 1; display: flex; flex-direction: column; align-items: flex-start; gap: 10px; padding: 24px; }
 .mcp-page__off p { margin: 0; max-width: 640px; }
+.mcp-page__ask { font-weight: 600; }
+.mcp-page__choices { display: flex; flex-wrap: wrap; gap: 8px; }
+/* 入口详情顶部的三步：做完的打勾，下一步高亮 */
+.mcp-steps { display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 2px 0 4px; padding: 0; list-style: none; font-size: var(--fs-sm); color: var(--text-muted); }
+.mcp-steps__item { display: inline-flex; align-items: center; gap: 6px; }
+.mcp-steps__mark { display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: 50%; border: 1px solid var(--border); font-size: var(--fs-xs); font-variant-numeric: tabular-nums; }
+.mcp-steps__item--done { color: var(--text); }
+.mcp-steps__item--done .mcp-steps__mark { border-color: transparent; background: color-mix(in srgb, var(--ok, var(--accent)) 18%, transparent); color: var(--ok, var(--accent)); }
+.mcp-steps__item--next { color: var(--accent); font-weight: 600; }
+.mcp-steps__item--next .mcp-steps__mark { border-color: var(--accent); }
 .mcp-page__body { flex: 1; min-height: 0; display: flex; gap: 8px; }
 .mcp-list { width: 300px; flex: none; display: flex; flex-direction: column; gap: 6px; padding: 12px; overflow: auto; }
 .mcp-list__label { margin-top: 8px; font-size: var(--fs-xs); color: var(--text-dim); }
@@ -68,7 +86,7 @@
 .mcp-row__dot--running { background: var(--ok); }
 .mcp-row__dot--connecting, .mcp-row__dot--reconnecting, .mcp-row__dot--waiting_password { background: var(--warn); }
 .mcp-row__dot--error { background: var(--danger); }
-.mcp-row__count { flex: none; min-width: 3.5em; text-align: right; font-size: var(--fs-xs); color: var(--accent); }
+.mcp-row__count { flex: none; min-width: 4.5em; text-align: right; font-size: var(--fs-xs); color: var(--accent); white-space: nowrap; }
 .mcp-row__count--none { color: transparent; }
 .mcp-detail { gap: 12px; }
 .mcp-detail__grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; align-items: start; }
@@ -77,7 +95,7 @@
 .mcp-detail__row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 4px 8px; }
 /* 端口错误放在下面预留好的一行里 */
 .mcp-port__err { order: 3; flex-basis: 100%; min-height: 16px; font-size: var(--fs-xs); color: var(--danger); }
-.mcp-detail__sessions { margin: 0; padding-left: 18px; font-size: var(--fs-sm); }
+.mcp-detail__sessions { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 4px; }
 .mcp-add { display: flex; flex-direction: column; gap: 6px; max-height: 320px; overflow: auto; }
 .mcp-activity { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 10px; padding: 12px 14px; }
 .mcp-activity__bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
@@ -94,10 +112,6 @@
 .mcp-table th { position: sticky; }
 .mcp-table__resize { position: absolute; top: 0; right: 0; width: 7px; height: 100%; cursor: col-resize; border-right: 1px solid var(--border); }
 .mcp-table__resize:hover { border-right-color: var(--accent); }
-/* 交给 AI 的终端：窗格标题栏里的标记和“收回”（放在标题栏里，不另起一行，终端不被挤动） */
-.pane__ai { display: inline-flex; align-items: center; gap: 6px; flex: 0 1 auto; min-width: 0; max-width: 55%; height: 20px; padding: 0 2px 0 4px; border-radius: 10px; background: var(--accent-soft); font-size: var(--fs-xs); color: var(--text); }
-.pane__ai-back { flex: none; height: 18px; padding: 0 8px; border: 0; border-radius: 9px; background: transparent; color: var(--accent); font: inherit; cursor: pointer; }
-.pane__ai-back:hover { background: var(--hover); }
 /* 一键添加：按钮一行，结果固定一行 */
 .mcp-oneclick { display: flex; flex-direction: column; gap: 6px; }
 .mcp-oneclick__buttons { display: flex; flex-wrap: wrap; gap: 6px; }

@@ -23,7 +23,7 @@ pub struct TerminalState {
     /// 会话 ID → 打开它的页面（webview 标签）。页面重载或窗口销毁时据此关闭会话，
     /// 避免旧页面的会话因为没人确认输出而永远暂停、进程一直留着。会话自然退出时条目随之删除。
     owners: Owners,
-    /// 会话 ID → 用户终端的元数据（AI 列终端、交给 AI 用）；快速连接不登记
+    /// 会话 ID → 终端的元数据（手机终端列表、AI 标记、当前目录用）；快速连接不登记
     meta: Mutex<HashMap<String, TerminalMeta>>,
     /// 手机“按手机宽度显示”时的尺寸归属（电脑界面的尺寸、手机的续期）
     pub phone: crate::phone_size::PhoneSizes,

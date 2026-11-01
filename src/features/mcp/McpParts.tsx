@@ -48,19 +48,33 @@ export function PortInput({ value, label, onCommit }: { value: number; label: st
   );
 }
 
-/** 一个入口的权限：执行命令、文件夹、服务器 */
-export function EntryPermissions({ entry, servers, exclude, windowsWarning, onChange }: {
+/**
+ * 一个入口的权限。服务器入口（AI 在服务器上）先列这台 Windows 的命令和文件夹，再列其他服务器，
+ * 另有“每次连接都问”；本机入口（AI 在这台电脑上）主要用来操作服务器，服务器放最前面。
+ */
+export function EntryPermissions({ entry, servers, exclude, server, onChange }: {
   entry: EntrySettings;
   servers: ServerRecord[];
   /** 不列出的服务器（服务器入口自己） */
   exclude?: string;
-  /** 服务器入口：勾“执行命令”时提醒风险 */
-  windowsWarning?: boolean;
+  /** 服务器入口 */
+  server: boolean;
   onChange: (e: EntrySettings) => void;
 }) {
   const { t } = useTranslation();
   const [folder, setFolder] = useState("");
   const others = servers.filter((s) => s.id !== exclude);
+  const serverList = (
+    <>
+      <div className="mcp-perms__label">{server ? t("mcp.otherServers") : t("mcp.servers")}</div>
+      {others.length === 0 && <span className="set-row__hint">{t("mcp.noServers")}</span>}
+      <div className="mcp-perms__servers">
+        {others.map((s) => (
+          <Checkbox key={s.id} label={s.name} checked={entry.servers.includes(s.id)} onChange={() => onChange(toggleServer(entry, s.id))} />
+        ))}
+      </div>
+    </>
+  );
   return (
     <div className="mcp-perms">
       <div className="mcp-perms__label">{t("mcp.approval")}</div>
@@ -70,9 +84,17 @@ export function EntryPermissions({ entry, servers, exclude, windowsWarning, onCh
         { value: "auto", label: t("mcp.approvalAuto") },
       ]} />
       <span className={`set-row__hint${entry.approval === "auto" ? " set-row__hint--warn" : ""}`}>{t(`mcp.approvalHint.${entry.approval}`)}</span>
+      {server && (
+        <>
+          <Checkbox label={t("mcp.confirmConnections")} checked={entry.confirmConnections} onChange={(e) => onChange({ ...entry, confirmConnections: e.target.checked })} />
+          <span className="set-row__hint">{t("mcp.confirmConnectionsHint")}</span>
+        </>
+      )}
+      {!server && serverList}
       <Checkbox label={t("mcp.windowsCommands")} checked={entry.windowsCommands} onChange={(e) => onChange({ ...entry, windowsCommands: e.target.checked })} />
-      <span className="set-row__hint">{windowsWarning ? t("mcp.windowsCommandsServerHint") : t("mcp.windowsCommandsHint")}</span>
+      <span className={`set-row__hint${server && entry.windowsCommands ? " set-row__hint--warn" : ""}`}>{t("mcp.windowsCommandsHint")}</span>
       <div className="mcp-perms__label">{t("mcp.folders")}</div>
+      <span className="set-row__hint">{t("mcp.foldersHint")}</span>
       {entry.folders.map((f) => (
         <div key={f} className="mcp-perms__folder">
           <span className="mono pl-ellipsis">{f}</span>
@@ -84,13 +106,7 @@ export function EntryPermissions({ entry, servers, exclude, windowsWarning, onCh
         <Button size="sm" icon={<Plus size={13} />} disabled={!folder.trim()} onClick={() => { onChange(addFolder(entry, folder)); setFolder(""); }}>{t("mcp.addFolder")}</Button>
         <Button size="sm" icon={<FolderOpen size={13} />} onClick={() => void getMcpApi().then((api) => api.pickFolder()).then((p) => { if (p) onChange(addFolder(entry, p)); }, () => {})}>{t("mcp.pickFolder")}</Button>
       </div>
-      <div className="mcp-perms__label">{t("mcp.servers")}</div>
-      {others.length === 0 && <span className="set-row__hint">{t("mcp.noServers")}</span>}
-      <div className="mcp-perms__servers">
-        {others.map((s) => (
-          <Checkbox key={s.id} label={s.name} checked={entry.servers.includes(s.id)} onChange={() => onChange(toggleServer(entry, s.id))} />
-        ))}
-      </div>
+      {server && serverList}
     </div>
   );
 }

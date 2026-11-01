@@ -1,9 +1,6 @@
 //! 用字节流客户端验证协议、宿主边界和资源释放。
 #[path = "approval_tests.rs"]
 mod approval;
-#[cfg(unix)]
-#[path = "handover_tests.rs"]
-mod handover;
 #[path = "http_tests.rs"]
 mod http;
 use super::*;
@@ -20,7 +17,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, DuplexStream, ReadHal
 
 struct Host {
     enabled: AtomicBool,
-    remembered: AtomicBool,
+    confirm_connections: AtomicBool,
     permission_blocked: AtomicBool,
     decision: Mutex<Confirmation>,
     action_decision: Mutex<Confirmation>,
@@ -37,7 +34,6 @@ struct Host {
     cancelled: AtomicUsize,
     output: Mutex<RunOutput>,
     terminals: Arc<TerminalManager>,
-    user_terminals: Mutex<Vec<UserTerminal>>,
     cwd_requests: Mutex<Vec<String>>,
     action_input: Mutex<Option<(String, Vec<u8>)>>,
     action_blocked: AtomicBool,
@@ -46,7 +42,8 @@ impl Host {
     fn new(terminals: Arc<TerminalManager>) -> Self {
         Self {
             enabled: AtomicBool::new(true),
-            remembered: AtomicBool::new(false),
+            // 大部分用例要走连接确认：模拟用户在入口设置里打开了“每次连接都问”
+            confirm_connections: AtomicBool::new(true),
             permission_blocked: AtomicBool::new(false),
             decision: Mutex::new(Confirmation::Allow),
             action_decision: Mutex::new(Confirmation::Allow),
@@ -75,7 +72,6 @@ impl Host {
                 duration_ms: 42,
             }),
             terminals,
-            user_terminals: Mutex::new(Vec::new()),
             cwd_requests: Mutex::new(Vec::new()),
             action_input: Mutex::new(None),
             action_blocked: AtomicBool::new(false),
@@ -141,8 +137,8 @@ impl McpHost for Host {
         }
         Ok(targets)
     }
-    fn remembered(&self, _entry: &Entry) -> bool {
-        self.remembered.load(Ordering::Acquire)
+    fn confirm_connections(&self, _entry: &Entry) -> bool {
+        self.confirm_connections.load(Ordering::Acquire)
     }
     fn confirm_connect(
         &self,
@@ -165,7 +161,7 @@ impl McpHost for Host {
             cancelled.store(true, Ordering::Release);
         }
         if decision == Confirmation::AllowAlways {
-            self.remembered.store(true, Ordering::Release);
+            self.confirm_connections.store(false, Ordering::Release);
         }
         Ok(decision)
     }
@@ -241,9 +237,6 @@ impl McpHost for Host {
             return Err(session::cancelled_error());
         }
         Ok(self.user_terminal())
-    }
-    fn user_terminals(&self) -> Result<Vec<UserTerminal>, AppError> {
-        Ok(lock(&self.user_terminals).clone())
     }
     fn terminal_cwd(&self, terminal_id: &str) -> Result<Option<String>, AppError> {
         lock(&self.cwd_requests).push(terminal_id.into());
@@ -525,7 +518,7 @@ async fn 现代发现无握手及不支持版本() {
     client.close().await;
 }
 #[tokio::test]
-async fn 拒绝连接后保持拒绝且总是允许按入口记住() {
+async fn 拒绝连接后保持拒绝且以后不再问按入口生效() {
     let fixture = Fixture::new();
     *lock(&fixture.host.decision) = Confirmation::Deny;
     let mut client = fixture.legacy().await;
@@ -541,7 +534,7 @@ async fn 拒绝连接后保持拒绝且总是允许按入口记住() {
         client.call("list_targets", json!({})).await["result"]["isError"],
         false
     );
-    assert!(fixture.host.remembered.load(Ordering::Acquire));
+    assert!(!fixture.host.confirm_connections.load(Ordering::Acquire));
     client.close().await;
     let mut client = fixture.legacy().await;
     assert_eq!(
@@ -549,6 +542,22 @@ async fn 拒绝连接后保持拒绝且总是允许按入口记住() {
         false
     );
     assert_eq!(fixture.host.confirmations.load(Ordering::Acquire), 2);
+    client.close().await;
+}
+#[tokio::test]
+async fn 入口没要求确认时连接直接可用() {
+    let fixture = Fixture::new();
+    fixture
+        .host
+        .confirm_connections
+        .store(false, Ordering::Release);
+    *lock(&fixture.host.decision) = Confirmation::Deny;
+    let mut client = fixture.legacy().await;
+    assert_eq!(
+        client.call("list_targets", json!({})).await["result"]["isError"],
+        false
+    );
+    assert_eq!(fixture.host.confirmations.load(Ordering::Acquire), 0);
     client.close().await;
 }
 #[tokio::test]
@@ -1288,6 +1297,62 @@ async fn 后台任务跨会话读取且撤权和关闭入口时清理() {
 }
 #[cfg(unix)]
 #[tokio::test]
+async fn 收回执行权限时正在跑的前台命令一秒内停止() {
+    let fixture = Fixture::new();
+    let mut client = fixture.legacy().await;
+    let host = fixture.host.clone();
+    let revoke = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        lock(&host.permissions).windows_commands = false;
+    });
+    let before = Instant::now();
+    let result = client
+        .call(
+            "run_command",
+            json!({"target":"windows","command":"sleep 30","timeout_secs":60}),
+        )
+        .await;
+    revoke.await.unwrap();
+    assert!(before.elapsed() < Duration::from_secs(5));
+    assert_eq!(result["result"]["isError"], true);
+    assert!(error_text(&result).contains("执行命令的权限已收回"));
+    client.close().await;
+}
+#[tokio::test]
+async fn 收回服务器权限或关掉入口时正在跑的服务器命令停止() {
+    for close_entry in [false, true] {
+        let fixture = Fixture::new();
+        let mut client = fixture.legacy().await;
+        fixture.host.block.store(true, Ordering::Release);
+        let host = fixture.host.clone();
+        let revoke = tokio::spawn(async move {
+            while host.started.load(Ordering::Acquire) == 0 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            if close_entry {
+                host.enabled.store(false, Ordering::Release);
+            } else {
+                lock(&host.permissions).servers.clear();
+            }
+        });
+        let before = Instant::now();
+        let result = client
+            .call(
+                "run_command",
+                json!({"target":"server-id","command":"sleep 30","timeout_secs":60}),
+            )
+            .await;
+        revoke.await.unwrap();
+        fixture.host.block.store(false, Ordering::Release);
+        assert!(before.elapsed() < Duration::from_secs(5));
+        assert_eq!(result["result"]["isError"], true, "{result}");
+        assert!(error_text(&result).contains("执行命令的权限已收回"));
+        assert_eq!(fixture.host.cancelled.load(Ordering::Acquire), 1);
+        client.close().await;
+    }
+}
+#[cfg(unix)]
+#[tokio::test]
 async fn 后台任务不受命令时限限制() {
     let fixture = Fixture::new();
     let mut client = fixture.legacy().await;
@@ -1645,11 +1710,18 @@ fn 可见会话集合过期只通知一次且本机连接不受时间影响() {
     assert!(shared.sessions_changed(&mut previous, last + Duration::from_secs(301)));
     assert_eq!(
         previous,
-        std::collections::HashSet::from([local.snapshot().id])
+        std::collections::HashSet::from([(local.snapshot().id, false)])
     );
     assert!(!shared.sessions_changed(&mut previous, last + Duration::from_secs(1800)));
     let call = remote.call_flag();
     assert!(shared.sessions_changed(&mut previous, last + Duration::from_secs(1800)));
+    let statuses = shared.statuses_at(last + Duration::from_secs(1800));
+    let busy = statuses
+        .iter()
+        .find(|s| s.info.id == remote.snapshot().id)
+        .unwrap();
+    assert!(busy.busy);
+    assert!(busy.last_active_ms > 0);
     drop(call);
     assert!(shared.sessions_changed(&mut previous, last + Duration::from_secs(1800)));
     assert!(

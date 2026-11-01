@@ -5,3 +5,5 @@
   font-size: var(--fs-xs); line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; pointer-events: none;
 }
 .pl-tip--above { transform: translateY(-100%); }
+/* 可停留的提示：鼠标能移进来选中、复制，内容长时在框里滚动 */
+.pl-tip--hold { max-width: min(560px, calc(100vw - 16px)); max-height: 45vh; overflow: auto; pointer-events: auto; user-select: text; cursor: text; scrollbar-width: thin; }
