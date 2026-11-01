@@ -44,6 +44,11 @@ use tokio::{
 use zeroize::Zeroizing;
 
 const MAX_BODY: usize = 8 * 1024 * 1024;
+/// 探测地址：不用令牌，只回报这个 Pierlink 的实例号（随机串，不含任何身份信息）。
+/// 服务器上的端口被占用时，Pierlink 从服务器上访问它，分清占着端口的是不是 Pierlink、是不是自己
+pub const PROBE_PATH: &str = "/.pierlink-probe";
+/// 探测回应里放实例号的头
+pub const INSTANCE_HEADER: &str = "x-pierlink-instance";
 const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 const SESSION_KEEP_ALIVE: Duration = Duration::from_secs(30 * 60);
 type HttpResponse = Response<BoxBody<Bytes, Infallible>>;
@@ -296,6 +301,14 @@ impl Generation {
         self.http.config.cancellation_token.cancel();
     }
     async fn handle(self: &Arc<Self>, mut request: Request<Incoming>) -> HttpResponse {
+        if request.method() == http::Method::GET && request.uri().path() == PROBE_PATH {
+            let mut response = response(StatusCode::NO_CONTENT);
+            let instance = lock(&self.group.shared.instance).clone();
+            if let Ok(value) = http::HeaderValue::from_str(&instance) {
+                response.headers_mut().insert(INSTANCE_HEADER, value);
+            }
+            return response;
+        }
         // 不记录认证头。固定长度 SHA-256 摘要交由库做常量时间比较，不逐字符提前退出。
         let headers = request.headers();
         let supplied = headers

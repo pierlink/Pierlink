@@ -144,12 +144,13 @@ function previewApi(): DesktopApi {
         desktops: new URLSearchParams(location.search).has("light")
           ? [{ id: "pierlink-light", name: "", heavy: false, light: true }]
           : [{ id: "xfce", name: "Xfce Session", heavy: false, light: false }, { id: "openbox", name: "Openbox", heavy: false, light: false }],
-        canCreate: true,
+        // ?nocreate：服务器上什么都没有、也不能新建（只给安装命令）
+        canCreate: !new URLSearchParams(location.search).has("nocreate"),
         needsServerProgram: true,
         missingTools: [],
         officialOk: true,
-        installCommand: "sudo apt-get install -y tigervnc-standalone-server xfce4 dbus-x11",
-        installCommandLight: "sudo apt-get install -y tigervnc-standalone-server openbox xterm dbus-x11",
+        installCommand: "sudo apt-get update && sudo apt-get install -y tigervnc-standalone-server dbus-x11 xfce4 xfce4-terminal fonts-wqy-microhei",
+        installCommandLight: "sudo apt-get update && sudo apt-get install -y tigervnc-standalone-server dbus-x11 openbox xterm fonts-wqy-microhei",
       };
     },
     async connect(_serverId, _target, onData, onClosed) {
@@ -175,7 +176,12 @@ function previewApi(): DesktopApi {
       onProgress({ kind: "ready" });
       onProgress({ kind: "starting" });
       await wait(500);
-      if (new URLSearchParams(location.search).has("createfail")) {
+      const fail = new URLSearchParams(location.search).get("createfail");
+      // ?createfail=light：轻量桌面那一步缺包（不是获取 TigerVNC 失败）
+      if (fail === "light") {
+        throw { code: "vnc.download_failed", params: { source: "Apt", package: "xterm", reason: "软件源里没有 xterm", reason_key: "vnc.apt_dependency_unavailable" } };
+      }
+      if (fail !== null) {
         throw { code: "vnc.acquire_failed", params: { steps: JSON.stringify([{ Failed: { source: "Apt", error: { code: "vnc.download_failed", params: { source: "Apt", reason: "软件源连不上" } } } }]) } };
       }
       return { session: { key: "unix:/home/u/.local/state/pierlink/vnc/20.sock", display: 20, flavor: "tigervnc", target: { kind: "unix", path: "/home/u/.local/state/pierlink/vnc/20.sock" }, exposed: false, systemUnit: null, pierlink: true, name: request.desktopId === "openbox" ? "Openbox" : "Xfce Session" }, mayEndOnLogout: false };

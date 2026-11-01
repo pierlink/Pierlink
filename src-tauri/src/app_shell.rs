@@ -165,6 +165,42 @@ pub fn show_main(app: &AppHandle) {
     }
 }
 
+/// 主窗口在前台（有焦点、没最小化）。注意：这几个读窗口状态的调用要等主线程回答，不能在主线程上调
+fn main_in_front(w: &tauri::WebviewWindow) -> bool {
+    w.is_focused().unwrap_or(false) && !w.is_minimized().unwrap_or(false)
+}
+
+/// 主窗口不在前台时让任务栏按钮一直闪，直到用户切回来；不把窗口拉到前面（AI 等登录、等输入密码时用：
+/// 这类事件 AI 重试时会来好几次，每次都抢前台太打扰）。不能在主线程上调。
+///
+/// :param app: 应用句柄
+pub fn flash_if_background(app: &AppHandle) {
+    let Some(w) = app.get_webview_window(MAIN) else {
+        return;
+    };
+    if !main_in_front(&w)
+        && let Err(e) = w.request_user_attention(Some(tauri::UserAttentionType::Critical))
+    {
+        eprintln!("任务栏提醒失败: 错误={e}");
+    }
+}
+
+/// AI 等你确认：照旧把主窗口调出来；窗口原来不在前台时，再让任务栏按钮一直闪，直到用户切回来
+/// （Windows 常常不让后台程序抢到前台，这时只能靠任务栏闪烁提醒）。不能在主线程上调。
+///
+/// :param app: 应用句柄
+pub fn attention(app: &AppHandle) {
+    let Some(w) = app.get_webview_window(MAIN) else {
+        return;
+    };
+    let was_front = main_in_front(&w);
+    show_main(app);
+    if !was_front && let Err(e) = w.request_user_attention(Some(tauri::UserAttentionType::Critical))
+    {
+        eprintln!("任务栏提醒失败: 错误={e}");
+    }
+}
+
 /// 建立托盘图标和菜单。失败时记录原因，应用照常运行（关闭窗口按退出处理）。
 ///
 /// :param app: 应用句柄

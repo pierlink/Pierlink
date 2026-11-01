@@ -1,18 +1,39 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Banner, Button, Dialog } from "../../components";
+import { inTauri } from "../shell/TitleBar";
 import { localizeAction } from "./actionText";
 import { getMcpApi, type McpAnswer, type McpConfirm } from "./api";
 import "./mcp.css";
 
+/** 新的一条确认出现后，按钮多久以后才能点（毫秒） */
+const ARM_MS = 500;
+
 /**
  * 全局的 AI 接入确认框：agent 第一次调用工具时确认这个连接；要执行危险命令、写脚本文件时确认这一次操作。
- * 后端 60 秒没有回答按拒绝处理，并通知这里关掉对应的框。默认焦点在“拒绝”上，按 Esc 也是拒绝。
+ * 后端 60 秒没有回答按拒绝处理，并通知这里关掉对应的框。
+ * 框是突然弹出来的，用户可能正在别处点击、打字或按 Esc：必须明确点按钮才算回答，点框外、按 Esc 都不算；
+ * 焦点放在框上而不是按钮上（正在敲的回车、空格不会点到按钮）；新的一条出现后半秒内按钮不能点（连点不会答到下一条）。
  */
 export function McpConfirmHost() {
   const { t, i18n } = useTranslation();
   const [queue, setQueue] = useState<McpConfirm[]>([]);
   const [busy, setBusy] = useState(false);
+  // 当前这一条的按钮能不能点了（出现后等 ARM_MS）
+  const [armed, setArmed] = useState<number | null>(null);
+  const headId = queue[0]?.id ?? null;
+  // 有确认在等时窗口标题写上（任务栏上看得到）；后端同时会让任务栏按钮闪烁
+  const waiting = queue.length;
+  useEffect(() => {
+    if (!inTauri) return;
+    const title = waiting ? `${t("mcp.waitingTitle", { count: waiting })} — Pierlink` : "Pierlink";
+    void import("@tauri-apps/api/window").then(({ getCurrentWindow }) => getCurrentWindow().setTitle(title)).catch(() => undefined);
+  }, [waiting, t]);
+  useEffect(() => {
+    if (headId === null) return;
+    const timer = setTimeout(() => setArmed(headId), ARM_MS);
+    return () => clearTimeout(timer);
+  }, [headId]);
 
   useEffect(() => {
     let alive = true;
@@ -41,6 +62,7 @@ export function McpConfirmHost() {
       setQueue((q) => q.filter((x) => x.id !== head.id));
     }
   };
+  const off = busy || armed !== head.id;
   const client = head.client || t("mcp.unknownClient");
   const entry = head.entry === "windows" ? t("mcp.targetWindows") : head.entry;
 
@@ -48,16 +70,15 @@ export function McpConfirmHost() {
     <Dialog
       title={head.kind === "connect" ? t("mcp.confirmConnectTitle") : head.kind === "dangerous" ? t("mcp.confirmDangerTitle") : t("mcp.confirmActionTitle")}
       danger={head.kind === "dangerous"}
-      onDismiss={busy ? undefined : () => void answer("deny")}
       actions={<>
-        <Button onClick={() => void answer("deny")} disabled={busy} autoFocus>{t("mcp.deny")}</Button>
-        <Button variant={head.kind === "dangerous" ? "danger" : "secondary"} onClick={() => void answer("allow")} disabled={busy}>{t("mcp.allowOnce")}</Button>
+        <Button onClick={() => void answer("deny")} disabled={off}>{t("mcp.deny")}</Button>
+        <Button variant={head.kind === "dangerous" ? "danger" : "secondary"} onClick={() => void answer("allow")} disabled={off}>{t("mcp.allowOnce")}</Button>
         {head.kind === "connect"
-          ? <Button variant="primary" onClick={() => void answer("allow_always")} disabled={busy}>{t("mcp.allowAlways")}</Button>
-          : <Button onClick={() => void answer("allow_always")} disabled={busy}>{t("mcp.allowSession")}</Button>}
+          ? <Button variant="primary" onClick={() => void answer("allow_always")} disabled={off}>{t("mcp.allowAlways")}</Button>
+          : <Button onClick={() => void answer("allow_always")} disabled={off}>{t("mcp.allowSession")}</Button>}
       </>}
     >
-      <div className="mcp-confirm">
+      <div className="mcp-confirm" tabIndex={-1}>
         {head.kind === "connect" ? (
           <>
             <p>{t("mcp.confirmConnectBody", { client, entry })}</p>

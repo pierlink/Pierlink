@@ -8,6 +8,7 @@ mod convert;
 mod data;
 mod deploy;
 mod desktop;
+mod drag_out;
 mod files;
 mod forwards;
 mod history;
@@ -88,6 +89,8 @@ fn specta_builder() -> Builder<tauri::Wry> {
         terminal::clipboard_read_text,
         terminal::clipboard_sequence,
         terminal::clipboard_write_text,
+        terminal::clipboard_write_desktop,
+        terminal::clipboard_read_desktop,
         paste_image::terminal_paste_image_remote,
         paste_image::terminal_paste_image_local,
         proxy::proxy_get,
@@ -116,6 +119,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
         files::files_plan,
         files::files_transfer,
         files::files_cancel,
+        drag_out::files_drag_out,
         host_key::host_key_check,
         host_key::host_key_answer,
         host_key::host_key_cancel,
@@ -427,7 +431,7 @@ pub fn run() {
                     }
                 }
             }
-            // 两台服务器之间中转传输的临时文件：上次被强制结束时可能残留，启动时整体删除
+            // 传输临时文件：中转的残留启动时删除；拖到窗口外的临时目录超过 1 小时才删
             files::cleanup_staging(app.handle());
             sync::prune_events(app.handle());
             // 网络断开/恢复：通知界面，恢复时立即重连同步隧道

@@ -10,11 +10,40 @@ use serde::Serialize;
 use specta::Type;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager};
 
 /// 服务器入口的隧道 ID 前缀（和端口转发共用一个隧道管理器）
 pub(crate) const TUNNEL_PREFIX: &str = "mcp:";
+/// 端口一直被占着时，隔多久再去服务器上查一次是谁占着
+const CHECK_EVERY: Duration = Duration::from_secs(60);
+
+/// 服务器上的端口被占着时查到的情况
+#[derive(Serialize, Type, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct McpPortConflictDto {
+    /// this_pc（这台电脑的另一条连接）/ other_pc（另一台电脑上的 Pierlink）/ stale（没断干净的旧连接）/
+    /// other_program（其他程序或其他用户）/ not_listening（没人在听，服务器却拒绝了转发）/ unknown（查不出来）
+    pub kind: String,
+    /// 另一台电脑的名字（知道的话）
+    pub computer: Option<String>,
+    /// 建议换到的空闲端口
+    pub free_port: Option<u16>,
+}
+
+/// 换令牌或端口后，在服务器上自动重新添加（一键添加过的客户端）的结果
+#[derive(Serialize, Type, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct McpReaddDto {
+    /// token / port
+    pub reason: String,
+    /// 更新好的客户端（claude / codex / gemini）
+    pub ok: Vec<String>,
+    /// 没更新成的客户端
+    pub failed: Vec<String>,
+    /// 完成的时间（Unix 毫秒）
+    pub at_ms: f64,
+}
 
 /// 一个服务器入口的运行状态
 #[derive(Serialize, Type, Clone, Debug)]
@@ -28,6 +57,10 @@ pub struct McpEntryStateDto {
     pub error: Option<AppError>,
     /// 服务器上的 ~/.pierlink/mcp.json 已写好
     pub file_written: bool,
+    /// 端口被占着时查到的情况（state 为 port_busy 且查过时才有）
+    pub conflict: Option<McpPortConflictDto>,
+    /// 最近一次自动重新添加的结果
+    pub readded: Option<McpReaddDto>,
 }
 
 struct Running {
@@ -39,11 +72,33 @@ struct Running {
     file_generation: u64,
     /// 服务器上写过文件（不管是不是当前的令牌）：关掉入口时要删
     file_present: bool,
+    conflict: Option<McpPortConflictDto>,
+    /// 上次去服务器上查端口的时间（一直被占着时隔 CHECK_EVERY 再查）
+    checked_at: Option<Instant>,
+    readded: Option<McpReaddDto>,
+}
+
+impl Running {
+    fn new(port: u16, state: &str, error: Option<AppError>) -> Self {
+        Self {
+            port,
+            state: state.into(),
+            error,
+            file_written: false,
+            file_generation: 0,
+            file_present: false,
+            conflict: None,
+            checked_at: None,
+            readded: None,
+        }
+    }
 }
 
 /// 正在运行的服务器入口
 #[derive(Default)]
 pub struct Entries {
+    /// 这个 Pierlink 的实例号（写进服务器上的地址文件；只删自己写的文件）
+    instance: String,
     running: Mutex<HashMap<String, Running>>,
     /// 设置连续保存时，后台的 apply 一个接一个做，免得后一次把前一次刚开的入口关掉
     applying: Mutex<()>,
@@ -66,12 +121,29 @@ pub(super) fn token(server_id: &str) -> Result<Zeroizing<String>, AppError> {
     Ok(token)
 }
 
+/// 凭据管理器里存着的令牌（只读：没有就是没有，不像 token() 那样新建一个）；删服务器上的文件时比较用
+fn saved_token(server_id: &str) -> Option<Zeroizing<String>> {
+    crate::sync::credential_store()
+        .and_then(|store| store.get(&token_key(server_id)))
+        .ok()
+        .flatten()
+        .map(Zeroizing::new)
+}
+
 /// 服务器上 agent 用的地址
 pub fn url(port: u16) -> String {
     format!("http://127.0.0.1:{port}/mcp")
 }
 
 impl Entries {
+    /// :param instance: 这个 Pierlink 的实例号
+    pub fn new(instance: String) -> Self {
+        Self {
+            instance,
+            ..Default::default()
+        }
+    }
+
     fn lock(&self) -> MutexGuard<'_, HashMap<String, Running>> {
         self.running.lock().unwrap_or_else(|p| p.into_inner())
     }
@@ -97,6 +169,8 @@ impl Entries {
                 port: r.port,
                 error: r.error.clone(),
                 file_written: r.file_written,
+                conflict: r.conflict.clone(),
+                readded: r.readded.clone(),
             })
             .collect();
         all.sort_by(|a, b| a.server_id.cmp(&b.server_id));
@@ -122,8 +196,12 @@ impl Entries {
             .map(|(id, r)| (id.clone(), r.port, r.state == "error"))
             .collect();
         // 不要了、端口变了、或者上次出错的：先关掉（出错的随后按设置重开，相当于重试）
+        let mut moved = Vec::new();
         for (id, port, failed) in &current {
             if wanted.get(id) != Some(port) || *failed {
+                if wanted.get(id).is_some_and(|p| p != port) {
+                    moved.push(id.clone());
+                }
                 self.stop(app, service, id);
             }
         }
@@ -133,20 +211,15 @@ impl Entries {
             }
             if let Err(e) = self.start(app, service, id, *port) {
                 eprintln!("开启 AI 接入服务器入口失败: 服务器={id}, 错误={}", e.code);
-                self.lock().insert(
-                    id.clone(),
-                    Running {
-                        port: *port,
-                        state: "error".into(),
-                        error: Some(e),
-                        file_written: false,
-                        file_generation: 0,
-                        file_present: false,
-                    },
-                );
+                self.lock()
+                    .insert(id.clone(), Running::new(*port, "error", Some(e)));
             }
         }
         emit(app, self.states());
+        // 换了端口：服务器上一键添加过的客户端用新地址重新添加（配置里写着端口）
+        for id in moved {
+            super::install::readd(app, &id, "port");
+        }
     }
 
     fn start(
@@ -168,17 +241,8 @@ impl Entries {
             return Err(e);
         }
         crate::forwards::ensure_pump(app);
-        self.lock().insert(
-            server_id.to_owned(),
-            Running {
-                port,
-                state: "connecting".into(),
-                error: None,
-                file_written: false,
-                file_generation: 0,
-                file_present: false,
-            },
-        );
+        self.lock()
+            .insert(server_id.to_owned(), Running::new(port, "connecting", None));
         eprintln!(
             "开启 AI 接入服务器入口: 服务器={server_id}, 服务器端口={port}, 本机端口={}",
             entry.local_port
@@ -203,11 +267,15 @@ impl Entries {
         // 正在写的那一次写完再删；写的那边发现入口已经不在了会自己再删一次
         let file = self.file_lock(server_id);
         let _file = file.lock().unwrap_or_else(|p| p.into_inner());
+        let current = saved_token(server_id);
         if removed.is_some_and(|r| r.file_written || r.file_present)
             && let Err(e) = run_on_server(
                 app,
                 server_id,
-                &pierlink_core::mcp::token::remove_token_file_script(),
+                &pierlink_core::mcp::token::remove_token_file_script(
+                    &self.instance,
+                    current.as_deref().map(String::as_str).unwrap_or_default(),
+                ),
             )
         {
             eprintln!(
@@ -243,8 +311,16 @@ impl Entries {
         if connected {
             self.write_file(app, server_id);
         }
-        super::install::reinstall_after_rotate(app, server_id);
+        super::install::readd(app, server_id, "token");
         Ok(())
+    }
+
+    /// 记下自动重新添加的结果，推给界面
+    pub(super) fn set_readded(&self, app: &AppHandle, server_id: &str, readded: McpReaddDto) {
+        if let Some(r) = self.lock().get_mut(server_id) {
+            r.readded = Some(readded);
+        }
+        emit(app, self.states());
     }
 
     /// 端口转发的事件循环转交过来的隧道状态
@@ -252,14 +328,20 @@ impl Entries {
         let Some(server_id) = event.tunnel_id.strip_prefix(TUNNEL_PREFIX) else {
             return;
         };
-        let write = {
+        let (write, check) = {
             let mut running = self.lock();
             let Some(r) = running.get_mut(server_id) else {
                 return;
             };
+            // 服务器上的端口被占着（SSH 是通的，只是转发被拒）：不说“正在重连”，说“端口被占用”，并去查是谁占着
+            let busy = event
+                .error
+                .as_ref()
+                .is_some_and(|e| e.code == "tunnel.remote_forward_failed");
             r.state = match event.state {
                 TunnelState::Connecting => "connecting",
                 TunnelState::Connected => "running",
+                TunnelState::Reconnecting if busy => "port_busy",
                 TunnelState::Reconnecting => "reconnecting",
                 TunnelState::WaitingPassword => "waiting_password",
                 TunnelState::Stopped => "stopped",
@@ -267,10 +349,92 @@ impl Entries {
             }
             .into();
             r.error = event.error.clone();
-            event.state == TunnelState::Connected && !r.file_written
+            if !busy {
+                r.conflict = None;
+                r.checked_at = None;
+            }
+            let check = busy && r.checked_at.is_none_or(|t| t.elapsed() >= CHECK_EVERY);
+            if check {
+                r.checked_at = Some(Instant::now());
+            }
+            (
+                event.state == TunnelState::Connected && !r.file_written,
+                check.then_some(r.port),
+            )
         };
         if write {
             self.write_file(app, server_id);
+        }
+        if let Some(port) = check {
+            self.check_port(app, server_id, port);
+        }
+        emit(app, self.states());
+    }
+
+    /// 服务器上的端口被占着：在后台到服务器上查是谁占着（另一台电脑的 Pierlink、没断干净的旧连接、其他程序），
+    /// 顺便找一个空闲端口，结果放进入口状态
+    fn check_port(&self, app: &AppHandle, server_id: &str, port: u16) {
+        let (app, id) = (app.clone(), server_id.to_owned());
+        std::thread::spawn(move || {
+            let Some(state) = app.try_state::<super::McpState>() else {
+                return;
+            };
+            let script = pierlink_core::mcp::port_check::port_check_script(port);
+            let found = match run_on_server_value(&app, &id, &script) {
+                Ok(v) => pierlink_core::mcp::port_check::classify(&v, &state.entries.instance),
+                Err(e) => {
+                    eprintln!(
+                        "查服务器端口被谁占着失败: 服务器={id}, 端口={port}, 错误={}",
+                        e.code
+                    );
+                    // 查不出来也要告诉界面，别一直显示“正在查”
+                    state
+                        .entries
+                        .set_conflict(&app, &id, port, "unknown", None, None);
+                    return;
+                }
+            };
+            eprintln!(
+                "查服务器端口被谁占着: 服务器={id}, 端口={port}, 结果={:?}, 空闲端口={:?}",
+                found.occupant, found.free_port
+            );
+            use pierlink_core::mcp::port_check::Occupant;
+            let kind = match found.occupant {
+                Occupant::ThisPc => "this_pc",
+                Occupant::OtherPc => "other_pc",
+                Occupant::Stale => "stale",
+                Occupant::OtherProgram => "other_program",
+                Occupant::NotListening => "not_listening",
+            };
+            state
+                .entries
+                .set_conflict(&app, &id, port, kind, found.computer, found.free_port);
+        });
+    }
+
+    /// 记下查到的端口占用情况，推给界面；查的途中换了端口或已经连上时作废
+    fn set_conflict(
+        &self,
+        app: &AppHandle,
+        server_id: &str,
+        port: u16,
+        kind: &str,
+        computer: Option<String>,
+        free_port: Option<u16>,
+    ) {
+        {
+            let mut running = self.lock();
+            let Some(r) = running.get_mut(server_id) else {
+                return;
+            };
+            if r.port != port || r.state != "port_busy" {
+                return;
+            }
+            r.conflict = Some(McpPortConflictDto {
+                kind: kind.into(),
+                computer,
+                free_port,
+            });
         }
         emit(app, self.states());
     }
@@ -293,11 +457,16 @@ impl Entries {
             else {
                 return;
             };
+            let computer = crate::sync::computer_name();
+            let owner = pierlink_core::mcp::token::FileOwner {
+                instance: &state.entries.instance,
+                computer: &computer,
+            };
             let result = token(&id).and_then(|token| {
                 run_on_server(
                     &app,
                     &id,
-                    &pierlink_core::mcp::token::token_file_script(&url(port), &token),
+                    &pierlink_core::mcp::token::token_file_script(&url(port), &token, owner),
                 )
             });
             match result {
@@ -316,7 +485,13 @@ impl Entries {
                     } else if let Err(e) = run_on_server(
                         &app,
                         &id,
-                        &pierlink_core::mcp::token::remove_token_file_script(),
+                        &pierlink_core::mcp::token::remove_token_file_script(
+                            &state.entries.instance,
+                            saved_token(&id)
+                                .as_deref()
+                                .map(String::as_str)
+                                .unwrap_or_default(),
+                        ),
                     ) {
                         // 写的时候入口被关了：令牌不能留在服务器上
                         eprintln!(
@@ -377,6 +552,15 @@ fn start_tunnel(
 
 /// 在服务器上执行一段脚本（后台方式：不弹密码框；内置 SSH 走主连接）
 fn run_on_server(app: &AppHandle, server_id: &str, script: &str) -> Result<(), AppError> {
+    run_on_server_value(app, server_id, script).map(|_| ())
+}
+
+/// 在服务器上执行一段脚本，返回它输出的 JSON
+fn run_on_server_value(
+    app: &AppHandle,
+    server_id: &str,
+    script: &str,
+) -> Result<serde_json::Value, AppError> {
     let (program, cmd, _) = crate::deploy::background_command(
         app,
         server_id,
@@ -392,7 +576,6 @@ fn run_on_server(app: &AppHandle, server_id: &str, script: &str) -> Result<(), A
             stderr_bytes: 4096,
         },
     )
-    .map(|_| ())
 }
 
 fn emit(app: &AppHandle, states: Vec<McpEntryStateDto>) {

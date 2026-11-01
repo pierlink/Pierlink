@@ -2,7 +2,13 @@
 html, body, #root { height: 100%; }
 body { margin: 0; background: var(--bg-solid); color: var(--text); font-family: var(--font-ui); font-size: 15px; -webkit-text-size-adjust: 100%; }
 .m-center { display: grid; place-items: center; height: 100%; color: var(--text-muted); }
-.m-app { display: flex; flex-direction: column; height: 100%; height: 100dvh; --m-tabs-h: calc(57px + env(safe-area-inset-bottom)); }
+/* 整页固定在可见区域里排成一列（顶栏、内容、底部标签上下相邻，不会叠在一起）。高度取 100dvh 和可见区域
+   （--m-vh，由脚本按 visualViewport 写）里小的那个：iOS 弹出键盘时只缩小可见区域；偏小只会留缝，不会叠 */
+.m-app {
+  position: fixed; left: 0; right: 0; top: 0; overflow: hidden;
+  display: flex; flex-direction: column; height: 100%; height: min(100dvh, var(--m-vh, 100dvh));
+}
+:root[data-kb] .m-app { top: var(--m-vtop, 0px); }
 .m-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: calc(env(safe-area-inset-top) + 10px) calc(env(safe-area-inset-right) + 16px) 10px calc(env(safe-area-inset-left) + 16px); border-bottom: 1px solid var(--border); background: var(--panel-solid); }
 .m-head__title { font-weight: 700; }
 .m-head__state { display: inline-flex; align-items: center; gap: 6px; min-width: 0; font-size: 13px; color: var(--text-muted); }
@@ -73,9 +79,14 @@ body { margin: 0; background: var(--bg-solid); color: var(--text); font-family: 
 .m-chip { flex: none; display: inline-flex; align-items: center; gap: 3px; padding: 1px 7px; border-radius: 10px; background: var(--chip); color: var(--text-muted); font-size: 12px; font-weight: 600; }
 .m-chip--busy { color: var(--accent); }
 
-/* 终端（看一个）：盖住顶栏，底部标签留着；软键盘开着时盖住标签、按可见区域排版（--m-vh、--m-vtop 由脚本写） */
+/* 终端（看一个）：占满内容区（顶栏让出来），底部标签照常排在下面；软键盘开着时标签让位。
+   内容放不下时在终端页里面挤（屏幕区先缩，输入区自己滚动），不会溢出去压住标签 */
+/* data-mterm：在看终端（脚本在根元素上标）。不用 :has()，老浏览器也认 */
+:root[data-mterm] .m-head { display: none; }
+:root[data-mterm] .m-main { display: flex; flex-direction: column; overflow: hidden; }
+:root[data-mterm][data-kb] .m-tabs { display: none; }
 .m-term {
-  position: fixed; left: 0; right: 0; top: var(--m-vtop, 0); height: calc(var(--m-vh, 100dvh) - var(--m-tabs-h, 0px)); z-index: 20;
+  flex: 1; min-height: 0; overflow: hidden;
   display: flex; flex-direction: column; background: var(--bg-solid);
   padding-left: env(safe-area-inset-left); padding-right: env(safe-area-inset-right);
 }
@@ -90,7 +101,7 @@ body { margin: 0; background: var(--bg-solid); color: var(--text); font-family: 
 .m-term__menu { flex: none; display: flex; flex-wrap: wrap; gap: 8px; padding: 8px 10px; border-bottom: 1px solid var(--border); background: var(--panel-solid); }
 .m-btn--on { border-color: var(--accent); color: var(--accent); }
 .m-term__alert { flex: none; display: flex; align-items: center; justify-content: center; gap: 6px; min-height: 34px; border: 0; background: color-mix(in srgb, var(--warn) 18%, var(--bg-solid)); color: var(--text); font: inherit; font-size: 14px; font-weight: 600; }
-.m-term__body { position: relative; flex: 1; min-height: 0; display: flex; }
+.m-term__body { position: relative; flex: 1 1 0; min-height: 4.5em; display: flex; }
 .m-screen {
   flex: 1; min-width: 0; overflow: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain;
   padding: 6px 8px 10px; background: var(--m-term-bg); color: var(--m-term-fg);
@@ -101,7 +112,7 @@ body { margin: 0; background: var(--bg-solid); color: var(--text); font-family: 
 .m-screen--wrap .m-line { white-space: pre-wrap; overflow-wrap: anywhere; }
 .m-jump { position: absolute; right: 12px; bottom: 12px; display: inline-flex; align-items: center; gap: 4px; height: 36px; padding: 0 12px; border: 1px solid var(--border-strong); border-radius: 18px; background: var(--panel-solid); color: var(--text); font: inherit; font-size: 13px; font-weight: 600; box-shadow: 0 4px 14px rgb(0 0 0 / 0.25); }
 .m-jump--new { border-color: var(--accent); color: var(--accent); }
-.m-term__input { flex: none; display: flex; flex-direction: column; gap: 6px; padding: 6px 8px 4px; border-top: 1px solid var(--border); background: var(--panel-solid); }
+.m-term__input { flex: 0 1 auto; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; padding: 6px 8px 4px; border-top: 1px solid var(--border); background: var(--panel-solid); }
 .m-choices { display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; }
 .m-choice { flex: none; display: flex; align-items: center; gap: 6px; max-width: 78vw; min-height: 44px; padding: 0 12px; border: 1px solid var(--border-strong); border-radius: var(--r-md); background: var(--field-solid); color: var(--text); font: inherit; font-size: 14px; }
 .m-choice--current { border-color: var(--accent); }
@@ -113,8 +124,6 @@ body { margin: 0; background: var(--bg-solid); color: var(--text); font-family: 
 .m-key:active { background: var(--field-solid); }
 .m-key:disabled { opacity: 0.45; }
 .m-term__line { display: flex; align-items: flex-end; gap: 6px; }
-/* 键盘开着：盖住底部标签 */
-:root[data-kb] .m-term { --m-tabs-h: 0px; }
 .m-term__line textarea {
   flex: 1; min-width: 0; min-height: 44px; max-height: 160px; box-sizing: border-box; padding: 11px 12px; resize: none;
   border: 1px solid var(--border-strong); border-radius: var(--r-md); background: var(--field-solid); color: var(--text);
@@ -146,6 +155,7 @@ body { margin: 0; background: var(--bg-solid); color: var(--text); font-family: 
 .m-pick { display: flex; flex-direction: column; gap: 8px; padding: 12px; border: 1px solid var(--border-strong); border-radius: var(--r-lg); background: var(--card); }
 .m-pick__title { margin: 0; font-size: 15px; font-weight: 600; }
 .m-sheet { display: flex; flex-direction: column; gap: 8px; margin: 8px 12px; padding: 12px; border: 1px solid var(--danger); border-radius: var(--r-lg); background: var(--card); }
+.m-term > .m-sheet { flex: 0 1 auto; min-height: 0; overflow-y: auto; }
 .m-sheet p { margin: 0; }
 .m-list { margin: 0; padding-left: 20px; font-size: 14px; overflow-wrap: anywhere; }
 /* 分段选择（外观） */

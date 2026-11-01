@@ -486,8 +486,9 @@ async function clickClient(client, button) {
   await u.waitFor(`[...document.querySelectorAll('.mcp-detail .pl-seg [role=tab]')].some(b=>b.getAttribute('aria-selected')==='true' && b.textContent.trim().startsWith(${JSON.stringify(client)}))`, `选中 ${client} 的标签`);
   // 只是切换标签，不能添加任何东西
   if (await p.js(`!!(document.querySelector('.mcp-oneclick__result')?.innerText||'').trim()`)) return "切换标签就出了结果";
-  // 检测客户端（服务器要连过去查）期间按钮是灰的：等它能点，最多 60 秒
-  const btn = `[...document.querySelectorAll('.mcp-oneclick__buttons button')].find(b=>b.textContent.trim()===${JSON.stringify(button)})`;
+  // 检测客户端（服务器要连过去查）期间按钮是灰的：等它能点，最多 60 秒。已经加过时“Add”写成“Re-add”
+  const names = button === "Add" ? ["Add", "Re-add"] : [button];
+  const btn = `[...document.querySelectorAll('.mcp-oneclick__buttons button')].find(b=>${JSON.stringify(names)}.includes(b.textContent.trim()))`;
   try {
     await u.waitFor(`!!${btn} && !${btn}.disabled`, `${client} 的“${button}”能点`, 60000);
   } catch {
@@ -512,6 +513,8 @@ await rec.step(p, "一键添加到本机 Claude Code、Codex：点标签只切�
   for (const [cmd, name] of clients) {
     const shown = await clickClient(name, "Add");
     if (!/Added to/.test(shown)) throw new Error(`${name} 点“Add”的结果不对：${shown}`);
+    // 加好后重新查配置：标签下面写“已添加”，按钮变成“Re-add”
+    await u.waitFor(`(document.querySelector('.mcp-oneclick .mcp-added--current')?.textContent||'').startsWith(${JSON.stringify(`${name}: added`)})`, `${name} 显示已添加`, 60000);
     const listed = windowsCli(`${cmd} mcp list`);
     if (listed.code !== 0 || !/pierlink/i.test(listed.out)) throw new Error(`${cmd} mcp list 里没有 pierlink（${listed.code}）：${listed.out.slice(-600)}`);
     // 能连上的客户端会把它标成已连接（Claude Code：✓ Connected）；只记录，连接检查的输出各版本写法不同
@@ -543,6 +546,8 @@ await rec.step(p, "一键添加到服务器上的 Claude Code、Codex：服务�
   for (const [cmd, name] of clients) {
     const shown = await clickClient(name, "Add");
     if (!/Added to/.test(shown)) throw new Error(`服务器上的 ${name} 点“Add”的结果不对：${shown}`);
+    // 加好后重新查服务器上的配置：地址和令牌都是现在的，标签下面写“已添加”
+    await u.waitFor(`(document.querySelector('.mcp-oneclick .mcp-added--current')?.textContent||'').startsWith(${JSON.stringify(`${name}: added`)})`, `服务器上的 ${name} 显示已添加`, 90000);
     const r = wslPython(`import subprocess, shutil; r = subprocess.run([shutil.which(${JSON.stringify(cmd)}), 'mcp', 'list'], capture_output=True, text=True, timeout=120); print(r.returncode); print(r.stdout + r.stderr)`);
     const [rc, ...rest] = r.out.split("\n");
     const text = rest.join("\n");

@@ -161,30 +161,30 @@ pub(super) fn parse_detection(value: serde_json::Value) -> Result<VncDetection, 
     })
 }
 
-/// 按 distro 和包管理器生成可交给终端的安装命令；light 选择 Openbox，未知包管理器返回 None。
+/// 按 distro 和包管理器生成可交给终端的安装命令（需要 sudo）：TigerVNC、dbus-launch、一个桌面会话和中文字体。
+///
+/// :param light: 桌面只装 Openbox + xterm（apt 才有；dnf 系统没有轻量桌面，照样给 XFCE）
+/// :return: 安装命令；未知包管理器返回 None
 pub fn install_command(distro: &Distro, pm: PackageManager, light: bool) -> Option<String> {
     match pm {
         PackageManager::Apt => Some(format!(
-            "sudo apt-get install -y tigervnc-standalone-server {} dbus-x11",
-            if light { "openbox xterm" } else { "xfce4" }
+            "sudo apt-get update && sudo apt-get install -y tigervnc-standalone-server dbus-x11 {} fonts-wqy-microhei",
+            if light {
+                "openbox xterm"
+            } else {
+                "xfce4 xfce4-terminal"
+            }
         )),
         PackageManager::Dnf => {
             let epel = std::iter::once(distro.id.as_str())
                 .chain(distro.id_like.iter().map(String::as_str))
                 .any(|id| matches!(id, "rhel" | "rocky" | "almalinux" | "alma"));
-            Some(format!(
-                "{}sudo dnf install -y tigervnc-server {}",
-                if epel {
-                    "sudo dnf install -y epel-release && "
-                } else {
-                    ""
-                },
-                if light {
-                    "openbox xterm"
-                } else {
-                    "@xfce-desktop-environment"
-                }
-            ))
+            // 企业发行版的 Xfce 在 EPEL 里，用软件包组安装
+            Some(if epel {
+                "sudo dnf install -y epel-release && sudo dnf install -y tigervnc-server dbus-x11 google-noto-sans-cjk-ttc-fonts && sudo dnf groupinstall -y \"Xfce\"".into()
+            } else {
+                "sudo dnf install -y tigervnc-server dbus-x11 @xfce-desktop-environment".into()
+            })
         }
         PackageManager::None => None,
     }

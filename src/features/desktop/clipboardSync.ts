@@ -4,9 +4,21 @@
  * 免得把远程自己复制的文件、图片冲掉。
  *
  * 不发的情况：
- * - 本机剪贴板的这次变化是我们把远程复制的文字写进来造成的：发回去会把远程剪贴板里的文件、图片换成文字；
+ * - 本机剪贴板里是从这个桌面复制来的文字（写进来时打了这个桌面的来源标记）：远程剪贴板里本来就是它，
+ *   发回去会让远程的剪贴板只剩文字（Xvnc 接管剪贴板），文件管理器里复制的文件粘出来成了路径。
+ *   断开重连、弹到独立窗口、重启 Pierlink、同一个桌面开着两个查看窗口、两次写入完成的先后颠倒都靠它认出来；
+ *   Windows 上任何程序再复制都会清掉标记，照样发；别的桌面来的（标记不同）也照样发，跨服务器复制粘贴要用；
+ * - 本机剪贴板的这次变化是我们把远程复制的文字写进来造成的（没有标记时靠变化序号和内容认）；
  * - 拿不到变化序号（不是 Windows）时，和上次发过的文字一样，或就是远程来的文字。
  */
+
+/** 读到的本机剪贴板 */
+export interface ClipboardRead {
+  /** 文字；没有文字时为空字符串 */
+  text: string;
+  /** 远程桌面写入时打的来源标记；别的程序复制的为 null */
+  origin: string | null;
+}
 
 /** 同步要用到的读写（测试里换成假的） */
 export interface ClipboardIo {
@@ -14,10 +26,28 @@ export interface ClipboardIo {
   ready(): boolean;
   /** 本机剪贴板的变化序号；拿不到时为 null（只能读出内容比较） */
   sequence(): Promise<number | null>;
-  /** 读本机剪贴板的文字；没有文字时为空字符串，被别的程序占着时抛错 */
-  read(): Promise<string>;
+  /** 读本机剪贴板的文字和来源标记；被别的程序占着时抛错 */
+  read(): Promise<ClipboardRead>;
+  /** 这个桌面的来源值（写进本机剪贴板时打的标记）；还不知道时为 null */
+  origin(): string | null;
   /** 发到远程剪贴板；没发出去（已断开）返回 false */
   send(text: string): boolean;
+}
+
+/**
+ * 桌面的来源值：远程复制的文字写进 Windows 剪贴板时打的标记，用来认出“这段文字是从这个桌面来的”。
+ * 别的程序也能读剪贴板，所以只放服务器 ID 和桌面键的哈希（SHA-256 前 16 字节），不放明文。
+ * @param serverId 服务器 ID
+ * @param key 桌面的键（DesktopSession.key）
+ * @returns 32 个十六进制字符；算不了（没有 Web Crypto）时为 null，这时不打标记
+ */
+export async function desktopOrigin(serverId: string, key: string): Promise<string | null> {
+  try {
+    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`${serverId}\n${key}`));
+    return Array.from(new Uint8Array(digest).slice(0, 16), (b) => b.toString(16).padStart(2, "0")).join("");
+  } catch {
+    return null;
+  }
 }
 
 export class ClipboardSync {
@@ -33,7 +63,7 @@ export class ClipboardSync {
 
   constructor(private readonly io: ClipboardIo) {}
 
-  /** 新的连接：远程剪贴板里有什么不知道，本机剪贴板里的文字再发一次 */
+  /** 新的连接：远程剪贴板里有什么不知道，本机剪贴板里的文字再发一次（从这个桌面复制来的除外，见来源标记） */
   reset(): void {
     this.remote = null;
     this.echo = null;
@@ -79,18 +109,21 @@ export class ClipboardSync {
       this.seen = seq;
       return;
     }
-    let text: string;
+    let read: ClipboardRead;
     try {
-      text = await this.io.read();
+      read = await this.io.read();
     } catch {
       // 剪贴板被别的程序占着：下次再看
       return;
     }
     if (!this.io.ready()) return;
+    const { text, origin } = read;
+    // 带着这个桌面的来源标记：是从这个桌面复制来的，不发回去
+    const own = origin !== null && origin === this.io.origin();
     // 还不知道写完时的序号（正在写、或拿不到序号），或这次看的序号比写进去的早（读的时候刚好写进来）时，
     // 按内容认出远程来的文字
     const early = this.echo === null || (seq !== null && seq < this.echo);
-    if (!text || (early && text === this.remote) || (seq === null && text === this.sent)) {
+    if (!text || own || (early && text === this.remote) || (seq === null && text === this.sent)) {
       this.seen = seq;
       return;
     }

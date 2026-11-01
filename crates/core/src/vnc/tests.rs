@@ -164,13 +164,13 @@ fn 安装命令覆盖轻桌面及企业发行版() {
     };
     assert_eq!(
         install_command(&ubuntu, PackageManager::Apt, false).unwrap(),
-        "sudo apt-get install -y tigervnc-standalone-server xfce4 dbus-x11"
+        "sudo apt-get update && sudo apt-get install -y tigervnc-standalone-server dbus-x11 xfce4 xfce4-terminal fonts-wqy-microhei"
     );
     assert_eq!(
         install_command(&ubuntu, PackageManager::Apt, true).unwrap(),
-        "sudo apt-get install -y tigervnc-standalone-server openbox xterm dbus-x11"
+        "sudo apt-get update && sudo apt-get install -y tigervnc-standalone-server dbus-x11 openbox xterm fonts-wqy-microhei"
     );
-    for id in ["rhel", "rocky", "almalinux"] {
+    for (id, light) in [("rhel", false), ("rocky", false), ("almalinux", true)] {
         assert_eq!(
             install_command(
                 &Distro {
@@ -178,15 +178,27 @@ fn 安装命令覆盖轻桌面及企业发行版() {
                     ..Default::default()
                 },
                 PackageManager::Dnf,
-                false
+                light
             )
             .unwrap(),
-            "sudo dnf install -y epel-release && sudo dnf install -y tigervnc-server @xfce-desktop-environment"
+            "sudo dnf install -y epel-release && sudo dnf install -y tigervnc-server dbus-x11 google-noto-sans-cjk-ttc-fonts && sudo dnf groupinstall -y \"Xfce\""
         );
     }
+    // CentOS Stream 只在 ID_LIKE 里写 rhel
+    let stream = Distro {
+        id: "centos".into(),
+        id_like: vec!["rhel".into(), "fedora".into()],
+        ..Default::default()
+    };
+    assert!(
+        install_command(&stream, PackageManager::Dnf, false)
+            .unwrap()
+            .starts_with("sudo dnf install -y epel-release && ")
+    );
+    // 没有轻量桌面的 dnf 系统照样给 XFCE
     assert_eq!(
         install_command(&Distro::default(), PackageManager::Dnf, true).unwrap(),
-        "sudo dnf install -y tigervnc-server openbox xterm"
+        "sudo dnf install -y tigervnc-server dbus-x11 @xfce-desktop-environment"
     );
     assert_eq!(install_command(&ubuntu, PackageManager::None, false), None);
 }

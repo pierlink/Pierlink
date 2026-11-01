@@ -98,14 +98,13 @@ const KEYWORDS = new Set(["if", "then", "else", "elif", "do", "while", "until", 
 const OPTIONS_WITH_VALUE = new Set(["-a", "-u", "-n", "-s", "-k", "-c", "-o", "-e", "-p"]);
 
 /**
- * 这条命令会不会进到另一个 shell。认识的这类命令按 shell 处理，其他按程序处理；取不到命令时按 shell 处理。
- * 用 ;、&&、|| 和管道连起来的几段，有一段会就算会。
- * @param command 提示符下输入的命令；取不到时为 null
- * @returns true 表示按 shell 处理
+ * 每一段命令（用 ;、&&、|| 和管道分开）实际运行的程序名：跳过关键字、环境变量赋值、前缀词和它们的选项，去掉路径。
+ * @param command 提示符下输入的命令
+ * @returns 各段的程序名（没有的段不列）
  */
-export function launchesShell(command: string | null): boolean {
-  if (!command?.trim()) return true;
-  return command.split(/[;&|]+/).some((part) => {
+function commandNames(command: string): string[] {
+  const names: string[] = [];
+  for (const part of command.split(/[;&|]+/)) {
     const words = part.trim().split(/\s+/);
     let afterPrefix = false;
     for (let i = 0; i < words.length; i++) {
@@ -118,10 +117,30 @@ export function launchesShell(command: string | null): boolean {
         continue;
       }
       if (afterPrefix && /^\d+(\.\d+)?[smhd]?$/.test(word)) continue; // timeout 100、nice 10 这类数字参数
-      return SHELL_LAUNCHERS.has(word);
+      names.push(word);
+      break;
     }
-    return false;
-  });
+  }
+  return names;
+}
+
+/**
+ * 这条命令会不会进到另一个 shell。认识的这类命令按 shell 处理，其他按程序处理；取不到命令时按 shell 处理。
+ * 用 ;、&&、|| 和管道连起来的几段，有一段会就算会。
+ * @param command 提示符下输入的命令；取不到时为 null
+ * @returns true 表示按 shell 处理
+ */
+export function launchesShell(command: string | null): boolean {
+  if (!command?.trim()) return true;
+  return commandNames(command).some((name) => SHELL_LAUNCHERS.has(name));
+}
+
+/**
+ * 这条命令是不是运行 GNU screen（4.x 不把里面程序开的括号粘贴转给外层终端，粘贴时要我们自己包上标记）。
+ * @param command 提示符下输入的命令；取不到时为 null
+ */
+export function runsScreen(command: string | null): boolean {
+  return !!command && commandNames(command).includes("screen");
 }
 
 /**

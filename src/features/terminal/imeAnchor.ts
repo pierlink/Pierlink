@@ -44,22 +44,12 @@ export function findFakeCursor(buffer: BufferLike, cols: number, rows: number): 
 }
 
 /**
- * 组字框和隐藏输入框该放的位置（CSS 像素，相对终端屏幕）。
- * 先对准程序自己画的光标（有的话），再保证组字框的右边不伸出终端：快到右边界时整体往左挪到贴着右边。
- * 一次算出最终位置、只写这一个值：观察者因为这次写入重新进来时算出的还是同一个值，不会来回改。
+ * 组字框和隐藏输入框该放的位置（CSS 像素，相对终端屏幕）：对准程序自己画的光标（有的话）。
+ * 快到右边界时不往左挪：往左会盖住刚打的字；组字框往右伸出终端的部分被裁掉（终端外框是 overflow: clip，
+ * 整个终端也不会被浏览器往左滚）。
  * @param anchor 程序自己画的光标那一格的位置；没有时为 null（照 xterm 摆的位置）
- * @param current xterm 现在摆的左边位置
- * @param width 组字框的宽度；组字框没在用时为 null（不用夹）
- * @param screen 终端屏幕的宽度
- * @returns 左边、上边位置；不用改的那一项为 null
+ * @returns 左边、上边位置；不用改时为 null
  */
-export function placeIme(
-  anchor: { left: number; top: number } | null,
-  current: number,
-  width: number | null,
-  screen: number,
-): { left: number | null; top: number | null } {
-  let left = anchor ? anchor.left : current;
-  if (width !== null) left = Math.min(left, Math.max(0, screen - width));
-  return { left: anchor || left !== current ? left : null, top: anchor ? anchor.top : null };
+export function placeIme(anchor: { left: number; top: number } | null): { left: number | null; top: number | null } {
+  return { left: anchor ? anchor.left : null, top: anchor ? anchor.top : null };
 }

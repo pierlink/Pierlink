@@ -4,7 +4,7 @@ import { Check, Monitor, Plus, Server, Trash2 } from "lucide-react";
 import { Banner, Button, Checkbox, Dialog, Notice, Segmented, Select, Switch } from "../../components";
 import { formatError } from "../../errors";
 import { getServersApi, type ServerRecord } from "../servers/api";
-import { defaultServerEntry, getMcpApi, type EntrySettings, type McpActivity, type McpConnectInfo, type McpEntryState, type McpJob, type McpSession, type McpSettings, type McpStatus } from "./api";
+import { defaultServerEntry, getMcpApi, type EntrySettings, type McpActivity, type McpAdded, type McpClients, type McpConnectInfo, type McpEntryState, type McpJob, type McpReadd, type McpSession, type McpSettings, type McpStatus } from "./api";
 import { agoText } from "./McpIndicator";
 import { CommandLine, EntryPermissions, PortInput } from "./McpParts";
 import "./mcp.css";
@@ -12,6 +12,16 @@ import "./mcp.css";
 type Tab = "entries" | "activity";
 /** 选中的入口：本机（windows）或服务器 ID */
 type EntryId = string;
+
+/** 记在这台电脑上的页面选择（选中的入口、选中的客户端）：从别的页面回来还是原样 */
+const PREF_ENTRY = "pierlink.mcp.entry";
+const PREF_CLIENT = "pierlink.mcp.client.";
+function readPref(key: string): string | null {
+  try { return window.localStorage.getItem(key); } catch { return null; }
+}
+function writePref(key: string, value: string) {
+  try { window.localStorage.setItem(key, value); } catch { /* 存不了就只在这次有效 */ }
+}
 
 /**
  * 顶部导航里的“MCP”板块：让 Claude Code 等 AI 助手通过 Pierlink 操作这台电脑和服务器。
@@ -36,7 +46,8 @@ export function McpPage() {
   const [activity, setActivity] = useState<McpActivity[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>("entries");
-  const [selected, setSelected] = useState<EntryId>("windows");
+  const [selected, setSelectedState] = useState<EntryId>("windows");
+  const setSelected = (id: EntryId) => { setSelectedState(id); writePref(PREF_ENTRY, id); };
   const [adding, setAdding] = useState<string[] | null>(null);
   const [stopping, setStopping] = useState(false);
   const saving = useRef(Promise.resolve());
@@ -50,8 +61,10 @@ export function McpPage() {
         const [s, st, i, a] = await Promise.all([api.getSettings(), api.status(), api.connectInfo(), api.activity(200)]);
         if (!alive) return;
         setSettings(s); setStatus(st); setInfo(i); setActivity(a);
-        // 有服务器入口时先选第一个（AI 在服务器上最常见）
-        if (s.servers.length) setSelected(s.servers[0].serverId);
+        // 上次选的入口还在就选它；否则有服务器入口时先选第一个（AI 在服务器上最常见）
+        const last = readPref(PREF_ENTRY);
+        if (last && (last === "windows" || s.servers.some((x) => x.serverId === last))) setSelected(last);
+        else if (s.servers.length) setSelected(s.servers[0].serverId);
       } catch (e) {
         if (alive) setError(formatError(e));
       }
@@ -288,20 +301,44 @@ function EntryDetail({ id, settings, servers, status, info, serverName, sessions
   const commands = windows ? info?.windows ?? [] : info?.servers.find((x) => x.serverId === id)?.commands ?? [];
   const [rotated, setRotated] = useState<{ ok: boolean; text: string } | null>(null);
   const [added, setAdded] = useState(() => wasAdded(id));
-  useEffect(() => { setRotated(null); setAdded(wasAdded(id)); }, [id]);
+  // 客户端的配置里已经加好这个入口（检测结果；查不到时为 false）
+  const [clientCurrent, setClientCurrent] = useState(false);
+  // 刚换了端口或令牌：显示进度和服务器上自动重新添加的结果
+  const [action, setAction] = useState<{ kind: "port" | "token"; at: number; port?: number } | null>(null);
+  useEffect(() => { setRotated(null); setAdded(wasAdded(id)); setAction(null); setClientCurrent(false); }, [id]);
   const now = Date.now();
   // 第三步“给权限”：本机入口主要是让 AI 操作服务器；服务器入口是让 AI 操作这台 Windows 或其他服务器
   const granted = windows ? entry.servers.length > 0 : entry.windowsCommands || entry.folders.length > 0 || entry.servers.length > 0;
-  const steps: [boolean, boolean, boolean] = [entry.enabled, added || seen || sessions.length > 0, granted];
+  const steps: [boolean, boolean, boolean] = [entry.enabled, clientCurrent || added || seen || sessions.length > 0, granted];
   const rotate = async () => {
     setRotated(null);
     try {
       await (await getMcpApi()).rotateToken(id);
       setRotated({ ok: true, text: t("mcp.rotated") });
+      setAction({ kind: "token", at: Date.now() });
     } catch (e) {
       setRotated({ ok: false, text: formatError(e) });
     }
   };
+  const changePort = (port: number) => {
+    onSave({ ...settings, servers: settings.servers.map((s, j) => (j === index ? { ...s, port } : s)) });
+    setRotated(null);
+    setAction({ kind: "port", at: Date.now(), port });
+  };
+  // 换端口、换令牌后的状态：端口改好了没有；服务器上一键添加过的客户端自动更新了没有
+  const readd: McpReadd | null = action && st?.readded && st.readded.reason === action.kind && st.readded.atMs >= action.at - 1000 ? st.readded : null;
+  const progress = (() => {
+    if (!action) return null;
+    const parts: string[] = [];
+    if (action.kind === "port") {
+      if (st?.state === "port_busy") return null;
+      parts.push(st && st.port === action.port && st.state === "running" ? t("mcp.portChanged", { port: action.port }) : t("mcp.portChanging", { port: action.port }));
+    } else if (rotated) {
+      parts.push(rotated.text);
+    }
+    if (readd) parts.push(readdText(t, readd));
+    return parts.join("；");
+  })();
 
   return (
     <section className="pl-panel sync-detail mcp-detail">
@@ -318,7 +355,11 @@ function EntryDetail({ id, settings, servers, status, info, serverName, sessions
       <SetupSteps done={steps} />
       {status?.elevated && <Banner tone="warn" title={t("mcp.elevatedWarn")} />}
       {windows && status && !status.pipeRunning && <Banner tone="warn" title={t("mcp.pipeUnavailable")}>{status.pipeError}</Banner>}
-      {st?.error && <Banner tone="danger" title={formatError(st.error)} />}
+      {st?.state === "port_busy" ? (
+        // 服务器上的端口被占着：说明是谁占着，有空闲端口时一键换过去
+        <Banner tone="warn" title={conflictText(t, st)}
+          actions={st.conflict?.freePort ? <Button size="sm" onClick={() => changePort(st.conflict!.freePort!)}>{t("mcp.useFreePort", { port: st.conflict.freePort })}</Button> : undefined} />
+      ) : st?.error && <Banner tone="danger" title={formatError(st.error)} />}
       {server && <Banner tone="warn" title={t("mcp.serverRiskShort")} />}
 
       <div className="mcp-detail__grid">
@@ -328,16 +369,20 @@ function EntryDetail({ id, settings, servers, status, info, serverName, sessions
           {/* 换了入口就重建：上一个入口还在添加、移除时，结果不会显示到新入口上 */}
           <ClientSetup key={id} serverId={windows ? null : id} serverName={serverName(id)} commands={commands}
             fileHint={server && st ? (st.fileWritten ? t("mcp.fileWritten") : t("mcp.fileNotWritten")) : undefined}
-            onAdded={() => { markAdded(id); setAdded(true); }} />
+            onAdded={() => { markAdded(id); setAdded(true); }}
+            onCurrent={setClientCurrent} />
           {server && (
             <div className="mcp-detail__row">
-              <PortInput label={t("mcp.port")} value={server.port} onCommit={(port) => onSave({ ...settings, servers: settings.servers.map((s, j) => (j === index ? { ...s, port } : s)) })} />
+              <PortInput label={t("mcp.port")} value={server.port} onCommit={changePort} />
               <Button size="sm" title={t("mcp.rotateTokenHint")} onClick={() => void rotate()}>{t("mcp.rotateToken")}</Button>
             </div>
           )}
           {server && (
-            <span className={`mcp-oneclick__result pl-ellipsis${rotated ? (rotated.ok ? " mcp-oneclick__result--ok" : " mcp-oneclick__result--error") : ""}`} role="status" title={rotated?.text}>{rotated?.text ?? ""}</span>
+            <span className={`mcp-oneclick__result${rotated && !rotated.ok ? " mcp-oneclick__result--error" : progress ? " mcp-oneclick__result--ok" : ""}`} role="status" title={rotated && !rotated.ok ? rotated.text : progress ?? undefined}>
+              {rotated && !rotated.ok ? rotated.text : progress ?? ""}
+            </span>
           )}
+          {server && <p className="set-row__hint">{t("mcp.restartHint")}</p>}
           <h3>{t("mcp.sessionsOfEntry")}</h3>
           {sessions.length === 0
             ? <p className="sync-muted">{t("mcp.noSessions")}</p>
@@ -364,46 +409,95 @@ type ClientKey = keyof typeof CLIENT_NAMES;
 const LOCAL_CLIENTS: readonly ClientKey[] = ["claude", "codex", "cursor"];
 const SERVER_CLIENTS: readonly ClientKey[] = ["claude", "codex", "gemini"];
 
+type T = ReturnType<typeof useTranslation>["t"];
+
+/** 几个客户端的名字连成一句（中文用顿号） */
+function clientList(t: T, keys: string[]): string {
+  const names = keys.map((k) => CLIENT_NAMES[k as ClientKey] ?? k);
+  return names.join(t("mcp.listJoiner"));
+}
+
+/** 自动重新添加的结果说成一句 */
+function readdText(t: T, r: McpReadd): string {
+  const parts: string[] = [];
+  if (r.ok.length) parts.push(t("mcp.readdedOk", { clients: clientList(t, r.ok) }));
+  if (r.failed.length) parts.push(t("mcp.readdedFailed", { clients: clientList(t, r.failed) }));
+  if (!parts.length) parts.push(t("mcp.readdedNone"));
+  return parts.join("；");
+}
+
+/** 端口被占着时的说明 */
+function conflictText(t: T, st: McpEntryState): string {
+  const c = st.conflict;
+  if (!c) return t("mcp.conflictChecking", { port: st.port });
+  switch (c.kind) {
+    case "this_pc": return t("mcp.conflictThisPc", { port: st.port });
+    case "other_pc": return t("mcp.conflictOtherPc", { port: st.port, who: c.computer ? t("mcp.conflictWho", { name: c.computer }) : "" });
+    case "stale": return t("mcp.conflictStale", { port: st.port });
+    case "not_listening": return t("mcp.conflictNotListening");
+    case "unknown": return t("mcp.conflictUnknown", { port: st.port });
+    default: return t("mcp.conflictOtherProgram", { port: st.port });
+  }
+}
+
 /**
  * 添加到 AI 客户端：上面一排标签选客户端（没装的也能选），下面是这个客户端的手动命令、“一键添加”和“移除”。
  * 点标签只切换，不会添加；没装的客户端两个按钮灰掉。结果写在按钮下面固定高度的一行里，不挤动下面的内容
  */
-function ClientSetup({ serverId, serverName, commands, fileHint, onAdded }: {
+function ClientSetup({ serverId, serverName, commands, fileHint, onAdded, onCurrent }: {
   serverId: string | null; serverName: string; commands: { client: string; text: string }[]; fileHint?: string;
   /** 一键添加成功 */
   onAdded: () => void;
+  /** 查到有客户端已经加好这个入口（地址、令牌都是现在的） */
+  onCurrent: (current: boolean) => void;
 }) {
   const { t } = useTranslation();
   const clients = serverId === null ? LOCAL_CLIENTS : SERVER_CLIENTS;
-  const [client, setClient] = useState<ClientKey>(clients[0]);
+  // 上次选的客户端（本机、服务器各记一个）：从别的页面回来还是它
+  const prefKey = PREF_CLIENT + (serverId === null ? "local" : "server");
+  const remembered = (): ClientKey | null => {
+    const v = readPref(prefKey) as ClientKey | null;
+    return v && clients.includes(v) ? v : null;
+  };
+  const [client, setClient] = useState<ClientKey>(() => remembered() ?? clients[0]);
   // 用户自己点过标签后，检测结果回来也不再自动换到装了的那个
   const picked = useRef(false);
   const [busy, setBusy] = useState<"add" | "remove" | null>(null);
   const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null);
-  // 装了哪些客户端：本机直接查，服务器要连过去查；没装的按钮灰掉并说明。查不到（服务器连不上）时不限制
-  const [installed, setInstalled] = useState<Record<ClientKey, boolean> | null>(null);
+  // 装了哪些客户端、各自加好这个入口没有：本机直接查，服务器要连过去查；没装的按钮灰掉并说明。
+  // 查不到（服务器连不上）时不限制、也不显示加好没有。添加、移除后再查一次
+  const [installed, setInstalled] = useState<McpClients | null>(null);
+  const [checks, setChecks] = useState(0);
+  useEffect(() => {
+    const last = remembered();
+    picked.current = !!last;
+    setClient(last ?? clients[0]);
+    setResult(null);
+    // clients 只由 serverId 决定
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [serverId]);
   useEffect(() => {
     let alive = true;
-    picked.current = false;
-    setClient(clients[0]);
-    setResult(null);
-    setInstalled(null);
+    if (checks === 0) setInstalled(null);
     void getMcpApi().then((api) => (serverId === null ? api.detectClients() : api.detectServerClients(serverId))).then(
       (c) => {
         if (!alive) return;
         setInstalled(c);
-        // 默认选第一个装了的
+        // 没选过的话默认选第一个装了的
         if (!picked.current) setClient(clients.find((x) => c[x]) ?? clients[0]);
       },
-      () => { if (alive) setInstalled({ claude: true, codex: true, cursor: true, gemini: true }); },
+      () => { if (alive) setInstalled({ claude: true, codex: true, cursor: true, gemini: true, added: {} }); },
     );
     return () => { alive = false; };
     // clients 只由 serverId 决定
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [serverId]);
+  }, [serverId, checks]);
+  const anyCurrent = !!installed && clients.some((c) => installed.added[c] === "current");
+  useEffect(() => { onCurrent(anyCurrent); }, [anyCurrent, onCurrent]);
 
   const name = CLIENT_NAMES[client];
   const missing = installed !== null && !installed[client];
+  const addedState: McpAdded | undefined = installed?.added[client];
   const shown = commands.filter((c) => c.client === (client === "cursor" ? "json" : client));
   const run = async (kind: "add" | "remove", f: () => Promise<string>) => {
     setBusy(kind);
@@ -414,6 +508,8 @@ function ClientSetup({ serverId, serverName, commands, fileHint, onAdded }: {
       setResult({ ok: false, text: formatError(e) });
     } finally {
       setBusy(null);
+      // 加好、移除后重新查一下配置，标记跟着变
+      setChecks((n) => n + 1);
     }
   };
   const add = () => run("add", async () => {
@@ -444,8 +540,13 @@ function ClientSetup({ serverId, serverName, commands, fileHint, onAdded }: {
         label={t("mcp.clientsTitle")}
         value={client}
         options={clients.map((c) => ({ value: c, label: CLIENT_NAMES[c] }))}
-        onChange={(c) => { if (busy) return; picked.current = true; setClient(c); setResult(null); }}
+        onChange={(c) => { if (busy) return; picked.current = true; setClient(c); writePref(prefKey, c); setResult(null); }}
       />
+      {addedState && (
+        <p className={`set-row__hint mcp-added--${addedState}`}>
+          {t(addedState === "current" ? "mcp.clientAdded" : addedState === "stale" ? "mcp.clientStale" : "mcp.clientNotAdded", { client: name })}
+        </p>
+      )}
       {missing && (
         <p className="set-row__hint">
           {serverId === null ? t("mcp.clientMissing", { client: name }) : t("mcp.serverClientMissing", { client: name, server: serverName })}
@@ -457,7 +558,7 @@ function ClientSetup({ serverId, serverName, commands, fileHint, onAdded }: {
       <div className="mcp-oneclick__buttons">
         {/* 还在检测时也能点（服务器离线时检测要等很久）；没装的话后端报“没检测到”，照常提示 */}
         <Button size="sm" variant="primary" disabled={busy !== null || missing} onClick={() => void add()}>
-          {busy === "add" ? t("mcp.adding") : t("mcp.addOneClick")}
+          {busy === "add" ? t("mcp.adding") : addedState === "current" || addedState === "stale" ? t("mcp.readdOneClick") : t("mcp.addOneClick")}
         </Button>
         <Button size="sm" disabled={busy !== null || missing} onClick={() => void remove()}>
           {busy === "remove" ? t("mcp.removing") : t("mcp.remove")}

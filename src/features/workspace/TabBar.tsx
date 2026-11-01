@@ -1,9 +1,10 @@
-import { useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { useTranslation } from "react-i18next";
 import { ChevronDown, Columns2, PanelRight, Plus, Radio, SquareTerminal, X } from "lucide-react";
 import { IconButton, Menu, StatusDot, type MenuEntry } from "../../components";
 import { localShellName } from "../terminal/backend";
 import type { ServerView, TabView } from "./types";
+import { maskHost, useHideAddresses } from "./hideAddresses";
 
 const dotTone = { online: "ok", connecting: "warn", offline: "neutral" } as const;
 
@@ -33,10 +34,24 @@ export function TabBar({ tabs, activeId, servers, localShells, onActivate, onClo
   const { t } = useTranslation();
   const moreRef = useRef<HTMLButtonElement>(null);
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
+  const hide = useHideAddresses();
+  const stripRef = useRef<HTMLDivElement>(null);
+  // 鼠标在标签上时，滚轮左右滚动标签（不用去点细细的滚动条）。触控板左右滑动照常交给浏览器
+  useEffect(() => {
+    const el = stripRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      if (e.ctrlKey || Math.abs(e.deltaX) >= Math.abs(e.deltaY) || el.scrollWidth <= el.clientWidth) return;
+      e.preventDefault();
+      el.scrollLeft += e.deltaMode === 1 ? e.deltaY * 40 : e.deltaMode === 2 ? e.deltaY * el.clientWidth : e.deltaY;
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, []);
 
   const entries: MenuEntry[] = [
     { kind: "header", id: "h1", label: t("workspace.serversHeader") },
-    ...servers.map((s) => ({ id: `srv-${s.id}`, label: `${s.name}  ·  ${s.address}`, onSelect: () => onPickServer(s.id) })),
+    ...servers.map((s) => ({ id: `srv-${s.id}`, label: hide ? maskHost(`${s.name}  ·  ${s.address}`, s.host) : `${s.name}  ·  ${s.address}`, onSelect: () => onPickServer(s.id) })),
     { id: "quick", label: `${t("terminal.quickConnect")}…`, onSelect: onQuickConnect },
     { kind: "separator", id: "s1" },
     { kind: "header", id: "h2", label: t("workspace.localShells") },
@@ -45,7 +60,7 @@ export function TabBar({ tabs, activeId, servers, localShells, onActivate, onClo
 
   return (
     <div className="tabbar">
-      <div role="tablist" aria-label={t("workspace.newTab")} className="tabbar__tabs">
+      <div ref={stripRef} role="tablist" aria-label={t("workspace.newTab")} className="tabbar__tabs">
       {tabs.map((tab) => (
         <div
           key={tab.id}
@@ -60,6 +75,7 @@ export function TabBar({ tabs, activeId, servers, localShells, onActivate, onClo
           onAuxClick={(e) => e.button === 1 && onClose(tab.id)}
         >
           {tab.kind === "local" ? <SquareTerminal size={13} aria-hidden="true" color="var(--accent)" /> : <StatusDot tone={dotTone[tab.status]} label={t(`workspace.status.${tab.status}`)} />}
+          {tab.attention && <span className="tab__attention" role="img" aria-label={t("terminal.attention")} title={t("terminal.attention")} />}
           <span className="tab__title">{tab.title}</span>
           <span className="tab__sub pl-ellipsis">{tab.subtitle}</span>
           {tab.ai && <span className="ai-badge" title={t("mcp.aiTerminal")}>AI</span>}

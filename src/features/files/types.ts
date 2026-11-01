@@ -60,6 +60,25 @@ export interface TransferReportView {
   failed: { path: string; reason: string }[];
 }
 
+/** 拖出窗口外（资源管理器等）时系统进度框里的文字 */
+export interface DragOutLabels {
+  /** 标题栏 */
+  title: string;
+  /** 第一行，如“正在下载 report.pdf” */
+  line: string;
+  /** 点了取消之后显示的文字 */
+  cancelling: string;
+}
+
+/**
+ * 拖出窗口外的结果：放下了（已下载并交给对方）、没放下，或者又拖回了本窗口
+ * （x、y 是松手处相对窗口客户区的物理像素，按窗口内的拖放处理）
+ */
+export type DragOutResult =
+  | { kind: "dropped"; report: TransferReportView }
+  | { kind: "cancelled" }
+  | { kind: "returned"; x: number; y: number };
+
 /** 文件版本：大小和修改时间（秒）。保存前用它检查文件是否被别人改过 */
 export interface FileVersion {
   size: number;

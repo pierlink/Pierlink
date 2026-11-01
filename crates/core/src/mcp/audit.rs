@@ -3,11 +3,14 @@ use super::{AuditRecord, lock};
 use crate::{error::AppError, security::redact};
 use std::{
     fs::{self, OpenOptions},
-    io::Write,
+    io::{Read, Seek, SeekFrom, Write},
     path::PathBuf,
     sync::Mutex,
     time::{SystemTime, UNIX_EPOCH},
 };
+
+/// 读回最近的记录时，每个日志文件最多从末尾读这么多字节（一天的操作很多时不整个读进内存）
+const RECENT_TAIL_BYTES: u64 = 4 * 1024 * 1024;
 
 pub struct Audit {
     dir: PathBuf,
@@ -50,6 +53,39 @@ impl Audit {
             eprintln!("MCP 审计日志写入失败：{:?}", error.kind());
         }
     }
+    /// 从最新的日志往回读最近 limit 条记录，新的在前（程序重启、更新后操作记录接着显示）。
+    /// 每个文件只读末尾 RECENT_TAIL_BYTES；读不懂的行跳过；目录不存在或读不了时返回已读到的。
+    pub fn recent(&self, limit: usize) -> Vec<AuditRecord> {
+        let mut out = Vec::new();
+        let Ok(entries) = fs::read_dir(&self.dir) else {
+            return out;
+        };
+        let mut days: Vec<String> = entries
+            .filter_map(Result::ok)
+            .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
+            .filter_map(|e| {
+                let name = e.file_name().into_string().ok()?;
+                let day = name.strip_suffix(".jsonl")?;
+                valid_date(day).then(|| day.to_owned())
+            })
+            .collect();
+        days.sort_unstable_by(|a, b| b.cmp(a));
+        for day in days {
+            let Ok(text) = read_tail(&self.dir.join(format!("{day}.jsonl")), RECENT_TAIL_BYTES)
+            else {
+                continue;
+            };
+            for line in text.lines().rev() {
+                if out.len() >= limit {
+                    return out;
+                }
+                if let Ok(record) = serde_json::from_str::<AuditRecord>(line) {
+                    out.push(record);
+                }
+            }
+        }
+        out
+    }
     /// 删除文件名日期早于保留期限的普通日志文件，返回删除数量；不跟随符号链接。
     pub fn prune(&self) -> Result<usize, AppError> {
         prune_daily(&self.dir, self.retain_days).map_err(|_| audit_error())
@@ -82,6 +118,21 @@ pub(crate) fn prune_daily(dir: &std::path::Path, retain_days: u32) -> std::io::R
         }
     }
     Ok(removed)
+}
+/// 读文件末尾至多 max 字节的文字；不是从头读的时候丢掉第一行（多半只有半行）
+fn read_tail(path: &std::path::Path, max: u64) -> std::io::Result<String> {
+    let mut file = fs::File::open(path)?;
+    let len = file.metadata()?.len();
+    let start = len.saturating_sub(max);
+    file.seek(SeekFrom::Start(start))?;
+    let mut bytes = Vec::new();
+    file.take(max).read_to_end(&mut bytes)?;
+    let mut text = String::from_utf8_lossy(&bytes).into_owned();
+    if start > 0 {
+        let cut = text.find('\n').map_or(text.len(), |i| i + 1);
+        text.drain(..cut);
+    }
+    Ok(text)
 }
 fn audit_error() -> AppError {
     AppError::new("mcp.audit_failed")
@@ -188,6 +239,46 @@ mod tests {
         assert!(valid_date("2000-02-29"));
         assert!(!valid_date("1900-02-29"));
         assert!(!valid_date("中文日期无效"));
+    }
+    #[test]
+    fn 读回最近的记录_新的在前_跨天_跳过读不懂的行() {
+        let dir = crate::test_support::tempdir();
+        let today = now_ms() / 86_400_000;
+        let line = |summary: &str| {
+            serde_json::json!({
+                "time_ms": 1, "session": "s", "entry": {"kind": "windows"},
+                "client": {"name": "c", "version": "1"}, "tool": "run_command",
+                "target": null, "summary": summary, "outcome": "ok",
+                "exit_code": 0, "duration_ms": 1
+            })
+            .to_string()
+        };
+        fs::write(
+            dir.path().join(format!("{}.jsonl", date(today - 1))),
+            format!("{}\n{}\n", line("a"), line("b")),
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join(format!("{}.jsonl", date(today))),
+            format!("{}\n不是 JSON\n{}\n", line("c"), line("d")),
+        )
+        .unwrap();
+        let audit = Audit::new(dir.path().into(), 30);
+        let summaries = |n| {
+            audit
+                .recent(n)
+                .into_iter()
+                .map(|r| r.summary)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(summaries(10), ["d", "c", "b", "a"]);
+        assert_eq!(summaries(3), ["d", "c", "b"]);
+        assert!(Audit::new(dir.path().join("没有"), 30).recent(5).is_empty());
+        // 只读末尾时丢掉开头那半行
+        let big = dir.path().join("big.jsonl");
+        fs::write(&big, format!("{}\n{}\n", line("x"), line("y"))).unwrap();
+        let tail = read_tail(&big, (line("y").len() + 5) as u64).unwrap();
+        assert_eq!(tail.trim(), line("y"));
     }
     #[test]
     fn 追加记录与跨日清理及失败不影响调用() {

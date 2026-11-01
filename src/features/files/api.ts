@@ -1,5 +1,5 @@
 import { inTauri } from "../shell/TitleBar";
-import type { ConflictChoice, FileVersion, Listing, Loc, TextFileView, TransferPlanView, TransferProgressView, TransferReportView, TransferRequest } from "./types";
+import type { ConflictChoice, DragOutLabels, DragOutResult, FileVersion, Listing, Loc, TextFileView, TransferPlanView, TransferProgressView, TransferReportView, TransferRequest } from "./types";
 
 /** 文件面板用到的后端接口：Tauri 实现和浏览器预览实现都遵守它 */
 export interface FilesApi {
@@ -18,6 +18,12 @@ export interface FilesApi {
   /** 开始传输；返回传输 ID（用于取消）和完成时的报告 */
   transfer(req: TransferRequest, conflict: ConflictChoice, onProgress: (p: TransferProgressView) => void): { id: Promise<string>; done: Promise<TransferReportView> };
   cancel(transferId: string): Promise<void>;
+  /**
+   * 把服务器上的文件拖到窗口外（资源管理器、桌面等）：开始系统拖放，松手放到别的程序上时才下载。
+   * 开始下载时 onProgress 先收到一条全是 0 的进度。
+   * @returns 传输 ID（取消用）和拖放结束时的结果；下载出错时 done 抛出错误（取消是 sftp.cancelled）
+   */
+  dragOut(from: Loc, sources: string[], labels: DragOutLabels, onProgress: (p: TransferProgressView) => void): { id: string; done: Promise<DragOutResult> };
   /** 重命名（目标已存在时报错） */
   rename(loc: Loc, from: string, to: string): Promise<void>;
   createDir(loc: Loc, path: string): Promise<void>;

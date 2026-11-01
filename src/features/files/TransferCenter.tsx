@@ -4,6 +4,7 @@ import { createPortal } from "react-dom";
 import { ArrowDownUp, ArrowRightLeft, Check, CircleAlert, X } from "lucide-react";
 import { Button, Dialog } from "../../components";
 import { formatError } from "../../errors";
+import { useSettings } from "../settings/store";
 import { getSyncApi } from "../sync/syncApi";
 import { getFilesApi } from "./api";
 import type { DragPayload, DropTarget } from "./dnd";
@@ -47,6 +48,10 @@ export function TransferCenter() {
   const { t } = useTranslation();
   const drop = useSyncExternalStore((l) => { dropListeners.add(l); return () => dropListeners.delete(l); }, () => pendingDrop);
   const [step, setStep] = useState<Step | null>(null);
+  // “同名文件直接覆盖”：plan 在 effect 里调用，经 ref 读最新的值
+  const { settings } = useSettings();
+  const overwrite = useRef(settings.files.overwriteOnDrop);
+  overwrite.current = settings.files.overwriteOnDrop;
 
   const labelFor = (p: DragPayload, target: DropTarget) =>
     t("files.transferLabel", { what: p.names.length === 1 ? p.names[0] : t("files.items", { count: p.names.length }), to: target.title, dir: target.dir });
@@ -57,8 +62,14 @@ export function TransferCenter() {
   const close = () => { planSeq.current++; setStep(null); };
   const plan = async (p: DragPayload, target: DropTarget) => {
     const my = ++planSeq.current;
-    const req: TransferRequest = { from: p.loc, sources: p.names.map((n) => joinPath(p.dir, n)), to: target.loc, destDir: target.dir };
+    const req: TransferRequest = { from: p.loc, sources: p.paths ?? p.names.map((n) => joinPath(p.dir, n)), to: target.loc, destDir: target.dir };
     const label = labelFor(p, target);
+    // 设置里开了“同名文件直接覆盖”：不统计、不问，直接开始（统计和出错照样在传输列表里）
+    if (overwrite.current) {
+      setStep(null);
+      void startTransfer(req, "overwrite", label);
+      return;
+    }
     setStep({ kind: "planning", req });
     try {
       const result = await (await getFilesApi()).plan(req);
@@ -262,7 +273,8 @@ function JobRow({ job }: { job: TransferJob }) {
 function DragGhost() {
   const { t } = useTranslation();
   const drag = useDragState();
-  if (!drag) return null;
+  // 从资源管理器拖进来的：系统自己画拖动的图标
+  if (!drag || drag.os) return null;
   const target = dropTargetInfo(drag.over, drag.payload);
   const what = drag.payload.names.length === 1 ? drag.payload.names[0] : t("files.items", { count: drag.payload.names.length });
   return (

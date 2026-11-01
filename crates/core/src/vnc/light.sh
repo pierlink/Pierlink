@@ -23,9 +23,13 @@ trap 'exit 1' HUP INT TERM
 mkdir "$work/unpack" || fail permission_denied
 version_package=openbox
 companion_package=xterm
-# 字体与总线不依赖 recommends；补充用户自行放置 Firefox 所需的 GTK、NSS 和 D-Bus 库，不下载浏览器。
+# 必需的只有窗口管理器、终端和会话总线。dbus 1.14 起 dbus-run-session、dbus-daemon 拆到 dbus-bin、dbus-daemon，
+# 由 dbus 的依赖带上；更早的发行版（Ubuntu 22.04、Debian 11）没有这两个包，不能直接点名。
+# 其余可选，软件源里没有就跳过：xauth（系统或 TigerVNC 前缀通常已有）、字体、键盘数据，
+# 以及用户自行放置 Firefox 所需的 GTK、NSS 和 D-Bus 库（不下载浏览器）。
 # libgtk-3-bin 会依赖本发行版对应的 GTK 库，也覆盖使用 t64 包名的发行版。
-apt_unpack openbox xterm dbus dbus-bin dbus-daemon fontconfig fonts-dejavu-core fonts-wqy-microhei xauth x11-xkb-utils xkb-data libgtk-3-bin libdbus-glib-1-2 libnss3
+optional_packages='xauth fontconfig fonts-dejavu-core fonts-wqy-microhei x11-xkb-utils xkb-data libgtk-3-bin libdbus-glib-1-2 libnss3'
+apt_unpack openbox xterm dbus
 rm -rf -- "$apt_root/lists" "$apt_root/cache"
 rmdir -- "$apt_root/.lock"
 apt_private=false

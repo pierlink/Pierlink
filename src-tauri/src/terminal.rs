@@ -912,6 +912,34 @@ pub async fn clipboard_write_text(text: String) -> Result<Option<u32>, AppError>
     .map_err(|e| AppError::new("clipboard.write_failed").with("reason", e.to_string()))?
 }
 
+/// 把远程桌面复制来的文字写进系统剪贴板，同时打上来源标记（哪个桌面来的）：同一个桌面重连、开着两个查看窗口时
+/// 据此认出这段文字是它自己的，不发回远程。Windows 上别的程序再复制会清掉标记。返回写完时剪贴板的变化序号（Windows）
+///
+/// :param origin: 来源值（界面算好的哈希，不含服务器和桌面的明文）
+#[tauri::command]
+#[specta::specta]
+pub async fn clipboard_write_desktop(
+    text: String,
+    origin: String,
+) -> Result<Option<u32>, AppError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        pierlink_core::clipboard::write_marked_text(&text, &origin)?;
+        Ok(clipboard_seq())
+    })
+    .await
+    .map_err(|e| AppError::new("clipboard.write_failed").with("reason", e.to_string()))?
+}
+
+/// 读取系统剪贴板的文字和远程桌面写入时打的来源标记（同一次打开剪贴板读出）。
+/// 没有文字时 text 为 null；不是远程桌面写的、或之后别的程序又复制过时 origin 为 null
+#[tauri::command]
+#[specta::specta]
+pub async fn clipboard_read_desktop() -> Result<pierlink_core::clipboard::ClipboardText, AppError> {
+    tauri::async_runtime::spawn_blocking(pierlink_core::clipboard::read_marked_text)
+        .await
+        .map_err(|e| AppError::new("clipboard.read_failed").with("reason", e.to_string()))?
+}
+
 /// 用系统默认浏览器打开网址（只允许 http 和 https）
 #[tauri::command]
 #[specta::specta]

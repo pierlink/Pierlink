@@ -222,7 +222,25 @@ await rec.step(p, "图片等二进制文件右键没有“编辑”", async () =
   return items;
 });
 
-// ---------- 4. 关闭规则、粘贴 ----------
+// ---------- 4. 响铃提醒、关闭规则、粘贴 ----------
+await rec.step(p, "程序响铃：看不见的标签上出现提醒点，当前标签没有；切过去就消失", async () => {
+  // 第一个标签里 3 秒后响铃，期间开第二个标签（第一个就看不见了）
+  await u.click(".pane-slot:not([style*='none']) .xterm-screen");
+  await u.typeLine('Start-Sleep 3; Write-Host "PL-BELL`a"');
+  await u.click('.tabbar button[aria-label="New terminal tab"]');
+  await u.waitFor(`document.querySelectorAll('.tab').length === 2`, "第二个标签");
+  await u.waitFor(`!!document.querySelectorAll('.tab')[0]?.querySelector('.tab__attention')`, "第一个标签上的提醒点", 20000);
+  if (await p.js(`!!document.querySelector('.tab[aria-selected=true] .tab__attention')`)) throw new Error("当前标签也出现了提醒点");
+  await u.click(".tab", 0);
+  await u.waitFor(`!document.querySelector('.tab__attention')`, "切过去后提醒点消失", 8000);
+  // 关掉第二个标签（新开的空闲终端）
+  await u.click(".tab", 1);
+  await sleep(500);
+  await u.click(".tab[aria-selected=true] .tab__close");
+  await u.waitFor(`document.querySelectorAll('.tab').length === 1`, "关掉第二个标签", 8000);
+  return "第一个标签出现提醒点，切过去后消失";
+});
+
 await rec.step(p, "空闲终端直接关闭；运行 ping 时关闭要确认", async () => {
   await u.click('.tabbar button[aria-label="New terminal tab"]');
   await u.waitFor(`document.querySelectorAll('.tab').length === 2`, "第二个标签");
@@ -524,6 +542,27 @@ await rec.step(p, "拖放传输：本机 → 服务器，再服务器 → 本机
   if (dlg.includes("\\\\?\\")) throw new Error(`路径里有 \\\\?\\：${dlg}`);
   await u.clickText("Skip existing", ".pl-dialog");
   return `传输按钮：${xferBtn}；同名提示：${dlg.replace(/\s+/g, " ").slice(0, 160)}`;
+});
+
+// 选文件夹是系统对话框，端到端里不好点：这里只查菜单项在不在；拖到资源管理器也模拟不了
+await rec.step(p, "服务器文件右键有“下载到…”，本机文件没有", async () => {
+  if (!haveSshd) throw new Error("跳过：没有本机 sshd");
+  const paths = await p.js(`[...document.querySelectorAll('.files')].map(f=>f.querySelector('.files__crumbs')?.title || f.querySelector('.files__crumbs')?.getAttribute('data-pl-tip') || '')`);
+  const remote = paths.findIndex((x) => x.startsWith("/"));
+  const local = paths.findIndex((x) => /^[A-Z]:\\/i.test(x));
+  if (remote < 0 || local < 0) throw new Error(`文件列表不对：${JSON.stringify(paths)}`);
+  const menuOf = async (panel) => {
+    const pt = await u.waitFor(`(()=>{const r=[...document.querySelectorAll('.files')[${panel}].querySelectorAll('.files__row')].find(r=>r.querySelector('.files__name')?.textContent==='pl-xfer.txt'); if(!r) return null; r.scrollIntoView({block:'center'}); const b=r.getBoundingClientRect(); return {x:b.x+40,y:b.y+b.height/2};})()`, "列表里有 pl-xfer.txt");
+    await u.clickXY(pt.x, pt.y, "right");
+    const items = await u.waitFor(`(()=>{const l=[...document.querySelectorAll('.pl-menu [role=menuitem]')].map(x=>x.textContent.trim()); return l.length ? l : null;})()`, "右键菜单");
+    await u.esc();
+    return items;
+  };
+  const remoteItems = await menuOf(remote);
+  if (!remoteItems.some((x) => x.startsWith("Download to"))) throw new Error(`服务器文件的菜单里没有 Download to…：${remoteItems.join(" | ")}`);
+  const localItems = await menuOf(local);
+  if (localItems.some((x) => x.startsWith("Download to"))) throw new Error(`本机文件的菜单里有 Download to…：${localItems.join(" | ")}`);
+  return remoteItems.join(" | ");
 });
 
 // ---------- 7. 重启恢复 ----------

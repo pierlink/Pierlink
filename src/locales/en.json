@@ -55,6 +55,7 @@
     "section": {
       "appearance": "General",
       "terminal": "Terminal",
+      "files": "File transfer",
       "sync": "Sync",
       "ai": "AI access",
       "about": "About",
@@ -121,6 +122,10 @@
     "closeToTray": "Minimize to tray when closing the window",
     "closeToTrayHint": "Sync and terminals keep running in the background",
     "closeToTrayUnavailable": "The system tray is unavailable, so closing the window quits the app",
+    "files": {
+      "overwrite": "Overwrite files with the same name",
+      "overwriteHint": "When you transfer by dragging, replace files with the same name without asking"
+    },
     "desktop": {
       "openInWindow": "Open in a separate window",
       "openInWindowHint": "Open desktops straight in their own window"
@@ -155,6 +160,8 @@
     "servers": "Servers",
     "searchServers": "Name, address, group",
     "addServer": "Add server",
+    "hideAddresses": "Hide IPs",
+    "showAddresses": "Show IPs",
     "importSshConfig": "Import from ~/.ssh/config",
     "filterAll": "All {{count}}",
     "filterFavorites": "Favorites",
@@ -344,6 +351,16 @@
         "couldn_t_replace_the_bash_wrapper_atomically": "couldn't replace the Bash wrapper atomically",
         "bash_wrapper_path_is_not_valid_utf_8": "the Bash wrapper path is not valid UTF-8",
         "select_the_editor_s_native_executable": "select the editor's native executable"
+      },
+      "files": {
+        "drag_out_timer": "Couldn't start the drag",
+        "drag_out_busy": "Another drag out is in progress",
+        "drag_out_crashed": "Something went wrong during the drag",
+        "drag_out_ole": "Couldn't set up drag and drop ({{detail}})",
+        "drag_out_rejected": "The program you dropped on didn't accept the files",
+        "drag_out_unexpected": "Drag and drop returned an unexpected result ({{detail}})",
+        "drag_out_unsupported": "Only available on Windows",
+        "drag_out_unfinished": "The drag didn't finish"
       },
       "fs_local": {
         "check_destination": "check destination",
@@ -1217,7 +1234,7 @@
         "package_size_limit": "downloaded package exceeds the size limit",
         "apt_tools_missing": "apt-get, apt-cache, and dpkg are required",
         "apt_dependencies": "couldn't resolve distribution dependencies",
-        "apt_dependency_unavailable": "no available package in the dependency group",
+        "apt_dependency_unavailable": "the repository has no {{package}}",
         "apt_package_missing": "repository has no downloadable package",
         "apt_size_unknown": "repository did not provide a unique download size",
         "apt_single_limit": "a dependency download exceeds 300 MiB",
@@ -1559,7 +1576,11 @@
       "too_large": "The file is too large (over 5 MB) to edit in the app",
       "not_text": "Not a text file (or not UTF-8), can't edit it in the app",
       "changed": "The file changed after you opened it",
-      "pick_failed": "Couldn't open the folder picker: {{reason}}"
+      "pick_failed": "Couldn't open the folder picker: {{reason}}",
+      "drag_out_unsupported": "Dragging files out of the window only works on Windows",
+      "drag_no_space": "Not enough local disk space: dragged-out files are downloaded to this computer first (needs {{need}} plus 1 GB headroom; {{free}} free)",
+      "drag_out_failed": "Couldn't drag out: {{reason}}",
+      "drag_out_empty": "Nothing was downloaded"
     },
     "clipboard": {
       "busy": "The clipboard is in use by another program. Try pasting again",
@@ -1567,7 +1588,8 @@
       "unsupported": "Reading the clipboard directly isn't supported on this system",
       "too_large": "Too much to copy (limit {{limit}} bytes)",
       "write_failed": "Couldn't write to the clipboard",
-      "no_image": "No image in the clipboard"
+      "no_image": "No image in the clipboard",
+      "invalid_origin": "Invalid clipboard origin mark"
     },
     "link": {
       "invalid_url": "This link can't be opened: {{reason}}",
@@ -1695,6 +1717,7 @@
     }
   },
   "terminal": {
+    "attention": "A program is waiting for you (for example, the AI needs an answer)",
     "closed": "Session closed",
     "pressEnter": "Press Enter to reopen",
     "previewBanner": "Pierlink preview: no server is connected in the browser; input is echoed. Type exit to end.",
@@ -1746,10 +1769,9 @@
     "reopen": "Reopen",
     "endedEnterHint": "Or just press Enter",
     "disconnect": "Disconnect",
-    "lineLost": "Connection lost. Press Enter to reconnect.",
-    "lineDisconnected": "Disconnected. Press Enter to reconnect.",
-    "lineExited": "Process exited (code {{code}}). Press Enter to reconnect.",
-    "lineExitedLocal": "Process exited (code {{code}}). Press Enter to reopen.",
+    "endLost": "Connection lost",
+    "endDisconnected": "Disconnected",
+    "endExited": "Process exited (code {{code}})",
     "hookOff": "Command prediction doesn't work on this server, so it is now off for this server (turn it back on in the server's right-click menu).",
     "hookHintQuick": "If it exits right after connecting, turn off command prediction in Settings → Terminal and try again.",
     "paneCount": "{{count}} panes",
@@ -2576,7 +2598,12 @@
     "binaryRemote": "\"{{name}}\" is not a text file and can't be edited in the app. Drag it to a local pane's file list to download it, then open it.",
     "incomingShort": "Receiving",
     "outgoingShort": "Sending",
-    "refreshFailed": "Couldn't refresh the folder; showing what was read last time: {{reason}}"
+    "refreshFailed": "Couldn't refresh the folder; showing what was read last time: {{reason}}",
+    "downloadTo": "Download to…",
+    "dragHintOut": "Drag to another pane to transfer, or out of the window to download",
+    "dragOutLabel": "Drag out {{what}}",
+    "dragOutLine": "Downloading {{what}}",
+    "dragOutCancelled": "Cancelled"
   },
   "dbRestored": {
     "title": "Database restored from backup",
@@ -2831,6 +2858,7 @@
   "mcp": {
     "unknownClient": "Unknown client",
     "confirmConnectTitle": "Allow this AI to connect?",
+    "waitingTitle": "AI needs you ({{count}})",
     "confirmDangerTitle": "AI wants to do something risky",
     "deny": "Deny",
     "allowOnce": "Allow this time",
@@ -2876,6 +2904,7 @@
       "connecting": "Connecting",
       "running": "Running",
       "reconnecting": "Reconnecting",
+      "port_busy": "Port in use",
       "waiting_password": "Waiting for login",
       "error": "Error",
       "stopped": "Not running"
@@ -2945,8 +2974,29 @@
     "added": "Added to {{client}}. Restart it to take effect",
     "addedCursor": "Written to {{path}}; Cursor loads it automatically",
     "addedServer": "Added to {{client}} on {{server}}",
+    "portApply": "Apply",
+    "portChanging": "Switching to {{port}}…",
+    "portChanged": "Now on {{port}}",
+    "readdedOk": "{{clients}} on the server updated; restart them to apply",
+    "readdedFailed": "Couldn't update {{clients}}; click Re-add",
+    "readdedNone": "Re-add it in the AI on the server, then restart the AI",
+    "restartHint": "After changing the token or port, one-click setups update themselves and manual ones need re-adding. Either way, restart the AI on the server (Codex, Claude Code…).",
+    "conflictChecking": "Port {{port}} on the server is in use; checking who has it…",
+    "conflictThisPc": "Port {{port}} is used by another connection from this PC (two server records may point to the same server). Use another port.",
+    "conflictOtherPc": "Port {{port}} is used by Pierlink on another PC{{who}}. When two PCs use AI access on the same server, give each its own port and re-add it on the server.",
+    "conflictStale": "Port {{port}} is held by an earlier connection that didn't close cleanly. The server frees it once it notices (minutes), and this entry then connects. Use another port if you're in a hurry.",
+    "conflictOtherProgram": "Port {{port}} is used by another program on the server. Use another port.",
+    "conflictUnknown": "Port {{port}} on the server is in use and the owner couldn't be found. Try another port.",
+    "conflictNotListening": "The server refused the port forward (sshd may have forwarding turned off). Retrying automatically.",
+    "listJoiner": ", ",
+    "conflictWho": " ({{name}})",
+    "useFreePort": "Use {{port}}",
+    "clientAdded": "{{client}}: added",
+    "clientStale": "{{client}}: the saved setup is old (address, token or Pierlink location changed). Click Re-add, then restart {{client}}",
+    "clientNotAdded": "{{client}}: not added yet",
+    "readdOneClick": "Re-add",
     "rotateTokenHint": "The old token stops working immediately; connected AIs disconnect and their background jobs end",
-    "rotated": "Token rotated; one-click setups update themselves and take effect when the client reconnects",
+    "rotated": "New token in place",
     "clientMissing": "{{client}} wasn't found on this PC; copy a command below to add it yourself",
     "serverClientMissing": "{{client}} wasn't found on {{server}}; copy a command below to add it yourself",
     "showOutput": "Show output",
@@ -3228,6 +3278,19 @@
     "noneTitle": "No VNC desktop found on this server",
     "noneInstall": "If you have admin rights, run this in a terminal on the server:",
     "noneManual": "Install TigerVNC and a desktop environment (XFCE recommended) on the server first.",
+    "recheck": "Check again",
+    "help": {
+      "open": "How to install",
+      "title": "Install what the desktop needs",
+      "run": "Install with admin rights in a terminal on the server, then come back and click “{{button}}”.",
+      "other": "Other systems",
+      "full": "Full desktop",
+      "fullValue": "Replace openbox xterm with xfce4 xfce4-terminal",
+      "universe": "Ubuntu can't find a package",
+      "rhelName": "Rocky / Alma / CentOS Stream 8, 9",
+      "rhel": "epel-release first, then tigervnc-server dbus-x11 google-noto-sans-cjk-ttc-fonts and the Xfce group",
+      "ai": "You can also send this to an AI and have it install them."
+    },
     "copy": "Copy command",
     "copied": "Copied",
     "pickTitle": "Choose a desktop",
@@ -3268,7 +3331,6 @@
     "copyLink": "Copy link",
     "pickPackage": "Pick downloaded package",
     "localDownload": "Download on this PC",
-    "back": "Back",
     "stop": "Close desktop",
     "stopTitle": "Close this desktop?",
     "stopBody": "All programs open in it will end.",

@@ -16,8 +16,8 @@ import { ProxySection } from "./ProxySection";
 import { clearHistory } from "../terminal/history";
 import "./settings.css";
 
-type Section = "appearance" | "terminal" | "desktop" | "sync" | "phone" | "network" | "backup" | "about";
-const SECTIONS: Section[] = ["appearance", "terminal", "desktop", "sync", "phone", "network", "backup", "about"];
+type Section = "appearance" | "terminal" | "files" | "desktop" | "sync" | "phone" | "network" | "backup" | "about";
+const SECTIONS: Section[] = ["appearance", "terminal", "files", "desktop", "sync", "phone", "network", "backup", "about"];
 
 /** 一行设置：左边说明，右边控件 */
 function Row({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
@@ -81,7 +81,7 @@ export function SettingsPage({ version }: { version: string | null }) {
   const [shells, setShells] = useState<LocalShellView[]>([]);
   const [rulesText, setRulesText] = useState(settings.syncDefaults.ignoreRules.join("\n"));
   const [active, setActive] = useState<Section>("appearance");
-  const refs = useRef<Record<Section, HTMLElement | null>>({ appearance: null, terminal: null, desktop: null, sync: null, phone: null, network: null, backup: null, about: null });
+  const refs = useRef<Record<Section, HTMLElement | null>>({ appearance: null, terminal: null, files: null, desktop: null, sync: null, phone: null, network: null, backup: null, about: null });
   const term = settings.terminal;
   const sync = settings.syncDefaults;
 
@@ -232,6 +232,15 @@ export function SettingsPage({ version }: { version: string | null }) {
             {historyError && <Banner tone="danger" title={historyError} />}
             <Row label={t("settings.term.shortcuts")} hint={t("settings.term.shortcutsHint")}>
               <span className="set-kbd mono">Ctrl+C / Ctrl+V / Ctrl+Shift+B</span>
+            </Row>
+          </div>
+        </section>
+
+        <section ref={(el) => { refs.current.files = el; }} className="set-section">
+          <h2>{t("settings.section.files")}</h2>
+          <div className="set-card">
+            <Row label={t("settings.files.overwrite")} hint={t("settings.files.overwriteHint")}>
+              <Switch label={t("settings.files.overwrite")} checked={settings.files.overwriteOnDrop} onChange={(v) => update((s) => ({ ...s, files: { ...s.files, overwriteOnDrop: v } }))} />
             </Row>
           </div>
         </section>

@@ -106,6 +106,8 @@ export function createPreviewFilesApi(): FilesApi {
       return { id: Promise.resolve(id), done };
     },
     async cancel(id) { cancelled.add(id); },
+    // 浏览器里没有系统拖放：当作没放下
+    dragOut() { return { id: `d${++seq}`, done: Promise.resolve({ kind: "cancelled" as const }) }; },
     async rename(loc, from, to) {
       await wait();
       if (exists(loc, to)) throw { code: loc.kind === "local" ? "fs.exists" : "sftp.exists", params: { path: to } };

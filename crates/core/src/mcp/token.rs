@@ -19,15 +19,32 @@ pub fn new_token() -> Zeroizing<String> {
     )
 }
 
-/// 将 url、token 和 Claude 接入命令写入 ~/.pierlink/mcp.json，返回交给 run_script 的 POSIX sh 正文。
+/// 谁写的 ~/.pierlink/mcp.json：同一台服务器、同一个用户可能被几台电脑上的 Pierlink 连着，
+/// 停用入口时只删自己写的那份
+#[derive(Debug, Clone, Copy)]
+pub struct FileOwner<'a> {
+    /// Pierlink 的实例号（随机、长期不变；只含字母数字和 -_）
+    pub instance: &'a str,
+    /// 电脑名（只用于显示：端口被另一台电脑占着时告诉用户是哪台）
+    pub computer: &'a str,
+}
+
+/// 将 url、token、Claude 接入命令和写入者写入 ~/.pierlink/mcp.json，返回交给 run_script 的 POSIX sh 正文。
 /// 正文须经标准输入发送；成功仅输出 {"ok":true}，临时文件自动清理，不将令牌放进进程参数。
 /// url 含 NUL 时返回明确失败的脚本；token 由 JSON 编码，可安全包含引号和换行。
-pub fn token_file_script(url: &str, token: &str) -> String {
+pub fn token_file_script(url: &str, token: &str, owner: FileOwner) -> String {
     if sh_quote(url).is_err() {
         return invalid_url_script();
     }
     let commands = connect_commands(url);
-    let value = serde_json::json!({"url":url, "token":token, "claude":commands[0]});
+    let value = serde_json::json!({
+        "url": url,
+        "token": token,
+        "claude": commands[0],
+        "instance": clean_instance(owner.instance),
+        "token_id": token_id(token),
+        "computer": owner.computer,
+    });
     format!(
         r#"set -eu
 umask 077
@@ -52,15 +69,52 @@ printf '%s\n' '{{"ok":true}}'
     )
 }
 
-/// 无参数；返回删除 ~/.pierlink/mcp.json 的 run_script 正文，文件不存在也输出成功 JSON。
-pub fn remove_token_file_script() -> String {
-    r#"set -eu
+/// 返回删除 ~/.pierlink/mcp.json 的 run_script 正文，文件不存在也输出成功 JSON。
+/// 文件是另一个实例写的（另一台电脑上的 Pierlink 正用着）就不删，输出 {"ok":true,"kept":true}；
+/// 实例号对得上、或令牌的短哈希对得上（数据目录被清过、实例号变了，但令牌还是这台电脑的）都算自己的；
+/// 旧版本写的文件没有实例号，照旧删。
+/// :param instance: 这个 Pierlink 的实例号
+/// :param token: 这个入口现在的令牌（只用它的短哈希比较；不知道时传空串）
+pub fn remove_token_file_script(instance: &str, token: &str) -> String {
+    let marker = format!("\"instance\":\"{}\"", clean_instance(instance));
+    // 令牌为空时给一个不会出现在文件里的标记
+    let token_marker = if token.is_empty() {
+        "\"token_id\":\"-\"".to_owned()
+    } else {
+        format!("\"token_id\":\"{}\"", token_id(token))
+    };
+    // 只含字母数字和 -_ 加上引号冒号：放进单引号里不需要转义
+    format!(
+        r#"set -eu
 dir="$HOME/.pierlink"
 if [ -L "$dir" ]; then printf '%s\n' 'MCP 配置目录不能是符号链接' >&2; exit 1; fi
-rm -f -- "$dir/mcp.json"
-printf '%s\n' '{"ok":true}'
+f="$dir/mcp.json"
+if [ -f "$f" ] && grep -q '"instance"' "$f" && ! grep -qF '{marker}' "$f" && ! grep -qF '{token_marker}' "$f"; then
+  printf '%s\n' '{{"ok":true,"kept":true}}'
+  exit 0
+fi
+rm -f -- "$f"
+printf '%s\n' '{{"ok":true}}'
 "#
-    .into()
+    )
+}
+
+/// 令牌的短哈希（SHA-256 的前 8 字节，十六进制）：写进 mcp.json，删除时认出是不是自己写的；不能反推出令牌
+pub fn token_id(token: &str) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(token.as_bytes())[..8]
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+/// 实例号只留字母数字和 -_（放进脚本和 JSON 都不用转义）
+fn clean_instance(instance: &str) -> String {
+    instance
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+        .take(64)
+        .collect()
 }
 
 /// 按 url 返回 jq 与无 jq 的 sed 两种 Claude 接入命令；令牌在运行时从配置读取。
@@ -114,6 +168,11 @@ mod tests {
             process::{Command, Stdio},
         };
 
+        const OWNER: FileOwner = FileOwner {
+            instance: "inst-a",
+            computer: "电脑 A",
+        };
+
         fn run(home: &Path, script: &str) -> std::process::Output {
             let mut command = Command::new("/bin/sh");
             command.arg("-s");
@@ -162,7 +221,7 @@ mod tests {
                 new_token().to_string(),
                 "引号\"'\nPIERLINK_MCP_JSON\n$(id)\\\0".into(),
             ] {
-                framed(&home, &token_file_script(url, &token));
+                framed(&home, &token_file_script(url, &token, OWNER));
                 let dir = home.join(".pierlink");
                 let path = dir.join("mcp.json");
                 assert_eq!(
@@ -178,11 +237,38 @@ mod tests {
                 assert_eq!(data["url"], url);
                 assert_eq!(data["token"], token);
                 assert_eq!(data["claude"], connect_commands(url)[0]);
+                assert_eq!(data["instance"], "inst-a");
+                assert_eq!(data["token_id"], token_id(&token));
+                assert_eq!(token_id(&token).len(), 16);
+                assert_eq!(data["computer"], "电脑 A");
                 assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
             }
-            framed(&home, &remove_token_file_script());
-            framed(&home, &remove_token_file_script());
+            framed(&home, &remove_token_file_script("inst-a", ""));
+            framed(&home, &remove_token_file_script("inst-a", ""));
             assert!(!home.join(".pierlink/mcp.json").exists());
+        }
+
+        #[test]
+        fn 只删自己写的地址文件_旧版本写的照删() {
+            let root = crate::test_support::tempdir();
+            let home = root.path();
+            let path = home.join(".pierlink/mcp.json");
+            framed(
+                home,
+                &token_file_script("http://127.0.0.1:47821/mcp", "t", OWNER),
+            );
+            // 另一台电脑（另一个实例、另一个令牌）停用入口：不删
+            let result = run(home, &remove_token_file_script("inst-b", "other"));
+            assert!(result.status.success());
+            assert!(String::from_utf8_lossy(&result.stdout).contains("kept"));
+            assert!(path.exists());
+            // 实例号变了（数据目录被清过）但令牌还是自己的：删
+            framed(home, &remove_token_file_script("inst-new", "t"));
+            assert!(!path.exists());
+            // 旧版本写的（没有实例号）：照删
+            std::fs::write(&path, r#"{"url":"u","token":"t"}"#).unwrap();
+            framed(home, &remove_token_file_script("inst-b", ""));
+            assert!(!path.exists());
         }
 
         #[test]
@@ -192,7 +278,7 @@ mod tests {
             std::fs::create_dir(&home).unwrap();
             let url = "http://127.0.0.1:47821/mcp?'\"$(exit 7)";
             let token = new_token();
-            framed(&home, &token_file_script(url, &token));
+            framed(&home, &token_file_script(url, &token, OWNER));
             for command in connect_commands(url) {
                 // 以函数接收参数，验证 shell 转义和两种真实读取程序，不执行 Claude。
                 let script = format!(
@@ -211,7 +297,7 @@ mod tests {
         fn 非法地址和不安全目录失败且无临时文件残留() {
             let root = crate::test_support::tempdir();
             assert!(
-                !run(root.path(), &token_file_script("x\0y", "秘密"))
+                !run(root.path(), &token_file_script("x\0y", "秘密", OWNER))
                     .status
                     .success()
             );
@@ -224,7 +310,7 @@ mod tests {
             std::fs::create_dir(root.path().join(".pierlink/mcp.json")).unwrap();
             let result = run(
                 root.path(),
-                &token_file_script("http://127.0.0.1/mcp", "秘密"),
+                &token_file_script("http://127.0.0.1/mcp", "秘密", OWNER),
             );
             assert!(!result.status.success());
             assert!(!String::from_utf8_lossy(&result.stderr).contains("秘密"));
@@ -240,9 +326,9 @@ mod tests {
         fn 写入中途失败保留旧文件并删除临时文件() {
             let root = crate::test_support::tempdir();
             let url = "http://127.0.0.1:47821/mcp";
-            framed(root.path(), &token_file_script(url, "old-token"));
-            let script =
-                token_file_script(url, "new-token").replace("chmod 600 --", "false\nchmod 600 --");
+            framed(root.path(), &token_file_script(url, "old-token", OWNER));
+            let script = token_file_script(url, "new-token", OWNER)
+                .replace("chmod 600 --", "false\nchmod 600 --");
             assert!(!run(root.path(), &script).status.success());
             let dir = root.path().join(".pierlink");
             let data: serde_json::Value =

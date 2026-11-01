@@ -226,12 +226,16 @@ impl McpState {
         let terminals = app.state::<TerminalState>().manager.clone();
         let audit_dir = crate::data::data_dir(app)?.join("logs").join("mcp");
         let service = Arc::new(McpService::new(host.clone(), terminals, audit_dir)?);
+        // 这个 Pierlink 的实例号（随机、存在数据目录里长期不变）：服务器入口的探测地址回报它，
+        // 服务器上的地址文件也记着它，端口被占用时据此分清是不是自己
+        let instance = load_instance(app);
+        service.set_instance(&instance);
         let pipe = Arc::new(Mutex::new(PipeStatus::default()));
         start_pipe(&service, &pipe);
         Ok(Self {
             service,
             host,
-            entries: entries::Entries::default(),
+            entries: entries::Entries::new(instance),
             pipe,
         })
     }
@@ -290,6 +294,34 @@ fn start_pipe(service: &Arc<McpService>, status: &Arc<Mutex<PipeStatus>>) {
 #[cfg(not(windows))]
 fn start_pipe(_service: &Arc<McpService>, status: &Arc<Mutex<PipeStatus>>) {
     status.lock().unwrap_or_else(|p| p.into_inner()).error = Some("只在 Windows 上提供".into());
+}
+
+/// 读这个 Pierlink 的实例号（数据目录里的 mcp-instance）；没有或读不懂就新建一个存进去，存不了就只在这次运行里用
+fn load_instance(app: &AppHandle) -> String {
+    let path = crate::data::data_dir(app)
+        .ok()
+        .map(|d| d.join("mcp-instance"));
+    if let Some(text) = path.as_ref().and_then(|p| std::fs::read_to_string(p).ok()) {
+        let id = text.trim();
+        if (16..=64).contains(&id.len())
+            && id
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        {
+            return id.to_owned();
+        }
+    }
+    let id: String = pierlink_core::mcp::token::new_token()
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .take(20)
+        .collect();
+    if let Some(p) = path
+        && let Err(e) = std::fs::write(&p, &id)
+    {
+        eprintln!("保存 AI 接入实例号失败: 错误={e}");
+    }
+    id
 }
 
 /// 设置里应该运行的服务器入口（服务器 ID → 端口）

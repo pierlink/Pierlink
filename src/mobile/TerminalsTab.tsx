@@ -278,6 +278,12 @@ function TerminalView({ me, term, pending, onOpenConfirms, onBack, onAuthLost }:
   /** 刚往上多要了行：下一次读到的要马上显示，并保持正在看的位置 */
   const loadingMore = useRef<{ height: number } | null>(null);
   useWakeLock(true);
+  // 告诉整页现在在看终端（顶栏让出来、键盘开着时底部标签让位，见 mobile.css）；不用 :has()，老浏览器也认
+  useEffect(() => {
+    const root = document.documentElement;
+    root.dataset.mterm = "1";
+    return () => { delete root.dataset.mterm; };
+  }, []);
 
   // 按手机宽度显示：电脑上的终端临时改成手机的列数，离开时恢复；电脑上有人在用时不改
   const sentSize = useRef<{ cols: number; rows: number } | null>(null);

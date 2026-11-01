@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import RFB from "@novnc/novnc";
-import { AppWindow, Expand, Maximize, Minimize, Power, Unplug, X } from "lucide-react";
+import { AppWindow, CircleQuestionMark, Expand, Maximize, Minimize, Power, Unplug, X } from "lucide-react";
 import { Button, Checkbox, Dialog, Select } from "../../components";
 import { formatError, isAppError } from "../../errors";
-import { clipboardSequence, readClipboardText, writeClipboardText } from "../shell/clipboard";
-import { ClipboardSync } from "./clipboardSync";
+import { clipboardSequence, readMarkedClipboardText, writeClipboardText, writeMarkedClipboardText } from "../shell/clipboard";
+import { CommandLine } from "../mcp/McpParts";
+import { ClipboardSync, desktopOrigin } from "./clipboardSync";
 import { openDesktopWindow } from "./popouts";
 import { inTauri } from "../shell/TitleBar";
 import { DesktopChannel } from "./channel";
@@ -46,6 +47,23 @@ interface CreateArgs {
 
 /** 官方包的下载地址（电脑上用浏览器下载后再“选择已下载的包”） */
 const OFFICIAL_URL = "https://sourceforge.net/projects/tigervnc/files/stable/1.16.2/tigervnc-1.16.2.x86_64.tar.gz";
+
+/**
+ * 安装说明里 Debian / Ubuntu 要装的包，和后端给轻量桌面的安装命令一致：TigerVNC（Xvnc）、dbus-launch、
+ * Openbox + xterm、中文字体
+ */
+const APT_PACKAGES = "tigervnc-standalone-server dbus-x11 openbox xterm fonts-wqy-microhei";
+/** Ubuntu 没开 universe 源时找不到 TigerVNC、Openbox 等包 */
+const UNIVERSE_COMMAND = "sudo add-apt-repository -y universe";
+
+/**
+ * 这台服务器要装的软件的安装命令（需要管理员权限）：只能用轻量桌面（服务器上没有桌面环境）时装 Openbox，否则装 XFCE。
+ * @param detection 检测结果
+ * @returns 安装命令；不认识服务器的包管理器时为 null
+ */
+function installCommandFor(detection: DesktopDetection): string | null {
+  return (detection.desktops.some((d) => d.light) ? detection.installCommandLight : null) ?? detection.installCommand;
+}
 
 /**
  * noVNC 1.7 的内部字段：恢复远程分辨率要用（公开接口只能“跟随窗口”，不能指定尺寸）；
@@ -165,11 +183,14 @@ export function DesktopPane({ serverId, visible, title, controls, windowTitle, s
   const wantFull = useRef(false);
   /** 已经连上远程（noVNC 握手完成）：连上之前发剪贴板会被 noVNC 丢掉 */
   const linked = useRef(false);
+  /** 当前桌面的来源值：远程复制的文字写进 Windows 剪贴板时打的标记（服务器 ID 和桌面键的哈希） */
+  const originRef = useRef<string | null>(null);
   /** 剪贴板自动同步：本机剪贴板有了新文字就发到远程 */
   const [clip] = useState(() => new ClipboardSync({
     ready: () => !!rfbRef.current && linked.current,
     sequence: clipboardSequence,
-    read: readClipboardText,
+    read: readMarkedClipboardText,
+    origin: () => originRef.current,
     send: (text) => {
       const rfb = rfbRef.current;
       if (!rfb || !linked.current) return false;
@@ -189,9 +210,10 @@ export function DesktopPane({ serverId, visible, title, controls, windowTitle, s
     disconnect();
     linked.current = false;
     clip.reset();
+    originRef.current = null;
     setPhase({ kind: "connecting", session });
     setSize("");
-    const api = await getDesktopApi();
+    const [api, origin] = await Promise.all([getDesktopApi(), desktopOrigin(serverId, session.key)]);
     const channel = new DesktopChannel();
     // 服务器那边断开的原因（noVNC 在已连接时收到关闭不算出错，原因要自己记下来显示）
     let closedReason = "";
@@ -211,6 +233,7 @@ export function DesktopPane({ serverId, visible, title, controls, windowTitle, s
     if (!screen) { conn.close(); return; }
     const rfb = new RFB(screen, channel, { shared: true, credentials: saved ? { password: saved } : undefined });
     rfbRef.current = rfb;
+    originRef.current = origin;
     const p = loadPrefs();
     rfb.scaleViewport = p.fit;
     const mode = effectiveResolution(p.resolution, session.pierlink);
@@ -268,12 +291,13 @@ export function DesktopPane({ serverId, visible, title, controls, windowTitle, s
       connRef.current = null;
       setPhase((cur) => (cur.kind === "password" || cur.kind === "popped" ? cur : { kind: "closed", session, error: closedReason || (clean ? null : t("desktop.lost")) }));
     });
-    // 远程复制了东西：由后端写进 Windows 剪贴板（网页方式要求窗口在前台，远程在后台复制时会写不进去）
+    // 远程复制了东西：由后端写进 Windows 剪贴板（网页方式要求窗口在前台，远程在后台复制时会写不进去），
+    // 打上这个桌面的来源标记，之后重连、另一个查看窗口都认得出它，不发回去
     rfb.addEventListener("clipboard", (e) => {
       const text = (e as CustomEvent<{ text: string }>).detail?.text;
       if (!text) return;
       clip.fromRemote(text);
-      void writeClipboardText(text).then((seq) => clip.written(seq), () => {});
+      void (origin ? writeMarkedClipboardText(text, origin) : writeClipboardText(text)).then((seq) => clip.written(seq), () => {});
     });
   }, [clip, disconnect, serverId, t]);
 
@@ -588,7 +612,7 @@ export function DesktopPane({ serverId, visible, title, controls, windowTitle, s
           </div>
         )}
         {phase.kind === "pick" && (
-          <SessionList detection={phase.detection} onConnect={(s) => void connect(s)}
+          <SessionList detection={phase.detection} onConnect={(s) => void connect(s)} onRecheck={() => void detect(false)}
             onCreate={(desktopId) => void create({ detection: phase.detection, desktopId, allowOfficialDownload: false, manualPackage: null })} />
         )}
         {phase.kind === "creating" && (
@@ -673,7 +697,10 @@ function CreateProgress({ progress }: { progress: DesktopCreateProgress | null }
   );
 }
 
-/** 新建失败：每一步为什么不行；能用官方包时可以让这台电脑下载，或选已经下载好的包；有管理员权限可以用安装命令 */
+/**
+ * 新建失败：每一步为什么不行；能用官方包时可以让这台电脑下载，或选已经下载好的包；
+ * 不管哪一步失败，都给出这台服务器的安装命令（有管理员权限时自己装）
+ */
 function CreateFailed({ state, onRetry, onBack }: {
   state: Extract<Phase, { kind: "createFailed" }>;
   onRetry: (args: CreateArgs) => void;
@@ -693,6 +720,7 @@ function CreateFailed({ state, onRetry, onBack }: {
     return true;
   });
   const acquireFailed = state.failures.length > 0;
+  const command = installCommandFor(detection);
   const copy = (text: string) => { void writeClipboardText(text).then(() => setCopied(text)); };
   const pick = async () => {
     const path = await (await getDesktopApi()).pickPackage().catch(() => null);
@@ -700,7 +728,10 @@ function CreateFailed({ state, onRetry, onBack }: {
   };
   return (
     <div className="desk__card desk__card--wide">
-      <b>{acquireFailed ? t("desktop.acquireFailedTitle") : t("desktop.createFailedTitle")}</b>
+      <div className="desk__head">
+        <b>{acquireFailed ? t("desktop.acquireFailedTitle") : t("desktop.createFailedTitle")}</b>
+        <InstallHelp command={command} onRecheck={onBack} />
+      </div>
       {acquireFailed
         ? (
           <ul className="desk__reasons">
@@ -721,36 +752,42 @@ function CreateFailed({ state, onRetry, onBack }: {
           </div>
         </>
       )}
-      {acquireFailed && detection.installCommand && (
+      {command && (
         <>
           <p>{t("desktop.noneInstall")}</p>
-          <pre className="mono desk__cmd">{detection.installCommand}</pre>
+          <pre className="mono desk__cmd">{command}</pre>
           <div className="desk__actions">
-            <Button onClick={() => copy(detection.installCommand!)}>{copied === detection.installCommand ? t("desktop.copied") : t("desktop.copy")}</Button>
+            <Button onClick={() => copy(command)}>{copied === command ? t("desktop.copied") : t("desktop.copy")}</Button>
           </div>
         </>
       )}
       <div className="desk__actions">
-        <Button onClick={onBack}>{t("desktop.back")}</Button>
+        <Button onClick={onBack}>{t("desktop.recheck")}</Button>
         <Button variant="primary" onClick={() => onRetry(request)}>{t("common.retry")}</Button>
       </div>
     </div>
   );
 }
 
-/** 检测结果：已有的桌面逐个列出；能新建时给“新建桌面”；都不行时给安装命令 */
-function SessionList({ detection, onConnect, onCreate }: {
+/** 检测结果：已有的桌面逐个列出；能新建时给“新建桌面”；都不行时给安装命令。onRecheck 重新查找（装好软件以后） */
+function SessionList({ detection, onConnect, onCreate, onRecheck }: {
   detection: DesktopDetection;
   onConnect: (s: DesktopSession) => void;
   onCreate: (desktopId: string) => void;
+  onRecheck: () => void;
 }) {
   const { t } = useTranslation();
   const [copied, setCopied] = useState(false);
   const [env, setEnv] = useState(detection.desktops[0]?.id ?? "");
   const none = detection.sessions.length === 0;
+  const command = installCommandFor(detection);
+  const help = <InstallHelp command={command} onRecheck={onRecheck} />;
   const createBox = detection.canCreate && (
     <div className="desk__create">
-      <b>{none ? t("desktop.createFirstTitle") : t("desktop.createTitle")}</b>
+      <div className="desk__head">
+        <b>{none ? t("desktop.createFirstTitle") : t("desktop.createTitle")}</b>
+        {help}
+      </div>
       <p className="desk__hint">{t("desktop.createHint")}</p>
       <div className="desk__create-row">
         {detection.desktops.length > 1 && (
@@ -765,20 +802,21 @@ function SessionList({ detection, onConnect, onCreate }: {
     </div>
   );
   if (none && !detection.canCreate) {
-    const cmd = detection.installCommand;
     return (
       <div className="desk__card desk__card--wide">
-        <b>{t("desktop.noneTitle")}</b>
+        <div className="desk__head">
+          <b>{t("desktop.noneTitle")}</b>
+          {help}
+        </div>
         {detection.missingTools.length > 0 && <p>{t("desktop.missingTools", { tools: detection.missingTools.join(t("desktop.sep")) })}</p>}
-        <p>{cmd ? t("desktop.noneInstall") : t("desktop.noneManual")}</p>
-        {cmd && (
-          <>
-            <pre className="mono desk__cmd">{cmd}</pre>
-            <div className="desk__actions">
-              <Button onClick={() => { void writeClipboardText(cmd).then(() => setCopied(true)); }}>{copied ? t("desktop.copied") : t("desktop.copy")}</Button>
-            </div>
-          </>
-        )}
+        <p>{command ? t("desktop.noneInstall") : t("desktop.noneManual")}</p>
+        {command && <pre className="mono desk__cmd">{command}</pre>}
+        <div className="desk__actions">
+          {command && (
+            <Button onClick={() => { void writeClipboardText(command).then(() => setCopied(true)); }}>{copied ? t("desktop.copied") : t("desktop.copy")}</Button>
+          )}
+          <Button variant="primary" onClick={onRecheck}>{t("desktop.recheck")}</Button>
+        </div>
       </div>
     );
   }
@@ -804,5 +842,45 @@ function SessionList({ detection, onConnect, onCreate }: {
       )}
       {createBox}
     </div>
+  );
+}
+
+/**
+ * 卡片标题行最右边的问号：点开是简易安装说明——这台服务器的安装命令、其他系统要装的包。
+ * 要装的和新建桌面实际用到的一致：TigerVNC 的 Xvnc（1.9 起）、dbus-run-session 或 dbus-launch、一个桌面会话、中文字体。
+ * @param command 这台服务器的安装命令；不认识包管理器时为 null（只给其他系统的包）
+ * @param onRecheck 装好以后重新查找
+ */
+function InstallHelp({ command, onRecheck }: { command: string | null; onRecheck: () => void }) {
+  const { t } = useTranslation();
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <button type="button" className="pane__btn" title={t("desktop.help.open")} aria-label={t("desktop.help.open")} onClick={() => setOpen(true)}>
+        <CircleQuestionMark size={14} />
+      </button>
+      {open && (
+        <Dialog title={t("desktop.help.title")} onDismiss={() => setOpen(false)}
+          actions={<>
+            <Button onClick={() => setOpen(false)}>{t("common.close")}</Button>
+            <Button variant="primary" onClick={() => { setOpen(false); onRecheck(); }}>{t("desktop.recheck")}</Button>
+          </>}>
+          <div className="desk-help">
+            <p>{t("desktop.help.run", { button: t("desktop.recheck") })}</p>
+            {command && <CommandLine text={command} />}
+            <table className="desk-help__table">
+              <caption>{t("desktop.help.other")}</caption>
+              <tbody>
+                <tr><th scope="row">Debian / Ubuntu</th><td className="mono">{APT_PACKAGES}</td></tr>
+                <tr><th scope="row">{t("desktop.help.full")}</th><td>{t("desktop.help.fullValue")}</td></tr>
+                <tr><th scope="row">{t("desktop.help.universe")}</th><td className="mono">{UNIVERSE_COMMAND}</td></tr>
+                <tr><th scope="row">{t("desktop.help.rhelName")}</th><td>{t("desktop.help.rhel")}</td></tr>
+              </tbody>
+            </table>
+            <p>{t("desktop.help.ai")}</p>
+          </div>
+        </Dialog>
+      )}
+    </>
   );
 }

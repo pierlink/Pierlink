@@ -184,6 +184,32 @@ async fn unused(port: u16) {
 }
 
 #[tokio::test]
+async fn 探测地址不用令牌只回实例号() {
+    let f = Fixture::new();
+    f.service.set_instance("inst-1 <坏字符>");
+    let port = start(&f);
+    let mut client = HttpClient::connect(port).await;
+    let start = Instant::now();
+    client
+        .io
+        .get_mut()
+        .write_all(b"GET /.pierlink-probe HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 0\r\n\r\n")
+        .await
+        .unwrap();
+    let reply = client.receive().await;
+    assert_eq!(reply.status, 204);
+    assert_eq!(reply.headers["x-pierlink-instance"], "inst-1");
+    assert!(reply.body.is_empty());
+    // 不像认证失败那样等 200 毫秒
+    assert!(start.elapsed() < Duration::from_millis(200));
+    // 其他路径照样要令牌
+    let mut client = HttpClient::connect(port).await;
+    let reply = client.request("POST", ACCEPT, &call(None)).await;
+    assert_eq!(reply.status, 401);
+    assert!(f.service.sessions().is_empty());
+}
+
+#[tokio::test]
 async fn 认证失败延时且来源和主机校验不能绕过() {
     let f = Fixture::new();
     let port = start(&f);

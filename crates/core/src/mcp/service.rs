@@ -43,6 +43,9 @@ pub(super) struct Shared {
     pub(super) sessions: Mutex<HashMap<String, Arc<Session>>>,
     activity: Mutex<VecDeque<AuditRecord>>,
     secrets: Mutex<Vec<Zeroizing<String>>>,
+    /// 这个 Pierlink 的实例号（宿主设置，随机、长期不变）：服务器入口的探测地址回报它，
+    /// 端口被占用时据此分清是自己还是另一台电脑上的 Pierlink
+    pub(super) instance: Mutex<String>,
 }
 impl Shared {
     pub(super) fn redact_command(&self, command: &str) -> String {
@@ -98,6 +101,11 @@ impl Shared {
         true
     }
 }
+/// 内存里留的操作记录条数（界面的“操作记录”最多显示这么多）
+const ACTIVITY_MAX: usize = 200;
+/// 带输出预览的最新记录条数
+const ACTIVITY_PREVIEWS: usize = 30;
+
 /// 两个入口共享的 MCP 基座，拥有独立的两个异步工作线程。
 pub struct McpService {
     pub(super) shared: Arc<Shared>,
@@ -126,6 +134,8 @@ impl McpService {
         if audit.prune().is_err() {
             eprintln!("MCP 启动时清理审计日志失败");
         }
+        // 重启、更新后操作记录接着显示：从审计日志读回最近的（日志里没有输出预览）
+        let recent: VecDeque<AuditRecord> = audit.recent(ACTIVITY_MAX).into();
         let terminals = Arc::new(terminals);
         let shared = Arc::new(Shared {
             host: host.clone(),
@@ -134,8 +144,9 @@ impl McpService {
             terminals,
             audit,
             sessions: Mutex::new(HashMap::new()),
-            activity: Mutex::new(VecDeque::new()),
+            activity: Mutex::new(recent),
             secrets: Mutex::new(Vec::new()),
+            instance: Mutex::new(String::new()),
         });
         let weak = Arc::downgrade(&shared);
         // 每秒维护后台任务、AI 终端和界面可见的会话集合。
@@ -222,11 +233,20 @@ impl McpService {
     pub fn sessions(&self) -> Vec<SessionInfo> {
         self.shared.sessions_at(Instant::now())
     }
+    /// 设置实例号：服务器入口的探测地址（不用令牌）回报它。只允许字母、数字、- 和 _，其他字符去掉。
+    pub fn set_instance(&self, id: &str) {
+        *lock(&self.shared.instance) = id
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+            .take(64)
+            .collect();
+    }
     /// 无参数；返回同一批会话的界面状态（有没有调用在进行、最后一次请求的时间），按 ID 排序。
     pub fn session_statuses(&self) -> Vec<super::SessionStatus> {
         self.shared.statuses_at(Instant::now())
     }
-    /// 返回至多 limit 条已脱敏操作，新的在前；内存总量最多 30 条。
+    /// 返回至多 limit 条已脱敏操作，新的在前；内存里最多 ACTIVITY_MAX 条（启动时从审计日志读回），
+    /// 只有最新 ACTIVITY_PREVIEWS 条带输出预览。
     pub fn activity(&self, limit: usize) -> Vec<AuditRecord> {
         lock(&self.shared.activity)
             .iter()
@@ -543,7 +563,11 @@ impl Shared {
         {
             let mut activity = lock(&self.activity);
             activity.push_front(record.clone());
-            activity.truncate(30);
+            activity.truncate(ACTIVITY_MAX);
+            // 输出预览占地方：只给最新的几条留着
+            if let Some(old) = activity.get_mut(ACTIVITY_PREVIEWS) {
+                old.output_preview = None;
+            }
         }
         self.host.notify(HostEvent::Activity(record));
     }

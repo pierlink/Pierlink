@@ -28,6 +28,15 @@
 .srv-row__text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
 .srv-row__name { font-weight: 500; }
 .srv-row__addr { font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--text-dim); }
+/* 地址和右边的复制按钮：按钮紧跟在地址后面，地址太长时地址省略、按钮不被挤掉 */
+.srv-row__addrline { display: flex; align-items: center; gap: 2px; min-width: 0; }
+.srv-row__copy {
+  flex: none; display: grid; place-items: center; width: 18px; height: 16px; border-radius: 4px;
+  color: var(--text-dim); opacity: 0.55; cursor: pointer; transition: opacity var(--dur-fast), color var(--dur-fast), background var(--dur-fast);
+}
+.srv-row:hover .srv-row__copy, .srv-row[aria-current="true"] .srv-row__copy { opacity: 1; }
+.srv-row__copy:hover { color: var(--text); background: var(--chip); }
+.srv-row__copy--done, .srv-row__copy--done:hover { opacity: 1; color: var(--ok); }
 .srv-row__count { min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; display: grid; place-items: center; font-size: var(--fs-xs); background: var(--chip); color: var(--text-muted); }
 
 .tabbar { display: flex; align-items: center; gap: 4px; padding: 8px 8px 0; flex-wrap: nowrap; }
@@ -36,6 +45,10 @@
 .tab:hover { background: var(--hover); }
 .tab[aria-selected="true"] { background: var(--tab-active); color: var(--text); }
 .tab__title { font-weight: 500; white-space: nowrap; }
+/* 程序在等你（响铃、通知）：标题前一个闪动的小点，看到这个标签就消失 */
+.tab__attention { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--warn); box-shadow: 0 0 0 3px color-mix(in srgb, var(--warn) 25%, transparent); animation: tab-attention 1.2s ease-in-out infinite; }
+@keyframes tab-attention { 50% { opacity: 0.35; } }
+@media (prefers-reduced-motion: reduce) { .tab__attention { animation: none; } }
 .tab__sub { font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--text-dim); }
 .tab__close { display: grid; place-items: center; width: 20px; height: 20px; border-radius: 4px; color: var(--text-dim); }
 .tab__close:hover { background: var(--hover); color: var(--text); }

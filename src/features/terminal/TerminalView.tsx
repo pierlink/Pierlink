@@ -10,10 +10,12 @@ import { currentTerminalTheme } from "./theme";
 import { needsPasteConfirm, parseOsc7, parseOsc99 } from "./util";
 import { ConnectCard, ConnectSteps, STEPS, stepIndex, stepOf, type Step } from "./ConnectProgress";
 import { findFakeCursor, placeIme } from "./imeAnchor";
+import { keepsConnectCard, looksTyped } from "./loginOutput";
 import { useSettings } from "../settings/store";
 import { useContextMenu } from "../../components";
 import { formatError, isAppError } from "../../errors";
-import { MODES_OFF, endedFromOpenError, endedLine, endsInline, type Ended } from "./ended";
+import { MODES_OFF, endedFromOpenError, endedLine, endedText, endsInline, type Ended } from "./ended";
+import { EndCard } from "./EndCard";
 import { getServersApi, notifyServersChanged } from "../servers/api";
 import type { Connecting, OpenSpec, TerminalBackend } from "./types";
 import { Button } from "../../components";
@@ -45,6 +47,8 @@ interface Props {
   onCwd?: (path: string) => void;
   /** 用户在终端里按了回车（可能执行了 cd，服务器终端据此重新查询当前目录） */
   onCommand?: () => void;
+  /** 程序要你注意：响铃、OSC 9 / 777 通知（Codex 等你确认或回答、做完一轮时会发） */
+  onAttention?: () => void;
   /** 后端会话 ID 变化（打开成功、重新连接时为新 ID，结束时为 null） */
   onSession?: (id: string | null) => void;
   /** 打开失败（错误对象原样交给上层翻译） */
@@ -69,6 +73,8 @@ interface Props {
   fileDrop?: boolean;
   /** 显示命令预测（设置开着、这台服务器没关、没交给 AI） */
   prediction?: boolean;
+  /** 这台服务器自己的命令预测开没开（右键菜单里可以开关；全局关着或不是保存过的服务器时不给） */
+  serverPrediction?: boolean;
   /** 连接卡片上的服务器名 */
   connectTitle?: string;
   /** 手机正按手机宽度查看这个终端（手机的列数）：顶上提示，在这里打字就恢复 */
@@ -94,20 +100,22 @@ export interface TermHandle {
   reconnect: () => void;
 }
 
+/** 鼠标停在结束卡片上滚动时，多少像素算一行 */
+const WHEEL_LINE_PX = 33;
 /**
  * 一个终端窗格：xterm.js 显示 + 后端会话。
  * 规则：有选中文字时 Ctrl+C、Ctrl+Shift+C 复制，没有时 Ctrl+C 发给程序（中断）；Ctrl+V、Ctrl+Shift+V 粘贴；
- * 会话断开或退出后，终端内容留着，最下面写一行说明，按 Enter 重新连接；登录失败、没能打开时盖上一块提示，
- * 提供“重新连接”和“关闭标签”。不自动重连，也不自动关闭标签（设计 3.9）。
+ * 会话断开或退出后，终端内容留着，最下面写一行说明，正中间放一张带“重新连接”的卡片，按 Enter 也能重新连接；
+ * 登录失败、没能打开时盖上一块提示，提供“重新连接”和“关闭标签”。不自动重连，也不自动关闭标签（设计 3.9）。
  */
-export function TerminalView({ backend, spec, visible, confirmPaste, openLink, onStatus, onError, onCloseTab, closeLabel, onCwd, onCommand, onSession, broadcasting, onInput, onOutput, onToggleBroadcast, onHandle, cwd, onSplit, canSplit, fileDrop, prediction, connectTitle, phoneCols, precheck, onCancelConnect, onRetryConnect }: Props) {
+export function TerminalView({ backend, spec, visible, confirmPaste, openLink, onStatus, onError, onCloseTab, closeLabel, onCwd, onCommand, onAttention, onSession, broadcasting, onInput, onOutput, onToggleBroadcast, onHandle, cwd, onSplit, canSplit, fileDrop, prediction, serverPrediction, connectTitle, phoneCols, precheck, onCancelConnect, onRetryConnect }: Props) {
   const { t } = useTranslation();
   const host = useRef<HTMLDivElement>(null);
   // 回调放进 ref，避免它们变化时重建终端
   const { settings } = useSettings();
   const opts = settings.terminal;
-  const cb = useRef({ confirmPaste, openLink, onStatus, onError, onCwd, onCommand, onSession, t, opts, broadcasting, onInput, onOutput, onToggleBroadcast, onHandle, cwd, onSplit, canSplit, prediction, precheck, onRetryConnect });
-  cb.current = { confirmPaste, openLink, onStatus, onError, onCwd, onCommand, onSession, t, opts, broadcasting, onInput, onOutput, onToggleBroadcast, onHandle, cwd, onSplit, canSplit, prediction, precheck, onRetryConnect };
+  const cb = useRef({ confirmPaste, openLink, onStatus, onError, onCwd, onCommand, onAttention, onSession, t, opts, broadcasting, onInput, onOutput, onToggleBroadcast, onHandle, cwd, onSplit, canSplit, prediction, precheck, onRetryConnect });
+  cb.current = { confirmPaste, openLink, onStatus, onError, onCwd, onCommand, onAttention, onSession, t, opts, broadcasting, onInput, onOutput, onToggleBroadcast, onHandle, cwd, onSplit, canSplit, prediction, precheck, onRetryConnect };
   /** 指纹还没核对通过：先不打开会话 */
   const held = !!precheck && precheck.phase !== "go";
   /** 会话已经开始打开（核对通过后只开一次；之后的重新连接走 reopen） */
@@ -122,6 +130,8 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
   // 输入发送失败等短暂提示，显示在终端顶部，几秒后自动消失（不写进终端内容，避免打乱程序输出）
   const [notice, setNotice] = useState<string | null>(null);
   const [ended, setEnded] = useState<Ended | null>(null);
+  /** 鼠标停在结束卡片上滚动时攒着的不到一行的滚动量（像素） */
+  const wheelRest = useRef(0);
   /**
    * 连接服务器的进度：当前一步、这一步和整个连接开始的时间（performance.now()）；
    * failed 表示连接停在这一步（显示在失败提示块上）
@@ -129,6 +139,15 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
   const [steps, setSteps] = useState<{ at: Step; stepStart: number; start: number; failed: boolean; done?: boolean } | null>(null);
   /** 内置 SSH 连不上或密钥没通过：提供“改用系统 OpenSSH 重试”（只对保存过的服务器） */
   const offerOpenSsh = spec.kind === "server" && (ended?.kind === "failed" || ended?.kind === "authFailed") && !!ended.builtin;
+  /** 右键菜单里开关这台服务器的命令预测；失败时在终端顶部提示 */
+  const setServerPrediction = async (serverId: string, on: boolean) => {
+    try {
+      await (await getServersApi()).setCommandPrediction(serverId, on);
+      notifyServersChanged();
+    } catch (e) {
+      showNotice.current(formatError(e));
+    }
+  };
   /** 把这台服务器改成系统 OpenSSH（原因写进服务器设置），再重新连接 */
   const switchToOpenSsh = async () => {
     if (spec.kind !== "server" || !ended) return;
@@ -198,12 +217,24 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
       return true;
     });
     term.parser.registerOscHandler(9, (data) => {
-      // OSC 9 还有别的用途（如通知），只处理 9;9
-      if (!data.startsWith("9;")) return false;
-      const path = parseOsc99(data.slice(2));
-      if (path) cb.current.onCwd?.(path);
+      // 9;9 是当前目录；其他“数字;”开头的是进度条等（不管）；剩下的是 iTerm2 式的通知文字
+      if (data.startsWith("9;")) {
+        const path = parseOsc99(data.slice(2));
+        if (path) cb.current.onCwd?.(path);
+        return true;
+      }
+      if (/^\d+;/.test(data)) return false;
+      cb.current.onAttention?.();
       return true;
     });
+    // OSC 777;notify;标题;正文（rxvt 式的通知）
+    term.parser.registerOscHandler(777, (data) => {
+      if (!data.startsWith("notify;")) return false;
+      cb.current.onAttention?.();
+      return true;
+    });
+    // 响铃：Codex 等你确认、回答时（窗口不在前台）会发；交给上层决定要不要提醒
+    term.onBell(() => cb.current.onAttention?.());
     // OSC 52：程序（Claude Code、tmux、vim 等）通过 SSH 写剪贴板；读请求一律忽略。
     // 由后端写系统剪贴板：网页方式要求窗口在前台，窗口不在前台时会写不进去。
     // 注意：GNU screen 4.x 会丢掉程序直接发的 OSC 52（包在 DCS 里的才透传），tmux 会转出来
@@ -243,10 +274,14 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
      * 有命令在运行，并且不是 ssh、sudo -i、tmux 这类会进到另一个 shell 的命令。没装钩子时，主屏上藏了光标
      * 自己画、或开了鼠标上报的程序才算（如 Claude Code）；全屏的 vim、tmux、screen 不算，仍按 shell 提醒。
      */
-    const inProgram = () =>
-      prediction.integrated
-        ? prediction.programRunning
-        : term.buffer.active.type !== "alternate" && (cursorHidden || term.modes.mouseTrackingMode !== "none");
+    const inProgram = () => {
+      // 装了钩子：以钩子为准（提示符下就按 shell 处理，哪怕之前崩掉的程序把光标留成了藏着）；
+      // 钩子说前台是 tmux、screen、ssh 这类会进到另一个 shell 的命令时，再看光标：
+      // 藏了真实光标、自己画光标的程序（Claude Code 等）在复用器里也认得出（复用器会转发光标的显示和隐藏）
+      if (prediction.integrated) return prediction.programRunning || (prediction.nestedRunning && cursorHidden);
+      // 没装钩子：光标藏着，或主屏上开了鼠标上报
+      return cursorHidden || (term.buffer.active.type !== "alternate" && term.modes.mouseTrackingMode !== "none");
+    };
 
     // 输入法：程序藏了真实光标、自己画一个反色格当光标（Claude Code 等）时，组字框和候选框放到这一格。
     // xterm 按真实光标摆放它们；Windows 自带的 ConPTY 在光标隐藏时不报光标位置，真实光标会停在别处，
@@ -254,16 +289,13 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
     let want: { left: number; top: number } | null = null;
     // 取到两位小数：浏览器读回 style 时会截短位数，取整后读回的值和写入的一样，才能比较出“没变”
     const px = (v: number) => `${Math.round(v * 100) / 100}px`;
-    // 拼音快到右边界时组字框会伸出终端：整体往左挪到贴着右边，输入框跟着挪（候选框也就留在终端里）。
-    // 只改左右位置，不动高度和行：确认后的字照常由程序换行。位置一次算好再写（见 placeIme），
-    // 观察者因为这次写入重新进来时没有要改的，不会和“对准假光标”来回改个不停
+    // 拼音快到右边界时组字框往右伸出终端（伸出的部分被裁掉），不往左挪去盖住刚打的字；不换行，
+    // 确认后的字照常由程序换行。位置一次算好再写（见 placeIme），观察者因为这次写入重新进来时没有要改的，
+    // 不会和 xterm 来回改个不停
     const applyIme = () => {
+      if (!want) return;
       const view = el.querySelector<HTMLElement>(".composition-view");
-      const screen = el.querySelector<HTMLElement>(".xterm-screen");
-      const active = !!view?.classList.contains("active") && !!screen;
-      if (!want && !active) return;
-      const current = parseFloat(view?.style.left ?? "") || 0;
-      const at = placeIme(want, current, active && view ? view.offsetWidth : null, screen?.clientWidth ?? 0);
+      const at = placeIme(want);
       const left = at.left === null ? null : px(at.left);
       const top = at.top === null ? null : px(at.top);
       for (const node of [term.textarea, view]) {
@@ -297,10 +329,10 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
     term.onCursorMove(scanSoon);
     const imeEvents = ["focus", "compositionstart", "compositionupdate"] as const;
     for (const name of imeEvents) term.textarea?.addEventListener(name, anchorIme);
-    // 组字框挪到右边界以内：xterm 在组字更新后的下一轮事件循环里才量组字框的宽度、摆好位置，
-    // 观察者会在它改位置时立即改回；这里再补一次，宽度变了（多打了几个字母）也能跟上
-    const clampSoon = () => requestAnimationFrame(applyIme);
-    term.textarea?.addEventListener("compositionupdate", clampSoon);
+    // 组字框对准假光标：xterm 在组字更新后的下一轮事件循环里才摆好组字框，
+    // 观察者会在它改位置时立即改回；这里再补一次
+    const alignSoon = () => requestAnimationFrame(applyIme);
+    term.textarea?.addEventListener("compositionupdate", alignSoon);
     // 兜底：万一有容器还是被滚动了（旧版 WebView 不认 overflow: clip），立刻滚回去
     const unscroll = (e: Event) => {
       const t = e.currentTarget as HTMLElement;
@@ -334,7 +366,14 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
     let tail = "";
     const decoder = new TextDecoder();
 
-    /** 会话结束：断开、退出时写一行说明，其他情况盖上提示块 */
+    /** 连接卡片还盖着时来了输出：该让开就让开（规则见 keepsConnectCard），停在哪一步仍记着，失败时用 */
+    const coverOutput = (chunk: string) => {
+      if (keepsConnectCard(chunk)) return;
+      covering = false;
+      setSteps(null);
+    };
+
+    /** 会话结束：断开、退出时写一行说明（中间的卡片由界面显示），其他情况盖上提示块 */
     const end = (e: Ended) => {
       prediction.reset();
       kitty.reset();
@@ -347,12 +386,8 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
       lastStep = null;
       setEnded(e);
       if (!endsInline(e)) return;
-      const tr = cb.current.t;
-      // 服务器拒绝了带钩子的请求时进程没启动过，不说“进程已退出”
-      let text = e.kind === "lost" ? tr("terminal.lineLost")
-        : e.kind === "disconnected" || (e.kind === "exited" && e.hookHint && e.code === null) ? tr("terminal.lineDisconnected")
-        : tr(spec.kind === "local" ? "terminal.lineExitedLocal" : "terminal.lineExited", { code: e.kind === "exited" ? e.code ?? "-" : "-" });
-      if (e.kind === "exited" && e.hookHint) text += `\r\n${tr(e.hookHint === "off" ? "terminal.hookOff" : "terminal.hookHintQuick")}`;
+      const { title, detail } = endedText(e, cb.current.t);
+      const text = detail ? `${title}\r\n${detail}` : title;
       // 等已收到的输出处理完再看是不是在全屏程序里；这期间重新连接了就不写
       term.write("", () => {
         if (disposed || !exited) return;
@@ -407,14 +442,11 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
             return;
           }
           if (e.kind === "output") {
-            // 终端里有了输出（密码提示、警告等）：进度让开，不挡住内容；停在哪一步仍记着，失败时用
-            if (covering) {
-              covering = false;
-              setSteps(null);
-            }
+            const chunk = decoder.decode(e.data, { stream: true });
+            if (covering) coverOutput(chunk);
             const n = e.data.length;
             sessionBytes += n;
-            tail = (tail + decoder.decode(e.data, { stream: true })).slice(-2048);
+            tail = (tail + chunk).slice(-2048);
             cb.current.onOutput?.(tail);
             term.write(e.data, () => {
               if (id) void backend.ack(id, n);
@@ -497,7 +529,11 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
     const disconnect = () => {
       if (exited || manual) return;
       manual = true;
-      if (id) void backend.close(id).catch((err: unknown) => { if (!disposed) showNotice.current(formatError(err)); });
+      if (id) void backend.close(id).catch((err: unknown) => {
+        // 没关成：会话还在，恢复输入（否则这个终端敲什么都没反应）
+        manual = false;
+        if (!disposed) showNotice.current(formatError(err));
+      });
     };
 
     // 粘贴图片：服务器终端把图片传到那台服务器的 /tmp，本机终端存到本机，再把路径粘贴进去
@@ -563,15 +599,21 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
         if (data === "\r") reopen();
         return;
       }
+      // 点了“断开”、会话正在关：不再往里写（点按钮后终端拿回焦点，开着焦点上报的程序会收到一段输入，
+      // 写进正在关的会话只会报“会话不存在或已关闭”）
+      if (manual) return;
       if (data.includes("\r")) {
         sessionEnters++;
         cb.current.onCommand?.();
       }
-      // 广播输入：由上层发给参与广播的所有窗格（包括这一个）
-      if (cb.current.onInput?.(data)) return;
+      // 广播输入：由上层发给参与广播的所有窗格（包括这一个）。终端替程序回的应答（焦点进出、设备属性、
+      // 光标位置、颜色）和鼠标报告只属于这个窗格，不广播
+      if (looksTyped(data) && cb.current.onInput?.(data)) return;
       if (id) {
         backend.write(id, data).catch((err: unknown) => {
-          if (!disposed) showNotice.current(formatError(err));
+          // 会话刚好结束（断网、程序退出）：中间的卡片会说明，不再弹“会话不存在或已关闭”
+          if (disposed || (isAppError(err) && err.code === "terminal.not_found")) return;
+          showNotice.current(formatError(err));
         });
       }
     });
@@ -583,6 +625,12 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
       const broadcast = !!cb.current.broadcasting;
       const where = { bracketed: term.modes.bracketedPasteMode, broadcast, program: inProgram() };
       if ((broadcast || cb.current.opts.confirmMultilinePaste) && needsPasteConfirm(text, where) && !(await cb.current.confirmPaste(text))) return;
+      // screen 4.x 不把里面程序开的括号粘贴（DECSET 2004）转给外层终端：钩子显示前台是 screen、外层不是括号粘贴、
+      // 光标藏着（Claude Code 这类自己画光标、开了括号粘贴的程序）时，自己包上标记，免得多行被一行一行提交
+      if (!term.modes.bracketedPasteMode && cursorHidden && prediction.screenRunning) {
+        term.input(`\x1b[200~${text.replace(/\r?\n/g, "\r")}\x1b[201~`, true);
+        return;
+      }
       term.paste(text);
     };
     pasteRef.current = doPaste;
@@ -591,7 +639,7 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
     // 没有选中时 Ctrl+C 照常发给程序（中断）；Ctrl+V、Ctrl+Shift+V 粘贴；Ctrl+Shift+B 开关广播输入。
     // 拦下的按键要阻止浏览器默认动作：Ctrl+V 在浏览器里本身就是粘贴，不阻止会再粘贴一次（粘贴两份）
     term.attachCustomKeyEventHandler((ev) => {
-      // 会话结束后 Tab 交给浏览器：焦点能移到右下角的“关闭”“重新连接”
+      // 会话结束后 Tab 交给浏览器：焦点能移到中间卡片上的“关闭”“重新连接”
       if (exited && ev.key === "Tab") return false;
       // 正在显示命令预测时，→ 补全整条、Ctrl+→ 补一个词
       const predicted = prediction.handleKey(ev);
@@ -637,9 +685,10 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
     };
     term.textarea?.addEventListener("paste", onPaste, true);
 
-    // 有选中文字时右键只弹菜单：不把这次点击发给开了鼠标模式的程序（发过去会清掉选中，复制不了）
+    // 右键归 Pierlink（复制或弹菜单），不发给开了鼠标模式的程序：发过去会清掉选中、复制不了，
+    // tmux 还会自己再弹一个菜单。只有开了“右键复制粘贴”、又没选中文字时照旧交给程序（见右键菜单的处理）
     const onRightButton = (ev: MouseEvent) => {
-      if (ev.button === 2 && term.hasSelection()) ev.stopPropagation();
+      if (ev.button === 2 && (term.hasSelection() || !cb.current.opts.rightClickCopyPaste)) ev.stopPropagation();
     };
     el.addEventListener("mousedown", onRightButton, true);
     el.addEventListener("mouseup", onRightButton, true);
@@ -689,7 +738,7 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
       term.textarea?.removeEventListener("paste", onPaste, true);
       for (const name of imeEvents) term.textarea?.removeEventListener(name, anchorIme);
       term.textarea?.removeEventListener("blur", dropIme);
-      term.textarea?.removeEventListener("compositionupdate", clampSoon);
+      term.textarea?.removeEventListener("compositionupdate", alignSoon);
       el.removeEventListener("scroll", unscroll);
       keepIme.disconnect();
       if (imeFrame) cancelAnimationFrame(imeFrame);
@@ -763,11 +812,10 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
         const copy = (text: string) => { copyText.current(text); term.clearSelection(); term.focus(); };
         // 有 Pierlink 自己的选中（全屏程序里按住 Shift 拖选的也算）：程序里、或开了“右键复制粘贴”时直接复制
         if (selection && (program || fullScreen || quick)) { copy(selection); return; }
-        // 程序开了鼠标模式（Claude Code、vim 的 mouse=a 等）：右键交给程序。不粘贴：程序里的选中 Pierlink 看不到，
-        // 当成“没选中”去粘贴，会和程序自己的复制（OSC 52）一起触发
-        if (program) return;
-        // 全屏程序里不弹菜单；开了“右键复制粘贴”时没选中就粘贴
-        if (fullScreen || quick) { if (quick) paste(); return; }
+        // 开了“右键复制粘贴”：没选中就粘贴。程序开了鼠标模式（Claude Code、vim 的 mouse=a 等）时右键交给程序、不粘贴：
+        // 程序里的选中 Pierlink 看不到，当成“没选中”去粘贴，会和程序自己的复制（OSC 52）一起触发
+        if (quick) { if (!program) paste(); return; }
+        // 其他情况都弹菜单，tmux、vim 这类全屏程序里也弹（右键没有发给程序，见 onRightButton）
         const dir = cb.current.cwd ?? null;
         const folder = spec.kind === "local" ? explorerFolder(spec.shellId, dir) : null;
         const split = cb.current.onSplit;
@@ -777,6 +825,13 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
           { id: "paste", label: t("terminal.paste"), shortcut: "Ctrl V", onSelect: paste },
           { kind: "separator", id: "s1" },
           { id: "cwd", label: t("terminal.copyCwd"), disabled: !dir, onSelect: () => { if (dir) copyText.current(dir); term.focus(); } },
+          // 这台服务器的命令预测（和左边服务器列表右键菜单里的是同一个开关）
+          ...(spec.kind === "server" && serverPrediction !== undefined
+            ? [{ id: "predict", label: serverPrediction ? t("menu.predictionOff") : t("menu.predictionOn"), onSelect: () => {
+                void setServerPrediction(spec.serverId, !serverPrediction);
+                term.focus();
+              } }]
+            : []),
           ...(spec.kind === "local" && inTauri
             ? [{ id: "explorer", label: t("terminal.openInExplorer"), disabled: !folder, onSelect: () => {
                 if (folder) void commands.filesOpenDefault(folder).then((r) => { if (r.status === "error") showNotice.current(formatError(r.error)); });
@@ -837,13 +892,24 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
         </div>
       )}
       {ended && endsInline(ended) && (
-        // 断开、退出：内容留在终端里，右下角放“关闭”和“重新连接”（按 Enter 也能重新连接）
-        <div className="term-endbar">
-          {onCloseTab && <Button size="sm" onClick={() => onCloseTab()}>{closeLabel ?? t("terminal.closeTab")}</Button>}
-          <Button size="sm" variant="primary" onClick={() => reopenRef.current(true)}>
-            {spec.kind === "local" ? t("terminal.reopen") : t("terminal.reconnect")}
-          </Button>
-        </div>
+        // 断开、退出：内容留在终端里，正中间放“关闭”和“重新连接”（按 Enter 也能重新连接）
+        <EndCard
+          {...endedText(ended, t)}
+          warn={ended.kind === "lost"}
+          closeLabel={closeLabel ?? t("terminal.closeTab")}
+          onClose={onCloseTab ? () => onCloseTab() : undefined}
+          reopenLabel={spec.kind === "local" ? t("terminal.reopen") : t("terminal.reconnect")}
+          onReopen={() => reopenRef.current(true)}
+          onFocusTerminal={() => termRef.current?.focus()}
+          onWheel={(e) => {
+            // 按行滚动：一格滚轮（约 100 像素）滚 3 行，触控板的小步攒够一行再滚
+            const term = termRef.current;
+            if (!term) return;
+            wheelRest.current += e.deltaMode === 1 ? e.deltaY * WHEEL_LINE_PX : e.deltaMode === 2 ? e.deltaY * WHEEL_LINE_PX * term.rows : e.deltaY;
+            const lines = Math.trunc(wheelRest.current / WHEEL_LINE_PX);
+            if (lines) { wheelRest.current -= lines * WHEEL_LINE_PX; term.scrollLines(lines); }
+          }}
+        />
       )}
       {fileDrop && <div className="term-filedrop" aria-hidden="true"><span>{t("terminal.fileDrop")}</span></div>}
       {phoneCols ? <div className="term-phone" role="status">{t("terminal.phoneView", { cols: phoneCols })}</div> : null}

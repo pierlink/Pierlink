@@ -27,21 +27,26 @@ export function PortInput({ value, label, onCommit }: { value: number; label: st
   const [text, setText] = useState(String(value));
   const [bad, setBad] = useState(false);
   useEffect(() => setText(String(value)), [value]);
+  const port = Number(text);
+  const changed = text !== String(value);
+  // 改端口会重开入口：点“应用”或按 Enter 才改（离开输入框不改），Esc 恢复
   const commit = () => {
-    const port = Number(text);
     if (Number.isInteger(port) && port >= 1024 && port <= 65535) {
       setBad(false);
       if (port !== value) onCommit(port);
     } else {
       setBad(true);
-      setText(String(value));
     }
   };
   return (
     <>
       <TextField label={label} className="pl-input mono" inputMode="numeric" value={text} aria-invalid={bad} title={bad ? t("mcp.portInvalid") : undefined}
         onChange={(e) => { setBad(false); setText(e.target.value.replace(/[^0-9]/g, "").slice(0, 5)); }}
-        onBlur={commit} onKeyDown={(e) => { if (e.key === "Enter") commit(); }} />
+        onKeyDown={(e) => {
+          if (e.key === "Enter") commit();
+          if (e.key === "Escape") { setBad(false); setText(String(value)); }
+        }} />
+      <Button size="sm" variant={changed ? "primary" : "secondary"} disabled={!changed} onClick={commit}>{t("mcp.portApply")}</Button>
       {/* 端口不对时文字放在固定宽度的位置，不把旁边的按钮挤开 */}
       <span className="mcp-port__err" role={bad ? "alert" : undefined}>{bad ? t("mcp.portInvalid") : ""}</span>
     </>

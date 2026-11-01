@@ -34,12 +34,23 @@ case "$*" in
 esac
 "#,
     );
+    // FAKE_MISSING 里的包软件源里没有：apt-cache 不输出它。
+    // dbus 1.14 起拆出 dbus-bin、dbus-daemon（Debian 12、Ubuntu 24.04），由 dbus 依赖；
+    // FAKE_JAMMY 模拟 Ubuntu 22.04：dbus 自带这两个程序，点名这两个包时 apt-cache 只输出带尖括号的名字。
     script_file(
         &bin.join("apt-cache"),
         r#"#!/bin/sh
 printf '%s\n' "$*" >> "$HOME/cache-calls"
 for arg do
-  case "$arg" in openbox|xterm|dbus|dbus-bin|dbus-daemon|fontconfig|fonts-dejavu-core|fonts-wqy-microhei|xauth|x11-xkb-utils|xkb-data|tigervnc-common|libgtk-3-bin|libdbus-glib-1-2|libnss3) printf '%s\n  Depends: libmissing:amd64\n' "$arg";; esac
+  case " ${FAKE_MISSING:-} " in *" $arg "*) continue;; esac
+  case "$arg" in
+    dbus-bin|dbus-daemon)
+      if [ -n "${FAKE_JAMMY:-}" ]; then printf '<%s>\n' "$arg"; else printf '%s\n  Depends: libmissing:amd64\n' "$arg"; fi;;
+    dbus)
+      if [ -n "${FAKE_JAMMY:-}" ]; then printf 'dbus\n  Depends: libmissing:amd64\n'
+      else printf 'dbus\n  Depends: dbus-bin\n  Depends: dbus-daemon\n  Depends: libmissing:amd64\ndbus-bin\n  Depends: libmissing:amd64\ndbus-daemon\n  Depends: libmissing:amd64\n'; fi;;
+    openbox|xterm|fontconfig|fonts-dejavu-core|fonts-wqy-microhei|xauth|x11-xkb-utils|xkb-data|tigervnc-common|libgtk-3-bin|libdbus-glib-1-2|libnss3) printf '%s\n  Depends: libmissing:amd64\n' "$arg";;
+  esac
 done
 cat <<'EOF'
 tigervnc-standalone-server
@@ -224,9 +235,14 @@ fn 轻量桌面获取带字体菜单和字节进度并复用完整版本() {
     let calls = fs::read_to_string(root.path().join("apt-calls")).unwrap();
     assert!(calls.contains("download fonts-wqy-microhei"));
     assert!(calls.contains("download fonts-dejavu-core"));
-    assert!(calls.contains("download dbus-daemon"));
     assert!(calls.contains("download libgtk-3-bin"));
     assert!(calls.contains("download libnss3"));
+    // 拆分后的总线程序不点名，由 dbus 的依赖带上
+    assert!(calls.contains("download dbus-bin"));
+    assert!(calls.contains("download dbus-daemon"));
+    let cache = fs::read_to_string(root.path().join("cache-calls")).unwrap();
+    assert!(!cache.contains("dbus-bin"));
+    assert!(!cache.contains("dbus-daemon"));
     assert!(events.lock().unwrap().iter().any(|e| matches!(e, AcquireStep::Download {source: AcquireSource::Apt, bytes, total: Some(total)} if *bytes > 0 && bytes == total)));
     acquire_light_desktop(&program, &cmd, &|_| {}, &AtomicBool::new(false)).unwrap();
     assert_eq!(
@@ -245,6 +261,54 @@ fn 轻量桌面获取带字体菜单和字节进度并复用完整版本() {
         "vnc.cancelled"
     );
     assert_eq!(fs::read_dir(prefix.parent().unwrap()).unwrap().count(), 1);
+}
+
+#[test]
+fn 轻量桌面在没有拆分总线包的发行版上照样获取() {
+    let (root, program, mut cmd) = local();
+    fake_apt(root.path(), &mut cmd);
+    cmd.env.push(("FAKE_JAMMY".into(), "1".into()));
+    let prefix = acquire_light_desktop(&program, &cmd, &|_| {}, &AtomicBool::new(false)).unwrap();
+    assert!(Path::new(&prefix).join("session").exists());
+    let calls = fs::read_to_string(root.path().join("apt-calls")).unwrap();
+    assert!(calls.lines().any(|line| line.ends_with(" download dbus")));
+    assert!(calls.contains("download fonts-wqy-microhei"));
+    assert!(!calls.contains("dbus-bin"));
+    assert!(!calls.contains("dbus-daemon"));
+}
+
+#[test]
+fn 轻量桌面跳过软件源里没有的可选包且缺必需包时报出包名() {
+    let (root, program, mut cmd) = local();
+    fake_apt(root.path(), &mut cmd);
+    cmd.env.push((
+        "FAKE_MISSING".into(),
+        "fonts-wqy-microhei libgtk-3-bin".into(),
+    ));
+    acquire_light_desktop(&program, &cmd, &|_| {}, &AtomicBool::new(false)).unwrap();
+    let calls = fs::read_to_string(root.path().join("apt-calls")).unwrap();
+    assert!(!calls.contains("fonts-wqy-microhei"));
+    assert!(!calls.contains("libgtk-3-bin"));
+    assert!(calls.contains("download libnss3"));
+    assert!(calls.contains("download xterm"));
+
+    let (root, program, mut cmd) = local();
+    fake_apt(root.path(), &mut cmd);
+    cmd.env.push(("FAKE_MISSING".into(), "xterm".into()));
+    let e = acquire_light_desktop(&program, &cmd, &|_| {}, &AtomicBool::new(false)).unwrap_err();
+    assert_eq!(e.code, "vnc.download_failed");
+    assert_eq!(e.params["package"], "xterm");
+    assert_eq!(e.params["reason_key"], "vnc.apt_dependency_unavailable");
+    assert_eq!(e.params["reason"], "软件源里没有 xterm");
+    // 一个包都没下载，私有索引已清理
+    let calls = fs::read_to_string(root.path().join("apt-calls")).unwrap();
+    assert!(calls.lines().all(|line| line.contains("update")));
+    assert_eq!(
+        fs::read_dir(root.path().join(".cache/pierlink/apt"))
+            .unwrap()
+            .count(),
+        0
+    );
 }
 
 #[test]
@@ -422,11 +486,43 @@ fn 候选依赖只选首个可用项且复用已安装或已在闭包中的项()
         );
         fs::write(root.path().join("depends"), graph).unwrap();
         let script = format!(
-            "{}\nwork=$HOME\npackages=$(dependency_closure {roots}) || fail download_failed\nprintf '{{\"packages\":'; json \"$packages\"; printf '}}'",
+            "{}\nwork=$HOME\ndependency_index\npackages=$(dependency_closure {roots}) || fail download_failed\nprintf '{{\"packages\":'; json \"$packages\"; printf '}}'",
             include_str!("apt.sh")
         );
         let result = desktop::run(&program, &cmd, &script, 10).unwrap();
         assert_eq!(result["packages"], expected);
+    }
+}
+
+#[test]
+fn 闭包缺包时写出缺的包名() {
+    for (graph, roots, expected) in [
+        ("root\n", "root gone", "gone"),
+        ("root\n  Depends: gone\n", "root", "gone"),
+        (
+            "root\n |Depends: alt\n  Depends: <virtual>\n<virtual>\n",
+            "root",
+            "alt | virtual",
+        ),
+    ] {
+        let (root, program, mut cmd) = local();
+        let bin = root.path().join("bin");
+        fs::create_dir(&bin).unwrap();
+        script_file(&bin.join("dpkg-query"), "#!/bin/sh\nexit 1\n");
+        cmd.env
+            .push(("PATH".into(), format!("{}:/usr/bin:/bin", bin.display())));
+        fs::write(root.path().join("depends"), graph).unwrap();
+        let script = format!(
+            r#"{apt}
+work=$HOME
+dependency_index
+if dependency_closure {roots} > "$work/closure"; then status=0; else status=1; fi
+printf '{{"status":%s,"missing":' "$status"; json "$(cat "$work/unavailable")"; printf '}}'"#,
+            apt = include_str!("apt.sh")
+        );
+        let result = desktop::run(&program, &cmd, &script, 10).unwrap();
+        assert_eq!(result["status"], 1);
+        assert_eq!(result["missing"], expected);
     }
 }
 

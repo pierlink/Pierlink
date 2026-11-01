@@ -861,7 +861,7 @@ async fn 单会话句柄取消与运行时句柄() {
     client.close().await;
 }
 #[tokio::test]
-async fn 审计与返回结果遮蔽秘密且内存保留三十条() {
+async fn 审计与返回结果遮蔽秘密且内存保留二百条() {
     let fixture = Fixture::new();
     fixture
         .service
@@ -897,7 +897,10 @@ async fn 审计与返回结果遮蔽秘密且内存保留三十条() {
     for _ in 0..205 {
         client.call("list_targets", json!({})).await;
     }
-    assert_eq!(fixture.service.activity(999).len(), 30);
+    let all = fixture.service.activity(999);
+    assert_eq!(all.len(), 200);
+    // 只有最新的 30 条带输出预览
+    assert!(all.iter().skip(30).all(|r| r.output_preview.is_none()));
     assert!(fixture.service.activity(0).is_empty());
     assert_eq!(fixture.service.activity(1)[0].tool, "list_targets");
     let logs = std::fs::read_dir(fixture._dir.path())

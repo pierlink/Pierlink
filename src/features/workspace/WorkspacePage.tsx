@@ -38,7 +38,7 @@ type Modal =
 
 function toView(r: ServerRecord): ServerView {
   // 连接状态与同步状态在后续阶段接入；目前只区分有无打开的终端由终端区负责
-  return { id: r.id, name: r.name, address: serverAddress(r), group: r.groupName, favorite: r.favorite, status: "offline", openTabs: 0, linked: r.source === "ssh_config", noPrediction: !r.commandPrediction, syncState: "none" };
+  return { id: r.id, name: r.name, address: serverAddress(r), host: r.host, group: r.groupName, favorite: r.favorite, status: "offline", openTabs: 0, linked: r.source === "ssh_config", noPrediction: !r.commandPrediction, syncState: "none" };
 }
 
 /** 删除失败的原因：仍被同步任务使用时列出任务名 */
@@ -105,14 +105,25 @@ export function WorkspacePage() {
   const byId = (id: string) => records.find((r) => r.id === id);
   const fail = (title: string) => (e: unknown) => setModal({ kind: "error", title, text: formatError(e) });
   const showCopied = () => { setCopied(true); setTimeout(() => setCopied(false), 1500); };
-  /** 复制服务器的 IP（或主机名）；导入自 ssh config 的服务器用 ssh -G 解析出的实际地址 */
-  const copyIp = (id: string) => {
+  /**
+   * 复制服务器的 IP（或主机名）；导入自 ssh config 的服务器用 ssh -G 解析出的实际地址。
+   * 隐藏 IP 时照样复制真实地址。
+   * @returns 复制成功时为 true
+   */
+  const copyIp = (id: string): Promise<boolean> => {
     const s = byId(id);
-    if (!s) return;
+    if (!s) return Promise.resolve(false);
     const host = s.source === "ssh_config"
       ? getServersApi().then((api) => api.resolve(id)).then((r) => r.hostname)
       : Promise.resolve(s.host ?? "");
-    host.then((h) => (h ? writeClipboardText(h).then(showCopied) : undefined)).catch(fail(t("servers.copyIpFailed")));
+    return host
+      .then(async (h) => {
+        if (!h) return false;
+        await writeClipboardText(h);
+        showCopied();
+        return true;
+      })
+      .catch((e: unknown) => { fail(t("servers.copyIpFailed"))(e); return false; });
   };
 
   return (

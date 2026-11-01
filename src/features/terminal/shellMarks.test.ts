@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parse133, parseMark, launchesShell, ShellTracker, type TermLike } from "./shellMarks";
+import { parse133, parseMark, launchesShell, runsScreen, ShellTracker, type TermLike } from "./shellMarks";
 
 /** 只放 ASCII 的假终端：每行一段文字，可以标成折行续行 */
 function fakeTerm(cols = 40) {
@@ -208,5 +208,16 @@ describe("提示符标记", () => {
     expect(s.integrated).toBe(false);
     expect(s.native).toBe(false);
     expect(s.input(term)).toBeNull();
+  });
+});
+
+describe("是不是在跑 GNU screen", () => {
+  it("screen 本身、带选项、带前缀或路径的算；tmux、ssh 和别的命令不算", () => {
+    for (const c of ["screen", "screen -r work", "/usr/bin/screen -S x", "exec screen -dR", "TERM=xterm screen", "cd /x && screen"]) {
+      expect(runsScreen(c), c).toBe(true);
+    }
+    for (const c of ["tmux", "ssh host screen", "vim screen.txt", "echo screen", "", null]) {
+      expect(runsScreen(c), String(c)).toBe(false);
+    }
   });
 });

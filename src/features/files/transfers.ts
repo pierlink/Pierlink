@@ -2,7 +2,7 @@ import { useSyncExternalStore } from "react";
 import { formatError } from "../../errors";
 import { getFilesApi } from "./api";
 import { locKey } from "./path";
-import type { ConflictChoice, TransferProgressView, TransferReportView, TransferRequest } from "./types";
+import type { ConflictChoice, DragOutLabels, DragOutResult, Loc, TransferProgressView, TransferReportView, TransferRequest } from "./types";
 
 /** 一个传输任务（显示在右下角的传输列表里） */
 export interface TransferJob {
@@ -41,9 +41,14 @@ const update = (key: number, patch: Partial<TransferJob>) => {
   emit();
 };
 
+/** 当前所有传输任务（不订阅变化；组件里用 useTransfers） */
+export function transferJobs(): TransferJob[] {
+  return jobs;
+}
+
 /** 当前所有传输任务 */
 export function useTransfers(): TransferJob[] {
-  return useSyncExternalStore(subscribe, () => jobs);
+  return useSyncExternalStore(subscribe, transferJobs);
 }
 
 /**
@@ -82,6 +87,57 @@ export async function startTransfer(req: TransferRequest, conflict: ConflictChoi
     if (frame) cancelAnimationFrame(frame);
     // 目标目录内容变了（失败时也可能已传了一部分）
     changed.forEach((fn) => fn(locKey(req.to), req.destDir));
+  }
+}
+
+/**
+ * 把服务器上的文件拖到窗口外（资源管理器、桌面等）：开始系统拖放，松手放到别的程序上时才下载。
+ * 真正开始下载时（收到第一条进度）在传输列表里加一条，结束后更新；没开始下载就结束（没放下、拖回本窗口）时不加。
+ * @param from 来源服务器
+ * @param sources 要拖出的完整路径
+ * @param label 传输列表里显示的说明
+ * @param labels 系统进度框里的文字
+ * @returns 拖放的结果；下载出错时抛出错误（取消是 sftp.cancelled）
+ */
+export async function startDragOut(from: Loc, sources: string[], label: string, labels: DragOutLabels): Promise<DragOutResult> {
+  const api = await getFilesApi();
+  // 目的地是别的程序，不知道具体目录
+  const req: TransferRequest = { from, sources, to: { kind: "local" }, destDir: "" };
+  let key: number | null = null;
+  let finished = false;
+  let latest: TransferProgressView | null = null;
+  let frame = 0;
+  /** 在传输列表里加上这一项，返回它的编号 */
+  const add = (progress: TransferProgressView | null): number => {
+    const k = ++seq;
+    key = k;
+    jobs = [...jobs, { key: k, req, label, state: "running", progress, report: null, error: null, id: run.id, cancelRequested: false, finishedAt: null }];
+    emit();
+    return k;
+  };
+  const run = api.dragOut(from, sources, labels, (p) => {
+    // 进度和命令的结果谁先到不保证：结果之后才到的进度不要再加一条进行中的
+    if (finished) return;
+    if (key === null) { add(p.totalBytes > 0 ? p : null); return; }
+    // 进度回调很频繁，合并到每帧最多更新一次
+    const job = key;
+    latest = p;
+    if (!frame) frame = requestAnimationFrame(() => { frame = 0; update(job, { progress: latest }); });
+  });
+  try {
+    const result = await run.done;
+    finished = true;
+    // 已经下载、给了对方，但开始下载的进度还没到：照样在列表里留一条
+    const job = key ?? (result.kind === "dropped" ? add(null) : null);
+    if (job !== null) update(job, result.kind === "dropped" ? { state: "done", report: result.report, finishedAt: Date.now() } : { state: "cancelled", finishedAt: Date.now() });
+    return result;
+  } catch (e) {
+    finished = true;
+    const cancelled = (e as { code?: string } | null)?.code === "sftp.cancelled";
+    if (key !== null) update(key, { state: cancelled ? "cancelled" : "failed", error: cancelled ? null : formatError(e), finishedAt: Date.now() });
+    throw e;
+  } finally {
+    if (frame) cancelAnimationFrame(frame);
   }
 }
 

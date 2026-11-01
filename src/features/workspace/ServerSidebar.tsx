@@ -1,11 +1,12 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { ArrowDownUp, ChevronDown, Monitor, Plus, RefreshCw, Search } from "lucide-react";
+import { ArrowDownUp, Check, ChevronDown, Copy, Eye, EyeOff, Monitor, Plus, RefreshCw, Search } from "lucide-react";
 import { IconButton, Menu, Segmented, StatusDot, useContextMenu, type MenuEntry } from "../../components";
 import type { ServerView } from "./types";
 import { BuiltinSshNotice } from "./BuiltinSshNotice";
 import { focusDesktopWindow, useDesktopPopouts } from "../desktop/popouts";
 import { useSettings } from "../settings/store";
+import { maskHost, setHideAddresses, useHideAddresses } from "./hideAddresses";
 
 type Filter = "all" | "favorites" | "online";
 
@@ -28,13 +29,16 @@ export interface ServerActions {
   /** 打开或关闭这台服务器的命令预测 */
   onTogglePrediction: (id: string) => void;
   onCopyAddress: (id: string) => void;
-  /** 只复制 IP（或主机名），不带用户名和端口 */
-  onCopyIp: (id: string) => void;
+  /** 只复制 IP（或主机名），不带用户名和端口；复制成功时结果为 true */
+  onCopyIp: (id: string) => Promise<boolean>;
   onDeploy: (id: string) => void;
   onDedicatedKey: (id: string) => void;
 }
 
-/** 左侧服务器列表：搜索、筛选、分组、右键菜单。双击或回车打开终端。 */
+/**
+ * 左侧服务器列表：搜索、筛选、分组、右键菜单。双击或回车打开终端。
+ * 每行地址右边有复制按钮（复制 IP）；顶部的小眼睛把所有 IP 显示成圆点（防止截图泄露，复制照样是真实地址）。
+ */
 export function ServerSidebar({ servers, selectedId, onSelect, actions }: { servers: ServerView[]; selectedId: string | null; onSelect: (id: string) => void; actions: ServerActions }) {
   const { t } = useTranslation();
   const { settings } = useSettings();
@@ -43,6 +47,19 @@ export function ServerSidebar({ servers, selectedId, onSelect, actions }: { serv
   const ctx = useContextMenu(t("workspace.servers"));
   const popouts = useDesktopPopouts();
   const [importMenu, setImportMenu] = useState<{ x: number; y: number } | null>(null);
+  const hide = useHideAddresses();
+  // 刚复制过的那一行：复制按钮短暂显示成对勾
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+  const copiedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (copiedTimer.current) clearTimeout(copiedTimer.current); }, []);
+  const copyIp = (id: string) => {
+    void actions.onCopyIp(id).then((ok) => {
+      if (!ok) return;
+      if (copiedTimer.current) clearTimeout(copiedTimer.current);
+      setCopiedId(id);
+      copiedTimer.current = setTimeout(() => setCopiedId(null), 1500);
+    });
+  };
 
   const groups = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -86,6 +103,15 @@ export function ServerSidebar({ servers, selectedId, onSelect, actions }: { serv
     <nav aria-label={t("workspace.servers")} className="pl-panel ws__side">
       <div style={{ display: "flex", alignItems: "center", padding: "0 4px" }}>
         <span className="ws__label" style={{ flex: 1 }}>{t("workspace.servers")}</span>
+        <IconButton
+          size="sm"
+          label={hide ? t("workspace.showAddresses") : t("workspace.hideAddresses")}
+          aria-pressed={hide}
+          className={hide ? "pl-icon-btn--on" : undefined}
+          onClick={() => setHideAddresses(!hide)}
+        >
+          {hide ? <EyeOff size={14} /> : <Eye size={14} />}
+        </IconButton>
         <IconButton
           size="sm"
           label={t("workspace.importMenu")}
@@ -137,8 +163,20 @@ export function ServerSidebar({ servers, selectedId, onSelect, actions }: { serv
             >
               <StatusDot tone={dotTone[s.status]} label={t(`workspace.status.${s.status}`)} />
               <span className="srv-row__text">
-                <span className="srv-row__name pl-ellipsis">{s.name}</span>
-                <span className="srv-row__addr pl-ellipsis">{s.address}</span>
+                <span className="srv-row__name pl-ellipsis">{hide ? maskHost(s.name, s.host) : s.name}</span>
+                <span className="srv-row__addrline">
+                  <span className="srv-row__addr pl-ellipsis">{hide ? maskHost(s.address, s.host) : s.address}</span>
+                  {/* 行本身是按钮，里面不能再放按钮：用 span 接点击；键盘和读屏用右键菜单里的“复制 IP” */}
+                  <span
+                    className={`srv-row__copy${copiedId === s.id ? " srv-row__copy--done" : ""}`}
+                    title={t("menu.copyIp")}
+                    aria-hidden="true"
+                    onClick={(e) => { e.stopPropagation(); copyIp(s.id); }}
+                    onDoubleClick={(e) => e.stopPropagation()}
+                  >
+                    {copiedId === s.id ? <Check size={12} /> : <Copy size={12} />}
+                  </span>
+                </span>
               </span>
               {s.syncState !== "none" && (
                 <RefreshCw size={13} role="img" aria-label={t("workspace.hasSync")} color={s.syncState === "warn" ? "var(--warn)" : s.syncState === "busy" ? "var(--accent)" : "var(--ok)"} />

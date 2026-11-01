@@ -50,24 +50,10 @@ describe("找假光标", () => {
 });
 
 describe("组字框的位置", () => {
-  it("没有假光标、离右边还远：不改", () => {
-    expect(placeIme(null, 100, 187, 811)).toEqual({ left: null, top: null });
+  it("没有假光标：照 xterm 摆的位置，不改", () => {
+    expect(placeIme(null)).toEqual({ left: null, top: null });
   });
-  it("快到右边界：往左挪到贴着右边；挪完再算一次不再改", () => {
-    expect(placeIme(null, 756, 187, 811)).toEqual({ left: 624, top: null });
-    expect(placeIme(null, 624, 187, 811)).toEqual({ left: null, top: null });
-  });
-  it("对准假光标后再夹在右边以内；写过以后再算还是同一个值（不会来回改）", () => {
-    const anchor = { left: 780, top: 340 };
-    const first = placeIme(anchor, 756, 187, 811);
-    expect(first).toEqual({ left: 624, top: 340 });
-    // 观察者因为写入重新进来：现在的位置已经是 624
-    expect(placeIme(anchor, first.left!, 187, 811)).toEqual(first);
-  });
-  it("组字框没在用：只对准假光标", () => {
-    expect(placeIme({ left: 780, top: 20 }, 10, null, 811)).toEqual({ left: 780, top: 20 });
-  });
-  it("组字框比屏幕还宽：贴着左边", () => {
-    expect(placeIme(null, 300, 900, 811)).toEqual({ left: 0, top: null });
+  it("有假光标：对准它；快到右边界也不往左挪（往右伸出的部分被裁掉，不盖住左边的字）", () => {
+    expect(placeIme({ left: 780, top: 340 })).toEqual({ left: 780, top: 340 });
   });
 });

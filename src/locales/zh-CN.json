@@ -55,6 +55,7 @@
     "section": {
       "appearance": "常规",
       "terminal": "终端",
+      "files": "文件传输",
       "sync": "同步",
       "ai": "AI 接入",
       "about": "关于",
@@ -120,6 +121,10 @@
     "closeToTray": "关闭窗口时缩到托盘",
     "closeToTrayHint": "同步和终端在后台继续运行",
     "closeToTrayUnavailable": "系统托盘不可用，关闭窗口会退出应用",
+    "files": {
+      "overwrite": "同名文件直接覆盖",
+      "overwriteHint": "拖动传输文件时，目标里有同名的文件就直接覆盖，不再询问"
+    },
     "desktop": {
       "openInWindow": "在独立窗口打开",
       "openInWindowHint": "打开桌面时直接用单独的窗口"
@@ -154,6 +159,8 @@
     "servers": "服务器",
     "searchServers": "名称、地址、分组",
     "addServer": "添加服务器",
+    "hideAddresses": "隐藏 IP",
+    "showAddresses": "显示 IP",
     "importSshConfig": "从 ~/.ssh/config 导入",
     "filterAll": "全部 {{count}}",
     "filterFavorites": "收藏",
@@ -343,6 +350,16 @@
         "couldn_t_replace_the_bash_wrapper_atomically": "原子替换 Bash 包装脚本失败",
         "bash_wrapper_path_is_not_valid_utf_8": "Bash 包装脚本路径不是 UTF-8",
         "select_the_editor_s_native_executable": "请选择编辑器的原生可执行文件"
+      },
+      "files": {
+        "drag_out_timer": "开始拖放失败",
+        "drag_out_busy": "已有一个拖出正在进行",
+        "drag_out_crashed": "拖放时程序出错",
+        "drag_out_ole": "系统拖放初始化失败（{{detail}}）",
+        "drag_out_rejected": "放下的程序没有接收文件",
+        "drag_out_unexpected": "系统拖放返回了意外的结果（{{detail}}）",
+        "drag_out_unsupported": "只支持 Windows",
+        "drag_out_unfinished": "拖放没有完成"
       },
       "fs_local": {
         "check_destination": "检查目标",
@@ -1216,7 +1233,7 @@
         "package_size_limit": "下载包超过大小限制",
         "apt_tools_missing": "需要 apt-get、apt-cache 和 dpkg",
         "apt_dependencies": "无法计算发行版依赖",
-        "apt_dependency_unavailable": "依赖组中没有可用的软件包",
+        "apt_dependency_unavailable": "软件源里没有 {{package}}",
         "apt_package_missing": "软件源中没有可下载的包",
         "apt_size_unknown": "软件源没有提供唯一的下载大小",
         "apt_single_limit": "单个依赖下载超过 300 MiB",
@@ -1558,7 +1575,11 @@
       "too_large": "文件太大（超过 5 MB），不能在软件里编辑",
       "not_text": "不是文本文件（或不是 UTF-8 编码），不能在软件里编辑",
       "changed": "文件在你打开后被修改过",
-      "pick_failed": "没能打开选择文件夹的窗口：{{reason}}"
+      "pick_failed": "没能打开选择文件夹的窗口：{{reason}}",
+      "drag_out_unsupported": "只有 Windows 版能把文件拖到窗口外",
+      "drag_no_space": "本机磁盘空间不够：拖出的文件要先下载到本机（需要 {{need}}，再留 1 GB 余量；现在可用 {{free}}）",
+      "drag_out_failed": "没能拖出：{{reason}}",
+      "drag_out_empty": "没有下载到任何文件"
     },
     "clipboard": {
       "busy": "剪贴板正被别的程序占用，请稍后再粘贴",
@@ -1566,7 +1587,8 @@
       "unsupported": "这个系统上不能直接读取剪贴板",
       "too_large": "要复制的内容太大（上限 {{limit}} 字节）",
       "write_failed": "写入剪贴板失败",
-      "no_image": "剪贴板里没有图片"
+      "no_image": "剪贴板里没有图片",
+      "invalid_origin": "剪贴板来源标记不正确"
     },
     "link": {
       "invalid_url": "这个链接不能打开：{{reason}}",
@@ -1694,6 +1716,7 @@
     }
   },
   "terminal": {
+    "attention": "程序在等你（比如 AI 要你确认或回答）",
     "closed": "会话已关闭",
     "pressEnter": "按 Enter 重新打开",
     "previewBanner": "Pierlink 预览模式：浏览器里不连接任何服务器，只回显输入。输入 exit 结束。",
@@ -1744,10 +1767,9 @@
     "reopen": "重新打开",
     "endedEnterHint": "也可以直接按 Enter",
     "disconnect": "断开",
-    "lineLost": "连接已断开，按 Enter 重新连接",
-    "lineDisconnected": "已断开，按 Enter 重新连接",
-    "lineExited": "进程已退出（代码 {{code}}），按 Enter 重新连接",
-    "lineExitedLocal": "进程已退出（代码 {{code}}），按 Enter 重新打开",
+    "endLost": "连接已断开",
+    "endDisconnected": "已断开",
+    "endExited": "进程已退出（代码 {{code}}）",
     "hookOff": "这台服务器上用不了命令预测，已为它关闭（服务器右键菜单可以重新打开）",
     "hookHintQuick": "连上就退出时，可以在 设置 → 终端 里关闭命令预测后重试",
     "paneCount": "{{count}} 个窗格",
@@ -2541,7 +2563,12 @@
     "binaryRemote": "“{{name}}”不是文本文件，不能在软件里编辑。可以拖到本机窗格的文件列表下载后再打开。",
     "incomingShort": "传入",
     "outgoingShort": "传出",
-    "refreshFailed": "刷新目录失败，显示的是上次读到的：{{reason}}"
+    "refreshFailed": "刷新目录失败，显示的是上次读到的：{{reason}}",
+    "downloadTo": "下载到…",
+    "dragHintOut": "拖到另一个窗格传输，拖到窗口外下载",
+    "dragOutLabel": "拖出 {{what}}",
+    "dragOutLine": "正在下载 {{what}}",
+    "dragOutCancelled": "已取消"
   },
   "dbRestored": {
     "title": "数据库已从备份恢复",
@@ -2793,6 +2820,7 @@
   "mcp": {
     "unknownClient": "未知客户端",
     "confirmConnectTitle": "允许这个 AI 连接吗？",
+    "waitingTitle": "AI 等你确认（{{count}}）",
     "confirmDangerTitle": "AI 要执行危险操作",
     "deny": "拒绝",
     "allowOnce": "只允许这一次",
@@ -2838,6 +2866,7 @@
       "connecting": "正在连接",
       "running": "运行中",
       "reconnecting": "正在重连",
+      "port_busy": "端口被占用",
       "waiting_password": "等待登录",
       "error": "出错",
       "stopped": "未运行"
@@ -2907,8 +2936,29 @@
     "added": "已添加到 {{client}}，重新打开它后生效",
     "addedCursor": "已写入 {{path}}，Cursor 会自动加载",
     "addedServer": "已在 {{server}} 上添加到 {{client}}",
+    "portApply": "应用",
+    "portChanging": "正在改到 {{port}}…",
+    "portChanged": "已改到 {{port}}",
+    "readdedOk": "服务器上的 {{clients}} 已更新，重启它们后生效",
+    "readdedFailed": "{{clients}} 没更新成，请点“重新添加”",
+    "readdedNone": "服务器上的 AI 要重新添加，再重启才生效",
+    "restartHint": "换了令牌或端口：一键添加过的会自动更新，手动添加的要重新添加；之后都要重启服务器上的 AI（如 Codex、Claude Code）才生效。",
+    "conflictChecking": "服务器上的端口 {{port}} 被占用，正在查是谁占着…",
+    "conflictThisPc": "端口 {{port}} 正被这台电脑的另一条连接使用（可能有两个服务器记录指向同一台服务器）。换一个端口。",
+    "conflictOtherPc": "端口 {{port}} 正被另一台电脑{{who}}上的 Pierlink 使用。两台电脑同时打开这台服务器的 AI 接入时，各用一个端口，并在服务器上重新添加。",
+    "conflictStale": "端口 {{port}} 被上一次没断干净的连接占着，服务器发现后会释放（几分钟到十几分钟），到时自动连上；着急的话换一个端口。",
+    "conflictOtherProgram": "端口 {{port}} 被服务器上的其他程序占用了。换一个端口。",
+    "conflictUnknown": "服务器上的端口 {{port}} 被占用了，查不出是谁占着。换一个端口试试。",
+    "conflictNotListening": "服务器拒绝了端口转发（可能 sshd 关掉了转发），会自动重试。",
+    "listJoiner": "、",
+    "conflictWho": "（{{name}}）",
+    "useFreePort": "换到 {{port}}",
+    "clientAdded": "{{client}}：已添加",
+    "clientStale": "{{client}}：配置是旧的（地址、令牌或 Pierlink 位置变了），点“重新添加”，再重启 {{client}}",
+    "clientNotAdded": "{{client}}：还没添加",
+    "readdOneClick": "重新添加",
     "rotateTokenHint": "旧令牌立即失效，已连着的 AI 会断开，它们的后台任务也会结束",
-    "rotated": "已换新令牌，一键添加过的会自动更新，客户端重新连接后生效",
+    "rotated": "已换新令牌",
     "clientMissing": "这台电脑上没检测到 {{client}}，可以复制下面的命令手动添加",
     "serverClientMissing": "{{server}} 上没检测到 {{client}}，可以复制下面的命令手动添加",
     "showOutput": "点开看输出",
@@ -3189,6 +3239,19 @@
     "noneTitle": "服务器上没有找到 VNC 桌面",
     "noneInstall": "有管理员权限的话，在这台服务器的终端里运行：",
     "noneManual": "请先在服务器上安装 TigerVNC 和一个桌面环境（推荐 XFCE）。",
+    "recheck": "重新查找",
+    "help": {
+      "open": "安装说明",
+      "title": "安装桌面需要的软件",
+      "run": "在服务器终端里用管理员权限安装，装好后回来点“{{button}}”。",
+      "other": "其他系统",
+      "full": "完整桌面",
+      "fullValue": "把 openbox xterm 换成 xfce4 xfce4-terminal",
+      "universe": "Ubuntu 找不到包时",
+      "rhelName": "Rocky / Alma / CentOS Stream 8、9",
+      "rhel": "先装 epel-release，再装 tigervnc-server dbus-x11 google-noto-sans-cjk-ttc-fonts 和软件包组 Xfce",
+      "ai": "也可以把这些发给 AI，让它帮你装。"
+    },
     "copy": "复制命令",
     "copied": "已复制",
     "pickTitle": "选择要打开的桌面",
@@ -3229,7 +3292,6 @@
     "copyLink": "复制链接",
     "pickPackage": "选择已下载的包",
     "localDownload": "用这台电脑下载",
-    "back": "返回",
     "stop": "关闭桌面",
     "stopTitle": "关闭这个桌面？",
     "stopBody": "桌面里打开的程序都会结束。",

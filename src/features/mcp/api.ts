@@ -47,12 +47,47 @@ export interface McpSession {
 
 export interface McpEntryState {
   serverId: string;
-  /** connecting / running / reconnecting / waiting_password / error / stopped */
+  /** connecting / running / reconnecting / port_busy（服务器上的端口被占着）/ waiting_password / error / stopped */
   state: string;
   port: number;
   error: AppError | null;
   /** 服务器上的 ~/.pierlink/mcp.json 已写好 */
   fileWritten: boolean;
+  /** 端口被占着时查到是谁占着（还没查完时为 null） */
+  conflict: McpPortConflict | null;
+  /** 换令牌或端口后自动重新添加的结果（最近一次） */
+  readded: McpReadd | null;
+}
+
+/** 服务器上的端口被谁占着 */
+export interface McpPortConflict {
+  /** this_pc / other_pc / stale / other_program / not_listening / unknown（查不出来） */
+  kind: string;
+  /** 另一台电脑的名字（知道的话） */
+  computer: string | null;
+  /** 建议换到的空闲端口 */
+  freePort: number | null;
+}
+
+/** 换令牌或端口后，在服务器上自动重新添加的结果 */
+export interface McpReadd {
+  /** token / port */
+  reason: string;
+  ok: string[];
+  failed: string[];
+  atMs: number;
+}
+
+/** 客户端配置里有没有加好这个入口：current 加好了 / stale 地址、令牌或程序位置是旧的 / none 没加 */
+export type McpAdded = "current" | "stale" | "none";
+
+/** 装了哪些客户端，以及各自加好没有（查不了的客户端不在 added 里） */
+export interface McpClients {
+  claude: boolean;
+  codex: boolean;
+  cursor: boolean;
+  gemini: boolean;
+  added: Partial<Record<string, McpAdded>>;
 }
 
 export interface McpStatus {
@@ -168,10 +203,10 @@ export interface McpApi {
   removeLocal(client: "claude" | "codex" | "cursor"): Promise<boolean>;
   /** 在服务器上把这台服务器的入口从客户端里移除；返回 false 表示本来就没有 */
   removeServer(serverId: string, client: "claude" | "codex" | "gemini"): Promise<boolean>;
-  /** 这台电脑上装了哪些客户端 */
-  detectClients(): Promise<{ claude: boolean; codex: boolean; cursor: boolean; gemini: boolean }>;
-  /** 服务器上装了哪些客户端（要连过去查；连不上时抛错） */
-  detectServerClients(serverId: string): Promise<{ claude: boolean; codex: boolean; cursor: boolean; gemini: boolean }>;
+  /** 这台电脑上装了哪些客户端、各自加好本机入口没有 */
+  detectClients(): Promise<McpClients>;
+  /** 服务器上装了哪些客户端、各自加好这台服务器的入口没有（要连过去查；连不上时抛错） */
+  detectServerClients(serverId: string): Promise<McpClients>;
   /** 报告终端当前目录（AI 列终端时用） */
   reportCwd(terminalId: string, cwd: string | null): Promise<void>;
   onSessions(cb: () => void): Promise<() => void>;
@@ -248,7 +283,7 @@ function previewApi(): McpApi {
         { id: "a", entry: "windows", client: "Claude Code 2.1", busy: false, lastActiveMs: Date.now() - 180_000 },
         { id: "c", entry: "s1", client: "Claude Code 2.1", busy: true, lastActiveMs: Date.now() },
       ] : [],
-      entries: sample ? [{ serverId: "s1", state: "running", port: 47821, error: null, fileWritten: true }] : [],
+      entries: sample ? [{ serverId: "s1", state: "running", port: 47821, error: null, fileWritten: true, conflict: null, readded: null }] : [],
     }),
     connectInfo: async () => ({
       windows: [
@@ -280,8 +315,8 @@ function previewApi(): McpApi {
     installServer: async () => { await new Promise((r) => setTimeout(r, 900)); },
     removeLocal: async (client) => { await new Promise((r) => setTimeout(r, 500)); return client !== "cursor"; },
     removeServer: async () => { await new Promise((r) => setTimeout(r, 800)); return true; },
-    detectClients: async () => ({ claude: true, codex: false, cursor: true, gemini: false }),
-    detectServerClients: async () => { await new Promise((r) => setTimeout(r, 500)); return { claude: true, codex: false, cursor: false, gemini: true }; },
+    detectClients: async () => ({ claude: true, codex: false, cursor: true, gemini: false, added: { claude: "current", cursor: "none" } }),
+    detectServerClients: async () => { await new Promise((r) => setTimeout(r, 500)); return { claude: true, codex: true, cursor: false, gemini: true, added: { claude: "current", codex: "stale", gemini: "none" } }; },
     onSessions: noop,
     onActivity: noop,
     onConfirm: async (cb) => { confirms.add(cb); return () => { confirms.delete(cb); }; },

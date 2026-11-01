@@ -112,9 +112,17 @@ function toolError(r) {
   return r.result.content?.[0]?.text ?? "";
 }
 
-/** 等确认框出现，点 label 开头的按钮；返回框里的文字 */
-async function answerConfirm(label, what) {
+/** 等确认框出现，点 label 开头的按钮；返回框里的文字。stray：先点框外、按 Esc，确认框应该还在（不算回答） */
+async function answerConfirm(label, what, stray = false) {
   const text = await u.waitFor(`(()=>{const d=document.querySelector('.pl-dialog .mcp-confirm')?.closest('.pl-dialog'); return d ? d.innerText : null;})()`, what, 30000);
+  if (stray) {
+    await u.clickXY(8, 200);
+    await u.key("Escape", "Escape", 27);
+    await sleep(600);
+    if (!(await p.js(`!!document.querySelector('.pl-dialog .mcp-confirm')`))) throw new Error("点框外、按 Esc 后确认框没了（不该算回答）");
+  }
+  // 新弹出的确认框半秒后按钮才能点（防止连点答到下一条）
+  await u.waitFor(`[...document.querySelectorAll('.pl-dialog button')].every((b)=>!b.disabled)`, "确认框的按钮可以点了", 5000);
   await u.clickText(label, ".pl-dialog");
   await u.waitFor(`!document.querySelector('.pl-dialog .mcp-confirm')`, "确认框关闭", 10000);
   return text.replace(/\s+/g, " ");
@@ -190,13 +198,13 @@ await rec.step(p, "run_command：本机 PowerShell 和 WSL 服务器都原样返
   return `本机：${local.stdout.trim()}；服务器：${remote.stdout.trim()}`;
 });
 
-await rec.step(p, "危险命令先弹框确认；点“拒绝”后不执行", async () => {
+await rec.step(p, "危险命令先弹框确认；点框外、按 Esc 不算回答；点“拒绝”后不执行", async () => {
   if (!agent) throw new Error("没有客户端");
   const victim = join(OUT, "pl-mcp-danger");
   mkdirSync(victim, { recursive: true });
   writeFileSync(join(victim, "keep.txt"), "keep");
   const pending = agent.call("run_command", { target: "windows", command: `Remove-Item -Recurse -Force '${victim}'` });
-  const dialog = await answerConfirm("Deny", "危险命令确认框");
+  const dialog = await answerConfirm("Deny", "危险命令确认框", true);
   if (!dialog.includes("Remove-Item")) throw new Error(`确认框里没有命令原文：${dialog}`);
   const text = toolError(await pending);
   if (!existsSync(join(victim, "keep.txt"))) throw new Error("拒绝了却还是删掉了");

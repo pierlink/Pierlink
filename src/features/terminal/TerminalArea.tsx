@@ -5,6 +5,7 @@ import { Button, Dialog, Menu, TextField, type MenuEntry } from "../../component
 import { formatError } from "../../errors";
 import { TabBar } from "../workspace/TabBar";
 import type { ServerView, TabView } from "../workspace/types";
+import { maskHost, useHideAddresses } from "../workspace/hideAddresses";
 import { getTerminalBackend, listLocalShells, localShellName, type LocalShellView } from "./backend";
 import { HostKeyDialog } from "./HostKeyDialog";
 import { reorder, tabPart, zoneAt, zoneBox, type Box, type DragWhat, type DropAt } from "./paneDrag";
@@ -20,6 +21,7 @@ import { inTauri } from "../shell/TitleBar";
 import { useSettings } from "../settings/store";
 import { computeRects, insertBeside, pairNodes, pairSpan, pane as leaf, paneIds, removePane, resizeAt, seriesCount, splitPane, swapPanes, type Dir, type Layout, type Rect, type Side } from "./panes";
 import { FilePanel } from "../files/FilePanel";
+import { systemDragEnd, systemDragOver, systemDrop } from "../files/dnd";
 import { loadWorkspace, maxPaneNumber, saveWorkspace, type SavedWorkspace } from "./persist";
 import { TransferCenter } from "../files/TransferCenter";
 import { isDangerous, LineBuffer, looksLikePasswordPrompt } from "./broadcast";
@@ -248,6 +250,13 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
   onSnippetTargets?: (count: number) => void;
 }) {
   const { t } = useTranslation();
+  const hide = useHideAddresses();
+  /** 标签、窗格上显示的文字：隐藏 IP 时遮住这台服务器的地址（快速连接按输入的主机） */
+  const shown = (spec: OpenSpec, text: string): string => {
+    if (!hide) return text;
+    const host = spec.kind === "quick" ? spec.host : spec.kind === "server" ? servers.find((s) => s.id === spec.serverId)?.host ?? null : null;
+    return maskHost(text, host);
+  };
   const backend = getTerminalBackend();
   const { settings } = useSettings();
   const [shells, setShells] = useState<LocalShellView[]>([]);
@@ -290,29 +299,38 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
   const [fileDrop, setFileDrop] = useState<string | null>(null);
   useEffect(() => {
     if (!inTauri) return;
-    /** 拖放位置（相对窗口的物理像素）下面是不是一个运行中的本机终端 */
-    const localPaneAt = (pos: { x: number; y: number }): string | null => {
-      const ratio = window.devicePixelRatio || 1;
-      const id = document.elementFromPoint(pos.x / ratio, pos.y / ratio)?.closest<HTMLElement>("[data-pane]")?.dataset.pane;
+    /** 拖放位置（CSS 像素）下面是不是一个运行中的本机终端 */
+    const localPaneAt = (x: number, y: number): string | null => {
+      const id = document.elementFromPoint(x, y)?.closest<HTMLElement>("[data-pane]")?.dataset.pane;
       const p = id ? panesRef.current[id] : undefined;
       return id && p && p.spec.kind === "local" && !p.desktop && p.status === "running" ? id : null;
     };
+    const focusWindow = () => { void import("@tauri-apps/api/window").then(({ getCurrentWindow }) => getCurrentWindow().setFocus()).catch(() => undefined); };
     let off: (() => void) | undefined;
     let alive = true;
     void import("@tauri-apps/api/webview")
       .then(({ getCurrentWebview }) => getCurrentWebview().onDragDropEvent((ev) => {
         const d = ev.payload;
-        if (d.type === "leave") { setFileDrop(null); return; }
-        const id = localPaneAt(d.position);
-        if (d.type !== "drop") { setFileDrop(id); return; }
+        if (d.type === "leave") { setFileDrop(null); systemDragEnd(); return; }
+        // 事件给的是物理像素
+        const ratio = window.devicePixelRatio || 1;
+        const x = d.position.x / ratio;
+        const y = d.position.y / ratio;
+        // 在文件栏上：上传到文件栏打开的目录（和从本机文件栏拖过去一样）；不在文件栏上才往本机终端里填路径
+        if (d.type !== "drop") {
+          setFileDrop(systemDragOver(d.type === "enter" ? d.paths : null, x, y) ? null : localPaneAt(x, y));
+          return;
+        }
         setFileDrop(null);
+        if (systemDrop(d.paths, x, y)) { focusWindow(); return; }
+        const id = localPaneAt(x, y);
         const p = id ? panesRef.current[id] : undefined;
         if (!id || p?.spec.kind !== "local" || !d.paths.length) return;
         // 只填路径不回车；遵守括号粘贴模式，和粘贴一样
         const h = handles.current.get(id);
         h?.paste(droppedText(p.spec.shellId, d.paths));
         h?.focus();
-        void import("@tauri-apps/api/window").then(({ getCurrentWindow }) => getCurrentWindow().setFocus()).catch(() => undefined);
+        focusWindow();
       }))
       .then((u) => { if (alive) off = u; else u(); }, (e: unknown) => console.error(formatError(e)));
     return () => { alive = false; off?.(); };
@@ -1100,8 +1118,43 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
       setBroadcast(next);
     }
   }, [broadcast, tabs, panes]);
-  const focusPane = (tabKey: string, paneId: string) =>
+  const focusPane = (tabKey: string, paneId: string) => {
     setTabs((ts) => ts.map((x) => (x.key === tabKey && x.active !== paneId ? { ...x, active: paneId } : x)));
+    clearAttention([paneId]);
+  };
+
+  // ---------- 程序要你注意（响铃、通知） ----------
+  // Codex 等你确认、回答时会响铃（窗口不在前台时）。你正看着这个窗格就不管；否则标签上显示一个点，
+  // 窗口不在前台时再让任务栏按钮闪烁。Codex 的提问大约两分钟后会自动作答，所以要及时提醒
+  const [attention, setAttention] = useState<ReadonlySet<string>>(() => new Set());
+  const attentionAt = useRef(new Map<string, number>());
+  /** 窗格现在看得见（所在标签是当前标签、工作区页面在显示） */
+  const paneShown = (paneId: string) => (document.querySelector<HTMLElement>(`[data-pane="${CSS.escape(paneId)}"]`)?.offsetWidth ?? 0) > 0;
+  const raiseAttention = (paneId: string) => {
+    if (document.hasFocus() && paneShown(paneId)) return;
+    setAttention((cur) => (cur.has(paneId) ? cur : new Set(cur).add(paneId)));
+    // 同一个窗格 30 秒内只闪一次任务栏
+    const now = Date.now();
+    if (now - (attentionAt.current.get(paneId) ?? 0) < 30_000) return;
+    attentionAt.current.set(paneId, now);
+    if (inTauri && !document.hasFocus()) {
+      void import("@tauri-apps/api/window")
+        .then(({ getCurrentWindow, UserAttentionType }) => getCurrentWindow().requestUserAttention(UserAttentionType.Critical))
+        .catch(() => undefined);
+    }
+  };
+  const clearAttention = (ids: string[]) =>
+    setAttention((cur) => (ids.some((id) => cur.has(id)) ? new Set([...cur].filter((id) => !ids.includes(id))) : cur));
+  // 切到标签、窗口回到前台、从别的页面切回工作区时：看得见的窗格不再提醒
+  useEffect(() => {
+    if (!attention.size) return;
+    const check = () => { if (document.hasFocus()) clearAttention([...attention].filter(paneShown)); };
+    check();
+    window.addEventListener("focus", check);
+    const timer = setInterval(check, 1000);
+    return () => { window.removeEventListener("focus", check); clearInterval(timer); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [attention, activeTab]);
 
   // ---------- 命令片段 ----------
   // 片段发到哪：广播中 = 参与广播的窗格（只需交给其中一个，由广播分发）；否则当前窗格
@@ -1163,13 +1216,14 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
     return [{
       id: x.key,
       kind: p.spec.kind === "local" ? "local" : "remote",
-      title: p.title,
-      subtitle: p.subtitle,
+      title: shown(p.spec, p.title),
+      subtitle: shown(p.spec, p.subtitle),
       // 有窗格正在连接（核对指纹到会话建立前）显示“连接中”；核对没通过的不算在线
       status: ids.some((id) => isConnecting(panes[id])) ? "connecting"
         : ids.some((id) => panes[id]?.status === "running" && panes[id]?.connecting?.phase !== "failed") ? "online" : "offline",
       badge: ids.length > 1 ? t("terminal.paneCount", { count: ids.length }) : undefined,
       ai: ids.some((id) => !!panes[id]?.ai),
+      attention: ids.some((id) => attention.has(id)),
     }];
   });
   tabViewsRef.current = tabViews;
@@ -1194,7 +1248,7 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
     const same: MenuEntry[] = cur
       ? [{
           id: "same",
-          label: t("terminal.splitSame", { name: cur.title }),
+          label: t("terminal.splitSame", { name: shown(cur.spec, cur.title) }),
           onSelect: () => splitSame(m.tab, m.pane, m.dir),
         }, { kind: "separator", id: "s0" }]
       : [];
@@ -1204,7 +1258,7 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
       ...shells.map((l) => ({ id: `sh-${l.id}`, label: localShellName(l), onSelect: () => openShellIn(l.id, target) })),
       { kind: "separator", id: "s1" },
       { kind: "header", id: "h2", label: t("workspace.serversHeader") },
-      ...servers.map((s) => ({ id: `srv-${s.id}`, label: `${s.name}  ·  ${s.address}`, onSelect: () => openServer(s.id, target) })),
+      ...servers.map((s) => ({ id: `srv-${s.id}`, label: hide ? maskHost(`${s.name}  ·  ${s.address}`, s.host) : `${s.name}  ·  ${s.address}`, onSelect: () => openServer(s.id, target) })),
       { id: "quick", label: `${t("terminal.quickConnect")}…`, onSelect: () => setPending({ kind: "quick", value: "", error: null, target }) },
     ];
   };
@@ -1228,7 +1282,13 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
         activeId={activeTab ?? ""}
         servers={servers}
         localShells={shells}
-        onActivate={(key) => { if (!suppressClick.current) setActiveTab(key); }}
+        onActivate={(key) => {
+          if (suppressClick.current) return;
+          setActiveTab(key);
+          // 点开这个标签就算看到了：不再提醒（不管窗口当时算不算在前台）
+          const tab = tabs.find((x) => x.key === key);
+          if (tab) clearAttention(paneIds(tab.layout));
+        }}
         onTabPointerDown={(e, key) => {
           const v = tabViews.find((x) => x.id === key);
           const tab = tabs.find((x) => x.key === key);
@@ -1275,8 +1335,8 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
                     bar={p.desktop ? null : (
                       <>
                       <div className="pane__bar" role="toolbar" aria-label={p.title}>
-                        <span className="pane__title pl-ellipsis" title={p.cwd ?? p.subtitle} onPointerDown={(e) => beginDrag(e, { kind: "pane", id, tab: tab.key }, p.title)}>
-                        {multi && <strong>{p.title}</strong>}
+                        <span className="pane__title pl-ellipsis" title={p.cwd ?? shown(p.spec, p.subtitle)} onPointerDown={(e) => beginDrag(e, { kind: "pane", id, tab: tab.key }, shown(p.spec, p.title))}>
+                        {multi && <strong>{shown(p.spec, p.title)}</strong>}
                         {p.cwd && <span className="mono">{p.cwd}</span>}
                       </span>
                         {p.spec.kind !== "local" && !(p.ai && !p.ai.takenOver) && (() => {
@@ -1363,8 +1423,8 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
                   >
                     {p.restored ? (
                       <RestoredPane
-                        title={p.title}
-                        subtitle={p.subtitle}
+                        title={shown(p.spec, p.title)}
+                        subtitle={shown(p.spec, p.subtitle)}
                         deleted={serversLoaded && p.spec.kind === "server" && !servers.some((x) => p.spec.kind === "server" && x.id === p.spec.serverId)}
                         focus={visible && tab.active === id}
                         closeLabel={multi ? t("terminal.closePane") : t("terminal.closeTab")}
@@ -1375,11 +1435,11 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
                       <DesktopPane
                         serverId={p.spec.serverId}
                         visible={visible}
-                        windowTitle={p.title}
+                        windowTitle={shown(p.spec, p.title)}
                         onPoppedOut={() => dropPanes(tab.key, [id])}
                         title={(
-                          <span className="pane__title pl-ellipsis" title={p.subtitle} onPointerDown={(e) => beginDrag(e, { kind: "pane", id, tab: tab.key }, p.title)}>
-                            <strong>{p.title}</strong>
+                          <span className="pane__title pl-ellipsis" title={shown(p.spec, p.subtitle)} onPointerDown={(e) => beginDrag(e, { kind: "pane", id, tab: tab.key }, shown(p.spec, p.title))}>
+                            <strong>{shown(p.spec, p.title)}</strong>
                           </span>
                         )}
                         controls={(
@@ -1410,7 +1470,7 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
                       backend={backend}
                       spec={p.spec}
                       visible={visible}
-                      connectTitle={p.title}
+                      connectTitle={shown(p.spec, p.title)}
                       phoneCols={p.phoneCols}
                       precheck={p.connecting ?? null}
                       onCancelConnect={() => cancelPane(id)}
@@ -1418,6 +1478,7 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
                       onStatus={(s) => setStatus(id, s)}
                       onCwd={(cwd) => { if (cwd !== p.cwd) reportCwd(p.session, cwd); updatePane(id, (x) => (x.cwd === cwd ? {} : { cwd })); }}
                       onCommand={() => updatePane(id, (x) => ({ commands: x.commands + 1 }))}
+                      onAttention={() => raiseAttention(id)}
                       onSession={(session) => onPaneSession(id, session)}
                       onCloseTab={() => dropPanes(tab.key, [id])}
                       closeLabel={multi ? t("terminal.closePane") : t("terminal.closeTab")}
@@ -1430,6 +1491,8 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
                       fileDrop={fileDrop === id}
                       prediction={settings.terminal.commandPrediction && !(p.ai && !p.ai.takenOver)
                         && !(p.spec.kind === "server" && servers.find((x) => p.spec.kind === "server" && x.id === p.spec.serverId)?.noPrediction)}
+                      serverPrediction={settings.terminal.commandPrediction && p.spec.kind === "server"
+                        ? !servers.find((x) => p.spec.kind === "server" && x.id === p.spec.serverId)?.noPrediction : undefined}
                       broadcasting={inBroadcast}
                       onInput={inBroadcast ? (data) => onBroadcastInput(tab.key, id, data) : undefined}
                       onOutput={inBroadcast ? (tail) => onBroadcastOutput(tab.key, id, tail) : undefined}

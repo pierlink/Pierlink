@@ -120,7 +120,7 @@ impl TauriHost {
         request: impl FnOnce(u64) -> McpConfirmDto,
         cancelled: &AtomicBool,
     ) -> Option<Confirmation> {
-        crate::app_shell::show_main(&self.app);
+        crate::app_shell::attention(&self.app);
         let app = self.app.clone();
         let (id, answer) = self.confirms.ask(
             request,
@@ -390,12 +390,17 @@ impl McpHost for TauriHost {
             HostEvent::TerminalClosed(terminal_id) => self
                 .app
                 .emit(NOTICE_EVENT, McpNoticeDto::TerminalClosed { terminal_id }),
-            HostEvent::LoginNeeded { server_id } => self
-                .app
-                .emit(NOTICE_EVENT, McpNoticeDto::LoginNeeded { server_id }),
-            HostEvent::PasswordPrompt { terminal_id } => self
-                .app
-                .emit(NOTICE_EVENT, McpNoticeDto::PasswordPrompt { terminal_id }),
+            HostEvent::LoginNeeded { server_id } => {
+                // AI 要用的服务器等着登录：窗口在后台时闪任务栏（不抢前台：AI 重试时会来好几次）
+                crate::app_shell::flash_if_background(&self.app);
+                self.app
+                    .emit(NOTICE_EVENT, McpNoticeDto::LoginNeeded { server_id })
+            }
+            HostEvent::PasswordPrompt { terminal_id } => {
+                crate::app_shell::flash_if_background(&self.app);
+                self.app
+                    .emit(NOTICE_EVENT, McpNoticeDto::PasswordPrompt { terminal_id })
+            }
             HostEvent::JobsChanged => self.app.emit(super::JOBS_EVENT, ()),
         };
         if let Err(e) = result {

@@ -1,8 +1,8 @@
 import { Channel } from "@tauri-apps/api/core";
-import { commands, type LocDto, type TransferProgressDto } from "../../bindings/commands";
+import { commands, type LocDto, type TransferProgressDto, type TransferReportDto } from "../../bindings/commands";
 import { formatError } from "../../errors";
 import type { FilesApi } from "./api";
-import type { EntryKind, FileVersion, Loc, TransferRequest } from "./types";
+import type { DragOutResult, EntryKind, FileVersion, Loc, TransferReportView, TransferRequest } from "./types";
 
 /** tauri-specta 对可能失败的命令返回 {status, data|error}；这里统一转成“成功返回数据、失败抛出错误” */
 function unwrap<T>(r: { status: "ok"; data: T } | { status: "error"; error: unknown }): T {
@@ -25,6 +25,16 @@ function version(v: { size: number | null; mtime: number | null; hash: string | 
   return { size: v.size ?? 0, mtime: v.mtime ?? 0, hash: v.hash };
 }
 
+/** 传输报告：失败原因翻译成文字 */
+function reportView(r: TransferReportDto): TransferReportView {
+  return {
+    done: r.done,
+    skipped: r.skipped,
+    renamed: r.renamed,
+    failed: r.failed.map((f) => ({ path: f.path, reason: formatError(f.reason) })),
+  };
+}
+
 /** Tauri 后端的文件接口 */
 export function createTauriFilesApi(): FilesApi {
   let seq = 0;
@@ -45,15 +55,18 @@ export function createTauriFilesApi(): FilesApi {
       const id = `x${Date.now().toString(36)}-${++seq}`;
       const channel = new Channel<TransferProgressDto>();
       channel.onmessage = (p) => onProgress({ ...p, totalBytes: p.totalBytes ?? 0, doneBytes: p.doneBytes ?? 0 });
-      const done = commands.filesTransfer(id, reqDto(req), conflict, channel).then(unwrap).then((r) => ({
-        done: r.done,
-        skipped: r.skipped,
-        renamed: r.renamed,
-        failed: r.failed.map((f) => ({ path: f.path, reason: formatError(f.reason) })),
-      }));
+      const done = commands.filesTransfer(id, reqDto(req), conflict, channel).then(unwrap).then(reportView);
       return { id: Promise.resolve(id), done };
     },
     async cancel(id) { await commands.filesCancel(id); },
+    dragOut(from, sources, labels, onProgress) {
+      // 传输 ID 也用作临时目录名（后端只接受字母、数字和横线）
+      const id = `d${Date.now().toString(36)}-${++seq}`;
+      const channel = new Channel<TransferProgressDto>();
+      channel.onmessage = (p) => onProgress({ ...p, totalBytes: p.totalBytes ?? 0, doneBytes: p.doneBytes ?? 0 });
+      const done = commands.filesDragOut(id, locDto(from), sources, labels, channel).then(unwrap).then((r): DragOutResult => (r.kind === "dropped" ? { kind: "dropped", report: reportView(r.report) } : r));
+      return { id, done };
+    },
     async rename(loc, from, to) { unwrap(await commands.filesRename(locDto(loc), from, to)); },
     async createDir(loc, path) { unwrap(await commands.filesCreateDir(locDto(loc), path)); },
     async createFile(loc, path) { unwrap(await commands.filesCreateFile(locDto(loc), path)); },

@@ -1,7 +1,7 @@
 import type { IDecoration, IDisposable, IMarker, Terminal } from "@xterm/xterm";
 import { historyOf, onHistoryLoaded, remember } from "./history";
 import { nextWord, suggest } from "./predict";
-import { launchesShell, parse133, parseMark, PIERLINK_OSC, ShellTracker, type Mark } from "./shellMarks";
+import { launchesShell, parse133, runsScreen, parseMark, PIERLINK_OSC, ShellTracker, type Mark } from "./shellMarks";
 
 /** 东亚宽字符（占两格）；只用来排预测文字，不影响终端本身 */
 const WIDE = /[ᄀ-ᅟ⺀-〾ぁ-㏿㐀-䶿一-鿿ꀀ-꓏가-힣豈-﫿︰-﹏＀-｠￠-￦]|[\u{1f300}-\u{1f64f}\u{1f900}-\u{1f9ff}\u{20000}-\u{3fffd}]/u;
@@ -81,6 +81,16 @@ export class Prediction {
    */
   get programRunning(): boolean {
     return this.tracker.integrated && this.tracker.running && !launchesShell(this.tracker.command);
+  }
+
+  /** 钩子显示前台是会进到另一个 shell 的命令（tmux、screen、ssh 等），还没回到提示符；没装钩子时为 false */
+  get nestedRunning(): boolean {
+    return this.tracker.integrated && this.tracker.running && launchesShell(this.tracker.command);
+  }
+
+  /** 钩子显示前台是 GNU screen（在提示符下运行了 screen，还没回到提示符）；没装钩子时为 false */
+  get screenRunning(): boolean {
+    return this.tracker.integrated && this.tracker.running && runsScreen(this.tracker.command);
   }
 
   private onMark(mark: Mark | null): void {

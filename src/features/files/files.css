@@ -110,6 +110,7 @@ body.files-dragging, body.files-dragging * { cursor: grabbing !important; user-s
 .files__row--edit { background: var(--selected); }
 .files__name-input { grid-column: 2 / -1; min-width: 0; height: 22px; padding: 0 6px; border: 1px solid var(--accent); border-radius: var(--r-sm); background: var(--field-solid); color: var(--text); font-size: var(--fs-xs); outline: none; }
 .files__op-error { min-width: 0; color: var(--danger); }
+.files__note { min-width: 0; color: var(--text); }
 /* 跟不了终端目录：跟随按钮上一个小点 */
 .files__follow--off { position: relative; }
 .files__follow--off::after { content: ""; position: absolute; top: 3px; right: 3px; width: 5px; height: 5px; border-radius: 50%; background: var(--warn); }

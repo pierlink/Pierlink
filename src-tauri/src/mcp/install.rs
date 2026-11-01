@@ -863,7 +863,7 @@ pub async fn mcp_remove_server(
         .map_err(|e| AppError::new("mcp.task_failed").with("reason", e.to_string()))?
 }
 
-/// 这台电脑上装了哪些客户端
+/// 这台电脑（或服务器）上装了哪些客户端，以及各自加好这个入口没有
 #[derive(Serialize, Type, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct McpClientsDto {
@@ -872,6 +872,118 @@ pub struct McpClientsDto {
     pub cursor: bool,
     /// 只在服务器上检测（本机固定为 false）
     pub gemini: bool,
+    /// 客户端的配置里有没有这个入口：current（加好了，地址和令牌或程序路径都是现在的）/
+    /// stale（有 pierlink，但地址、令牌或程序路径是旧的，要重新添加）/ none（没加）；查不了的客户端不列
+    pub added: std::collections::BTreeMap<String, String>,
+}
+
+/// 配置里 pierlink 这一项的状态
+fn added_state(found: Option<bool>) -> &'static str {
+    match found {
+        Some(true) => "current",
+        Some(false) => "stale",
+        None => "none",
+    }
+}
+
+/// Windows 路径比较：不分大小写，/ 和 \ 一样
+fn same_path(a: &str, b: &str) -> bool {
+    let norm = |p: &str| p.trim().replace('/', "\\").to_lowercase();
+    norm(a) == norm(b)
+}
+
+/// JSON 配置（Claude Code 的 ~/.claude.json、Cursor 的 ~/.cursor/mcp.json）里 mcpServers.pierlink 的程序路径
+/// 是不是 exe；没有这一项时为 None
+fn json_command_matches(text: &str, exe: &str) -> Option<bool> {
+    let root: serde_json::Value = serde_json::from_str(text).ok()?;
+    let entry = root.get("mcpServers")?.get(NAME)?;
+    Some(
+        entry
+            .get("command")
+            .and_then(|c| c.as_str())
+            .is_some_and(|c| same_path(c, exe)),
+    )
+}
+
+/// Codex 的 config.toml 里 [mcp_servers.pierlink] 段的 command 是不是 exe；没有这一段时为 None
+fn codex_command_matches(text: &str, exe: &str) -> Option<bool> {
+    let header = format!("[mcp_servers.{NAME}]");
+    let mut inside = false;
+    let mut found = false;
+    for line in text.lines() {
+        let t = line.trim();
+        if t.starts_with('[') {
+            inside = t == header;
+            found |= inside;
+            continue;
+        }
+        if !inside {
+            continue;
+        }
+        let Some(value) = t.strip_prefix("command").map(str::trim_start) else {
+            continue;
+        };
+        let Some(value) = value.strip_prefix('=').map(str::trim) else {
+            continue;
+        };
+        // TOML 基本字符串（"..."，反斜杠转义）或字面字符串（'...'）
+        let command = if let Some(v) = value.strip_prefix('"') {
+            let mut out = String::new();
+            let mut chars = v.chars();
+            while let Some(c) = chars.next() {
+                match c {
+                    '"' => break,
+                    '\\' => {
+                        if let Some(n) = chars.next() {
+                            out.push(n);
+                        }
+                    }
+                    c => out.push(c),
+                }
+            }
+            out
+        } else if let Some(v) = value.strip_prefix('\'') {
+            v.split('\'').next().unwrap_or_default().to_owned()
+        } else {
+            continue;
+        };
+        return Some(same_path(&command, exe));
+    }
+    found.then_some(false)
+}
+
+/// 本机的 Claude Code、Codex、Cursor 里有没有加好本机入口（程序路径是不是现在这个 Pierlink）
+fn local_added(exe: &str) -> std::collections::BTreeMap<String, String> {
+    let mut added = std::collections::BTreeMap::new();
+    let Some(home) = home_dir() else {
+        return added;
+    };
+    let read = |p: PathBuf| match std::fs::read_to_string(p) {
+        Ok(t) => Some(Some(t)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(None),
+        Err(_) => None,
+    };
+    let codex_dir = std::env::var_os("CODEX_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".codex"));
+    let files = [
+        ("claude", home.join(".claude.json"), false),
+        ("codex", codex_dir.join("config.toml"), true),
+        ("cursor", home.join(".cursor").join("mcp.json"), false),
+    ];
+    for (client, path, toml) in files {
+        // 读不了（权限等）就不列，界面显示“查不到”
+        let Some(text) = read(path) else { continue };
+        let found = text.and_then(|t| {
+            if toml {
+                codex_command_matches(&t, exe)
+            } else {
+                json_command_matches(&t, exe)
+            }
+        });
+        added.insert(client.to_owned(), added_state(found).to_owned());
+    }
+    added
 }
 
 /// Cursor 装没装：开始菜单装的位置、PATH 里的 cursor，或用过它留下的 ~/.cursor
@@ -904,12 +1016,16 @@ pub async fn mcp_detect_clients() -> Result<McpClientsDto, AppError> {
         codex: find_client("codex").is_some(),
         cursor: cursor_installed(),
         gemini: false,
+        added: std::env::current_exe()
+            .map(|exe| local_added(&exe.to_string_lossy()))
+            .unwrap_or_default(),
     })
     .await
     .map_err(|e| AppError::new("mcp.task_failed").with("reason", e.to_string()))
 }
 
-/// 查服务器上装了哪些客户端的脚本：和添加时找程序的办法一样（PATH、常见位置、登录和交互 shell）
+/// 查服务器上装了哪些客户端的脚本：和添加时找程序的办法一样（PATH、常见位置、登录和交互 shell）。
+/// 后面接 server_added_script 查各客户端的配置里有没有加好这个入口
 const SERVER_DETECT_SCRIPT: &str = r#"has() {
   command -v "$1" >/dev/null 2>&1 && return 0
   for d in "$HOME/.local/bin" "$HOME/.claude/local" "$HOME/.npm-global/bin" /usr/local/bin; do
@@ -922,8 +1038,87 @@ const SERVER_DETECT_SCRIPT: &str = r#"has() {
 claude=false; has claude && claude=true
 codex=false; has codex && codex=true
 gemini=false; has gemini && gemini=true
-printf '{"claude":%s,"codex":%s,"gemini":%s}\n' "$claude" "$codex" "$gemini"
 "#;
+
+/// 没有入口时接在 SERVER_DETECT_SCRIPT 后面：只报装了哪些客户端
+const DETECT_TAIL_NO_ENTRY: &str = r#"printf '{"claude":%s,"codex":%s,"gemini":%s,"added":{}}\n' "$claude" "$codex" "$gemini"
+"#;
+
+/// 查服务器上 Claude Code（~/.claude.json）、Codex（~/.codex/config.toml）、Gemini CLI（~/.gemini/settings.json）
+/// 的配置里有没有 pierlink、地址和令牌是不是现在的；接在 SERVER_DETECT_SCRIPT 后面，最后输出一行 JSON。
+/// 令牌写在脚本正文里（经标准输入发送），比较时也只经标准输入交给 grep/python，不出现在进程参数里。
+/// 有 python3 时按 JSON/TOML 解析，没有时按文字粗查。
+fn server_added_script(url: &str, token: &str) -> Result<String, AppError> {
+    let url_q = pierlink_core::ssh::quote::sh_quote(url)?;
+    let auth_q = pierlink_core::ssh::quote::sh_quote(&format!("Bearer {token}"))?;
+    Ok(format!(
+        r#"url={url_q}
+auth={auth_q}
+cj="${{CLAUDE_CONFIG_DIR:-$HOME}}/.claude.json"
+[ -f "$cj" ] || cj="$HOME/.claude.json"
+ct="${{CODEX_HOME:-$HOME/.codex}}/config.toml"
+gj="$HOME/.gemini/settings.json"
+added=''
+if command -v python3 >/dev/null 2>&1; then
+  added=$(printf '%s\n%s\n' "$url" "$auth" | python3 -c '
+import json, re, sys
+url, auth = sys.stdin.read().split("\n")[:2]
+def state(entry, u, a):
+    if entry is None:
+        return "none"
+    return "current" if u == url and a == auth else "stale"
+def from_json(path, url_keys):
+    try:
+        with open(path) as f:
+            d = json.load(f)
+    except FileNotFoundError:
+        return "none"
+    except Exception:
+        return "unknown"
+    e = (d.get("mcpServers") or {{}}).get("pierlink")
+    if not isinstance(e, dict):
+        return state(None, "", "")
+    u = next((e.get(k) for k in url_keys if e.get(k)), "")
+    return state(e, u, (e.get("headers") or {{}}).get("Authorization", ""))
+def codex(path):
+    try:
+        with open(path) as f:
+            text = f.read()
+    except FileNotFoundError:
+        return "none"
+    except Exception:
+        return "unknown"
+    try:
+        import tomllib
+        e = (tomllib.loads(text).get("mcp_servers") or {{}}).get("pierlink")
+        if not isinstance(e, dict):
+            return "none"
+        return state(e, e.get("url", ""), (e.get("http_headers") or {{}}).get("Authorization", ""))
+    except ImportError:
+        m = re.search(r"^\[mcp_servers\.pierlink\]\s*$(.*?)(?=^\[|\Z)", text, re.M | re.S)
+        if not m:
+            return "none"
+        body = m.group(1)
+        return "current" if ("\"" + url + "\"") in body and auth in body else "stale"
+    except Exception:
+        return "unknown"
+import os
+print(json.dumps({{"claude": from_json(sys.argv[1], ["url"]), "codex": codex(sys.argv[2]), "gemini": from_json(sys.argv[3], ["httpUrl", "url"])}}))
+' "$cj" "$ct" "$gj" 2>/dev/null)
+fi
+if [ -z "$added" ]; then
+  # 没有 python3：按文字粗查（有 pierlink 字样算加过；同时含现在的地址和令牌算是现在的）
+  st() {{
+    [ -f "$1" ] || {{ printf none; return; }}
+    grep -q 'pierlink' "$1" 2>/dev/null || {{ printf none; return; }}
+    if grep -qF -- "$url" "$1" && printf '%s\n' "$auth" | grep -qF -f - "$1"; then printf current; else printf stale; fi
+  }}
+  added=$(printf '{{"claude":"%s","codex":"%s","gemini":"%s"}}' "$(st "$cj")" "$(st "$ct")" "$(st "$gj")")
+fi
+printf '{{"claude":%s,"codex":%s,"gemini":%s,"added":%s}}\n' "$claude" "$codex" "$gemini" "$added"
+"#
+    ))
+}
 
 /// 检测服务器上装了 Claude Code、Codex 中的哪些（Cursor 只在本机，固定为 false）
 ///
@@ -941,59 +1136,144 @@ pub async fn mcp_detect_server_clients(
             &server_id,
             crate::keys::Access::Background("AI 接入"),
         )?;
+        // 有入口时顺便查各客户端的配置里加好没有（要用现在的地址和令牌比较）
+        let settings = super::settings::load(&app);
+        let added = match settings.servers.iter().find(|s| s.server_id == server_id) {
+            Some(s) => server_added_script(
+                &super::entries::url(s.port),
+                &super::entries::token(&server_id)?,
+            )?,
+            None => DETECT_TAIL_NO_ENTRY.into(),
+        };
+        let script = format!("{SERVER_DETECT_SCRIPT}{added}");
         let v = pierlink_core::remote::run::run_script(
             &program,
             &cmd,
-            SERVER_DETECT_SCRIPT,
+            &script,
             pierlink_core::remote::run::RunLimits {
                 timeout: std::time::Duration::from_secs(30),
                 stdout_bytes: 4096,
                 stderr_bytes: 4096,
             },
-        )?;
+        )
+        .map_err(|mut e| {
+            // 脚本正文里有令牌：错误尾部不给界面
+            e.params.remove("stderr_tail");
+            e
+        })?;
+        let added = v["added"]
+            .as_object()
+            .map(|m| {
+                m.iter()
+                    .filter_map(|(k, v)| {
+                        let v = v.as_str()?;
+                        matches!(v, "current" | "stale" | "none").then(|| (k.clone(), v.to_owned()))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         Ok(McpClientsDto {
             claude: v["claude"].as_bool().unwrap_or(false),
             codex: v["codex"].as_bool().unwrap_or(false),
             cursor: false,
             gemini: v["gemini"].as_bool().unwrap_or(false),
+            added,
         })
     })
     .await
     .map_err(|e| AppError::new("mcp.task_failed").with("reason", e.to_string()))?
 }
 
-/// 换令牌后：这台服务器上一键添加过的客户端，在后台用新令牌重加
-pub(crate) fn reinstall_after_rotate(app: &AppHandle, server_id: &str) {
+/// 换令牌或端口后：这台服务器上一键添加过的客户端，在后台用新的地址和令牌重新添加，结果放进入口状态
+/// （界面据此提示“已更新，重启它们后生效”或“没更新成，请重新添加”）
+///
+/// :param reason: token / port
+pub(crate) fn readd(app: &AppHandle, server_id: &str, reason: &'static str) {
     let list = installed(app);
-    let clients: Vec<&str> = ["claude", "codex", "gemini"]
+    let clients: Vec<String> = ["claude", "codex", "gemini"]
         .into_iter()
         .filter(|c| list.iter().any(|x| *x == installed_key(server_id, c)))
+        .map(str::to_owned)
         .collect();
-    if clients.is_empty() {
-        return;
-    }
     let (app, id) = (app.clone(), server_id.to_owned());
-    let clients: Vec<String> = clients.into_iter().map(str::to_owned).collect();
     std::thread::spawn(move || {
-        if app.try_state::<super::McpState>().is_none() {
+        let Some(state) = app.try_state::<super::McpState>() else {
             return;
-        }
-        for client in &clients {
-            match install_on_server(&app, &id, client) {
-                Ok(_) => eprintln!("换令牌后已在服务器上重加 {}: 服务器={id}", display(client)),
-                Err(e) => eprintln!(
-                    "换令牌后在服务器上重加 {} 失败: 服务器={id}, 错误={}",
-                    display(client),
-                    e.code
-                ),
+        };
+        let (mut ok, mut failed) = (Vec::new(), Vec::new());
+        for client in clients {
+            match install_on_server(&app, &id, &client) {
+                Ok(_) => {
+                    eprintln!(
+                        "已在服务器上重新添加 {}: 服务器={id}, 原因={reason}",
+                        display(&client)
+                    );
+                    ok.push(client);
+                }
+                Err(e) => {
+                    eprintln!(
+                        "在服务器上重新添加 {} 失败: 服务器={id}, 原因={reason}, 错误={}",
+                        display(&client),
+                        e.code
+                    );
+                    failed.push(client);
+                }
             }
         }
+        let at_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as f64)
+            .unwrap_or_default();
+        state.entries.set_readded(
+            &app,
+            &id,
+            super::entries::McpReaddDto {
+                reason: reason.into(),
+                ok,
+                failed,
+                at_ms,
+            },
+        );
     });
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn 本机客户端配置里加好没有() {
+        let exe = r"C:\Users\me\AppData\Local\Pierlink\Pierlink.exe";
+        // Claude Code / Cursor：mcpServers.pierlink.command 是不是现在的程序（不分大小写、/ 和 \ 一样）
+        let claude = r#"{"mcpServers":{"pierlink":{"type":"stdio","command":"c:/users/me/appdata/local/pierlink/pierlink.exe","args":["--mcp"]}}}"#;
+        assert_eq!(json_command_matches(claude, exe), Some(true));
+        let old = r#"{"mcpServers":{"pierlink":{"command":"D:\\old\\Pierlink.exe"}}}"#;
+        assert_eq!(json_command_matches(old, exe), Some(false));
+        assert_eq!(
+            json_command_matches(r#"{"mcpServers":{"other":{}}}"#, exe),
+            None
+        );
+        assert_eq!(json_command_matches("不是 JSON", exe), None);
+        // Codex：[mcp_servers.pierlink] 段里的 command（基本字符串带转义、字面字符串）
+        let toml = "[model]\nname = \"x\"\n\n[mcp_servers.pierlink]\ncommand = \"C:\\\\Users\\\\me\\\\AppData\\\\Local\\\\Pierlink\\\\Pierlink.exe\"\nargs = [\"--mcp\"]\n";
+        assert_eq!(codex_command_matches(toml, exe), Some(true));
+        let literal = format!("[mcp_servers.pierlink]\ncommand = '{exe}'\n");
+        assert_eq!(codex_command_matches(&literal, exe), Some(true));
+        let stale = "[mcp_servers.pierlink]\ncommand = 'D:\\old\\Pierlink.exe'\n";
+        assert_eq!(codex_command_matches(stale, exe), Some(false));
+        // 有这一段但没有 command（只写了超时设置）：算旧的
+        assert_eq!(
+            codex_command_matches("[mcp_servers.pierlink]\ntool_timeout_sec = 1800\n", exe),
+            Some(false)
+        );
+        assert_eq!(
+            codex_command_matches("[mcp_servers.other]\ncommand = 'x'\n", exe),
+            None
+        );
+        assert_eq!(added_state(Some(true)), "current");
+        assert_eq!(added_state(Some(false)), "stale");
+        assert_eq!(added_state(None), "none");
+    }
 
     #[test]
     fn cursor配置合并时保留其他服务器() {
@@ -1073,7 +1353,7 @@ mod tests {
         std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
         let out = Command::new("/bin/sh")
             .arg("-c")
-            .arg(SERVER_DETECT_SCRIPT)
+            .arg(format!("{SERVER_DETECT_SCRIPT}{DETECT_TAIL_NO_ENTRY}"))
             .env("HOME", dir.path())
             .env("PATH", "/nonexistent")
             .env("SHELL", "/bin/sh")
@@ -1081,8 +1361,72 @@ mod tests {
             .unwrap();
         assert_eq!(
             String::from_utf8_lossy(&out.stdout).trim(),
-            r#"{"claude":false,"codex":true,"gemini":false}"#
+            r#"{"claude":false,"codex":true,"gemini":false,"added":{}}"#
         );
+    }
+
+    /// 在假的家目录里跑“检测客户端 + 查配置”；path 为 None 时用真实的 PATH
+    #[cfg(unix)]
+    fn detect_added(home: &Path, path: Option<&Path>) -> serde_json::Value {
+        let url = "http://127.0.0.1:47821/mcp";
+        let script = format!(
+            "{SERVER_DETECT_SCRIPT}{}",
+            server_added_script(url, "tok_-1").unwrap()
+        );
+        let mut cmd = Command::new("/bin/sh");
+        cmd.arg("-c")
+            .arg(&script)
+            .env("HOME", home)
+            .env("SHELL", "/bin/sh");
+        cmd.env_remove("CLAUDE_CONFIG_DIR").env_remove("CODEX_HOME");
+        if let Some(p) = path {
+            cmd.env("PATH", p);
+        }
+        let out = cmd.output().unwrap();
+        serde_json::from_slice(&out.stdout).unwrap_or_else(|_| {
+            panic!(
+                "输出不是 JSON：{}｜{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            )
+        })
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn 检测服务器上客户端的配置里加好没有() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path();
+        // Claude Code：地址和令牌都是现在的
+        std::fs::write(
+            home.join(".claude.json"),
+            r#"{"mcpServers":{"pierlink":{"type":"http","url":"http://127.0.0.1:47821/mcp","headers":{"Authorization":"Bearer tok_-1"}}}}"#,
+        )
+        .unwrap();
+        // Codex：端口是旧的
+        std::fs::create_dir_all(home.join(".codex")).unwrap();
+        std::fs::write(
+            home.join(".codex/config.toml"),
+            "[mcp_servers.pierlink]\nurl = \"http://127.0.0.1:47000/mcp\"\nhttp_headers = { \"Authorization\" = \"Bearer tok_-1\" }\n",
+        )
+        .unwrap();
+        // Gemini：没有配置文件
+        let v = detect_added(home, None);
+        assert_eq!(v["added"]["claude"], "current", "{v}");
+        assert_eq!(v["added"]["codex"], "stale", "{v}");
+        assert_eq!(v["added"]["gemini"], "none", "{v}");
+        // 没有 python3 时按文字粗查：PATH 里只放 grep
+        let bin = home.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let grep = ["/usr/bin/grep", "/bin/grep"]
+            .into_iter()
+            .find(|p| Path::new(p).exists())
+            .unwrap();
+        std::os::unix::fs::symlink(grep, bin.join("grep")).unwrap();
+        let v = detect_added(home, Some(&bin));
+        assert_eq!(v["added"]["claude"], "current", "{v}");
+        assert_eq!(v["added"]["codex"], "stale", "{v}");
+        assert_eq!(v["added"]["gemini"], "none", "{v}");
     }
 
     #[cfg(unix)]

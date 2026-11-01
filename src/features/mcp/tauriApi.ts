@@ -1,7 +1,7 @@
 import { listen } from "@tauri-apps/api/event";
 import { commands } from "../../bindings/commands";
 import { isAppError, type AppError } from "../../errors";
-import type { McpActivity, McpApi, McpConfirm, McpConnectInfo, McpEntryState, McpNotice, McpOpenTerminal, McpSettings, McpStatus } from "./api";
+import type { McpActivity, McpApi, McpClients, McpConfirm, McpConnectInfo, McpEntryState, McpNotice, McpOpenTerminal, McpSettings, McpStatus } from "./api";
 
 /** 与 Rust 端 mcp/mod.rs 的事件名一致 */
 const SESSIONS_EVENT = "pierlink://mcp-sessions";
@@ -52,8 +52,9 @@ export const tauriMcpApi: McpApi = {
   installServer: async (serverId, client) => { unwrap(await commands.mcpInstallServer(serverId, client)); },
   removeLocal: async (client) => unwrap(await commands.mcpRemoveLocal(client)).removed,
   removeServer: async (serverId, client) => unwrap(await commands.mcpRemoveServer(serverId, client)).removed,
-  detectClients: async () => unwrap(await commands.mcpDetectClients()),
-  detectServerClients: async (serverId) => unwrap(await commands.mcpDetectServerClients(serverId)),
+  // 后端只给 current / stale / none 三种
+  detectClients: async () => unwrap(await commands.mcpDetectClients()) as McpClients,
+  detectServerClients: async (serverId) => unwrap(await commands.mcpDetectServerClients(serverId)) as McpClients,
   reportCwd: async (terminalId, cwd) => { unwrap(await commands.terminalReportCwd(terminalId, cwd)); },
   onSessions: (cb) => listen(SESSIONS_EVENT, () => cb()),
   onJobs: (cb) => listen(JOBS_EVENT, () => cb()),

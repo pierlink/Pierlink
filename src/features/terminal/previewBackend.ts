@@ -42,9 +42,11 @@ export function createPreviewBackend(banner: (spec: OpenSpec) => string, promptF
       let out = "";
       for (const ch of data) {
         if (ch === "\r") {
-          if (s.line.trim() === "exit") {
+          // exit 带退出码：服务器终端里 exit 255 等于 ssh 断线，预览里能看到“连接已断开”
+          const exit = /^exit(?:\s+(\d{1,3}))?$/.exec(s.line.trim());
+          if (exit) {
             s.emit({ kind: "output", data: enc.encode("\r\n") });
-            s.emit({ kind: "exited", code: 0, closedByUser: false });
+            s.emit({ kind: "exited", code: Number(exit[1] ?? 0), closedByUser: false });
             sessions.delete(id);
             return;
           }

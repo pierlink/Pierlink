@@ -224,6 +224,27 @@ await rec.step(p, "剪贴板：远程复制的文字到了 Windows；Windows 换
   return "远程到 Windows、复制回来、中文重连都对";
 });
 
+await rec.step(p, "剪贴板：远程复制的文字到了 Windows 后断开重连，不发回远程（远程剪贴板仍归复制它的程序，文件管理器复制的文件不会变成路径）", async () => {
+  if (!vnc) return "跳过";
+  await copyOnRemote("PLKEEPOWNER", "UTF8_STRING");
+  const deadline = Date.now() + 10000;
+  let got = "";
+  while (Date.now() < deadline && (got = getWindowsClipboard()) !== "PLKEEPOWNER") await sleep(500);
+  if (got !== "PLKEEPOWNER") throw new Error(`远程复制后 Windows 剪贴板是 ${JSON.stringify(got.slice(0, 80))}，应该是 "PLKEEPOWNER"`);
+  await u.click('[aria-label="Disconnect"]');
+  await u.clickText("Reconnect", ".desk__card");
+  await u.waitFor(`(document.querySelector('.desk__status')?.innerText||'').startsWith('Connected')`, "重新连上", 30000);
+  // 等过扩展剪贴板的等待（最多 1.5 秒）和每秒一次的检查，再点一下画面（也会看一次剪贴板），留出发过去的时间
+  await sleep(2500);
+  await u.click(".desk__screen canvas");
+  await sleep(2000);
+  // xclip 只提供 TARGETS 和 UTF8_STRING；Xvnc 接管后会多出 TIMESTAMP、STRING、TEXT
+  const targets = remoteClipboard("TARGETS");
+  if (/\bTIMESTAMP\b/.test(targets)) throw new Error(`重连后 Pierlink 把文字发回了远程，剪贴板被 Xvnc 接管（TARGETS：${JSON.stringify(targets.slice(0, 200))}）`);
+  if (!/\bUTF8_STRING\b/.test(targets)) throw new Error(`重连后读不到远程剪贴板的格式（TARGETS：${JSON.stringify(targets.slice(0, 200))}）`);
+  return `远程剪贴板仍归 xclip：${targets.replace(/\s+/g, " ").trim()}`;
+});
+
 await rec.step(p, "全屏：和终端分屏时也盖住整个窗口（旁边的窗格、分隔条、侧栏都在下面）；再点一次退出", async () => {
   if (!vnc) return "跳过";
   // 先在桌面旁边开一个本机终端

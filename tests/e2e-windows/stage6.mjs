@@ -190,6 +190,41 @@ await rec.step(conn, "服务器概况：Windows 服务器的终端右上角显�
   if (!/doesn't support/.test(text)) throw new Error(`应当显示不支持：${text}`);
 });
 
+await rec.step(conn, "服务器列表：地址右边的复制按钮复制 IP；小眼睛把 IP 显示成圆点（侧栏和标签栏，名称就是 IP 的也遮住），这时复制照样是真实 IP；再点一次恢复", async () => {
+  if (!HAVE_SSHD) throw new Error("跳过：没有本机 sshd");
+  const idx = Number(await u.waitFor(`(()=>{const i=[...document.querySelectorAll('.srv-row')].findIndex(r=>r.innerText.includes('127.0.0.1')); return i>=0 ? String(i) : null;})()`, "侧栏里的 127.0.0.1"));
+  const row = `document.querySelectorAll('.srv-row')[${idx}]`;
+  const clip = () => pwsh("Get-Clipboard").split("\n")[0].trim();
+  const copy = async (what) => {
+    // 上一次复制的对勾要 1.5 秒才消失：先等它没了，免得把旧对勾当成这次的
+    await u.waitFor(`!${row}?.querySelector('.srv-row__copy--done')`, `${what}：上一次的对勾消失`, 5000);
+    execFileSync("powershell.exe", ["-NoProfile", "-Command", 'Set-Clipboard -Value "pl-before-copy"']);
+    const r = await p.js(`(()=>{const c=${row}?.querySelector('.srv-row__copy'); if(!c) return null; const b=c.getBoundingClientRect(); return {x:b.x+b.width/2,y:b.y+b.height/2};})()`);
+    if (!r) throw new Error(`${what}：这一行没有复制按钮`);
+    await u.clickXY(r.x, r.y);
+    await u.waitFor(`!!${row}?.querySelector('.srv-row__copy--done')`, `${what}：复制按钮变成对勾`, 10000);
+    const got = clip();
+    if (got !== "127.0.0.1") throw new Error(`${what}：剪贴板里是 ${JSON.stringify(got)}`);
+  };
+  await copy("显示 IP 时复制");
+  // 前一步开了这台服务器的终端时，标签栏里也有它的地址
+  const tabHad = await p.js(`document.querySelector('.tabbar').innerText.includes('127.0.0.1')`);
+  await u.click('button[aria-label="Hide IPs"]');
+  let hidden = "";
+  // 不管中间哪一步失败都恢复显示：后面的步骤按 IP 找服务器
+  try {
+    await u.waitFor(`!document.querySelector('.ws__side').innerText.includes('127.0.0.1') && ${row}.innerText.includes('•••••')`, "侧栏里看不到 IP", 5000);
+    const tabs = await p.js(`document.querySelector('.tabbar').innerText`);
+    if (tabs.includes("127.0.0.1")) throw new Error(`标签栏里还有 IP：${tabs}`);
+    hidden = await p.js(`${row}.innerText`);
+    await copy("隐藏 IP 时复制");
+  } finally {
+    if (await p.js(`!!document.querySelector('button[aria-label="Show IPs"]')`)) await u.click('button[aria-label="Show IPs"]');
+  }
+  await u.waitFor(`${row}.innerText.includes('127.0.0.1') && (${!tabHad} || document.querySelector('.tabbar').innerText.includes('127.0.0.1'))`, "再点一次恢复显示", 5000);
+  return `隐藏时侧栏：${hidden.replace(/\n/g, " / ")}`;
+});
+
 // ---------- 广播输入 ----------
 /** 只在当前可见的窗格里按选择器找第 i 个元素并点击（隐藏标签的窗格也在页面里，只是不显示） */
 /** 在第一个可见窗格里按 Ctrl+Shift+B 开广播；没生效（焦点还没到终端）时再点一次终端重按 */
@@ -361,7 +396,7 @@ await rec.step(conn, "服务器概况：Linux 服务器终端右上角显示运�
   return `${info.summary}｜CPU ${cpu.now}%（${cpu.detail}）｜内存 ${mem.now}%（${mem.detail}）｜${disk.label} ${disk.now}%（${disk.detail}）`;
 });
 
-await rec.step(conn, "服务器终端的连接 / 断开按钮：断开后内容留着、最下面写一行，右下角有“关闭”“重新连接”；点工具栏、右下角的按钮或按 Enter 都清屏重新连接，光标回来、焦点在终端里", async () => {
+await rec.step(conn, "服务器终端的连接 / 断开按钮：断开后内容留着、最下面写一行，终端正中间的卡片上有“关闭”“重新连接”；点工具栏、卡片上的按钮或按 Enter 都清屏重新连接，光标回来、焦点在终端里", async () => {
   if (!HAVE_LINUX) throw new Error("没有 WSL Linux 服务器");
   const pane = `[...document.querySelectorAll('.pane-slot')].filter(s=>s.style.display!=='none')[0]`;
   const term = `(${pane}?.querySelector('.xterm-rows')?.innerText||'')`;
@@ -369,31 +404,47 @@ await rec.step(conn, "服务器终端的连接 / 断开按钮：断开后内容�
   const cursorBack = `(()=>{const s=${pane}; const a=document.activeElement; return !!s?.querySelector('.xterm-rows .xterm-cursor') && !!a && s.contains(a) && a.classList.contains('xterm-helper-textarea');})()`;
   const disconnect = async (what) => {
     await clickVisible('[aria-label="Disconnect"]');
-    return await u.waitFor(`(()=>{const t=${term}; return /Disconnected\\. Press Enter to reconnect\\./.test(t) ? t : null;})()`, what, 15000);
+    return await u.waitFor(`(()=>{const t=${term}; return /^Disconnected\\s*$/m.test(t) ? t : null;})()`, what, 15000);
   };
   const reconnected = async (what) => {
     await u.waitFor(`${bashPanes} >= 1 && !/PL-KEEP-42|Disconnected/.test(${term})`, what, 30000);
     await u.waitFor(cursorBack, `${what}：光标显示、焦点在终端里`, 10000);
-    if (await p.js(`!!${pane}?.querySelector('.term-endbar')`)) throw new Error(`${what}：右下角的按钮还在`);
+    if (await p.js(`!!${pane}?.querySelector('.term-endcard')`)) throw new Error(`${what}：中间的卡片还在`);
   };
   await clickVisible(".xterm-screen", 0);
-  await u.typeLine("echo PL-KEEP-$((40+2))");
+  // 顺便打开焦点上报（tmux、Claude Code 都会开）：点“断开”后终端拿回焦点会产生一段输入，
+  // 以前写进正在关的会话会弹“会话不存在或已关闭”
+  await u.typeLine("echo PL-KEEP-$((40+2)); printf '\\033[?1004h'");
   await u.waitFor(`/^PL-KEEP-42\\s*$/m.test(${term})`, "echo 的输出", 10000);
   const text = await disconnect("终端最下面写了“已断开”");
   if (!/^PL-KEEP-42\s*$/m.test(text)) throw new Error(`断开后原来的内容没了：${text}`);
+  await sleep(1000);
+  const notice = await p.js(`${pane}?.querySelector('.term-notice')?.innerText || ''`);
+  if (notice) throw new Error(`断开后不该弹提示：${notice}`);
   if (await p.js(`[...document.querySelectorAll('.pane-slot')].filter(s=>s.style.display!=='none').some(s=>s.querySelector('.term-ended'))`)) throw new Error("断开后不该盖提示块");
-  const bar = await p.js(`[...(${pane}?.querySelectorAll('.term-endbar button')||[])].map(b=>b.textContent.trim())`);
-  if (bar.length !== 2 || !/^Close (tab|pane)$/.test(bar[0]) || bar[1] !== "Reconnect") throw new Error(`右下角的按钮不对：${JSON.stringify(bar)}`);
+  const bar = await p.js(`[...(${pane}?.querySelectorAll('.term-endcard button')||[])].map(b=>b.textContent.trim())`);
+  if (bar.length !== 2 || !/^Close (tab|pane)$/.test(bar[0]) || bar[1] !== "Reconnect") throw new Error(`卡片上的按钮不对：${JSON.stringify(bar)}`);
+  // 卡片在终端正中间（以前在右下角，不醒目）；先等进场动画走完
+  await sleep(250);
+  const place = await p.js(`(()=>{const c=${pane}?.querySelector('.term-endcard')?.getBoundingClientRect(), t=${pane}?.querySelector('.term-pane')?.getBoundingClientRect(); return c && t ? {dx: Math.round((c.left+c.width/2)-(t.left+t.width/2)), dy: Math.round((c.top+c.height/2)-(t.top+t.height/2))} : null;})()`);
+  if (!place || Math.abs(place.dx) > 4 || Math.abs(place.dy) > 4) throw new Error(`卡片不在终端正中间：${JSON.stringify(place)}`);
   // 工具栏的“连接”
   await clickVisible('[aria-label="Connect"]');
   await reconnected("点工具栏的“连接”重新连接");
-  // 右下角的“重新连接”
+  // 卡片上的“重新连接”
   await disconnect("第二次断开");
-  await clickVisible(".term-endbar .pl-btn--primary");
-  await reconnected("点右下角的“重新连接”");
-  // 在终端里按 Enter
+  await clickVisible(".term-endcard .pl-btn--primary");
+  await reconnected("点卡片上的“重新连接”");
+  // 点卡片上的文字（不是按钮）后按 Enter：焦点回到终端，照样重新连接
   await disconnect("第三次断开");
-  await clickVisible(".xterm-screen", 0);
+  await clickVisible(".term-endcard__title");
+  await u.enter();
+  await reconnected("点卡片上的文字后按 Enter 重新连接");
+  // 点终端里卡片以外的地方后按 Enter（点终端左上角，避开中间的卡片）
+  await disconnect("第四次断开");
+  const corner = await p.js(`(()=>{const r=${pane}?.querySelector('.xterm-screen')?.getBoundingClientRect(); return r ? {x: r.left + 40, y: r.top + 10} : null;})()`);
+  if (!corner) throw new Error("找不到终端画面");
+  await u.clickXY(corner.x, corner.y);
   await u.enter();
   await reconnected("按 Enter 重新连接");
   return text.split("\n").filter(Boolean).slice(-2).join(" / ");

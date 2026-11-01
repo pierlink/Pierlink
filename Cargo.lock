@@ -3577,7 +3577,7 @@ dependencies = [
 
 [[package]]
 name = "pierlink"
-version = "0.9.9"
+version = "0.9.10"
 dependencies = [
  "base64 0.23.1",
  "if-addrs",
@@ -3599,12 +3599,14 @@ dependencies = [
  "tempfile",
  "tokio",
  "uuid",
+ "windows",
+ "windows-core",
  "windows-sys 0.61.2",
 ]
 
 [[package]]
 name = "pierlink-core"
-version = "0.9.9"
+version = "0.9.10"
 dependencies = [
  "bytes",
  "encoding_rs",
@@ -3648,14 +3650,14 @@ dependencies = [
 
 [[package]]
 name = "pierlink-export-bindings"
-version = "0.9.9"
+version = "0.9.10"
 dependencies = [
  "pierlink",
 ]
 
 [[package]]
 name = "pierlink-ssh-engine"
-version = "0.9.9"
+version = "0.9.10"
 dependencies = [
  "russh",
  "serde",

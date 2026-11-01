@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import "../../i18n";
-import { MODES_OFF, endedFromOpenError, endedLine, endsInline } from "./ended";
+import i18n from "../../i18n";
+import { MODES_OFF, endedFromOpenError, endedLine, endedText, endsInline } from "./ended";
 
 const err = (code: string, params: Record<string, string> = {}) => ({ code, params });
 
@@ -54,6 +54,21 @@ describe("断开和退出时写进终端的一行", () => {
     expect(main).toContain("\x1b[90m已断开");
     // 关掉鼠标上报：断开后点终端不再往外发鼠标序列
     expect(main).toContain("\x1b[?1000l");
+    // 按钮在中间的卡片上，说明下面不用再空行
+    expect(main).not.toContain("\r\n\r\n");
+  });
+
+  it("终端里的那一行和中间卡片用同一句说明；钩子不兼容时多一句补充", () => {
+    const tr = i18n.getFixedT("zh-CN");
+    expect(endedText({ kind: "lost" }, tr)).toEqual({ title: "连接已断开", detail: null });
+    expect(endedText({ kind: "disconnected" }, tr)).toEqual({ title: "已断开", detail: null });
+    expect(endedText({ kind: "exited", code: 0 }, tr)).toEqual({ title: "进程已退出（代码 0）", detail: null });
+    expect(endedText({ kind: "exited", code: null }, tr).title).toBe("进程已退出（代码 -）");
+    // 服务器拒绝了带钩子的请求：进程没启动过，说“已断开”
+    const rejected = endedText({ kind: "exited", code: null, hookHint: "off" }, tr);
+    expect(rejected.title).toBe("已断开");
+    expect(rejected.detail).toContain("命令预测");
+    expect(endedText({ kind: "exited", code: 0, hookHint: "quick" }, tr).detail).toContain("设置");
   });
 });
 

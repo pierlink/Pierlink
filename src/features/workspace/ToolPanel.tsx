@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { Copy, X } from "lucide-react";
 import { IconButton, Segmented, StatusDot } from "../../components";
 import type { ServerView } from "./types";
+import { maskHost, useHideAddresses } from "./hideAddresses";
 
 export type ToolPage = "server" | "snippets";
 
@@ -26,6 +27,8 @@ export function ToolPanel({ page, onPage, onClose, server, onCopyIp, follow, ser
   snippetsPage: ReactNode;
 }) {
   const { t } = useTranslation();
+  const hide = useHideAddresses();
+  const shown = (text: string) => (hide && server ? maskHost(text, server.host) : text);
   return (
     <aside className="pl-panel ws__tool" aria-label={t("panel.title")}>
       <div className="ws__tool-head">
@@ -44,12 +47,12 @@ export function ToolPanel({ page, onPage, onClose, server, onCopyIp, follow, ser
         server ? (
           <>
             <div className="ws__tool-server">
-              <span className="ws__tool-name pl-ellipsis">{server.name}</span>
+              <span className="ws__tool-name pl-ellipsis">{shown(server.name)}</span>
               <StatusDot tone={server.status === "online" ? "ok" : server.status === "connecting" ? "warn" : "neutral"} label={t(`workspace.status.${server.status}`)} />
               <span className="ws__tool-follow">{follow === "pane" ? t("panel.followPane") : t("panel.followSidebar")}</span>
             </div>
             <div className="ws__tool-addr">
-              <span className="mono pl-ellipsis">{server.address}</span>
+              <span className="mono pl-ellipsis">{shown(server.address)}</span>
               {onCopyIp && (
                 <IconButton size="sm" label={t("menu.copyIp")} title={t("menu.copyIp")} onClick={() => onCopyIp(server.id)}>
                   <Copy size={13} />

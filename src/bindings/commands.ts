@@ -165,6 +165,18 @@ export const commands = {
 	 */
 	clipboardWriteText: (text: string) => typedError<number | null, AppError>(__TAURI_INVOKE("clipboard_write_text", { text })),
 	/**
+	 *  把远程桌面复制来的文字写进系统剪贴板，同时打上来源标记（哪个桌面来的）：同一个桌面重连、开着两个查看窗口时
+	 *  据此认出这段文字是它自己的，不发回远程。Windows 上别的程序再复制会清掉标记。返回写完时剪贴板的变化序号（Windows）
+	 * 
+	 *  :param origin: 来源值（界面算好的哈希，不含服务器和桌面的明文）
+	 */
+	clipboardWriteDesktop: (text: string, origin: string) => typedError<number | null, AppError>(__TAURI_INVOKE("clipboard_write_desktop", { text, origin })),
+	/**
+	 *  读取系统剪贴板的文字和远程桌面写入时打的来源标记（同一次打开剪贴板读出）。
+	 *  没有文字时 text 为 null；不是远程桌面写的、或之后别的程序又复制过时 origin 为 null
+	 */
+	clipboardReadDesktop: () => typedError<ClipboardText_Serialize, AppError>(__TAURI_INVOKE("clipboard_read_desktop")),
+	/**
 	 *  把剪贴板里的图片传到服务器终端所在的服务器，返回路径。
 	 * 
 	 *  :param loc: 终端所在的服务器（保存过的服务器或快速连接）
@@ -249,6 +261,18 @@ export const commands = {
 	filesTransfer: (transferId: string, req: TransferRequestDto_Deserialize, conflict: string, onProgress: Channel<TransferProgressDto>) => typedError<TransferReportDto, AppError>(__TAURI_INVOKE("files_transfer", { transferId, req, conflict, onProgress })),
 	/**  取消传输（已经结束的忽略）。 */
 	filesCancel: (transferId: string) => typedError<null, AppError>(__TAURI_INVOKE("files_cancel", { transferId })),
+	/**
+	 *  把服务器上的文件拖到窗口外（资源管理器、桌面等）：开始系统拖放，松手放到别的程序上时才下载，
+	 *  下载期间显示系统的进度框。拖放结束后才返回。
+	 * 
+	 *  :param transfer_id: 前端生成的传输 ID（取消、临时目录名都用它）
+	 *  :param from: 文件所在的服务器
+	 *  :param sources: 要拖出的完整路径
+	 *  :param labels: 进度框里的文字
+	 *  :param on_progress: 下载进度；开始下载时先发一条全是 0 的
+	 *  :return: 拖放结果；下载出错时返回错误（在进度框里取消时是 sftp.cancelled）
+	 */
+	filesDragOut: (transferId: string, from: LocDto_Deserialize, sources: string[], labels: DragOutLabels, onProgress: Channel<TransferProgressDto>) => typedError<DragOutResultDto, AppError>(__TAURI_INVOKE("files_drag_out", { transferId, from, sources, labels, onProgress })),
 	/**
 	 *  检查快速连接目标的主机密钥。
 	 * 
@@ -696,6 +720,25 @@ export type AuthorizedKeyDto = {
 	ours: boolean,
 };
 
+/**  剪贴板里的文字和远程桌面写入时打的来源标记 */
+export type ClipboardText = ClipboardText_Serialize | ClipboardText_Deserialize;
+
+/**  剪贴板里的文字和远程桌面写入时打的来源标记 */
+export type ClipboardText_Deserialize = {
+	/**  文字；剪贴板里没有文字（如图片）时为 None */
+	text?: string | null,
+	/**  来源标记；不是远程桌面写的、或之后别的程序又复制过时为 None */
+	origin?: string | null,
+};
+
+/**  剪贴板里的文字和远程桌面写入时打的来源标记 */
+export type ClipboardText_Serialize = {
+	/**  文字；剪贴板里没有文字（如图片）时为 None */
+	text: string | null,
+	/**  来源标记；不是远程桌面写的、或之后别的程序又复制过时为 None */
+	origin: string | null,
+};
+
 /**  一项被改过的任务设置 */
 export type ConfigChangeDto = ConfigChangeDto_Serialize | ConfigChangeDto_Deserialize;
 
@@ -1139,6 +1182,25 @@ export type DiskDto = {
 	/**  df 的 Avail 列；界面按 df 的算法显示百分比：used / (used + free) */
 	free: number | null,
 };
+
+/**  系统进度框里的文字（随界面语言） */
+export type DragOutLabels = {
+	/**  标题栏 */
+	title: string,
+	/**  第一行，如“正在下载 report.pdf” */
+	line: string,
+	/**  点了取消之后显示的文字 */
+	cancelling: string,
+};
+
+/**  拖出的结果 */
+export type DragOutResultDto = 
+/**  已下载并交给了放下的程序；report 里有跳过、改名、失败的项 */
+{ kind: "dropped"; report: TransferReportDto } | 
+/**  没有放下：按了 Esc、放在不接收文件的地方 */
+{ kind: "cancelled" } | 
+/**  拖回了本窗口：x、y 是松手处相对窗口客户区的物理像素，界面按窗口内的拖放处理 */
+{ kind: "returned"; x: number; y: number };
 
 /**  检测到的编辑器 */
 export type EditorDto = {
@@ -1699,13 +1761,18 @@ export type McpActivityDto_Serialize = {
 /**  用户对确认框的回答 */
 export type McpAnswer = "allow" | "allow_always" | "deny";
 
-/**  这台电脑上装了哪些客户端 */
+/**  这台电脑（或服务器）上装了哪些客户端，以及各自加好这个入口没有 */
 export type McpClientsDto = {
 	claude: boolean,
 	codex: boolean,
 	cursor: boolean,
 	/**  只在服务器上检测（本机固定为 false） */
 	gemini: boolean,
+	/**
+	 *  客户端的配置里有没有这个入口：current（加好了，地址和令牌或程序路径都是现在的）/
+	 *  stale（有 pierlink，但地址、令牌或程序路径是旧的，要重新添加）/ none（没加）；查不了的客户端不列
+	 */
+	added: { [key in string]: string },
 };
 
 export type McpCommandDto = {
@@ -1772,6 +1839,10 @@ export type McpEntryStateDto_Deserialize = {
 	error?: AppError | null,
 	/**  服务器上的 ~/.pierlink/mcp.json 已写好 */
 	fileWritten: boolean,
+	/**  端口被占着时查到的情况（state 为 port_busy 且查过时才有） */
+	conflict?: McpPortConflictDto_Deserialize | null,
+	/**  最近一次自动重新添加的结果 */
+	readded?: McpReaddDto | null,
 };
 
 /**  一个服务器入口的运行状态 */
@@ -1784,6 +1855,10 @@ export type McpEntryStateDto_Serialize = {
 	error: AppError | null,
 	/**  服务器上的 ~/.pierlink/mcp.json 已写好 */
 	fileWritten: boolean,
+	/**  端口被占着时查到的情况（state 为 port_busy 且查过时才有） */
+	conflict: McpPortConflictDto_Serialize | null,
+	/**  最近一次自动重新添加的结果 */
+	readded: McpReaddDto | null,
 };
 
 /**  界面回报的打开失败原因（后端错误原样带回来） */
@@ -1847,6 +1922,47 @@ export type McpJobDto_Serialize = {
 export type McpOutputPreviewDto = {
 	stdout: string,
 	stderr: string,
+};
+
+/**  服务器上的端口被占着时查到的情况 */
+export type McpPortConflictDto = McpPortConflictDto_Serialize | McpPortConflictDto_Deserialize;
+
+/**  服务器上的端口被占着时查到的情况 */
+export type McpPortConflictDto_Deserialize = {
+	/**
+	 *  this_pc（这台电脑的另一条连接）/ other_pc（另一台电脑上的 Pierlink）/ stale（没断干净的旧连接）/
+	 *  other_program（其他程序或其他用户）/ not_listening（没人在听，服务器却拒绝了转发）/ unknown（查不出来）
+	 */
+	kind: string,
+	/**  另一台电脑的名字（知道的话） */
+	computer?: string | null,
+	/**  建议换到的空闲端口 */
+	freePort?: number | null,
+};
+
+/**  服务器上的端口被占着时查到的情况 */
+export type McpPortConflictDto_Serialize = {
+	/**
+	 *  this_pc（这台电脑的另一条连接）/ other_pc（另一台电脑上的 Pierlink）/ stale（没断干净的旧连接）/
+	 *  other_program（其他程序或其他用户）/ not_listening（没人在听，服务器却拒绝了转发）/ unknown（查不出来）
+	 */
+	kind: string,
+	/**  另一台电脑的名字（知道的话） */
+	computer: string | null,
+	/**  建议换到的空闲端口 */
+	freePort: number | null,
+};
+
+/**  换令牌或端口后，在服务器上自动重新添加（一键添加过的客户端）的结果 */
+export type McpReaddDto = {
+	/**  token / port */
+	reason: string,
+	/**  更新好的客户端（claude / codex / gemini） */
+	ok: string[],
+	/**  没更新成的客户端 */
+	failed: string[],
+	/**  完成的时间（Unix 毫秒） */
+	atMs: number | null,
 };
 
 /**  移除的结果 */

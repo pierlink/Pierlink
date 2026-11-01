@@ -7,6 +7,8 @@ export interface ServerView {
   name: string;
   /** 显示在名称下方的地址，如 dev@203.0.113.18 */
   address: string;
+  /** 主机名或 IP（隐藏 IP 时用来遮住名称和地址里的它；导入自 ssh config 的服务器可能没有） */
+  host?: string | null;
   group: string | null;
   favorite: boolean;
   status: ConnStatus;
@@ -28,6 +30,8 @@ export interface TabView {
   badge?: string;
   /** 这个标签里有 AI 打开的终端 */
   ai?: boolean;
+  /** 这个标签里有程序要你注意（响铃、通知，比如 Codex 等你确认），你还没看 */
+  attention?: boolean;
 }
 
 export interface ResourceView {

@@ -42,11 +42,16 @@ missing_packages() {
         [ "$installed" = 'install ok installed' ] || printf '%s\n' "$apt_package"
     done
 }
-# 先遍历必需依赖，再处理候选组；未选候选的子依赖不会进入闭包。
-dependency_closure() {
+# 软件源里有的包及其中尚未安装的包。逐个查询安装状态较慢，每次获取只准备一次，供多次计算闭包共用。
+dependency_index() {
     dependency_names < "$work/depends" > "$work/available"
     missing_packages < "$work/available" > "$work/missing"
-    awk -v roots="$*" '
+}
+# 先遍历必需依赖，再处理候选组；未选候选的子依赖不会进入闭包。
+# 入口或整组候选在软件源里都没有时，把缺的包名写进 $work/unavailable 并以 1 退出（标准错误已被丢弃）。
+dependency_closure() {
+    : > "$work/unavailable"
+    awk -v roots="$*" -v unavailable="$work/unavailable" '
         FILENAME==ARGV[1] {available[$0]=1; installed[$0]=1; next}
         FILENAME==ARGV[2] {delete installed[$0]; next}
         /^[a-z0-9][a-z0-9+.-]*(:[a-z0-9][a-z0-9-]*)?$/ {parent=$0; group=0; next}
@@ -56,12 +61,20 @@ dependency_closure() {
             if(!group) {group=++groups; owner[group]=parent}
             name=$NF; virtual=(name ~ /^</)
             if(!virtual) candidate[group,++lengths[group]]=name
+            # 记下这一组依赖的原名（虚包去掉尖括号），整组都没有时据此报告
+            wanted=name; gsub(/^<|>$/,"",wanted)
+            want[group]=want[group] (want[group]=="" ? "" : " | ") wanted
             last=group
             if($0 !~ /^ *\|/) group=0
             next
         }
         /^    [a-z0-9]/ && virtual && parent!="" {
             candidate[last,++lengths[last]]=$1
+        }
+        function missing(name) {
+            printf "%s", name > unavailable
+            close(unavailable)
+            exit 1
         }
         function add(name) {
             if(!selected[name] && !installed[name]) {selected[name]=1; queue[++tail]=name}
@@ -79,11 +92,11 @@ dependency_closure() {
                 n=candidate[g,i]
                 if(available[n]) {add(n); return}
             }
-            exit 1
+            missing(want[g])
         }
         END {
             n=split(roots,root," ")
-            for(i=1;i<=n;i++) {if(!available[root[i]]) exit 1; add(root[i])}
+            for(i=1;i<=n;i++) {if(!available[root[i]]) missing(root[i]); add(root[i])}
             # 入口自身即使已安装也要展开，以便为专用副本补齐依赖。
             for(i=1;i<=n;i++) if(!selected[root[i]]) {selected[root[i]]=1; queue[++tail]=root[i]}
             head=1
@@ -114,8 +127,22 @@ apt_unpack() {
     safe_path "$apt_root/lists"; safe_path "$apt_root/cache"
     mkdir -p "$apt_root/lists/partial" "$apt_root/cache/archives/partial" || fail permission_denied
     apt_attempt apt-get update -o APT::Update::Error-Mode=any || fail download_failed "$apt_reason_key" "软件源索引更新失败：$apt_reason"
-    apt_command apt-cache depends --recurse --no-recommends --no-suggests --no-conflicts --no-breaks --no-replaces --no-enhances "$@" > "$work/depends" 2>/dev/null || fail download_failed 'vnc.apt_dependencies' '无法计算发行版依赖'
-    dependency_closure "$@" > "$work/closure" || fail download_failed 'vnc.apt_dependency_unavailable' '依赖组中没有可用的软件包'
+    # 可选包（optional_packages）一起查依赖；软件源里没有的名字 apt-cache 不输出，下面跳过。
+    apt_command apt-cache depends --recurse --no-recommends --no-suggests --no-conflicts --no-breaks --no-replaces --no-enhances "$@" ${optional_packages:-} > "$work/depends" 2>/dev/null || fail download_failed 'vnc.apt_dependencies' '无法计算发行版依赖'
+    dependency_index
+    if ! dependency_closure "$@" > "$work/closure"; then
+        unavailable_package=$(cat "$work/unavailable" 2>/dev/null)
+        # 不是缺包（awk 本身出错等）：没有包名可报
+        [ -n "$unavailable_package" ] || fail download_failed 'vnc.apt_dependencies' '无法计算发行版依赖'
+        package_error download_failed "$unavailable_package" 'vnc.apt_dependency_unavailable' "软件源里没有 $unavailable_package"
+    fi
+    # 可选包逐个加入：它或它的依赖在软件源里没有时跳过，不影响必需的包。
+    closure_roots=$*
+    for optional_package in ${optional_packages:-}; do
+        dependency_closure $closure_roots "$optional_package" > "$work/candidate" || continue
+        closure_roots="$closure_roots $optional_package"
+        mv -f -- "$work/candidate" "$work/closure" || fail permission_denied
+    done
     missing_packages < "$work/closure" > "$work/packages"
     # 入口程序保留自己的副本；其余依赖（包括字体和总线）优先复用系统已装包。
     printf '%s\n' "$version_package" >> "$work/packages"

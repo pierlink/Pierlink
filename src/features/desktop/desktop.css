@@ -33,6 +33,18 @@
 .desk__progress > span { position: absolute; inset: 0 auto 0 0; background: var(--accent); transition: width 200ms linear; }
 .desk__progress > .desk__progress-busy { width: 30%; animation: desk-busy 1.2s ease-in-out infinite; }
 @keyframes desk-busy { 0% { left: -30%; } 100% { left: 100%; } }
+/* 卡片标题行：标题和最右边的安装说明问号；按钮上下用负边距抵消，不比文字行高 */
+.desk__head { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; }
+.desk__head > b { min-width: 0; overflow-wrap: anywhere; }
+.desk__head > .pane__btn { margin: -3px -4px -3px 0; }
+/* 安装说明对话框（挂在 body 下，不在 .desk 里） */
+.desk-help { display: flex; flex-direction: column; gap: 10px; }
+.desk-help p { margin: 0; }
+.desk-help__table { width: 100%; border-collapse: collapse; font-size: var(--fs-xs); }
+.desk-help__table caption { padding-bottom: 4px; text-align: left; font-weight: 600; color: var(--text); }
+.desk-help__table th, .desk-help__table td { padding: 5px 8px 5px 0; border-top: 1px solid var(--border); text-align: left; vertical-align: top; }
+.desk-help__table th { width: 30%; font-weight: 500; }
+.desk-help__table td { color: var(--text); overflow-wrap: break-word; user-select: text; }
 /* 获取失败：每一步的原因 */
 .desk__reasons { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; font-size: var(--fs-xs); }
 .desk__reasons li { display: grid; grid-template-columns: minmax(0, 11em) 1fr; gap: 8px; }

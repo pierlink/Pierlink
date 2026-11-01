@@ -2,7 +2,8 @@
 //!
 //! - 浏览用的 SFTP 会话按机器缓存复用，空闲 10 分钟后关闭；
 //! - 每次传输单独开一个 SFTP 会话，传大文件时不影响浏览；
-//! - 两台服务器之间传输经本机中转（先下载到数据目录下的临时目录，再上传，结束后删除）。
+//! - 两台服务器之间传输经本机中转（先下载到数据目录下的临时目录，再上传，结束后删除）；
+//! - 拖到窗口外（资源管理器等）的下载在 `drag_out`。
 
 use crate::terminal::{find_ssh, ssh_config_dir};
 use pierlink_core::cwd::{remote_cwd, remote_shell_status};
@@ -27,8 +28,8 @@ use tauri::{AppHandle, Manager};
 const LIST_LIMIT: usize = 5000;
 /// 浏览用的 SFTP 会话空闲多久后关闭
 const IDLE: Duration = Duration::from_secs(600);
-/// 中转时本机磁盘至少要留出的空间（字节）
-const RELAY_RESERVE: u64 = 1 << 30;
+/// 中转（以及拖出到窗口外）时本机磁盘至少要留出的空间（字节）
+pub(crate) const RELAY_RESERVE: u64 = 1 << 30;
 /// 建立 SFTP 会话的超时
 const OPEN_TIMEOUT: Duration = Duration::from_secs(20);
 
@@ -80,11 +81,28 @@ pub struct FilesState {
     markers: Mutex<HashMap<String, Marker>>,
 }
 
-fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+pub(crate) fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|p| p.into_inner())
 }
 
 impl FilesState {
+    /// 某个传输的取消标记（没有就建一个）。取消命令可能比传输命令先到（两个异步命令的执行顺序不保证），
+    /// 那时标记已经由取消命令建好并置位。
+    ///
+    /// :param transfer_id: 前端生成的传输 ID
+    /// :return: 传输过程中检查的标记
+    pub(crate) fn cancel_flag(&self, transfer_id: &str) -> Arc<AtomicBool> {
+        lock(&self.transfers)
+            .entry(transfer_id.to_owned())
+            .or_insert_with(|| Arc::new(AtomicBool::new(false)))
+            .clone()
+    }
+
+    /// 传输结束：去掉它的取消标记
+    pub(crate) fn forget_transfer(&self, transfer_id: &str) {
+        lock(&self.transfers).remove(transfer_id);
+    }
+
     /// 登记服务器终端的目录标记（打开远程终端成功后调用）。顺便清掉已经不存在的终端的标记。
     ///
     /// :param session_id: 终端会话 ID
@@ -170,7 +188,7 @@ fn command(
 }
 
 /// 新开一个 SFTP 会话
-fn open_session(app: &AppHandle, loc: &LocDto) -> Result<SftpSession, AppError> {
+pub(crate) fn open_session(app: &AppHandle, loc: &LocDto) -> Result<SftpSession, AppError> {
     let (program, cmd) = command(app, loc, &Purpose::Sftp)?;
     SftpSession::open(&program, &cmd, OPEN_TIMEOUT)
 }
@@ -254,7 +272,7 @@ fn kind_name(kind: EntryKind) -> String {
     .into()
 }
 
-async fn blocking<T, F>(app: AppHandle, f: F) -> Result<T, AppError>
+pub(crate) async fn blocking<T, F>(app: AppHandle, f: F) -> Result<T, AppError>
 where
     T: Send + 'static,
     F: FnOnce(&AppHandle) -> Result<T, AppError> + Send + 'static,
@@ -512,7 +530,7 @@ fn conflict_of(name: &str) -> Result<Conflict, AppError> {
 }
 
 /// 把核心的进度转成发给前端的进度（中转时两段各占一半）
-fn progress_sender(
+pub(crate) fn progress_sender(
     channel: Channel<TransferProgressDto>,
     phase: Option<(u8, &'static str)>,
 ) -> impl FnMut(&TransferProgress) {
@@ -560,11 +578,7 @@ pub async fn files_transfer(
     on_progress: Channel<TransferProgressDto>,
 ) -> Result<TransferReportDto, AppError> {
     let conflict = conflict_of(&conflict)?;
-    // 取消命令可能比本命令先到（两个异步命令的执行顺序不保证）：那时标记已经由取消命令建好并置位
-    let cancel = lock(&app.state::<FilesState>().transfers)
-        .entry(transfer_id.clone())
-        .or_insert_with(|| Arc::new(AtomicBool::new(false)))
-        .clone();
+    let cancel = app.state::<FilesState>().cancel_flag(&transfer_id);
     let id = transfer_id.clone();
     let result = blocking(app.clone(), move |app| {
         let report = match direction(&req)? {
@@ -595,8 +609,13 @@ pub async fn files_transfer(
         Ok(TransferReportDto::from(report))
     })
     .await;
-    lock(&app.state::<FilesState>().transfers).remove(&transfer_id);
+    app.state::<FilesState>().forget_transfer(&transfer_id);
     result
+}
+
+/// 传输 ID 能不能用作临时目录名：1 到 64 个字母、数字或横线
+pub(crate) fn valid_transfer_id(id: &str) -> bool {
+    !id.is_empty() && id.len() <= 64 && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
 }
 
 /// 两台服务器之间：下载到本机临时目录，再上传到目标
@@ -608,8 +627,7 @@ fn relay(
     on_progress: Channel<TransferProgressDto>,
     cancel: &AtomicBool,
 ) -> Result<TransferReport, AppError> {
-    if !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') || id.is_empty() || id.len() > 64
-    {
+    if !valid_transfer_id(id) {
         return Err(AppError::new("files.invalid_id"));
     }
     let dir = crate::data::data_dir(app)?.join("transfer-tmp").join(id);
@@ -664,7 +682,7 @@ fn relay(
 }
 
 /// 字节数显示成 MB/GB（错误提示用）
-fn format_bytes(n: u64) -> String {
+pub(crate) fn format_bytes(n: u64) -> String {
     let gb = n as f64 / (1u64 << 30) as f64;
     if gb >= 1.0 {
         format!("{gb:.1} GB")
@@ -678,23 +696,21 @@ fn format_bytes(n: u64) -> String {
 #[specta::specta]
 pub async fn files_cancel(app: AppHandle, transfer_id: String) -> Result<(), AppError> {
     // 传输还没登记时先建好标记，传输命令开始时会用到它。传输刚结束时取消会留下一个标记，只占几十字节，不影响
-    lock(&app.state::<FilesState>().transfers)
-        .entry(transfer_id)
-        .or_insert_with(|| Arc::new(AtomicBool::new(false)))
+    app.state::<FilesState>()
+        .cancel_flag(&transfer_id)
         .store(true, Ordering::Relaxed);
     Ok(())
 }
 
-/// 删除上次残留的中转临时目录（数据目录下 transfer-tmp）。启动时调用，失败只记日志。
+/// 清理数据目录下 transfer-tmp 里上次留下的东西。启动时调用，失败只记日志。
+///
+/// 中转传输的残留（上次被强制结束时留下的）一律删除；拖到窗口外的临时目录（`drag-` 开头）
+/// 超过 1 小时才删，复制走它的程序可能稍后还要读（见 `drag_out::DRAG_KEEP`）。
 pub fn cleanup_staging(app: &AppHandle) {
     let Ok(dir) = crate::data::data_dir(app).map(|d| d.join("transfer-tmp")) else {
         return;
     };
-    if dir.exists()
-        && let Err(e) = std::fs::remove_dir_all(&dir)
-    {
-        eprintln!("清理中转临时目录失败: 目录={}, 错误={e}", dir.display());
-    }
+    crate::drag_out::remove_stale(&dir, std::time::SystemTime::now(), true);
 }
 
 // ---------- 文件右键菜单：重命名、新建、删除、编辑文本、权限、打开 ----------

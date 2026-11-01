@@ -6,16 +6,18 @@ import { formatError } from "../../errors";
 import i18n from "../../i18n";
 import type { OpenSpec } from "../terminal/types";
 import { getFilesApi } from "./api";
-import { beginDrag, registerDropTarget, useDragState, type DragPayload } from "./dnd";
+import { beginDrag, registerDropTarget, useDragState, type DragOut, type DragPayload } from "./dnd";
 import { baseName, crumbs, formatSize, joinPath, locKey, parentPath } from "./path";
 import { requestDrop } from "./TransferCenter";
 import { TextEditor } from "./TextEditor";
 import { isBinaryName } from "./fileTypes";
 import { ChmodDialog, DeleteDialog } from "./FileDialogs";
-import { onDirChanged, useTransfers } from "./transfers";
+import { onDirChanged, startDragOut, useTransfers } from "./transfers";
 import type { FileEntry, Listing, Loc } from "./types";
 import "./files.css";
 import { writeClipboardText } from "../shell/clipboard";
+import { pickFolder } from "../shell/pickFolder";
+import { inTauri } from "../shell/TitleBar";
 
 /** 终端的打开方式 → 文件所在的机器 */
 function locOf(spec: OpenSpec): Loc {
@@ -97,6 +99,13 @@ export function FilePanel({ paneId, spec, title, cwd, commands, sessionId, onClo
     const timer = setTimeout(() => setOpError(null), 8000);
     return () => clearTimeout(timer);
   }, [opError]);
+  /** 不是错误的操作提示，如“已取消下载”（几秒后消失） */
+  const [note, setNote] = useState<string | null>(null);
+  useEffect(() => {
+    if (!note) return;
+    const timer = setTimeout(() => setNote(null), 5000);
+    return () => clearTimeout(timer);
+  }, [note]);
   const listRef = useRef<HTMLDivElement>(null);
 
   /** 看过的目录：再进去时先显示记住的列表（不用等），同时在后台重新读一次 */
@@ -267,7 +276,36 @@ export function FilePanel({ paneId, spec, title, cwd, commands, sessionId, onClo
     void act((api) => (kind === "dir" ? api.createDir(loc, full) : api.createFile(loc, full)), name);
   };
   const local = loc.kind === "local";
+  /** 服务器上的文件能拖到窗口外（资源管理器等）：只有 Windows 版 */
+  const canDragOut = !local && inTauri && navigator.userAgent.includes("Windows");
   const isDirEntry = (e: FileEntry) => e.kind === "dir" || (e.kind === "symlink" && e.targetIsDir === true);
+  /** “下载到…”：选一个本机文件夹，和拖到本机文件栏一样传输（同名确认、“同名文件直接覆盖”设置照样生效） */
+  const downloadTo = async (dir: string, names: string[]) => {
+    let dest: string | null;
+    try {
+      dest = await pickFolder();
+    } catch (e) {
+      setOpError(formatError(e));
+      return;
+    }
+    if (dest) requestDrop({ paneId, loc, home, dir, names }, { paneId: `${paneId}:download-to`, loc: { kind: "local" }, home: null, dir: dest, title: t("files.thisPc") });
+  };
+  /** 拖出窗口（到资源管理器、桌面等）：松手放下时才下载；没放下、失败在底栏提示 */
+  const dragOut: DragOut = async (p) => {
+    const what = p.names.length === 1 ? p.names[0] : t("files.items", { count: p.names.length });
+    const sources = p.paths ?? p.names.map((n) => joinPath(p.dir, n));
+    try {
+      const r = await startDragOut(p.loc, sources, t("files.dragOutLabel", { what }), { title: "Pierlink", line: t("files.dragOutLine", { what }), cancelling: t("files.cancelling") });
+      if (r.kind === "cancelled") setNote(t("files.dragOutCancelled"));
+      // 拖回本窗口：后端给的是物理像素
+      const ratio = window.devicePixelRatio || 1;
+      return r.kind === "returned" ? { x: r.x / ratio, y: r.y / ratio } : null;
+    } catch (e) {
+      if ((e as { code?: string } | null)?.code === "sftp.cancelled") setNote(t("files.dragOutCancelled"));
+      else setOpError(formatError(e));
+      return null;
+    }
+  };
   /** 复制到剪贴板（多个路径每行一个） */
   const copy = (text: string) => void writeClipboardText(text);
   /** 空白处的菜单：新建、刷新、复制当前路径 */
@@ -291,6 +329,7 @@ export function FilePanel({ paneId, spec, title, cwd, commands, sessionId, onClo
       if (!isDirEntry(one)) entriesOut.push({ id: "open-default", label: t("files.openDefault"), onSelect: () => void act((api) => api.openDefault(full(one.name))) });
       entriesOut.push({ id: "reveal", label: t("files.reveal"), onSelect: () => void act((api) => api.reveal(full(one.name))) });
     }
+    if (!local) entriesOut.push({ id: "download-to", label: t("files.downloadTo"), icon: <ArrowDownToLine size={13} />, onSelect: () => void downloadTo(dir, items.map((e) => e.name)) });
     if (entriesOut.length) entriesOut.push({ kind: "separator", id: "s0" });
     entriesOut.push(
       { id: "copy-path", label: items.length > 1 ? t("files.copyPaths", { count: items.length }) : t("files.copyPath"), shortcut: "Ctrl Shift C", onSelect: () => copy(items.map((e) => full(e.name)).join("\n")) },
@@ -448,7 +487,7 @@ export function FilePanel({ paneId, spec, title, cwd, commands, sessionId, onClo
               title={renaming === e.name ? undefined : e.name}
               onClick={(ev) => { if (renaming !== e.name) click(ev, e.name); }}
               onDoubleClick={() => { if (renaming !== e.name) open(e); }}
-              onPointerDown={(ev) => { if (renaming !== e.name && ev.button === 0) beginDrag(ev, () => dragFrom(e.name)); }}
+              onPointerDown={(ev) => { if (renaming !== e.name && ev.button === 0) beginDrag(ev, () => dragFrom(e.name), canDragOut ? dragOut : undefined); }}
               onContextMenu={(ev) => {
                 if (!path) return;
                 ev.stopPropagation();
@@ -482,8 +521,8 @@ export function FilePanel({ paneId, spec, title, cwd, commands, sessionId, onClo
         </div>
       )}
       <div className="files__foot">
-        {/* 操作失败写在底栏（替换计数，几秒后恢复），列表不被推下去 */}
-        {opError ? <span className="files__op-error pl-ellipsis" role="alert" title={opError}>{opError}</span> : listing && (
+        {/* 操作失败、操作提示写在底栏（替换计数，几秒后恢复），列表不被推下去 */}
+        {opError ? <span className="files__op-error pl-ellipsis" role="alert" title={opError}>{opError}</span> : note ? <span className="files__note pl-ellipsis" role="status" title={note}>{note}</span> : listing && (
           <span>
             {t("files.count", { count: listing.entries.length })}
             {hiddenCount > 0 && ` · ${t("files.hiddenCount", { count: hiddenCount })}`}
@@ -491,7 +530,7 @@ export function FilePanel({ paneId, spec, title, cwd, commands, sessionId, onClo
             {listing.truncated && <span className="files__warn">{` · ${t("files.truncated")}`}</span>}
           </span>
         )}
-        <span className="files__hint">{t("files.dragHint")}</span>
+        <span className="files__hint">{canDragOut ? t("files.dragHintOut") : t("files.dragHint")}</span>
       </div>
       {isOver && <div className="files__drop" aria-hidden="true">{t("files.dropHere", { dir: path })}</div>}
       {ctx.node}
