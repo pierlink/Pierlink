@@ -1615,7 +1615,11 @@
     "update": {
       "check_failed": "检查更新失败（网络或 GitHub 暂时访问不了）",
       "install_failed": "下载或安装更新失败",
-      "none": "没有可安装的新版本"
+      "none": "没有可安装的新版本",
+      "stalled": "网络中断，下载停住了，网络恢复后点“重试”",
+      "superseded": "已经换成新的一次下载",
+      "not_downloaded": "还没有下载好新版本",
+      "outdated": "下载好的不是最新版本（又出了 {{version}}），已经删掉，请重新下载"
     },
     "monitor": {
       "too_many": "同时最多看 {{max}} 台服务器的概况，先关掉一些服务器终端"
@@ -2791,17 +2795,21 @@
     "upToDate": "已经是最新版本",
     "checkFailed": "检查失败：{{text}}",
     "autoCheck": "自动检查更新",
-    "autoCheckHint": "启动时检查一次，不会自动安装。",
+    "autoCheckHint": "启动时检查一次，不会自动下载和安装。",
     "available": "Pierlink {{version}} 可以更新了",
-    "availableHint": "当前 {{current}}。更新会关闭同步和终端，装好后自动重新打开。",
+    "availableHint": "当前 {{current}}。先下载，下好后你点“安装更新”才会安装。",
     "notes": "更新说明",
     "notesTitle": "Pierlink {{version}} 更新说明",
     "install": "立即更新",
     "later": "稍后",
-    "installing": "正在更新到 {{version}}",
+    "installing": "正在下载 {{version}}",
     "downloading": "正在下载并校验签名…",
-    "restarting": "下载完成，Pierlink 即将关闭并安装新版本，装好后会自动重新打开。",
-    "failed": "更新没有完成：{{text}}"
+    "restarting": "Pierlink 即将关闭并安装新版本，装好后会自动重新打开。",
+    "failed": "更新没有完成：{{text}}",
+    "download": "下载更新",
+    "installNow": "安装更新",
+    "installTitle": "Pierlink {{version}} 已下载好",
+    "readyHint": "安装时 Pierlink 会先关闭（同步、终端会断开），装好后自动重新打开。"
   },
   "notices": {
     "builtinSsh": {

@@ -135,6 +135,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
         monitor::monitor_stop,
         monitor::monitor_visible,
         updates::update_check,
+        updates::update_download,
         updates::update_install,
         forwards::forward_list,
         forwards::forward_save,

@@ -1616,7 +1616,11 @@
     "update": {
       "check_failed": "Couldn't check for updates (network or GitHub unavailable)",
       "install_failed": "Couldn't download or install the update",
-      "none": "There's no new version to install"
+      "none": "There's no new version to install",
+      "stalled": "The download stalled because the network dropped. Click Retry when you're back online.",
+      "superseded": "Replaced by a newer download",
+      "not_downloaded": "The new version hasn't been downloaded yet",
+      "outdated": "The downloaded package isn't the latest version anymore ({{version}} is out). It was removed; download again."
     },
     "monitor": {
       "too_many": "Overview can watch at most {{max}} servers at once; close some server terminals first"
@@ -2828,17 +2832,21 @@
     "upToDate": "You're on the latest version",
     "checkFailed": "Couldn't check: {{text}}",
     "autoCheck": "Check for updates automatically",
-    "autoCheckHint": "Checks once at startup; nothing is installed automatically.",
+    "autoCheckHint": "Checks once at startup; nothing is downloaded or installed automatically.",
     "available": "Pierlink {{version}} is available",
-    "availableHint": "You have {{current}}. Updating closes sync and terminals and reopens Pierlink when done.",
+    "availableHint": "You have {{current}}. It downloads first; nothing is installed until you click Install update.",
     "notes": "What's new",
     "notesTitle": "What's new in Pierlink {{version}}",
     "install": "Update now",
     "later": "Later",
-    "installing": "Updating to {{version}}",
+    "installing": "Downloading {{version}}",
     "downloading": "Downloading and checking the signature…",
-    "restarting": "Download complete. Pierlink will close, install the new version and reopen.",
-    "failed": "The update didn't finish: {{text}}"
+    "restarting": "Pierlink will close, install the new version and reopen.",
+    "failed": "The update didn't finish: {{text}}",
+    "download": "Download update",
+    "installNow": "Install update",
+    "installTitle": "Pierlink {{version}} is downloaded",
+    "readyHint": "Installing closes Pierlink first (sync and terminals disconnect) and reopens it when done."
   },
   "notices": {
     "builtinSsh": {

@@ -346,8 +346,18 @@ export const commands = {
 	monitorVisible: (id: number | null, visible: boolean) => typedError<null, AppError>(__TAURI_INVOKE("monitor_visible", { id, visible })),
 	/**  检查是否有新版本；没有返回 null */
 	updateCheck: () => typedError<UpdateInfoDto_Serialize | null, AppError>(__TAURI_INVOKE("update_check")),
-	/**  下载、校验签名并安装新版本。Windows 上成功启动安装程序后 Pierlink 会退出，本命令不会返回。 */
-	updateInstall: (onProgress: Channel<UpdateProgressDto_Deserialize>) => typedError<null, AppError>(__TAURI_INVOKE("update_install", { onProgress })),
+	/**
+	 *  下载新版本并核对签名，留着等用户点“安装更新”（不自动安装）；返回下载好的版本号。
+	 *  同一时间只下载一个（再调用时停掉上一个，上一个返回 update.superseded）；30 秒没收到数据算卡住，
+	 *  停掉并返回 update.stalled（界面上可以重试）。
+	 */
+	updateDownload: (onProgress: Channel<UpdateProgressDto_Deserialize>) => typedError<string, AppError>(__TAURI_INVOKE("update_download", { onProgress })),
+	/**
+	 *  安装已经下载好的新版本（用户点了“安装更新”）。先再查一次服务器上的最新版本，只装和它一样的安装包：
+	 *  下好以后又出了新版本时删掉旧包、返回 update.outdated（让用户重新下载）；没下载时返回 update.not_downloaded。
+	 *  Windows 上会先正常关闭 Pierlink、运行安装程序，装好后自动重新打开，本命令不会返回。
+	 */
+	updateInstall: () => typedError<null, AppError>(__TAURI_INVOKE("update_install")),
 	/**  列出端口转发（server_id 为空时列出全部） */
 	forwardList: (serverId: string | null) => typedError<ForwardDto_Serialize[], AppError>(__TAURI_INVOKE("forward_list", { serverId })),
 	/**  新建或修改转发；已启用的会按新设置重新开启。开启失败时记录会保存，但改为未启用并返回错误 */
@@ -2877,6 +2887,8 @@ export type UpdateInfoDto_Deserialize = {
 	/**  更新说明（发版时写的） */
 	notes?: string | null,
 	date?: string | null,
+	/**  这个版本已经下载好、核对过签名（点“安装更新”就能装，不用再下载） */
+	downloaded: boolean,
 };
 
 /**  有新版本时给界面的信息 */
@@ -2886,20 +2898,18 @@ export type UpdateInfoDto_Serialize = {
 	/**  更新说明（发版时写的） */
 	notes: string | null,
 	date: string | null,
+	/**  这个版本已经下载好、核对过签名（点“安装更新”就能装，不用再下载） */
+	downloaded: boolean,
 };
 
-/**  下载安装进度 */
+/**  下载进度 */
 export type UpdateProgressDto = UpdateProgressDto_Serialize | UpdateProgressDto_Deserialize;
 
-/**  下载安装进度 */
-export type UpdateProgressDto_Deserialize = { kind: "downloading"; downloaded: number | null; total?: number | null } | 
-/**  下载完、签名校验通过，马上关闭 Pierlink 并运行安装程序 */
-{ kind: "installing" };
+/**  下载进度 */
+export type UpdateProgressDto_Deserialize = { kind: "downloading"; downloaded: number | null; total?: number | null };
 
-/**  下载安装进度 */
-export type UpdateProgressDto_Serialize = { kind: "downloading"; downloaded: number | null; total: number | null } | 
-/**  下载完、签名校验通过，马上关闭 Pierlink 并运行安装程序 */
-{ kind: "installing" };
+/**  下载进度 */
+export type UpdateProgressDto_Serialize = { kind: "downloading"; downloaded: number | null; total: number | null };
 
 export type VersionDto = {
 	path: string,
