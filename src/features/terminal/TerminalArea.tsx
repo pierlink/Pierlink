@@ -100,6 +100,8 @@ interface Conn {
   desktop?: boolean;
   /** 开始连接的时间（performance.now()；快速连接在对话框里核对指纹，打开窗格后卡片接着计时） */
   startedAt?: number;
+  /** 连上后自动输入并运行的命令（桌面窗格里点“安装桌面”时） */
+  run?: string;
 }
 type Pending =
   | { kind: "paste"; text: string; resolve: (ok: boolean) => void }
@@ -452,6 +454,8 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
   /** 每个窗格这次连接用的参数（重试、取消时用）和核对指纹的轮次（迟到的结果丢掉） */
   const paneConns = useRef<Record<string, Conn>>({});
   const probeSeq = useRef<Record<string, number>>({});
+  /** 窗格连上后要自动输入的命令（安装桌面）：输入后删掉，重新连接不再输入 */
+  const autoCommands = useRef(new Map<string, string>());
   /** 同时有几个窗格要确认指纹时排队，一次只弹一个 */
   const hostKeyQueue = useRef<Extract<Pending, { kind: "hostkey" }>[]>([]);
   const pendingRef = useRef<Pending | null>(null);
@@ -471,6 +475,7 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
     } else {
       id = add(conn.spec, conn.title, conn.subtitle, conn.target, conn.files, conn.ai, false, connecting);
     }
+    if (conn.run) autoCommands.current.set(id, conn.run);
     if (conn.phone !== undefined) phoneOpens.current[id] = conn.phone;
     paneConns.current[id] = conn;
     probePane(id);
@@ -630,6 +635,18 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
     }
     if (desktop) connect({ spec: { kind: "server", serverId: s.id }, title: t("desktop.paneTitle", { name: s.name }), subtitle: s.address, quick: null, target, desktop: true });
     else connectPane({ spec: { kind: "server", serverId: s.id }, title: s.name, subtitle: s.address, quick: null, target });
+  };
+  /**
+   * 桌面窗格里点了“安装桌面”：在它下面开一个连同一台服务器的终端，连上后输入并运行安装命令
+   * （要密码时用户在这个终端里输）；桌面窗格矮得分不开时开在新标签里。
+   * @returns 开出来了返回 true；找不到这台服务器时为 false
+   */
+  const openInstallTerminal = (tabKey: string, paneId: string, serverId: string, command: string): boolean => {
+    const s = servers.find((x) => x.id === serverId);
+    if (!s) return false;
+    const target: Target = canSplit(paneId, "col") ? { tab: tabKey, pane: paneId, dir: "col" } : null;
+    connectPane({ spec: { kind: "server", serverId: s.id }, title: s.name, subtitle: s.address, quick: null, target, run: command });
+    return true;
   };
   /** 连接一个恢复出来的服务器窗格：照常先确认指纹，通过后在原窗格里打开终端 */
   const revive = (paneId: string) => {
@@ -791,7 +808,10 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
 
   /** 去掉一些窗格；标签里的窗格全去掉时连标签一起关掉 */
   const dropPanes = (tabKey: string, ids: string[]) => {
-    for (const id of ids) phoneOpened(id, null, { code: "ssh.auth_cancelled", params: {} });
+    for (const id of ids) {
+      phoneOpened(id, null, { code: "ssh.auth_cancelled", params: {} });
+      autoCommands.current.delete(id);
+    }
     const before = tabsRef.current;
     const index = before.findIndex((x) => x.key === tabKey);
     if (index < 0) return;
@@ -1437,6 +1457,7 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
                         visible={visible}
                         windowTitle={shown(p.spec, p.title)}
                         onPoppedOut={() => dropPanes(tab.key, [id])}
+                        onInstallTerminal={(command) => openInstallTerminal(tab.key, id, (p.spec as { serverId: string }).serverId, command)}
                         title={(
                           <span className="pane__title pl-ellipsis" title={shown(p.spec, p.subtitle)} onPointerDown={(e) => beginDrag(e, { kind: "pane", id, tab: tab.key }, shown(p.spec, p.title))}>
                             <strong>{shown(p.spec, p.title)}</strong>
@@ -1475,6 +1496,8 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
                       precheck={p.connecting ?? null}
                       onCancelConnect={() => cancelPane(id)}
                       onRetryConnect={() => retryPane(id)}
+                      autoCommand={autoCommands.current.get(id)}
+                      onAutoCommandSent={() => autoCommands.current.delete(id)}
                       onStatus={(s) => setStatus(id, s)}
                       onCwd={(cwd) => { if (cwd !== p.cwd) reportCwd(p.session, cwd); updatePane(id, (x) => (x.cwd === cwd ? {} : { cwd })); }}
                       onCommand={() => updatePane(id, (x) => ({ commands: x.commands + 1 }))}

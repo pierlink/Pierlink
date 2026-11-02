@@ -73,6 +73,8 @@ export function McpIndicator() {
       void api.onSessions(() => void refresh()).then(keep);
       void api.onActivity((a) => {
         setActivity((list) => [a, ...list].slice(0, 30));
+        // 入口关着、调用被拒绝的不算（AI 客户端还开着、还在试着调用时，不显示“AI 已连接”）
+        if (a.outcome === "mcp.entry_disabled") return;
         setRecent(true);
         if (recentTimer.current) clearTimeout(recentTimer.current);
         recentTimer.current = setTimeout(() => setRecent(false), 120000);

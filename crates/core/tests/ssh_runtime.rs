@@ -509,6 +509,7 @@ fn 真实ssh终端当前目录跟随cd() {
             login_shell: None,
             cwd_marker: Some(marker.into()),
             integration: false,
+            start_dir: None,
         },
         &server.opts("cwd_hosts"),
     )
@@ -588,6 +589,7 @@ fn 真实ssh交互终端回显() {
             login_shell: Some("/bin/sh".into()),
             cwd_marker: None,
             integration: false,
+            start_dir: None,
         },
         &server.opts("terminal_hosts"),
     )

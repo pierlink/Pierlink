@@ -134,7 +134,7 @@ fn 内置终端对普通openssh服务器保留集成命令且仍可关闭() {
         f.server.login_shell = shell.map(str::to_owned);
         let manager = TerminalManager::new();
         let (id, rx) = open_with_integration(&f, &manager, true);
-        let expected = crate::shell_integration::command(shell).unwrap();
+        let expected = crate::shell_integration::command_in(shell, None).unwrap();
         assert!(expected.starts_with("exec /bin/sh -c '"));
         assert_eq!(
             requests.lock().unwrap().last(),

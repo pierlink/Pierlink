@@ -1,6 +1,6 @@
 use super::*;
 use crate::{
-    ssh::args::terminal_command,
+    ssh::args::{terminal_command, terminal_command_in},
     terminal::{TerminalEvent, TerminalKind, TerminalManager, TerminalSpec},
 };
 use std::{
@@ -58,7 +58,7 @@ impl Session {
     fn remote(home: &Path, env: Vec<(String, String)>) -> Self {
         Self::new(
             "/bin/dash",
-            vec!["-c".into(), command(None).unwrap()],
+            vec!["-c".into(), command_in(None, None).unwrap()],
             home,
             env,
         )
@@ -162,7 +162,7 @@ fn 关闭逐字节兼容且启用命令仅含安全字符() {
             .unwrap();
         assert_eq!(
             Base64::decode_vec(encoded).unwrap(),
-            loader(shell.as_deref()).unwrap().as_bytes()
+            loader(shell.as_deref(), None).unwrap().as_bytes()
         );
         if let Some(shell) = shell {
             assert!(text.ends_with(&format!("exec {shell} -l'")));
@@ -216,7 +216,7 @@ fn zsh() -> Option<String> {
 #[test]
 fn 各启动片段通过对应shell语法检查() {
     for shell in [None, Some("/bin/bash"), Some("/bin/zsh")] {
-        let script = loader(shell).unwrap();
+        let script = loader(shell, None).unwrap();
         syntax("/bin/bash", &["-n"], &script);
         syntax("/bin/dash", &["-n"], &script);
         if Path::new("/usr/bin/busybox").exists() {
@@ -706,7 +706,7 @@ fn 其他登录shell可原样解析外层包装() {
         if shell.ends_with("busybox") {
             args.push("sh".into());
         }
-        args.extend(["-c".into(), command(Some("/bin/bash")).unwrap()]);
+        args.extend(["-c".into(), command_in(Some("/bin/bash"), None).unwrap()]);
         let session = Session::new(shell, args, root.path(), vec![]);
         session.read(B);
         record(&session.run("true"), 0, "true");
@@ -782,6 +782,7 @@ fn 系统引擎经本机sshd收到提示符标记() {
             login_shell: Some("/bin/bash".into()),
             cwd_marker: None,
             integration: true,
+            start_dir: None,
         },
         &CommonOpts {
             known_hosts: Some(hosts),
@@ -801,6 +802,42 @@ fn 系统引擎经本机sshd收到提示符标记() {
             .unwrap()
             .count(),
         0
+    );
+}
+
+#[test]
+fn 重连时从断开前的目录启动且进不去时留在主目录() {
+    let root = home("");
+    // 带空格、单引号和中文：写在 base64 的启动脚本里，外层命令里看不到
+    let dir = root.path().join("工作 目录's");
+    fs::create_dir(&dir).unwrap();
+    let dir_text = dir.to_str().unwrap().to_owned();
+    let outer = terminal_command_in(&None, true, Some(&dir_text))
+        .unwrap()
+        .unwrap();
+    assert!(!outer.contains("工作"), "{outer}");
+    for (start, expected) in [
+        (Some(dir_text.as_str()), dir.clone()),
+        // 目录已经没了、相对路径：照常从主目录启动
+        (Some("/没有这个目录/pl"), root.path().to_path_buf()),
+        (Some("relative/dir"), root.path().to_path_buf()),
+        (None, root.path().to_path_buf()),
+    ] {
+        let wrapper = terminal_command_in(&Some("/bin/bash".into()), true, start)
+            .unwrap()
+            .unwrap();
+        let session = Session::new("/bin/dash", vec!["-c".into(), wrapper], root.path(), vec![]);
+        session.read(B);
+        let output = session.run("printf 'PWD-IS=%s\\n' \"$PWD\"");
+        assert!(
+            output.contains(&format!("PWD-IS={}\r\n", expected.display())),
+            "{start:?}: {output:?}"
+        );
+    }
+    // 没装钩子时不管启动目录（原来的连接命令不变）
+    assert_eq!(
+        terminal_command_in(&None, false, Some(&dir_text)).unwrap(),
+        None
     );
 }
 

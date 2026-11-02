@@ -128,13 +128,13 @@ export const commands = {
 	appDataProblem: () => __TAURI_INVOKE<AppError | null>("app_data_problem"),
 	/**  列出本机终端，并标出默认项（PowerShell 7 → Windows PowerShell → Git Bash → 其他 → 命令提示符）。 */
 	listLocalShells: () => typedError<LocalShellInfo[], AppError>(__TAURI_INVOKE("list_local_shells")),
-	/**  打开本机终端，返回会话 ID。 */
-	terminalOpenLocal: (shellId: string, cols: number, rows: number, prediction: boolean, onEvent: Channel<TerminalEventDto_Deserialize>) => typedError<string, AppError>(__TAURI_INVOKE("terminal_open_local", { shellId, cols, rows, prediction, onEvent })),
+	/**  打开本机终端，返回会话 ID。quiet_bell：设置里关掉了“PowerShell 提示音”。 */
+	terminalOpenLocal: (shellId: string, cols: number, rows: number, prediction: boolean, quietBell: boolean, onEvent: Channel<TerminalEventDto_Deserialize>) => typedError<string, AppError>(__TAURI_INVOKE("terminal_open_local", { shellId, cols, rows, prediction, quietBell, onEvent })),
 	/**
 	 *  快速连接：按 `用户@主机:端口` 打开远程终端（应用内新建的连接，不读用户 ssh config）。
 	 *  前端应先用 `host_key_check` 在应用内确认指纹；若未确认，ssh 仍会在终端里自行询问。
 	 */
-	terminalOpenQuick: (host: string, port: number, user: string | null, cols: number, rows: number, prediction: boolean, onEvent: Channel<TerminalEventDto_Deserialize>) => typedError<string, AppError>(__TAURI_INVOKE("terminal_open_quick", { host, port, user, cols, rows, prediction, onEvent })),
+	terminalOpenQuick: (host: string, port: number, user: string | null, cols: number, rows: number, prediction: boolean, startDir: string | null, onEvent: Channel<TerminalEventDto_Deserialize>) => typedError<string, AppError>(__TAURI_INVOKE("terminal_open_quick", { host, port, user, cols, rows, prediction, startDir, onEvent })),
 	/**  向终端写入键盘输入（xterm.js 给出的文本）。 */
 	terminalWrite: (id: string, data: string) => typedError<null, AppError>(__TAURI_INVOKE("terminal_write", { id, data })),
 	/**
@@ -150,8 +150,11 @@ export const commands = {
 	terminalAck: (id: string, bytes: number) => typedError<null, AppError>(__TAURI_INVOKE("terminal_ack", { id, bytes })),
 	/**  关闭终端（结束整个进程树）。 */
 	terminalClose: (id: string) => typedError<null, AppError>(__TAURI_INVOKE("terminal_close", { id })),
-	/**  按已保存的服务器打开远程终端（使用它的私钥、登录 shell、保存的密码等设置）。 */
-	terminalOpenServer: (serverId: string, cols: number, rows: number, prediction: boolean, onEvent: Channel<TerminalEventDto_Deserialize>) => typedError<string, AppError>(__TAURI_INVOKE("terminal_open_server", { serverId, cols, rows, prediction, onEvent })),
+	/**
+	 *  按已保存的服务器打开远程终端（使用它的私钥、登录 shell、保存的密码等设置）。
+	 *  start_dir：断开后在同一个窗格重连时，shell 从断开前的目录启动（只在装了命令预测的钩子时生效）；其他时候为 None。
+	 */
+	terminalOpenServer: (serverId: string, cols: number, rows: number, prediction: boolean, startDir: string | null, onEvent: Channel<TerminalEventDto_Deserialize>) => typedError<string, AppError>(__TAURI_INVOKE("terminal_open_server", { serverId, cols, rows, prediction, startDir, onEvent })),
 	/**  读取系统剪贴板的文字（不经过网页权限，不会弹出“是否允许读取剪贴板”）。没有文字时返回 null。 */
 	clipboardReadText: () => typedError<string | null, AppError>(__TAURI_INVOKE("clipboard_read_text")),
 	/**
@@ -398,6 +401,13 @@ export const commands = {
 	 *  :return: 已有的 VNC 桌面、能用的桌面环境、安装命令
 	 */
 	desktopDetect: (serverId: string) => typedError<DesktopDetectionDto_Serialize, AppError>(__TAURI_INVOKE("desktop_detect", { serverId })),
+	/**
+	 *  安装完整桌面前检查服务器（只读）：管理员权限、磁盘空间、内存和 CPU、要下载和占用多少
+	 * 
+	 *  :param server_id: 服务器 ID
+	 *  :return: 检查结果和安装命令
+	 */
+	desktopInstallCheck: (serverId: string) => typedError<DesktopInstallCheckDto_Serialize, AppError>(__TAURI_INVOKE("desktop_install_check", { serverId })),
 	/**
 	 *  连接一个桌面：先探测握手（不认证），再打开交给界面的字节流
 	 * 
@@ -1039,6 +1049,7 @@ export type DesktopDetectionDto = DesktopDetectionDto_Serialize | DesktopDetecti
 
 export type DesktopDetectionDto_Deserialize = {
 	sessions: DesktopSessionDto_Deserialize[],
+	/**  服务器上装好的桌面环境 */
 	desktops: DesktopEnvDto[],
 	/**  能新建 Pierlink 桌面（有桌面环境、工具齐全；服务端程序可以新建时再获取） */
 	canCreate: boolean,
@@ -1048,13 +1059,17 @@ export type DesktopDetectionDto_Deserialize = {
 	missingTools: string[],
 	/**  可以用 TigerVNC 官方包（服务器或这台电脑下载） */
 	officialOk: boolean,
-	/**  一键安装命令（需要 sudo）；没有就 null */
+	/**  安装完整桌面的命令（root 登录时不带 sudo）；不认识包管理器为 null */
 	installCommand?: string | null,
-	installCommandLight?: string | null,
+	/**  没有桌面环境时能改用精简桌面（只有终端，不用管理员权限） */
+	lightAvailable: boolean,
+	/**  服务器上正在运行 apt、dpkg、dnf 等（装桌面时等它装完） */
+	packageBusy: boolean,
 };
 
 export type DesktopDetectionDto_Serialize = {
 	sessions: DesktopSessionDto_Serialize[],
+	/**  服务器上装好的桌面环境 */
 	desktops: DesktopEnvDto[],
 	/**  能新建 Pierlink 桌面（有桌面环境、工具齐全；服务端程序可以新建时再获取） */
 	canCreate: boolean,
@@ -1064,17 +1079,79 @@ export type DesktopDetectionDto_Serialize = {
 	missingTools: string[],
 	/**  可以用 TigerVNC 官方包（服务器或这台电脑下载） */
 	officialOk: boolean,
-	/**  一键安装命令（需要 sudo）；没有就 null */
+	/**  安装完整桌面的命令（root 登录时不带 sudo）；不认识包管理器为 null */
 	installCommand: string | null,
-	installCommandLight: string | null,
+	/**  没有桌面环境时能改用精简桌面（只有终端，不用管理员权限） */
+	lightAvailable: boolean,
+	/**  服务器上正在运行 apt、dpkg、dnf 等（装桌面时等它装完） */
+	packageBusy: boolean,
+};
+
+export type DesktopDiskDto = {
+	mount: string,
+	available: number | null,
+	need: number | null,
 };
 
 export type DesktopEnvDto = {
 	id: string,
 	name: string,
 	heavy: boolean,
-	/**  Pierlink 免 sudo 获取的轻量桌面（名字由界面按语言显示） */
-	light: boolean,
+};
+
+/**  安装完整桌面前的检查结果（大小都是字节） */
+export type DesktopInstallCheckDto = DesktopInstallCheckDto_Serialize | DesktopInstallCheckDto_Deserialize;
+
+/**  安装完整桌面前的检查结果（大小都是字节） */
+export type DesktopInstallCheckDto_Deserialize = {
+	/**  管理员权限：root、nopass（sudo 不用密码）、password（sudo 要密码）、none（没有） */
+	admin: string,
+	/**  内存总量、可用内存；读不到为 0 */
+	memory: number | null,
+	availableMemory: number | null,
+	/**  CPU 核数；读不到为 0 */
+	cpus: number,
+	/**  要下载、装好后占用多少 */
+	download: number | null,
+	installed: number | null,
+	/**  拿不到软件源里的大小，上面两个是固定的保守估计 */
+	estimated: boolean,
+	/**  要写入的每个文件系统：挂载点、剩余、需要（含余量） */
+	disks: DesktopDiskDto[],
+	/**  每个文件系统的空间都够 */
+	enoughSpace: boolean,
+	/**  内存或 CPU 低于建议值，不建议装 */
+	lowSpec: boolean,
+	/**  安装命令（和检测结果里的一致） */
+	command?: string | null,
+	/**  能改用精简桌面（只有终端，不用管理员权限） */
+	lightAvailable: boolean,
+};
+
+/**  安装完整桌面前的检查结果（大小都是字节） */
+export type DesktopInstallCheckDto_Serialize = {
+	/**  管理员权限：root、nopass（sudo 不用密码）、password（sudo 要密码）、none（没有） */
+	admin: string,
+	/**  内存总量、可用内存；读不到为 0 */
+	memory: number | null,
+	availableMemory: number | null,
+	/**  CPU 核数；读不到为 0 */
+	cpus: number,
+	/**  要下载、装好后占用多少 */
+	download: number | null,
+	installed: number | null,
+	/**  拿不到软件源里的大小，上面两个是固定的保守估计 */
+	estimated: boolean,
+	/**  要写入的每个文件系统：挂载点、剩余、需要（含余量） */
+	disks: DesktopDiskDto[],
+	/**  每个文件系统的空间都够 */
+	enoughSpace: boolean,
+	/**  内存或 CPU 低于建议值，不建议装 */
+	lowSpec: boolean,
+	/**  安装命令（和检测结果里的一致） */
+	command: string | null,
+	/**  能改用精简桌面（只有终端，不用管理员权限） */
+	lightAvailable: boolean,
 };
 
 export type DesktopSessionDto = DesktopSessionDto_Serialize | DesktopSessionDto_Deserialize;
@@ -1092,6 +1169,8 @@ export type DesktopSessionDto_Deserialize = {
 	pierlink: boolean,
 	/**  Pierlink 桌面的桌面环境名字（如 Xfce Session）；其他为 null */
 	name?: string | null,
+	/**  Pierlink 的精简桌面（只有终端；名字由界面按语言显示） */
+	light: boolean,
 };
 
 export type DesktopSessionDto_Serialize = {
@@ -1107,6 +1186,8 @@ export type DesktopSessionDto_Serialize = {
 	pierlink: boolean,
 	/**  Pierlink 桌面的桌面环境名字（如 Xfce Session）；其他为 null */
 	name: string | null,
+	/**  Pierlink 的精简桌面（只有终端；名字由界面按语言显示） */
+	light: boolean,
 };
 
 /**  连到哪里：服务器上的 Unix 套接字，或服务器 127.0.0.1 的端口 */

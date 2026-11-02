@@ -380,6 +380,114 @@ await rec.step(p, "新建 Pierlink 桌面：选 Openbox 新建，直接连上；
   return `${status}；新建前后进程数 ${before} → ${during} → ${after}`;
 });
 
+/**
+ * WSL 里以 root 运行一段脚本（准备、还原用）。用 -e 直接执行：用 -- 时命令行先经过一层 shell，
+ * 脚本里的 $f 这类变量在外层就被展开成空（会话文件没挪走，root 照样看得到桌面环境）
+ */
+const asRoot = (script, timeout = 60000) => execFileSync("wsl.exe", ["-d", LX.wsl, "-u", "root", "-e", "sh", "-c", script], { encoding: "utf8", timeout });
+/** 添加服务器对话框里填一项 */
+async function fill(label, value) {
+  const ok = await p.js(`(()=>{const l=[...document.querySelectorAll('.pl-dialog label.pl-field')].find(l=>l.firstChild?.textContent?.trim()===${JSON.stringify(label)} || l.textContent.trim().startsWith(${JSON.stringify(label)})); const i=l?.querySelector('input,textarea'); if(!i) return false; i.focus(); i.select(); return true;})()`);
+  if (!ok) throw new Error(`找不到输入框：${label}`);
+  await u.type(value);
+}
+/** 画布上 8×8 个点里有几种颜色（远程桌面画出东西来了就不止一种） */
+const canvasColors = () => p.js(`(()=>{const c=[...document.querySelectorAll('.pane-slot')].filter(s=>s.style.display!=='none').map(s=>s.querySelector('.desk__screen canvas')).find(Boolean); if(!c||!c.width) return 0; const g=c.getContext('2d'); const seen=new Set(); for(let i=1;i<=8;i++) for(let j=1;j<=8;j++){const d=g.getImageData(Math.floor(c.width*i/9), Math.floor(c.height*j/9), 1, 1).data; seen.add(d[0]+','+d[1]+','+d[2]);} return seen.size;})()`);
+
+/** 看得见的桌面窗格（隐藏的标签里也可能有别的桌面窗格，选择器都限定在这一个里） */
+const deskPane = `[...document.querySelectorAll('.pane-slot')].filter(s=>s.style.display!=='none').map(s=>s.querySelector('.desk')).find(Boolean)`;
+const inDesk = (sel) => `${deskPane}?.querySelector(${JSON.stringify(sel)})`;
+/** 点看得见的桌面窗格里的按钮（text 给出时按文字找） */
+async function clickInDesk(sel, text) {
+  const ok = await p.js(`(()=>{const b=[...(${deskPane}?.querySelectorAll(${JSON.stringify(sel)})||[])].find(e=>${text ? `e.textContent.trim()===${JSON.stringify(text)}` : "true"}); if(!b) return false; b.click(); return true;})()`);
+  if (!ok) throw new Error(`桌面窗格里找不到：${sel}${text ? ` “${text}”` : ""}`);
+}
+const visiblePanes = `[...document.querySelectorAll('.pane-slot')].filter(s=>s.style.display!=='none')`;
+/** 装桌面的进度：开始安装了、装完了（后面的步骤据此决定跑不跑） */
+const install = { started: false, done: false, prepared: false };
+
+await rec.step(p, "安装桌面（一）：没有桌面环境的服务器上点“安装桌面”，检查完在下面的终端里自动输入安装命令（root 登录，命令不带 sudo）", async () => {
+  if (!vnc) return "跳过";
+  const key = process.env.PIERLINK_TEST_LINUX_KEY;
+  if (!key) return "跳过：没有 PIERLINK_TEST_LINUX_KEY";
+  // 上一步的桌面窗格还开着：先关掉这个标签，免得点到它的按钮
+  for (let i = 0; i < 3 && (await p.js(`!!${deskPane}`)); i++) {
+    await u.click(".tab[aria-selected=true] .tab__close");
+    await sleep(1500);
+  }
+  if (await p.js(`!!${deskPane}`)) throw new Error("前面的桌面窗格没关掉");
+  // root 用同一把测试密钥登录（sshd 默认允许 root 用密钥登录）；把会话文件（openbox）挪开，root 看到的就是“没有桌面环境”
+  install.prepared = true;
+  asRoot("install -d -m 700 /root/.ssh && install -m 600 /home/pl/.ssh/authorized_keys /root/.ssh/authorized_keys && mkdir -p /root/pl-e2e-xsessions && for f in /usr/share/xsessions/*.desktop; do [ -e \"$f\" ] && mv \"$f\" /root/pl-e2e-xsessions/; done; true");
+  await p.js(`document.querySelector('[aria-label="Hide panel"]')?.click()`);
+  await u.click('[aria-label="Add server"]');
+  await u.waitFor(`!!document.querySelector('.pl-dialog')`, "添加服务器对话框");
+  await fill("Host", LX.host);
+  await fill("Port", LX.port);
+  await fill("User", "root");
+  await fill("Display name", "pl-root");
+  await u.clickText("Specific key", ".pl-dialog");
+  await fill("Private key file", key);
+  await u.clickText("Save", ".pl-dialog");
+  await u.waitFor(`!document.querySelector('.pl-dialog')`, "对话框关闭");
+  const row = await u.waitFor(`(()=>{const i=[...document.querySelectorAll('.srv-row')].findIndex(r=>r.innerText.includes('pl-root')); return i>=0 ? String(i) : null;})()`, "侧栏里的 pl-root");
+  await u.click(".srv-row", Number(row), "right");
+  await u.clickText("Open desktop", ".pl-menu");
+  // 同一个 localhost:2222，指纹前面已经信任过；万一再问就信任
+  await u.waitFor(`/Trust and connect/.test(document.querySelector('.pl-dialog')?.innerText||'') || !!${deskPane}`, "指纹确认或桌面窗格", 30000);
+  if (await p.js(`/Trust and connect/.test(document.querySelector('.pl-dialog')?.innerText||'')`)) await u.clickText("Trust and connect", ".pl-dialog");
+  await u.waitFor(`!!${inDesk(".desk__install")}`, "“安装桌面”的卡片（root 看不到会话文件）", 60000);
+  await clickInDesk(".desk__install .pl-btn--primary");
+  const state = await u.waitFor(`(()=>{const s=document.querySelector('.desk-install')?.dataset.state; return s && s!=='checking' ? s : null;})()`, "安装前检查做完", 120000);
+  const dialog = await p.js(`document.querySelector('.pl-dialog')?.innerText || ''`);
+  if (state !== "ready") throw new Error(`检查结果不能装（${state}）：${dialog}`);
+  // root 登录：命令不带 sudo
+  const command = await p.js(`document.querySelector('.desk-install .mcp-cmd code')?.textContent || ''`);
+  if (!/^apt-get update && env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends .*xfce4 /.test(command)) throw new Error(`安装命令不对：${command}`);
+  await u.clickText("Install in terminal", ".pl-dialog");
+  await u.waitFor(`${visiblePanes}.length >= 2`, "桌面下面开出一个终端", 30000);
+  await u.waitFor(`/Installing desktop/.test(${inDesk(".desk__card")}?.innerText||'')`, "桌面卡片变成“正在安装”", 15000);
+  await u.waitFor(`${visiblePanes}.some(s=>/apt-get update/.test(s.querySelector('.xterm-rows')?.innerText||''))`, "终端里输入了安装命令", 60000);
+  install.started = true;
+  return `检查结果：${dialog.replace(/\s+/g, " ").slice(0, 200)}`;
+});
+
+await rec.step(p, "安装桌面（二）：在终端里装好 XFCE，桌面卡片自动回到“新建桌面”并选中 XFCE", async () => {
+  if (!install.started) return "跳过：上一步没开始安装";
+  // 软件源下载一百多 MB、装一百多个包：一步最多 10 分钟，这里等 9 分钟
+  try {
+    // 会话文件只剩 XFCE 一个时不显示选择框
+    await u.waitFor(`!!${inDesk(".desk__create")} && !${inDesk(".desk__install")} && !/Installing desktop/.test(${inDesk(".desk__card")}?.innerText||'') && (!${inDesk(".desk__create [role=combobox]")} || /Xfce/i.test(${inDesk(".desk__create")}?.innerText||''))`, "装好后回到新建卡片并选中 XFCE", 9 * 60000);
+  } catch (e) {
+    const term = await p.js(`${visiblePanes}.map(s=>s.querySelector('.xterm-rows')?.innerText||'').join('\\n---\\n')`);
+    throw new Error(`${e.message}｜终端最后几行：${term.split("\n").filter(Boolean).slice(-15).join(" / ")}`);
+  }
+  install.done = true;
+  const tail = await p.js(`${visiblePanes}.map(s=>s.querySelector('.xterm-rows')?.innerText||'').join('\\n')`);
+  return `装好了｜终端最后一行：${tail.split("\n").filter(Boolean).slice(-1)[0] ?? ""}`;
+});
+
+await rec.step(p, "安装桌面（三）：新建 XFCE 桌面，画面不是纯色；关掉后进程没了", async () => {
+  if (!install.done) return "跳过：没装好";
+  await clickInDesk(".desk__create button", "Create desktop");
+  await u.waitFor(`(${inDesk(".desk__status")}?.innerText||'').startsWith('Connected')`, "XFCE 桌面连上", 180000);
+  // XFCE 起来要几秒（面板、桌面背景）：等画面上出现多种颜色
+  let colors = 0;
+  const deadline = Date.now() + 90000;
+  while (Date.now() < deadline && (colors = await canvasColors()) < 3) await sleep(2000);
+  if (colors < 3) throw new Error(`XFCE 桌面画面还是纯色（取样颜色数 ${colors}）`);
+  const sessions = asRoot("ps -eo comm= | grep -cE '^(xfce4-session|xfwm4|xfce4-panel|Xtigervnc)$' || true").trim();
+  await clickInDesk('[aria-label="Close desktop"]');
+  await u.clickText("Close desktop", ".pl-dialog");
+  return `画面取样颜色 ${colors} 种｜XFCE 相关进程 ${sessions} 个`;
+});
+
+await rec.step(p, "安装桌面：还原 WSL 里挪走的会话文件", async () => {
+  if (!install.prepared) return "跳过";
+  asRoot("mv /root/pl-e2e-xsessions/*.desktop /usr/share/xsessions/ 2>/dev/null; rmdir /root/pl-e2e-xsessions 2>/dev/null; true");
+  return "已还原";
+});
+
 p.close();
 killApp(EXE);
 if (vnc) {

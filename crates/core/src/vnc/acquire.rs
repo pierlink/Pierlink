@@ -421,6 +421,8 @@ pub(super) fn upload_package(
     );
     let execute = |body: &str| run(program, &command, &format!("set -e\n{prefix}\n{body}"), 60);
     let result = (|| {
+        // 传上去的程序压缩后几 MB、解压后十几 MB，按 64 MiB 算，另外至少剩 500 MiB
+        execute("need_space \"$binroot\" $((65536 + home_margin_kib))\nprintf '{\"ok\":true}'")?;
         let destination = format!("\"$binroot\"/{}/unpack/Xvnc", sh_quote(&staging)?);
         crate::deploy::upload_binary_to(
             gzip,

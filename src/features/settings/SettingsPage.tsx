@@ -226,6 +226,9 @@ export function SettingsPage({ version }: { version: string | null }) {
             <Row label={t("settings.term.prediction")} hint={t("settings.term.predictionHint")}>
               <Switch label={t("settings.term.prediction")} checked={term.commandPrediction} onChange={(v) => setTerm({ commandPrediction: v })} />
             </Row>
+            <Row label={t("settings.term.powershellBell")} hint={t("settings.term.powershellBellHint")}>
+              <Switch label={t("settings.term.powershellBell")} checked={term.powershellBell} onChange={(v) => setTerm({ powershellBell: v })} />
+            </Row>
             <Row label={t("settings.term.clearHistory")} hint={historyCleared ? t("settings.term.historyCleared") : undefined}>
               <Button size="sm" onClick={() => { void clearHistory().then(() => setHistoryCleared(true), (e: unknown) => setHistoryError(formatError(e))); }}>{t("settings.term.clearHistoryButton")}</Button>
             </Row>

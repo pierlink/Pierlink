@@ -53,18 +53,24 @@ impl Shared {
         let refs: Vec<_> = secrets.iter().map(|s| s.as_str()).collect();
         crate::security::redact(command, &refs)
     }
-    /// 按 now 返回可见会话，结果按 ID 排序。
+    /// 按 now 返回界面上算“已连接”的会话，按 ID 排序：已接受、没停止，最近五分钟有请求或还有调用在进行，
+    /// 而且入口开着。AI 客户端开着就一直连着本机管道（不用也连着），所以两种入口都按最近有没有用来算；
+    /// 本机管道不论设置都接受连接（好让 AI 第一次调用时被告知去打开），入口关着时不算已连接。
     pub(super) fn sessions_at(&self, now: Instant) -> Vec<SessionInfo> {
-        let mut sessions: Vec<_> = lock(&self.sessions)
+        let recent: Vec<_> = lock(&self.sessions)
             .values()
-            .filter(|session| {
-                if matches!(lock(&session.info).entry, Entry::Server { .. }) {
-                    session.is_recent(now)
-                } else {
-                    session.accepted && !session.stopped.load(Ordering::Acquire)
-                }
-            })
+            .filter(|session| session.is_recent(now))
             .map(|session| session.snapshot())
+            .collect();
+        // 每个入口只读一次设置；读不到按关着算
+        let mut open: HashMap<Entry, bool> = HashMap::new();
+        let mut sessions: Vec<_> = recent
+            .into_iter()
+            .filter(|info| {
+                *open
+                    .entry(info.entry.clone())
+                    .or_insert_with(|| matches!(self.host.permissions(&info.entry), Ok(Some(_))))
+            })
             .collect();
         sessions.sort_by(|a, b| a.id.cmp(&b.id));
         sessions
@@ -228,8 +234,7 @@ impl McpService {
         let (read, write) = tokio::io::split(stream);
         self.serve_stream(entry, read, write)
     }
-    /// 无参数；返回已接受且未停止的会话及其建立时权限快照。
-    /// 服务器入口另要求最近五分钟有请求或仍有调用；本机管道连接期间始终显示。
+    /// 无参数；返回算“已连接”的会话及其建立时权限快照：已接受、未停止、最近五分钟有请求或仍有调用、入口开着。
     pub fn sessions(&self) -> Vec<SessionInfo> {
         self.shared.sessions_at(Instant::now())
     }

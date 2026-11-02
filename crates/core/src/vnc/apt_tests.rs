@@ -94,6 +94,95 @@ fi
     script_file(&bin.join("ldd"), "#!/bin/sh\nexit 0\n");
 }
 
+/// 假的 df：家目录所在文件系统只剩 free KiB（放进 fake_apt 建的 tools 目录）
+fn fake_df(home: &Path, free: u64) {
+    script_file(
+        &home.join("tools/df"),
+        &format!(
+            "#!/bin/sh\nprintf 'Filesystem 1024-blocks Used Available Capacity Mounted on\\n/dev/vdb 41168220 1 {free} 99%% /home\\n'\n"
+        ),
+    );
+}
+
+#[test]
+fn 家目录空间不够时不更新索引直接报剩多少要多少() {
+    let (root, program, mut cmd) = local();
+    fake_apt(root.path(), &mut cmd);
+    fake_df(root.path(), 100_000);
+    let e = acquire_light_desktop(&program, &cmd, &|_| {}, &AtomicBool::new(false)).unwrap_err();
+    assert_eq!(e.code, "vnc.no_space");
+    assert!(e.params["path"].ends_with("/.cache/pierlink/apt"));
+    assert_eq!(e.params["available"], "98 MB");
+    // 私有索引 256 MiB + 余量 500 MiB
+    assert_eq!(e.params["need"], "756 MB");
+    assert!(!root.path().join("apt-calls").exists());
+    assert_eq!(
+        fs::read_dir(root.path().join(".cache/pierlink/apt"))
+            .unwrap()
+            .count(),
+        0
+    );
+    assert_eq!(
+        fs::read_dir(root.path().join(".local/share/pierlink/vnc-light"))
+            .unwrap()
+            .count(),
+        0
+    );
+
+    // 从软件源免 root 获取 TigerVNC、服务器下载官方包也一样先看空间
+    for apt in [true, false] {
+        let e = acquire::remote_package(&program, &cmd, apt).unwrap_err();
+        assert_eq!(e.code, "vnc.no_space", "apt={apt}");
+    }
+    assert!(!root.path().join("apt-calls").exists());
+    assert_eq!(
+        fs::read_dir(root.path().join(".local/share/pierlink/vnc"))
+            .unwrap()
+            .count(),
+        0
+    );
+}
+
+#[test]
+fn 索引放得下但软件包放不下时一个包都不下载() {
+    let (root, program, mut cmd) = local();
+    fake_apt(root.path(), &mut cmd);
+    // 够放索引加余量（756 MiB），不够每个包 10 MB 的下载按 4 倍算再加余量
+    fake_df(root.path(), 800_000);
+    cmd.env.push(("FAKE_SIZE".into(), "10000000".into()));
+    let e = acquire_light_desktop(&program, &cmd, &|_| {}, &AtomicBool::new(false)).unwrap_err();
+    assert_eq!(e.code, "vnc.no_space");
+    assert_eq!(e.params["available"], "782 MB");
+    assert!(!e.params["need"].is_empty());
+    let calls = fs::read_to_string(root.path().join("apt-calls")).unwrap();
+    assert!(calls.lines().next().unwrap().contains("update"));
+    assert!(
+        calls
+            .lines()
+            .all(|line| line.contains("update") || line.contains("--print-uris"))
+    );
+    // 私有索引照样清理
+    assert_eq!(
+        fs::read_dir(root.path().join(".cache/pierlink/apt"))
+            .unwrap()
+            .count(),
+        0
+    );
+}
+
+#[test]
+fn 私有索引不下载软件包说明的翻译() {
+    let (root, program, mut cmd) = local();
+    fake_apt(root.path(), &mut cmd);
+    acquire_light_desktop(&program, &cmd, &|_| {}, &AtomicBool::new(false)).unwrap();
+    let calls = fs::read_to_string(root.path().join("apt-calls")).unwrap();
+    assert!(
+        calls
+            .lines()
+            .all(|line| line.contains("Acquire::Languages=none"))
+    );
+}
+
 #[test]
 fn 依赖闭包过滤虚包已装包并保留多架构名称() {
     let (root, program, mut cmd) = local();

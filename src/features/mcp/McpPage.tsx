@@ -355,11 +355,6 @@ function EntryDetail({ id, settings, servers, status, info, serverName, sessions
       <SetupSteps done={steps} />
       {status?.elevated && <Banner tone="warn" title={t("mcp.elevatedWarn")} />}
       {windows && status && !status.pipeRunning && <Banner tone="warn" title={t("mcp.pipeUnavailable")}>{status.pipeError}</Banner>}
-      {st?.state === "port_busy" ? (
-        // 服务器上的端口被占着：说明是谁占着，有空闲端口时一键换过去
-        <Banner tone="warn" title={conflictText(t, st)}
-          actions={st.conflict?.freePort ? <Button size="sm" onClick={() => changePort(st.conflict!.freePort!)}>{t("mcp.useFreePort", { port: st.conflict.freePort })}</Button> : undefined} />
-      ) : st?.error && <Banner tone="danger" title={formatError(st.error)} />}
       {server && <Banner tone="warn" title={t("mcp.serverRiskShort")} />}
 
       <div className="mcp-detail__grid">
@@ -377,11 +372,21 @@ function EntryDetail({ id, settings, servers, status, info, serverName, sessions
               <Button size="sm" title={t("mcp.rotateTokenHint")} onClick={() => void rotate()}>{t("mcp.rotateToken")}</Button>
             </div>
           )}
-          {server && (
-            <span className={`mcp-oneclick__result${rotated && !rotated.ok ? " mcp-oneclick__result--error" : progress ? " mcp-oneclick__result--ok" : ""}`} role="status" title={rotated && !rotated.ok ? rotated.text : progress ?? undefined}>
-              {rotated && !rotated.ok ? rotated.text : progress ?? ""}
-            </span>
-          )}
+          {/* 入口状态固定占一行（没有要说的也占着）：端口被占用、出错、换端口和令牌的进度都写在这里，不从页面顶上插提示 */}
+          {server && (() => {
+            const line = rotated && !rotated.ok ? { tone: "error", text: rotated.text }
+              : st?.state === "port_busy" ? { tone: "warn", text: conflictText(t, st) }
+                : st?.error ? { tone: "error", text: formatError(st.error) }
+                  : progress ? { tone: "ok", text: progress } : null;
+            const free = st?.state === "port_busy" ? st.conflict?.freePort : null;
+            return (
+              <div className={`mcp-detail__status${line ? ` mcp-detail__status--${line.tone}` : ""}`} role="status">
+                <span className="pl-ellipsis" title={line?.text}>{line?.text ?? ""}</span>
+                {/* 服务器上的端口被占着、有空闲端口时一键换过去 */}
+                {free ? <Button size="sm" onClick={() => changePort(free)}>{t("mcp.useFreePort", { port: free })}</Button> : null}
+              </div>
+            );
+          })()}
           {server && <p className="set-row__hint">{t("mcp.restartHint")}</p>}
           <h3>{t("mcp.sessionsOfEntry")}</h3>
           {sessions.length === 0
@@ -440,9 +445,14 @@ function conflictText(t: T, st: McpEntryState): string {
   }
 }
 
+/** 各入口最近一次查到的客户端情况（本机入口的键是 "local"）：切换入口、回到这个页面时先显示上次的结果，后台再查 */
+const clientCache = new Map<string, McpClients>();
+
 /**
  * 添加到 AI 客户端：上面一排标签选客户端（没装的也能选），下面是这个客户端的手动命令、“一键添加”和“移除”。
- * 点标签只切换，不会添加；没装的客户端两个按钮灰掉。结果写在按钮下面固定高度的一行里，不挤动下面的内容
+ * 点标签只切换，不会添加；没装的客户端两个按钮灰掉。整块高度不随检测结果和所选客户端变化：
+ * 加好没有、装没装写在标签下面固定的一行里（检查中也占着）；各客户端的命令叠在同一格里，按最高的占位；
+ * 结果写在按钮下面固定高度的一行里
  */
 function ClientSetup({ serverId, serverName, commands, fileHint, onAdded, onCurrent }: {
   serverId: string | null; serverName: string; commands: { client: string; text: string }[]; fileHint?: string;
@@ -459,29 +469,36 @@ function ClientSetup({ serverId, serverName, commands, fileHint, onAdded, onCurr
     const v = readPref(prefKey) as ClientKey | null;
     return v && clients.includes(v) ? v : null;
   };
-  const [client, setClient] = useState<ClientKey>(() => remembered() ?? clients[0]);
+  const cacheKey = serverId ?? "local";
+  // 没记住过的话，先选上次查到装了的第一个（换入口时也一样），检测完不再跳
+  const initialClient = (): ClientKey => {
+    const cached = clientCache.get(cacheKey);
+    return remembered() ?? (cached && clients.find((x) => cached[x])) ?? clients[0];
+  };
+  const [client, setClient] = useState<ClientKey>(initialClient);
   // 用户自己点过标签后，检测结果回来也不再自动换到装了的那个
   const picked = useRef(false);
   const [busy, setBusy] = useState<"add" | "remove" | null>(null);
   const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null);
   // 装了哪些客户端、各自加好这个入口没有：本机直接查，服务器要连过去查；没装的按钮灰掉并说明。
   // 查不到（服务器连不上）时不限制、也不显示加好没有。添加、移除后再查一次
-  const [installed, setInstalled] = useState<McpClients | null>(null);
+  const [installed, setInstalled] = useState<McpClients | null>(() => clientCache.get(cacheKey) ?? null);
   const [checks, setChecks] = useState(0);
   useEffect(() => {
-    const last = remembered();
-    picked.current = !!last;
-    setClient(last ?? clients[0]);
+    picked.current = !!remembered();
+    setClient(initialClient());
     setResult(null);
     // clients 只由 serverId 决定
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [serverId]);
   useEffect(() => {
     let alive = true;
-    if (checks === 0) setInstalled(null);
+    // 换了入口：先显示这个入口上次查到的（没查过就是“检查中”），查完再换，状态行不会先清空再冒出来
+    if (checks === 0) setInstalled(clientCache.get(cacheKey) ?? null);
     void getMcpApi().then((api) => (serverId === null ? api.detectClients() : api.detectServerClients(serverId))).then(
       (c) => {
         if (!alive) return;
+        clientCache.set(cacheKey, c);
         setInstalled(c);
         // 没选过的话默认选第一个装了的
         if (!picked.current) setClient(clients.find((x) => c[x]) ?? clients[0]);
@@ -498,7 +515,13 @@ function ClientSetup({ serverId, serverName, commands, fileHint, onAdded, onCurr
   const name = CLIENT_NAMES[client];
   const missing = installed !== null && !installed[client];
   const addedState: McpAdded | undefined = installed?.added[client];
-  const shown = commands.filter((c) => c.client === (client === "cursor" ? "json" : client));
+  // 标签下面那一行：检查中 / 没装 / 加好没有；查不到时空着，但照样占位
+  const statusText = installed === null ? t("mcp.clientChecking", { client: name })
+    : missing ? (serverId === null ? t("mcp.clientMissing", { client: name }) : t("mcp.serverClientMissing", { client: name, server: serverName }))
+      : addedState ? t(addedState === "current" ? "mcp.clientAdded" : addedState === "stale" ? "mcp.clientStale" : "mcp.clientNotAdded", { client: name })
+        : "";
+  const statusTone = installed === null ? " mcp-oneclick__status--checking" : !missing && addedState ? ` mcp-added--${addedState}` : "";
+  const commandsOf = (c: ClientKey) => commands.filter((x) => x.client === (c === "cursor" ? "json" : c));
   const run = async (kind: "add" | "remove", f: () => Promise<string>) => {
     setBusy(kind);
     setResult(null);
@@ -531,9 +554,9 @@ function ClientSetup({ serverId, serverName, commands, fileHint, onAdded, onCurr
     if (!removed) return t("mcp.notAdded", { client: name });
     return serverId !== null ? t("mcp.removedServer", { server: serverName, client: name }) : t("mcp.removed", { client: name });
   });
-  const manual = serverId === null
-    ? (client === "cursor" ? t("mcp.manualCursor") : t("mcp.manualLocal"))
-    : shown.length > 1 ? t("mcp.manualServerJq") : t("mcp.manualServer");
+  const manualOf = (c: ClientKey, count: number) => (serverId === null
+    ? (c === "cursor" ? t("mcp.manualCursor") : t("mcp.manualLocal"))
+    : count > 1 ? t("mcp.manualServerJq") : t("mcp.manualServer"));
   return (
     <div className="mcp-oneclick">
       <Segmented<ClientKey>
@@ -542,19 +565,21 @@ function ClientSetup({ serverId, serverName, commands, fileHint, onAdded, onCurr
         options={clients.map((c) => ({ value: c, label: CLIENT_NAMES[c] }))}
         onChange={(c) => { if (busy) return; picked.current = true; setClient(c); writePref(prefKey, c); setResult(null); }}
       />
-      {addedState && (
-        <p className={`set-row__hint mcp-added--${addedState}`}>
-          {t(addedState === "current" ? "mcp.clientAdded" : addedState === "stale" ? "mcp.clientStale" : "mcp.clientNotAdded", { client: name })}
-        </p>
-      )}
-      {missing && (
-        <p className="set-row__hint">
-          {serverId === null ? t("mcp.clientMissing", { client: name }) : t("mcp.serverClientMissing", { client: name, server: serverName })}
-        </p>
-      )}
-      {shown.length > 0 && <p className="set-row__hint">{manual}</p>}
-      {shown.map((c) => <CommandLine key={c.text} text={c.text} />)}
-      {fileHint && shown.length > 0 && <p className="set-row__hint">{fileHint}</p>}
+      <p className={`set-row__hint mcp-oneclick__status${statusTone}`} title={statusText || undefined}>{statusText}</p>
+      {/* 每个客户端的命令都放进同一格、只显示选中的：换客户端时这一块的高度不变 */}
+      <div className="mcp-oneclick__panels">
+        {clients.map((c) => {
+          const list = commandsOf(c);
+          const active = c === client;
+          return (
+            <div key={c} className={`mcp-oneclick__panel${active ? "" : " mcp-oneclick__panel--hidden"}`} aria-hidden={!active} inert={!active}>
+              {list.length > 0 && <p className="set-row__hint">{manualOf(c, list.length)}</p>}
+              {list.map((x) => <CommandLine key={x.text} text={x.text} />)}
+              {fileHint && list.length > 0 && <p className="set-row__hint">{fileHint}</p>}
+            </div>
+          );
+        })}
+      </div>
       <div className="mcp-oneclick__buttons">
         {/* 还在检测时也能点（服务器离线时检测要等很久）；没装的话后端报“没检测到”，照常提示 */}
         <Button size="sm" variant="primary" disabled={busy !== null || missing} onClick={() => void add()}>

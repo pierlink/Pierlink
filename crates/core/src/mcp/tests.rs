@@ -446,6 +446,9 @@ async fn 旧式版本和工具列表不等待入口授权() {
         assert_eq!(result["result"]["isError"], true);
         assert!(error_text(&result).contains("没有打开这个入口"));
         assert_eq!(fixture.host.confirmations.load(Ordering::Acquire), 0);
+        // 入口关着时不算已连接；打开后才看得到（客户端名照样记下了）
+        assert!(fixture.service.sessions().is_empty());
+        fixture.host.enabled.store(true, Ordering::Release);
         assert_eq!(fixture.service.sessions()[0].client.name, "测试客户端");
         client.close().await;
         assert!(fixture.service.sessions().is_empty());
@@ -1573,18 +1576,33 @@ async fn 确认返回无人回应时优先报告已取消且不记住决定() {
 }
 
 #[tokio::test]
-async fn 本机连接空闲超过五分钟仍显示且断开即移除() {
+async fn 本机连接空闲超过五分钟不再算已连接且断开即移除() {
     let fixture = Fixture::new();
     let client = fixture.legacy().await;
     let session = client.handle.as_ref().unwrap().session.clone();
-    let now = *lock(&session.last_request) + Duration::from_secs(1800);
-    assert_eq!(fixture.service.shared.sessions_at(now).len(), 1);
+    let last = *lock(&session.last_request);
+    // AI 客户端开着就一直连着管道：一分钟前用过算已连接，半小时没用就不算了
+    assert_eq!(
+        fixture
+            .service
+            .shared
+            .sessions_at(last + Duration::from_secs(60))
+            .len(),
+        1
+    );
+    assert!(
+        fixture
+            .service
+            .shared
+            .sessions_at(last + Duration::from_secs(1800))
+            .is_empty()
+    );
     client.close().await;
     assert!(fixture.service.sessions().is_empty());
 }
 
 #[test]
-fn 会话报告排除未接受和已停止连接且仅服务器入口检查活动时间() {
+fn 会话报告排除未接受和已停止连接且两种入口都检查活动时间() {
     let fixture = Fixture::new();
     let mut expected = Vec::new();
     let mut calls = Vec::new();
@@ -1609,7 +1627,8 @@ fn 会话报告排除未接受和已停止连接且仅服务器入口检查活�
                 session.cancel();
             }
             let id = session.snapshot().id;
-            if accepted && !stopped && (entry == Entry::Windows || busy) {
+            // 半小时没请求：两种入口都只剩还有调用在进行的
+            if accepted && !stopped && busy {
                 expected.push(id.clone());
             }
             lock(&fixture.service.shared.sessions).insert(id, session);
@@ -1692,7 +1711,7 @@ async fn 终端发送游标可用于多行正则并记录打开目录() {
 }
 
 #[test]
-fn 可见会话集合过期只通知一次且本机连接不受时间影响() {
+fn 可见会话集合过期只通知一次且本机连接也按时间过期() {
     let fixture = Fixture::new();
     let shared = &fixture.service.shared;
     let local = Arc::new(session::Session::new(Entry::Windows, true));
@@ -1703,6 +1722,8 @@ fn 可见会话集合过期只通知一次且本机连接不受时间影响() {
         true,
     ));
     let last = *lock(&remote.last_request);
+    // 两个连接的最后请求时间对齐，过期的时刻才确定
+    *lock(&local.last_request) = last;
     for session in [&local, &remote] {
         lock(&shared.sessions).insert(session.snapshot().id, session.clone());
     }
@@ -1710,11 +1731,9 @@ fn 可见会话集合过期只通知一次且本机连接不受时间影响() {
     assert!(shared.sessions_changed(&mut previous, last + Duration::from_secs(300)));
     assert_eq!(previous.len(), 2);
     assert!(!shared.sessions_changed(&mut previous, last + Duration::from_secs(300)));
+    // 五分钟没请求：本机连接和服务器连接一样不再算已连接
     assert!(shared.sessions_changed(&mut previous, last + Duration::from_secs(301)));
-    assert_eq!(
-        previous,
-        std::collections::HashSet::from([(local.snapshot().id, false)])
-    );
+    assert!(previous.is_empty());
     assert!(!shared.sessions_changed(&mut previous, last + Duration::from_secs(1800)));
     let call = remote.call_flag();
     assert!(shared.sessions_changed(&mut previous, last + Duration::from_secs(1800)));
@@ -1732,6 +1751,25 @@ fn 可见会话集合过期只通知一次且本机连接不受时间影响() {
             .iter()
             .any(|event| matches!(event, HostEvent::SessionsChanged))
     );
+}
+
+#[test]
+fn 入口关着时会话不算已连接() {
+    let fixture = Fixture::new();
+    let shared = &fixture.service.shared;
+    let local = Arc::new(session::Session::new(Entry::Windows, true));
+    lock(&shared.sessions).insert(local.snapshot().id, local.clone());
+    let now = Instant::now();
+    assert_eq!(shared.sessions_at(now).len(), 1);
+    // 关掉 AI 接入：管道照样连着，界面上不显示“已连接”，状态列表也没有它
+    fixture.host.enabled.store(false, Ordering::Release);
+    assert!(shared.sessions_at(now).is_empty());
+    assert!(shared.statuses_at(now).is_empty());
+    let mut previous = std::collections::HashSet::from([(local.snapshot().id, false)]);
+    assert!(shared.sessions_changed(&mut previous, now));
+    assert!(previous.is_empty());
+    fixture.host.enabled.store(true, Ordering::Release);
+    assert_eq!(shared.sessions_at(now).len(), 1);
 }
 
 #[tokio::test]

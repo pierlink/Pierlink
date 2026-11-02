@@ -450,6 +450,42 @@ await rec.step(conn, "服务器终端的连接 / 断开按钮：断开后内容�
   return text.split("\n").filter(Boolean).slice(-2).join(" / ");
 });
 
+await rec.step(conn, "程序发了“光标不闪”（\\e[?12l，tmux、screen 每次显示光标都带）之后，光标照样按设置闪", async () => {
+  if (!HAVE_LINUX) throw new Error("没有 WSL Linux 服务器");
+  const pane = `[...document.querySelectorAll('.pane-slot')].filter(s=>s.style.display!=='none')[0]`;
+  const term = `(${pane}?.querySelector('.xterm-rows')?.innerText||'')`;
+  await clickVisible(".xterm-screen", 0);
+  await u.typeLine("printf '\\033[?12l'; echo PL-NOBLINK-$((1+1))");
+  await u.waitFor(`/^PL-NOBLINK-2\\s*$/m.test(${term})`, "printf 之后的输出", 10000);
+  // 以前 xterm 收到它就把“光标闪烁”这个设置改成关，这个终端之后一直不闪
+  const blink = await u.waitFor(`(()=>{const c=${pane}?.querySelector('.xterm-rows .xterm-cursor'); return c ? {blink: c.classList.contains('xterm-cursor-blink'), cls: c.className} : null;})()`, "终端光标", 8000);
+  if (!blink.blink) throw new Error(`收到 \\e[?12l 后光标不闪了：${blink.cls}`);
+  return blink.cls;
+});
+
+await rec.step(conn, "断开后点“重新连接”：回到断开前的目录；重新连接以外（新开终端）照常从主目录开始", async () => {
+  if (!HAVE_LINUX) throw new Error("没有 WSL Linux 服务器");
+  const pane = `[...document.querySelectorAll('.pane-slot')].filter(s=>s.style.display!=='none')[0]`;
+  const term = `(${pane}?.querySelector('.xterm-rows')?.innerText||'')`;
+  const dirPrompt = `new RegExp(${JSON.stringify(`${LX.user}@[^\\s:]+:/tmp/pl-reconnect-dir\\$\\s*$`)}, 'm')`;
+  await clickVisible(".xterm-screen", 0);
+  await u.typeLine("mkdir -p /tmp/pl-reconnect-dir && cd /tmp/pl-reconnect-dir");
+  await u.waitFor(`${dirPrompt}.test(${term})`, "提示符换到 /tmp/pl-reconnect-dir", 10000);
+  await clickVisible('[aria-label="Disconnect"]');
+  await u.waitFor(`/^Disconnected\\s*$/m.test(${term})`, "已断开", 15000);
+  await clickVisible(".term-endcard .pl-btn--primary");
+  try {
+    await u.waitFor(`!/Disconnected/.test(${term}) && ${dirPrompt}.test(${term})`, "重新连接后的提示符在 /tmp/pl-reconnect-dir", 30000);
+    await u.typeLine("pwd");
+    await u.waitFor(`/^\\/tmp\\/pl-reconnect-dir\\s*$/m.test(${term})`, "pwd 输出原来的目录", 10000);
+  } finally {
+    // 回到主目录：后面的步骤按主目录的提示符认 bash 窗格
+    await u.typeLine("cd ~");
+    await u.waitFor(`${bashPanes} >= 1`, "回到主目录", 10000).catch(() => undefined);
+  }
+  return "重新连接后 pwd = /tmp/pl-reconnect-dir";
+});
+
 await rec.step(conn, "前台是程序时粘贴多行不提醒：bash 里运行 cat，粘贴两行直接进 cat", async () => {
   if (!HAVE_LINUX) throw new Error("没有 WSL Linux 服务器");
   const term = `([...document.querySelectorAll('.pane-slot')].filter(s=>s.style.display!=='none')[0]?.querySelector('.xterm-rows')?.innerText||'')`;

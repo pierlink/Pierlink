@@ -26,7 +26,7 @@ mod input;
 mod output;
 pub(crate) mod progress;
 mod ssh_log;
-pub use builtin::{BuiltinTerminal, remote};
+pub use builtin::{BuiltinTerminal, remote, set_start_dir};
 pub use input::InputSource;
 pub use output::{OutputRead, OutputSubscription, SubscriptionEvent};
 pub use progress::{ConnectProgress, ConnectStage};

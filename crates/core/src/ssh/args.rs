@@ -15,6 +15,8 @@ pub enum Purpose {
         cwd_marker: Option<String>,
         /// 是否注入提示符与命令记录标记；关闭时保留原连接命令。
         integration: bool,
+        /// 断开后重连时 shell 启动的目录（绝对路径）：只在注入了标记时生效，进不去就留在主目录。
+        start_dir: Option<String>,
     },
     Background,
     /// 主机密钥确认；隔离配置中每一级均允许交互确认，但禁止密码认证。
@@ -273,6 +275,15 @@ pub(crate) fn terminal_command(
     shell: &Option<String>,
     integration: bool,
 ) -> Result<Option<String>, AppError> {
+    terminal_command_in(shell, integration, None)
+}
+
+/// 同 terminal_command；start_dir 是重连时 shell 启动的目录，只在 integration 时生效（见 shell_integration::command_in）。
+pub(crate) fn terminal_command_in(
+    shell: &Option<String>,
+    integration: bool,
+    start_dir: Option<&str>,
+) -> Result<Option<String>, AppError> {
     let original = shell
         .as_ref()
         .map(|s| {
@@ -288,7 +299,7 @@ pub(crate) fn terminal_command(
         })
         .transpose()?;
     if integration {
-        crate::shell_integration::command(shell.as_deref()).map(Some)
+        crate::shell_integration::command_in(shell.as_deref(), start_dir).map(Some)
     } else {
         Ok(original)
     }
@@ -572,6 +583,7 @@ pub fn build_args(
         Purpose::Terminal {
             login_shell,
             integration,
+            start_dir,
             ..
         } => {
             let has_remote_command = opts.has_remote_command == Some(true)
@@ -581,7 +593,7 @@ pub fn build_args(
                     SshTarget::Manual { .. } => false,
                 };
             hooked = *integration && !has_remote_command;
-            if let Some(command) = terminal_command(login_shell, hooked)? {
+            if let Some(command) = terminal_command_in(login_shell, hooked, start_dir.as_deref())? {
                 args.push(command);
             }
         }
@@ -624,6 +636,7 @@ mod tests {
                         login_shell: shell.clone(),
                         cwd_marker: None,
                         integration: true,
+                        start_dir: None,
                     };
                     let command = build_args(target, &purpose, &opts).unwrap();
                     assert_eq!(command.hooked, !has_remote_command);
@@ -646,6 +659,7 @@ mod tests {
                                 login_shell: shell,
                                 cwd_marker: None,
                                 integration: false,
+                                start_dir: None,
                             },
                             &opts,
                         )
@@ -659,6 +673,7 @@ mod tests {
             login_shell: None,
             cwd_marker: None,
             integration: true,
+            start_dir: None,
         };
         assert_eq!(build(&alias(), purpose).args.last().unwrap(), "example");
     }
@@ -672,6 +687,7 @@ mod tests {
                 login_shell: None,
                 cwd_marker: Some(marker.into()),
                 integration: false,
+                start_dir: None,
             },
         );
         assert!(has(&command.args, ["-o", "SendEnv=LC_PIERLINK_TERM"]));
@@ -686,6 +702,7 @@ mod tests {
                 login_shell: None,
                 cwd_marker: None,
                 integration: false,
+                start_dir: None,
             },
         );
         assert!(!plain.args.iter().any(|a| a.contains("LC_PIERLINK_TERM")));
@@ -697,6 +714,7 @@ mod tests {
                     login_shell: None,
                     cwd_marker: Some(marker.into()),
                     integration: false,
+                    start_dir: None,
                 },
                 &CommonOpts::default(),
             )
@@ -738,11 +756,13 @@ mod tests {
                 login_shell: None,
                 cwd_marker: None,
                 integration: false,
+                start_dir: None,
             },
             Purpose::Terminal {
                 login_shell: Some("/bin/sh".into()),
                 cwd_marker: None,
                 integration: false,
+                start_dir: None,
             },
         ] {
             let args = build(&alias(), purpose.clone()).args;
@@ -1030,6 +1050,7 @@ mod tests {
                     login_shell: Some("/bin/sh".into()),
                     cwd_marker: None,
                     integration: false,
+                    start_dir: None,
                 },
             )
             .args,
@@ -1100,6 +1121,7 @@ mod tests {
                 login_shell: None,
                 cwd_marker: None,
                 integration: false,
+                start_dir: None,
             },
             &opts,
         )
@@ -1174,6 +1196,7 @@ mod tests {
                 login_shell: None,
                 cwd_marker: None,
                 integration: false,
+                start_dir: None,
             },
         ] {
             let cmd = build(&alias(), purpose.clone());
@@ -1252,6 +1275,7 @@ mod tests {
                 login_shell: None,
                 cwd_marker: None,
                 integration: false,
+                start_dir: None,
             },
         ] {
             let cmd = build_args(&manual(), &purpose, &opts).unwrap();
@@ -1367,6 +1391,7 @@ mod tests {
                 login_shell: Some(shell.into()),
                 cwd_marker: None,
                 integration: false,
+                start_dir: None,
             },
         );
         assert_eq!(
@@ -1439,6 +1464,7 @@ mod tests {
                     login_shell: Some("x\0secret".into()),
                     cwd_marker: None,
                     integration: false,
+                    start_dir: None,
                 },
                 &CommonOpts::default()
             )
@@ -1520,6 +1546,7 @@ mod dedicated_tests {
                 login_shell: None,
                 cwd_marker: None,
                 integration: false,
+                start_dir: None,
             },
             Purpose::Sftp,
             Purpose::Tunnel {

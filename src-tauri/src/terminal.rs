@@ -453,9 +453,10 @@ pub async fn list_local_shells(app: AppHandle) -> Result<Vec<LocalShellInfo>, Ap
     .await
 }
 
-/// 打开本机终端，返回会话 ID。
+/// 打开本机终端，返回会话 ID。quiet_bell：设置里关掉了“PowerShell 提示音”。
 #[tauri::command]
 #[specta::specta]
+#[allow(clippy::too_many_arguments)] // Tauri 命令的参数直接对应前端调用，拆成结构体反而不直观
 pub async fn terminal_open_local(
     app: AppHandle,
     webview: Webview,
@@ -463,6 +464,7 @@ pub async fn terminal_open_local(
     cols: u16,
     rows: u16,
     prediction: bool,
+    quiet_bell: bool,
     on_event: Channel<TerminalEventDto>,
 ) -> Result<String, AppError> {
     let owner = webview.label().to_owned();
@@ -477,7 +479,7 @@ pub async fn terminal_open_local(
         let spec = TerminalSpec {
             kind: TerminalKind::Local {
                 program: shell.program.clone(),
-                args: shell.args.clone(),
+                args: local_args(shell, quiet_bell),
                 // 和 Windows Terminal 一样从用户主目录开始；不设置时会继承 Pierlink 进程的目录
                 //（从开始菜单启动时是安装目录）
                 cwd: user_home(),
@@ -534,6 +536,7 @@ pub async fn terminal_open_quick(
     cols: u16,
     rows: u16,
     prediction: bool,
+    start_dir: Option<String>,
     on_event: Channel<TerminalEventDto>,
 ) -> Result<String, AppError> {
     let loc = crate::files::LocDto::Quick {
@@ -558,14 +561,17 @@ pub async fn terminal_open_quick(
         cols,
         rows,
         prediction,
+        start_dir,
         on_event,
     )
     .await
 }
 
 /// 按已保存的服务器打开远程终端（使用它的私钥、登录 shell、保存的密码等设置）。
+/// start_dir：断开后在同一个窗格重连时，shell 从断开前的目录启动（只在装了命令预测的钩子时生效）；其他时候为 None。
 #[tauri::command]
 #[specta::specta]
+#[allow(clippy::too_many_arguments)] // Tauri 命令的参数直接对应前端调用，拆成结构体反而不直观
 pub async fn terminal_open_server(
     app: AppHandle,
     webview: Webview,
@@ -573,6 +579,7 @@ pub async fn terminal_open_server(
     cols: u16,
     rows: u16,
     prediction: bool,
+    start_dir: Option<String>,
     on_event: Channel<TerminalEventDto>,
 ) -> Result<String, AppError> {
     let server = crate::servers::load(&app, &server_id)?;
@@ -588,9 +595,34 @@ pub async fn terminal_open_server(
         cols,
         rows,
         prediction,
+        start_dir,
         on_event,
     )
     .await
+}
+
+/// 关掉 PowerShell 提示音时接在 Pierlink 注入的启动命令后面：PSReadLine 退格删到头、补全不到时会调
+/// [Console]::Beep“咚”一声（PowerShell 自己发的，Pierlink 拦不到）。没有 PSReadLine 时什么都不做
+const QUIET_BELL: &str =
+    "; try { Set-PSReadLineOption -BellStyle None -ErrorAction Stop } catch {}";
+
+/// 本机终端的启动参数：关掉了 PowerShell 提示音时，在 -Command 的启动命令后面加上 QUIET_BELL。
+/// PowerShell 把 -Command 后面的参数全拼成一条命令，只在后面恰好一个参数（Pierlink 注入的启动命令）时追加；
+/// 其他终端、没有 -Command 或后面有好几个参数的（自定义参数）原样返回
+fn local_args(shell: &LocalShell, quiet_bell: bool) -> Vec<String> {
+    let mut args = shell.args.clone();
+    let powershell = matches!(
+        shell.kind,
+        shells::ShellKind::PowerShell7 | shells::ShellKind::WindowsPowerShell
+    );
+    if quiet_bell
+        && powershell
+        && let Some(i) = args.iter().position(|a| a.eq_ignore_ascii_case("-Command"))
+        && i + 2 == args.len()
+    {
+        args[i + 1].push_str(QUIET_BELL);
+    }
+    args
 }
 
 /// 本机终端的环境变量：Git Bash 打开命令预测时加上 PIERLINK_PREDICT=1（包装脚本据此装上提示符标记）；
@@ -633,6 +665,7 @@ async fn open_remote(
     cols: u16,
     rows: u16,
     prediction: bool,
+    start_dir: Option<String>,
     on_event: Channel<TerminalEventDto>,
 ) -> Result<String, AppError> {
     let owner = webview.label().to_owned();
@@ -655,6 +688,7 @@ async fn open_remote(
             login_shell,
             cwd_marker: Some(marker.clone()),
             integration: prediction,
+            start_dir: start_dir.clone(),
         };
         let openssh = || -> Result<TerminalKind, AppError> {
             Ok(TerminalKind::Remote {
@@ -664,7 +698,7 @@ async fn open_remote(
             })
         };
         // 保存过的服务器按它的连接方式选内置 SSH 或系统 OpenSSH；临时输入地址的快速连接照旧用系统 OpenSSH
-        let kind = match &loc {
+        let mut kind = match &loc {
             crate::files::LocDto::Server { server_id } => {
                 let server = crate::servers::load(app, server_id)?;
                 match (
@@ -691,6 +725,8 @@ async fn open_remote(
             }
             _ => openssh()?,
         };
+        // 内置 SSH 的终端在握手后才生成启动命令：重连时的启动目录另外交给它
+        pierlink_core::terminal::set_start_dir(&mut kind, start_dir);
         // 内置 SSH 在打开时就连接和登录：失败时标上 engine=builtin，界面据此提供“改用系统 OpenSSH 重试”
         let builtin_engine = matches!(kind, TerminalKind::BuiltinRemote(_));
         let spec = TerminalSpec { kind, cols, rows };
@@ -955,4 +991,47 @@ fn user_home() -> Option<std::path::PathBuf> {
         .or_else(|| std::env::var_os("HOME"))
         .map(std::path::PathBuf::from)
         .filter(|p| p.is_absolute() && p.is_dir())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn shell(kind: shells::ShellKind, args: &[&str]) -> LocalShell {
+        LocalShell {
+            id: "x".into(),
+            name: "x".into(),
+            program: "x".into(),
+            args: args.iter().map(|a| a.to_string()).collect(),
+            env: vec![],
+            kind,
+        }
+    }
+
+    #[test]
+    fn 关掉提示音只在powershell的启动命令后面加一句() {
+        let ps = shell(
+            shells::ShellKind::WindowsPowerShell,
+            &[
+                "-NoLogo",
+                "-NoExit",
+                "-Command",
+                "function global:prompt {}",
+            ],
+        );
+        assert_eq!(local_args(&ps, false), ps.args);
+        let quiet = local_args(&ps, true);
+        assert_eq!(&quiet[..3], &ps.args[..3]);
+        assert_eq!(quiet[3], format!("function global:prompt {{}}{QUIET_BELL}"));
+        assert_eq!(quiet.len(), 4);
+        let pwsh = shell(shells::ShellKind::PowerShell7, &["-command", "x"]);
+        assert_eq!(local_args(&pwsh, true)[1], format!("x{QUIET_BELL}"));
+        // 别的终端、没有 -Command 或后面有好几个参数的自定义参数不动
+        let several = shell(shells::ShellKind::PowerShell7, &["-Command", "a", "b"]);
+        assert_eq!(local_args(&several, true), several.args);
+        let cmd = shell(shells::ShellKind::Cmd, &["/K"]);
+        assert_eq!(local_args(&cmd, true), cmd.args);
+        let custom = shell(shells::ShellKind::PowerShell7, &["-NoLogo"]);
+        assert_eq!(local_args(&custom, true), custom.args);
+    }
 }

@@ -15,6 +15,8 @@ import {
   acquireFailures, getDesktopApi,
   type AcquireSource, type DesktopConnection, type DesktopCreateProgress, type DesktopDetection, type DesktopSession,
 } from "./api";
+import { desktopActions, INSTALL_POLL_MS, INSTALL_WAIT_MS, installFinished, LIGHT_DESKTOP_ID, preferredDesktop } from "./install";
+import { InstallDialog, InstallingCard, type InstallHint } from "./InstallDesktop";
 import "./desktop.css";
 
 type Quality = "low" | "medium" | "high";
@@ -27,7 +29,10 @@ const QUALITY: Record<Quality, { quality: number; compression: number }> = {
 
 type Phase =
   | { kind: "detecting" }
-  | { kind: "pick"; detection: DesktopDetection }
+  /** prefer：新建卡片里默认选的桌面环境（刚装好的 XFCE） */
+  | { kind: "pick"; detection: DesktopDetection; prefer?: string }
+  /** 正在终端里安装完整桌面：since 开始的时间，每隔一会儿查一次装好没有；timedOut 等太久不再自动查 */
+  | { kind: "installing"; command: string; hint: InstallHint; since: number; timedOut: boolean }
   | { kind: "connecting"; session: DesktopSession }
   | { kind: "password"; session: DesktopSession; error: string | null }
   | { kind: "connected"; session: DesktopSession; noAuth: boolean }
@@ -49,21 +54,11 @@ interface CreateArgs {
 const OFFICIAL_URL = "https://sourceforge.net/projects/tigervnc/files/stable/1.16.2/tigervnc-1.16.2.x86_64.tar.gz";
 
 /**
- * 安装说明里 Debian / Ubuntu 要装的包，和后端给轻量桌面的安装命令一致：TigerVNC（Xvnc）、dbus-launch、
- * Openbox + xterm、中文字体
+ * 安装说明里 Debian / Ubuntu 要装的主要的包，和后端的安装命令一致：XFCE 桌面和终端、dbus-launch、中文字体、TigerVNC（Xvnc）
  */
-const APT_PACKAGES = "tigervnc-standalone-server dbus-x11 openbox xterm fonts-wqy-microhei";
-/** Ubuntu 没开 universe 源时找不到 TigerVNC、Openbox 等包 */
+const APT_PACKAGES = "xfce4 xfce4-terminal dbus-x11 fonts-noto-cjk tigervnc-standalone-server";
+/** Ubuntu 没开 universe 源时找不到 TigerVNC、XFCE 等包 */
 const UNIVERSE_COMMAND = "sudo add-apt-repository -y universe";
-
-/**
- * 这台服务器要装的软件的安装命令（需要管理员权限）：只能用轻量桌面（服务器上没有桌面环境）时装 Openbox，否则装 XFCE。
- * @param detection 检测结果
- * @returns 安装命令；不认识服务器的包管理器时为 null
- */
-function installCommandFor(detection: DesktopDetection): string | null {
-  return (detection.desktops.some((d) => d.light) ? detection.installCommandLight : null) ?? detection.installCommand;
-}
 
 /**
  * noVNC 1.7 的内部字段：恢复远程分辨率要用（公开接口只能“跟随窗口”，不能指定尺寸）；
@@ -139,7 +134,7 @@ function savePrefs(p: ViewPrefs) {
  * 服务器桌面窗格：检测服务器上的 VNC 桌面，选一个连接，用 noVNC 显示。
  * 数据经 SSH 走后端，本机和服务器都不开端口。
  */
-export function DesktopPane({ serverId, visible, title, controls, windowTitle, standalone, onPoppedOut }: {
+export function DesktopPane({ serverId, visible, title, controls, windowTitle, standalone, onPoppedOut, onInstallTerminal }: {
   serverId: string;
   visible: boolean;
   /** 独立窗口的标题（如“gpu-dev 桌面”）；不给就不显示“在独立窗口打开” */
@@ -152,9 +147,16 @@ export function DesktopPane({ serverId, visible, title, controls, windowTitle, s
   controls?: ReactNode;
   /** 已经在独立窗口里打开：由上层关掉这个窗格（不给就留在这里显示“已在独立窗口打开”） */
   onPoppedOut?: () => void;
+  /**
+   * 安装桌面：在这个窗格下面开一个连同一台服务器的终端，连上后输入并运行 command（要密码时用户在终端里输）。
+   * 开出来了返回 true；不给（独立窗口里）时改为复制命令
+   */
+  onInstallTerminal?: (command: string) => boolean;
 }) {
   const { t } = useTranslation();
   const [phase, setPhase] = useState<Phase>({ kind: "detecting" });
+  /** 安装确认框开着：打开时的检测结果（改用精简桌面时要用） */
+  const [installFor, setInstallFor] = useState<DesktopDetection | null>(null);
   const [prefs, setPrefs] = useState<ViewPrefs>(loadPrefs);
   const [size, setSize] = useState<string>("");
   const [fullscreen, setFullscreen] = useState(false);
@@ -359,6 +361,36 @@ export function DesktopPane({ serverId, visible, title, controls, windowTitle, s
   const cancelCreate = () => {
     if (phase.kind === "creating") void getDesktopApi().then((api) => api.cancelCreate(phase.task));
   };
+
+  // 确认安装：在下面开终端运行安装命令（独立窗口里开不了，改为复制命令），这里等它装好
+  const startInstall = (command: string, password: boolean) => {
+    setInstallFor(null);
+    const inTerminal = !!onInstallTerminal && onInstallTerminal(command);
+    if (!inTerminal) void writeClipboardText(command).catch(() => undefined);
+    setPhase({ kind: "installing", command, hint: !inTerminal ? "copied" : password ? "password" : "terminal", since: Date.now(), timedOut: false });
+  };
+
+  // 装的过程中每隔几秒查一次，装好（能新建、没在跑 apt 等）就回到新建卡片并选中 XFCE；等太久就停下，让用户装好后自己点“重新查找”
+  const installSince = phase.kind === "installing" && !phase.timedOut ? phase.since : 0;
+  useEffect(() => {
+    if (!installSince) return;
+    let alive = true;
+    let busy = false;
+    const timer = setInterval(() => {
+      if (Date.now() - installSince > INSTALL_WAIT_MS) {
+        clearInterval(timer);
+        setPhase((cur) => (cur.kind === "installing" && cur.since === installSince ? { ...cur, timedOut: true } : cur));
+        return;
+      }
+      if (busy) return;
+      busy = true;
+      void getDesktopApi().then((api) => api.detect(serverId)).then((d) => {
+        if (!alive || !installFinished(d)) return;
+        setPhase((cur) => (cur.kind === "installing" && cur.since === installSince ? { kind: "pick", detection: d, prefer: preferredDesktop(d) } : cur));
+      }, () => undefined).finally(() => { busy = false; });
+    }, INSTALL_POLL_MS);
+    return () => { alive = false; clearInterval(timer); };
+  }, [installSince, serverId]);
 
   const stopDesktop = async (session: DesktopSession) => {
     setConfirmStop(false);
@@ -612,8 +644,12 @@ export function DesktopPane({ serverId, visible, title, controls, windowTitle, s
           </div>
         )}
         {phase.kind === "pick" && (
-          <SessionList detection={phase.detection} onConnect={(s) => void connect(s)} onRecheck={() => void detect(false)}
-            onCreate={(desktopId) => void create({ detection: phase.detection, desktopId, allowOfficialDownload: false, manualPackage: null })} />
+          <SessionList detection={phase.detection} prefer={phase.prefer} onConnect={(s) => void connect(s)} onRecheck={() => void detect(false)}
+            onCreate={(desktopId) => void create({ detection: phase.detection, desktopId, allowOfficialDownload: false, manualPackage: null })}
+            onInstall={() => setInstallFor(phase.detection)} />
+        )}
+        {phase.kind === "installing" && (
+          <InstallingCard command={phase.command} hint={phase.hint} timedOut={phase.timedOut} onRecheck={() => void detect(false)} />
         )}
         {phase.kind === "creating" && (
           <div className="desk__card">
@@ -662,6 +698,15 @@ export function DesktopPane({ serverId, visible, title, controls, windowTitle, s
           </div>
         )}
       </div>
+      {installFor?.installCommand && (
+        <InstallDialog serverId={serverId} command={installFor.installCommand} inTerminal={!!onInstallTerminal}
+          onClose={() => setInstallFor(null)} onInstall={startInstall}
+          onLight={() => {
+            const detection = installFor;
+            setInstallFor(null);
+            void create({ detection, desktopId: LIGHT_DESKTOP_ID, allowOfficialDownload: false, manualPackage: null });
+          }} />
+      )}
       {confirmStop && session && (
         <Dialog title={t("desktop.stopTitle")} danger onDismiss={() => setConfirmStop(false)}
           actions={<>
@@ -720,7 +765,7 @@ function CreateFailed({ state, onRetry, onBack }: {
     return true;
   });
   const acquireFailed = state.failures.length > 0;
-  const command = installCommandFor(detection);
+  const command = detection.installCommand;
   const copy = (text: string) => { void writeClipboardText(text).then(() => setCopied(text)); };
   const pick = async () => {
     const path = await (await getDesktopApi()).pickPackage().catch(() => null);
@@ -769,20 +814,26 @@ function CreateFailed({ state, onRetry, onBack }: {
   );
 }
 
-/** 检测结果：已有的桌面逐个列出；能新建时给“新建桌面”；都不行时给安装命令。onRecheck 重新查找（装好软件以后） */
-function SessionList({ detection, onConnect, onCreate, onRecheck }: {
+/**
+ * 检测结果：已有的桌面逐个列出；能新建时给“新建桌面”（默认选 prefer）；新建不了但能用包管理器装时给“安装桌面”；
+ * 都不行时给手动安装的说明。onRecheck 重新查找（装好软件以后）
+ */
+function SessionList({ detection, prefer, onConnect, onCreate, onInstall, onRecheck }: {
   detection: DesktopDetection;
+  prefer?: string;
   onConnect: (s: DesktopSession) => void;
   onCreate: (desktopId: string) => void;
+  onInstall: () => void;
   onRecheck: () => void;
 }) {
   const { t } = useTranslation();
   const [copied, setCopied] = useState(false);
-  const [env, setEnv] = useState(detection.desktops[0]?.id ?? "");
+  const [env, setEnv] = useState(prefer || detection.desktops[0]?.id || "");
   const none = detection.sessions.length === 0;
-  const command = installCommandFor(detection);
+  const command = detection.installCommand;
+  const actions = desktopActions(detection);
   const help = <InstallHelp command={command} onRecheck={onRecheck} />;
-  const createBox = detection.canCreate && (
+  const createBox = actions.create ? (
     <div className="desk__create">
       <div className="desk__head">
         <b>{none ? t("desktop.createFirstTitle") : t("desktop.createTitle")}</b>
@@ -792,16 +843,26 @@ function SessionList({ detection, onConnect, onCreate, onRecheck }: {
       <div className="desk__create-row">
         {detection.desktops.length > 1 && (
           <Select label={t("desktop.environment")} value={env} onChange={setEnv}
-            options={detection.desktops.map((d) => ({ value: d.id, label: d.light ? t("desktop.lightName") : d.name }))} />
+            options={detection.desktops.map((d) => ({ value: d.id, label: d.name }))} />
         )}
         <Button variant="primary" disabled={!env} onClick={() => onCreate(env)}>{t("desktop.create")}</Button>
       </div>
-      {detection.desktops.length === 1 && detection.desktops[0].light
-        ? <p className="desk__hint">{t("desktop.lightHint")}</p>
-        : detection.needsServerProgram && <p className="desk__hint">{t("desktop.needsProgram")}</p>}
+      {detection.needsServerProgram && <p className="desk__hint">{t("desktop.needsProgram")}</p>}
     </div>
-  );
-  if (none && !detection.canCreate) {
+  ) : actions.install ? (
+    <div className="desk__create desk__install">
+      <div className="desk__head">
+        <b>{none ? t("desktop.createFirstTitle") : t("desktop.install.title")}</b>
+        {help}
+      </div>
+      <p className="desk__hint">{t("desktop.install.hint")}</p>
+      <div className="desk__create-row">
+        <Button variant="primary" onClick={onInstall}>{t("desktop.install.action")}</Button>
+      </div>
+      {detection.missingTools.length > 0 && <p className="desk__hint">{t("desktop.missingTools", { tools: detection.missingTools.join(t("desktop.sep")) })}</p>}
+    </div>
+  ) : null;
+  if (none && !createBox) {
     return (
       <div className="desk__card desk__card--wide">
         <div className="desk__head">
@@ -830,7 +891,7 @@ function SessionList({ detection, onConnect, onCreate, onRecheck }: {
               <li key={s.key} className="desk__row">
                 <span className="desk__row-name">
                   <span className="mono">{s.display !== null ? `:${s.display}` : s.target.kind === "tcp" ? `:${s.target.port}` : "—"}</span>
-                  <span>{s.pierlink && s.name ? s.name : t(`desktop.flavor.${s.flavor}`)}</span>
+                  <span>{s.pierlink && s.light ? t("desktop.lightName") : s.pierlink && s.name ? s.name : t(`desktop.flavor.${s.flavor}`)}</span>
                   {s.pierlink && <span className="desk__tag">{t("desktop.tagPierlink")}</span>}
                   {s.exposed && <span className="desk__tag desk__tag--warn" title={t("desktop.exposedHint")}>{t("desktop.tagExposed")}</span>}
                 </span>
@@ -847,7 +908,7 @@ function SessionList({ detection, onConnect, onCreate, onRecheck }: {
 
 /**
  * 卡片标题行最右边的问号：点开是简易安装说明——这台服务器的安装命令、其他系统要装的包。
- * 要装的和新建桌面实际用到的一致：TigerVNC 的 Xvnc（1.9 起）、dbus-run-session 或 dbus-launch、一个桌面会话、中文字体。
+ * 要装的和安装桌面实际运行的一致：XFCE 桌面和终端、dbus-launch、中文字体、TigerVNC 的 Xvnc（1.9 起）。
  * @param command 这台服务器的安装命令；不认识包管理器时为 null（只给其他系统的包）
  * @param onRecheck 装好以后重新查找
  */
@@ -872,7 +933,6 @@ function InstallHelp({ command, onRecheck }: { command: string | null; onRecheck
               <caption>{t("desktop.help.other")}</caption>
               <tbody>
                 <tr><th scope="row">Debian / Ubuntu</th><td className="mono">{APT_PACKAGES}</td></tr>
-                <tr><th scope="row">{t("desktop.help.full")}</th><td>{t("desktop.help.fullValue")}</td></tr>
                 <tr><th scope="row">{t("desktop.help.universe")}</th><td className="mono">{UNIVERSE_COMMAND}</td></tr>
                 <tr><th scope="row">{t("desktop.help.rhelName")}</th><td>{t("desktop.help.rhel")}</td></tr>
               </tbody>

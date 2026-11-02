@@ -33,6 +33,10 @@ pub(super) fn script() -> String {
 #[derive(Deserialize)]
 struct RawDetection {
     arch: String,
+    #[serde(default)]
+    uid: String,
+    #[serde(default)]
+    package_busy: bool,
     glibc: String,
     os_release: String,
     package_manager: PackageManager,
@@ -152,6 +156,8 @@ pub(super) fn parse_detection(value: serde_json::Value) -> Result<VncDetection, 
         light_desktop_available: desktops.is_empty()
             && raw.apt_available
             && raw.package_manager == PackageManager::Apt,
+        root: raw.uid.trim() == "0",
+        package_busy: raw.package_busy,
         desktops,
         pierlink_desktops,
         tools: raw.tools,
@@ -161,19 +167,48 @@ pub(super) fn parse_detection(value: serde_json::Value) -> Result<VncDetection, 
     })
 }
 
-/// 按 distro 和包管理器生成可交给终端的安装命令（需要 sudo）：TigerVNC、dbus-launch、一个桌面会话和中文字体。
+/// distro 是 Ubuntu 或从 Ubuntu 派生（Linux Mint、Pop!_OS 等，ID_LIKE 里有 ubuntu）。
+fn ubuntu_family(distro: &Distro) -> bool {
+    std::iter::once(distro.id.as_str())
+        .chain(distro.id_like.iter().map(String::as_str))
+        .any(|id| id == "ubuntu")
+}
+
+/// 用 apt 装的完整桌面（和常见的本机 XFCE 一样）：XFCE 桌面和面板、Thunar 文件管理器、终端、通知，
+/// 发行版给 XFCE 配的默认图标和主题（Ubuntu 是 elementary-xfce + Greybird，Debian 是 Tango），
+/// SVG 图标支持、dbus-launch、中文字体、TigerVNC。不装浏览器；配合 --no-install-recommends 不带登录界面和屏保。
 ///
-/// :param light: 桌面只装 Openbox + xterm（apt 才有；dnf 系统没有轻量桌面，照样给 XFCE）
+/// :param distro: 服务器的发行版
+/// :return: 软件包名（只含小写字母、数字和 +.-）
+pub fn apt_packages(distro: &Distro) -> Vec<&'static str> {
+    let theme: &[&str] = if ubuntu_family(distro) {
+        &["elementary-xfce-icon-theme", "greybird-gtk-theme"]
+    } else {
+        &["tango-icon-theme"]
+    };
+    ["xfce4", "xfce4-terminal", "xfce4-notifyd"]
+        .into_iter()
+        .chain(theme.iter().copied())
+        .chain([
+            "librsvg2-common",
+            "xdg-user-dirs",
+            "dbus-x11",
+            "fonts-noto-cjk",
+            "tigervnc-standalone-server",
+        ])
+        .collect()
+}
+
+/// 按 distro 和包管理器生成交给终端运行的完整桌面安装命令（需要管理员权限，密码由用户在终端里输）。
+///
+/// :param root: 登录的就是 root，命令不带 sudo
 /// :return: 安装命令；未知包管理器返回 None
-pub fn install_command(distro: &Distro, pm: PackageManager, light: bool) -> Option<String> {
+pub fn install_command(distro: &Distro, pm: PackageManager, root: bool) -> Option<String> {
+    let sudo = if root { "" } else { "sudo " };
     match pm {
         PackageManager::Apt => Some(format!(
-            "sudo apt-get update && sudo apt-get install -y tigervnc-standalone-server dbus-x11 {} fonts-wqy-microhei",
-            if light {
-                "openbox xterm"
-            } else {
-                "xfce4 xfce4-terminal"
-            }
+            "{sudo}apt-get update && {sudo}env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends {}",
+            apt_packages(distro).join(" ")
         )),
         PackageManager::Dnf => {
             let epel = std::iter::once(distro.id.as_str())
@@ -181,9 +216,11 @@ pub fn install_command(distro: &Distro, pm: PackageManager, light: bool) -> Opti
                 .any(|id| matches!(id, "rhel" | "rocky" | "almalinux" | "alma"));
             // 企业发行版的 Xfce 在 EPEL 里，用软件包组安装
             Some(if epel {
-                "sudo dnf install -y epel-release && sudo dnf install -y tigervnc-server dbus-x11 google-noto-sans-cjk-ttc-fonts && sudo dnf groupinstall -y \"Xfce\"".into()
+                format!(
+                    "{sudo}dnf install -y epel-release && {sudo}dnf install -y tigervnc-server dbus-x11 google-noto-sans-cjk-ttc-fonts && {sudo}dnf groupinstall -y \"Xfce\""
+                )
             } else {
-                "sudo dnf install -y tigervnc-server dbus-x11 @xfce-desktop-environment".into()
+                format!("{sudo}dnf install -y tigervnc-server dbus-x11 @xfce-desktop-environment")
             })
         }
         PackageManager::None => None,

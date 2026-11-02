@@ -119,6 +119,21 @@
 .mcp-oneclick__result { min-height: 18px; font-size: var(--fs-xs); color: var(--text-muted); }
 .mcp-oneclick__result--ok { color: var(--ok); }
 .mcp-oneclick__result--error { color: var(--danger); }
+/* 标签下面的状态行（检查中、没装、加好没有）：固定两行高（长一点的句子也能看全），检查中也占着，结果出来只换文字 */
+.mcp-oneclick__status { height: 3em; margin: 0; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; }
+.mcp-oneclick__status--checking { color: var(--text-muted); }
+/* 各客户端的命令叠在同一格、只显示选中的：高度按最高的那个，换客户端时下面的内容不动 */
+.mcp-oneclick__panels { display: grid; }
+.mcp-oneclick__panel { grid-area: 1 / 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.mcp-oneclick__panel--hidden { visibility: hidden; }
+/* 很长的命令（Cursor 的 JSON）限高滚动，几个客户端占的高度差不多 */
+.mcp-oneclick__panel .mcp-cmd code { max-height: 6.4em; overflow: auto; }
+/* 入口状态行（端口被占用、出错、换端口和令牌的进度）：固定高度，没有要说的也占着 */
+.mcp-detail__status { display: flex; align-items: center; gap: 8px; min-height: 28px; font-size: var(--fs-xs); color: var(--text-muted); }
+.mcp-detail__status > span { flex: 1; min-width: 0; }
+.mcp-detail__status--ok { color: var(--ok); }
+.mcp-detail__status--warn { color: var(--warn); }
+.mcp-detail__status--error { color: var(--danger); }
 
 /* 最近操作：有输出的那条可以点开看输出结尾 */
 .mcp-pop__act--out { cursor: pointer; }

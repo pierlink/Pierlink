@@ -152,6 +152,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
         mobile::mobile_pair_answer,
         mobile::mobile_terminal_opened,
         desktop::desktop_detect,
+        desktop::desktop_install_check,
         desktop::desktop_connect,
         desktop::desktop_send,
         desktop::desktop_close,

@@ -1,4 +1,4 @@
-/// 免 sudo 获取的 Openbox 与 xterm 会话标识。
+/// 免 sudo 获取的精简桌面（只有 Openbox 与 xterm）会话标识；只作为没有管理员权限、装不了完整桌面时的退路。
 pub const LIGHT_DESKTOP_ID: &str = "pierlink-light";
 
 use serde::{Deserialize, Serialize};
@@ -13,9 +13,15 @@ pub struct VncDetection {
     pub tigervnc: Option<XvncBinary>,
     pub sessions: Vec<VncSession>,
     pub desktops: Vec<DesktopEntry>,
-    /// 没有可用桌面会话且 apt 工具齐全时，可用 pierlink-light 创建轻量桌面。
+    /// 没有可用桌面会话且 apt 工具齐全时，可用 pierlink-light 创建精简桌面。
     #[serde(default)]
     pub light_desktop_available: bool,
+    /// 登录的账号是 root：安装命令不带 sudo。
+    #[serde(default)]
+    pub root: bool,
+    /// 服务器上正在运行 apt、dpkg、dnf 等包管理程序（装桌面时据此等它装完）。
+    #[serde(default)]
+    pub package_busy: bool,
     #[serde(default)]
     pub pierlink_desktops: Vec<PierlinkDesktop>,
     pub tools: Tools,
@@ -215,4 +221,65 @@ pub struct RfbProbe {
     pub vencrypt_subtypes: Vec<u32>,
     pub no_auth: bool,
     pub novnc_supported: bool,
+}
+
+/// 登录的账号能不能装系统软件包。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AdminAccess {
+    /// 本身是 root：安装命令不带 sudo
+    #[serde(rename = "root")]
+    Root,
+    /// sudo 不用密码
+    #[serde(rename = "nopass")]
+    NoPassword,
+    /// 在管理员组里，sudo 要在终端里输密码
+    #[serde(rename = "password")]
+    Password,
+    /// 没有管理员权限
+    #[serde(rename = "none")]
+    None,
+}
+
+/// 安装要写入的一个文件系统：挂载点、可用和需要的空间（KiB；需要的已含余量）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DiskSpace {
+    pub mount: String,
+    pub available_kib: u64,
+    pub need_kib: u64,
+}
+
+impl DiskSpace {
+    /// 剩余空间够不够。
+    ///
+    /// :return: 可用不少于需要（含余量）时为 true
+    pub fn enough(&self) -> bool {
+        self.available_kib >= self.need_kib
+    }
+}
+
+/// 安装完整桌面前的只读检查结果。内存、CPU 读不到时为 0（不据此提醒）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct InstallCheck {
+    pub admin: AdminAccess,
+    pub memory_kib: u64,
+    pub available_memory_kib: u64,
+    pub cpus: u32,
+    /// 装好后占用（KiB）和要下载的大小（字节）
+    pub installed_kib: u64,
+    pub download_bytes: u64,
+    /// 拿不到软件源里的大小，用的是固定的保守估计
+    pub estimated: bool,
+    /// 装进系统的文件和下载缓存所在的文件系统（同一个时合成一项）
+    pub disks: Vec<DiskSpace>,
+    /// 内存或 CPU 低于建议值，不建议装
+    pub low_spec: bool,
+}
+
+impl InstallCheck {
+    /// 每个要写入的文件系统空间都够。
+    ///
+    /// :return: 都够时为 true
+    pub fn enough_space(&self) -> bool {
+        self.disks.iter().all(DiskSpace::enough)
+    }
 }

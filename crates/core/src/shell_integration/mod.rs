@@ -58,13 +58,23 @@ fn zsh_rc(name: &str) -> String {
     script
 }
 
-fn loader(shell: Option<&str>) -> Result<String, AppError> {
+/// 重连时的启动目录：只接受绝对路径（不超过 4096 字节、不含 NUL），其他的忽略、照常从主目录启动。
+fn start_dir_ok(dir: &str) -> bool {
+    dir.starts_with('/') && dir.len() <= 4096 && !dir.contains('\0')
+}
+
+fn loader(shell: Option<&str>, start_dir: Option<&str>) -> Result<String, AppError> {
     let shell = match shell {
         Some(shell) => sh_quote(shell)?,
         None => "\"${SHELL:-/bin/sh}\"".into(),
     };
+    // 断开后重连：先进原来的目录再启动 shell（目录没了或进不去就留在主目录，不报错）
+    let cd = match start_dir.filter(|dir| start_dir_ok(dir)) {
+        Some(dir) => format!("cd -- {} 2>/dev/null || :\n", sh_quote(dir)?),
+        None => String::new(),
+    };
     let mut script = format!(
-        "# 文件仅在启动期间存在；失败和信号均清理，成功后由 shell rc 接管。\n__pl_cleanup() {{ {CLEANUP}; }}\ntrap __pl_cleanup 0\ntrap 'exit 1' 1 2 15\nrm -f -- \"$d/pl\"\n__pl_shell={shell}\n__pl_start() {{\ncase ${{__pl_shell##*/}} in\nbash)\ncat 2>/dev/null >\"$d/bashrc\" <<'PIERLINK_BASH'\n{}\nPIERLINK_BASH\n[ \"$?\" -eq 0 ] || return\nexec \"$__pl_shell\" --rcfile \"$d/bashrc\" -i\n;;\nzsh)\n",
+        "# 文件仅在启动期间存在；失败和信号均清理，成功后由 shell rc 接管。\n__pl_cleanup() {{ {CLEANUP}; }}\ntrap __pl_cleanup 0\ntrap 'exit 1' 1 2 15\nrm -f -- \"$d/pl\"\n{cd}__pl_shell={shell}\n__pl_start() {{\ncase ${{__pl_shell##*/}} in\nbash)\ncat 2>/dev/null >\"$d/bashrc\" <<'PIERLINK_BASH'\n{}\nPIERLINK_BASH\n[ \"$?\" -eq 0 ] || return\nexec \"$__pl_shell\" --rcfile \"$d/bashrc\" -i\n;;\nzsh)\n",
         bash_rc()
     );
     for name in [".zshenv", ".zprofile", ".zshrc", ".zlogin"] {
@@ -78,8 +88,10 @@ fn loader(shell: Option<&str>) -> Result<String, AppError> {
 }
 
 /// 将已通过登录 shell 校验的路径包装为跨登录 shell 可解析的命令；无路径时使用远端 SHELL。
-pub(crate) fn command(shell: Option<&str>) -> Result<String, AppError> {
-    let payload = Base64::encode_string(loader(shell)?.as_bytes());
+/// start_dir 是断开后重连时 shell 启动的目录（绝对路径，其他时候为 None）。目录写在 base64 的启动脚本里，
+/// 外层命令照样只有 base64，任何字符都不会被登录 shell（包括 csh 的历史展开）解释。
+pub(crate) fn command_in(shell: Option<&str>, start_dir: Option<&str>) -> Result<String, AppError> {
+    let payload = Base64::encode_string(loader(shell, start_dir)?.as_bytes());
     // shell 路径的字符白名单已由调用方检查；外层只保留一对单引号，避免 csh 历史展开。
     let fallback = shell.unwrap_or("\"${SHELL:-/bin/sh}\"");
     // base64 不含 printf 格式符，直接作为格式串，外层也无需白名单之外的百分号。

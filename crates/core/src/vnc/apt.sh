@@ -1,10 +1,12 @@
-# 软件源索引只在本次调用使用；所有查询使用同一组私有目录。
+# 软件源索引只在本次调用使用；所有查询使用同一组私有目录。不下载软件包说明的翻译（Ubuntu 上能少占一百多 MB）。
 apt_command() {
     apt_program=$1; shift
     bounded 600 "$apt_program" -o "Dir::State::Lists=$apt_root/lists" -o "Dir::Cache=$apt_root/cache" \
         -o Debug::NoLocking=true -o Acquire::AllowInsecureRepositories=false \
-        -o APT::Get::AllowUnauthenticated=false "$@"
+        -o APT::Get::AllowUnauthenticated=false -o Acquire::Languages=none "$@"
 }
+# 私有软件源索引按 256 MiB 算空间（Ubuntu 打开全部组件、不含翻译约 200 MB）。
+apt_index_kib=262144
 # 不保存或返回软件源原始输出，其中可能包含代理口令；只保留固定的故障分类。
 apt_attempt() {
     (
@@ -122,6 +124,7 @@ apt_unpack() {
     command -v apt-get >/dev/null && command -v apt-cache >/dev/null && command -v dpkg-query >/dev/null && command -v dpkg-deb >/dev/null || fail light_unavailable 'vnc.apt_tools_missing' '需要 apt-get、apt-cache 和 dpkg'
     apt_root=$HOME/.cache/pierlink/apt
     private_dir "$apt_root"
+    need_space "$apt_root" $((apt_index_kib + home_margin_kib))
     mkdir "$apt_root/.lock" || fail locked
     apt_private=true
     safe_path "$apt_root/lists"; safe_path "$apt_root/cache"
@@ -165,6 +168,8 @@ apt_unpack() {
         fi
         printf '%s %s\n' "$apt_package" "$size" >> "$work/plan"
     done < "$work/selected"
+    # 一个一个下载、解包后删掉：解包后约为下载大小的 3 倍，再加正在解的那个包，按 4 倍算
+    need_space "$work" $((total_bytes / 1024 * 4 + home_margin_kib))
     downloaded_bytes=0
     mkdir "$work/download" || fail permission_denied
     while read -r apt_package size; do

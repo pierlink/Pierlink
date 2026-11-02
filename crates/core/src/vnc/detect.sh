@@ -31,6 +31,10 @@ detect_bounded() (
     exit "$result"
 )
 printf '{"arch":'; value "$(uname -m)"
+printf ',"uid":'; value "$uid"
+# 有人在装软件（装桌面时据此等装完）。unattended-upgrades、packagekitd 常驻后台，不算
+printf ',"package_busy":'
+if grep -qsxE 'apt|apt-get|aptitude|dpkg|dnf|yum|rpm' "$proc_root"/[0-9]*/comm; then printf true; else printf false; fi
 printf ',"glibc":'; value "$(getconf GNU_LIBC_VERSION)"
 printf ',"os_release":'; file "$os_release"
 printf ',"package_manager":'

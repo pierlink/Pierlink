@@ -521,6 +521,7 @@ mod manual_tests {
                 login_shell: None,
                 cwd_marker: None,
                 integration: false,
+                start_dir: None,
             },
         ] {
             let cmd = build_args(&chain(3), &purpose, &settings).unwrap();

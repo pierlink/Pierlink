@@ -570,6 +570,38 @@ await rec.step(p, "一键添加到服务器上的 Claude Code、Codex：服务�
   return results.join("｜");
 });
 
+await rec.step(p, "MCP 页不跳：查客户端加好没有的结果出来、换客户端标签、换入口再回来时，按钮和端口状态行都不挪位置", async () => {
+  if (!HAVE_LINUX) throw new Error("没有 WSL 里的 Linux 服务器");
+  await u.clickText("Workspace", "header nav");
+  await openMcpPage();
+  await selectEntry(LX_NAME);
+  const pos = `(()=>{const b=document.querySelector('.mcp-oneclick__buttons')?.getBoundingClientRect(); const s=document.querySelector('.mcp-detail__status')?.getBoundingClientRect(); return b && s ? {buttons: Math.round(b.top), status: Math.round(s.top)} : null;})()`;
+  const before = await u.waitFor(pos, "按钮和端口状态行", 15000);
+  // 状态行检查中写“Checking…”，结果出来只换文字；再等一轮状态轮询（文件写好没有那一行可能刚换文字）后量基准
+  await u.waitFor(`!/^Checking/.test(document.querySelector('.mcp-oneclick__status')?.textContent||'')`, "查完客户端", 90000);
+  await sleep(1500);
+  const first = await p.js(pos);
+  const same = (now, what) => {
+    if (!now || now.buttons !== first.buttons || now.status !== first.status) throw new Error(`${what}位置变了：${JSON.stringify(first)} → ${JSON.stringify(now)}`);
+  };
+  same(before, "查完以前（检查中）和查完以后：");
+  const tabs = await p.js(`[...document.querySelectorAll('.mcp-detail .pl-seg [role=tab]')].map(b=>b.textContent.trim())`);
+  for (let i = 0; i < tabs.length; i++) {
+    await p.js(`document.querySelectorAll('.mcp-detail .pl-seg [role=tab]')[${i}].click()`);
+    await sleep(300);
+    same(await p.js(pos), `换到 ${tabs[i]} 后`);
+  }
+  // 换到本机入口再回来：先显示上次查到的结果，后台再查
+  await selectEntry("This computer");
+  await sleep(500);
+  await selectEntry(LX_NAME);
+  await sleep(300);
+  same(await p.js(pos), "换入口再回来后");
+  await sleep(3000);
+  same(await p.js(pos), "回来后后台查完");
+  return `按钮在 ${first.buttons}px、状态行在 ${first.status}px；${tabs.join("、")} 都没动`;
+});
+
 p.close();
 killApp(EXE);
 if (wslSshd) {

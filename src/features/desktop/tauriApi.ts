@@ -1,7 +1,7 @@
 import { Channel } from "@tauri-apps/api/core";
 import { commands, type AppError, type DesktopChunk, type DesktopCreateProgress, type DesktopSessionDto } from "../../bindings/commands";
 import { formatError } from "../../errors";
-import type { DesktopApi, DesktopDetection, DesktopSession } from "./api";
+import type { DesktopApi, DesktopDetection, DesktopInstallCheck, DesktopSession } from "./api";
 
 function unwrap<T>(r: { status: "ok"; data: T } | { status: "error"; error: unknown }): T {
   if (r.status === "error") throw r.error;
@@ -27,6 +27,7 @@ function toSession(s: DesktopSessionDto): DesktopSession {
     systemUnit: s.systemUnit ?? null,
     pierlink: s.pierlink,
     name: s.name ?? null,
+    light: s.light,
   };
 }
 
@@ -44,7 +45,29 @@ export function createTauriDesktopApi(): DesktopApi {
         missingTools: d.missingTools,
         officialOk: d.officialOk,
         installCommand: d.installCommand ?? null,
-        installCommandLight: d.installCommandLight ?? null,
+        lightAvailable: d.lightAvailable,
+        packageBusy: d.packageBusy,
+      };
+      return result;
+    },
+    async installCheck(serverId) {
+      const c = unwrap(await commands.desktopInstallCheck(serverId));
+      const admin = (["root", "nopass", "password", "none"] as const).find((a) => a === c.admin) ?? "none";
+      // f64 在绑定里可能是 null（NaN 序列化成 null），按 0 处理
+      const n = (v: number | null | undefined) => v ?? 0;
+      const result: DesktopInstallCheck = {
+        admin,
+        memory: n(c.memory),
+        availableMemory: n(c.availableMemory),
+        cpus: c.cpus,
+        download: n(c.download),
+        installed: n(c.installed),
+        estimated: c.estimated,
+        disks: c.disks.map((d) => ({ mount: d.mount, available: n(d.available), need: n(d.need) })),
+        enoughSpace: c.enoughSpace,
+        lowSpec: c.lowSpec,
+        command: c.command ?? null,
+        lightAvailable: c.lightAvailable,
       };
       return result;
     },

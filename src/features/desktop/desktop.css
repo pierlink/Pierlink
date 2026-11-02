@@ -45,6 +45,18 @@
 .desk-help__table th, .desk-help__table td { padding: 5px 8px 5px 0; border-top: 1px solid var(--border); text-align: left; vertical-align: top; }
 .desk-help__table th { width: 30%; font-weight: 500; }
 .desk-help__table td { color: var(--text); overflow-wrap: break-word; user-select: text; }
+/* 安装桌面的确认框（挂在 body 下）：各项先用“…”占位，检查完只换文字；提示行没有内容时也占一行，框不跳动 */
+.desk-install { display: flex; flex-direction: column; gap: 8px; }
+.desk-install p { margin: 0; }
+.desk-install__rows { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; margin: 0; font-size: var(--fs-sm); }
+.desk-install__rows > div { display: contents; }
+.desk-install__rows dt { color: var(--text-muted); }
+.desk-install__rows dd { margin: 0; color: var(--text); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.desk-install__note { min-height: 1.6em; font-size: var(--fs-sm); overflow-wrap: anywhere; }
+.desk-install__note--warn { color: var(--warn) !important; }
+.desk-install__note--error { color: var(--danger) !important; }
+/* 正在安装：进度条停下时也占着位置 */
+.desk__card--installing .desk__progress:empty { background: var(--chip); }
 /* 获取失败：每一步的原因 */
 .desk__reasons { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; font-size: var(--fs-xs); }
 .desk__reasons li { display: grid; grid-template-columns: minmax(0, 11em) 1fr; gap: 8px; }

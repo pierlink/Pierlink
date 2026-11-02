@@ -4,8 +4,8 @@
 use crate::data::DbState;
 use pierlink_core::error::AppError;
 use pierlink_core::vnc::{
-    self, AcquireOptions, AcquireStep, CreateDesktop, Flavor, ListenScope, StartedBy, Tools,
-    VncCloser, VncDetection, VncTarget, VncWriter,
+    self, AcquireOptions, AcquireStep, AdminAccess, CreateDesktop, Distro, Flavor, InstallCheck,
+    ListenScope, PackageManager, StartedBy, Tools, VncCloser, VncDetection, VncTarget, VncWriter,
 };
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -54,6 +54,8 @@ pub struct DesktopSessionDto {
     pub pierlink: bool,
     /// Pierlink 桌面的桌面环境名字（如 Xfce Session）；其他为 null
     pub name: Option<String>,
+    /// Pierlink 的精简桌面（只有终端；名字由界面按语言显示）
+    pub light: bool,
 }
 
 #[derive(Serialize, Type, Clone, Debug)]
@@ -62,14 +64,13 @@ pub struct DesktopEnvDto {
     pub id: String,
     pub name: String,
     pub heavy: bool,
-    /// Pierlink 免 sudo 获取的轻量桌面（名字由界面按语言显示）
-    pub light: bool,
 }
 
 #[derive(Serialize, Type, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct DesktopDetectionDto {
     pub sessions: Vec<DesktopSessionDto>,
+    /// 服务器上装好的桌面环境
     pub desktops: Vec<DesktopEnvDto>,
     /// 能新建 Pierlink 桌面（有桌面环境、工具齐全；服务端程序可以新建时再获取）
     pub can_create: bool,
@@ -79,9 +80,48 @@ pub struct DesktopDetectionDto {
     pub missing_tools: Vec<String>,
     /// 可以用 TigerVNC 官方包（服务器或这台电脑下载）
     pub official_ok: bool,
-    /// 一键安装命令（需要 sudo）；没有就 null
+    /// 安装完整桌面的命令（root 登录时不带 sudo）；不认识包管理器为 null
     pub install_command: Option<String>,
-    pub install_command_light: Option<String>,
+    /// 没有桌面环境时能改用精简桌面（只有终端，不用管理员权限）
+    pub light_available: bool,
+    /// 服务器上正在运行 apt、dpkg、dnf 等（装桌面时等它装完）
+    pub package_busy: bool,
+}
+
+/// 安装完整桌面前的检查结果（大小都是字节）
+#[derive(Serialize, Type, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct DesktopInstallCheckDto {
+    /// 管理员权限：root、nopass（sudo 不用密码）、password（sudo 要密码）、none（没有）
+    pub admin: String,
+    /// 内存总量、可用内存；读不到为 0
+    pub memory: f64,
+    pub available_memory: f64,
+    /// CPU 核数；读不到为 0
+    pub cpus: u32,
+    /// 要下载、装好后占用多少
+    pub download: f64,
+    pub installed: f64,
+    /// 拿不到软件源里的大小，上面两个是固定的保守估计
+    pub estimated: bool,
+    /// 要写入的每个文件系统：挂载点、剩余、需要（含余量）
+    pub disks: Vec<DesktopDiskDto>,
+    /// 每个文件系统的空间都够
+    pub enough_space: bool,
+    /// 内存或 CPU 低于建议值，不建议装
+    pub low_spec: bool,
+    /// 安装命令（和检测结果里的一致）
+    pub command: Option<String>,
+    /// 能改用精简桌面（只有终端，不用管理员权限）
+    pub light_available: bool,
+}
+
+#[derive(Serialize, Type, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct DesktopDiskDto {
+    pub mount: String,
+    pub available: f64,
+    pub need: f64,
 }
 
 /// 新建桌面的请求
@@ -170,14 +210,37 @@ struct Conn {
     closer: VncCloser,
 }
 
-/// 打开着的桌面连接，以及每台服务器最近一次检测到的工具（选中继要用）
+/// 检测到的系统（安装桌面前的检查要用：决定装哪些包、能不能退到精简桌面）
+#[derive(Clone)]
+struct System {
+    distro: Distro,
+    package_manager: PackageManager,
+    light: bool,
+}
+
+/// 打开着的桌面连接，以及每台服务器最近一次检测到的工具（选中继要用）和系统
 #[derive(Default)]
 pub struct DesktopState {
     next: AtomicU64,
     conns: Mutex<HashMap<u64, Arc<Conn>>>,
     tools: Mutex<HashMap<String, Tools>>,
+    systems: Mutex<HashMap<String, System>>,
     /// 正在新建的桌面：编号 → 取消标志
     creating: Mutex<HashMap<String, Arc<AtomicBool>>>,
+}
+
+/// 记下这次检测到的工具和系统
+fn remember(app: &AppHandle, server_id: &str, d: &VncDetection) {
+    let state = app.state::<DesktopState>();
+    lock(&state.tools).insert(server_id.to_string(), d.tools.clone());
+    lock(&state.systems).insert(
+        server_id.to_string(),
+        System {
+            distro: d.distro.clone(),
+            package_manager: d.package_manager,
+            light: d.light_desktop_available,
+        },
+    );
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -213,6 +276,14 @@ fn session_dto(s: &vnc::VncSession, d: &VncDetection) -> Option<DesktopSessionDt
         DesktopTargetDto::Unix { path } => format!("unix:{path}"),
         DesktopTargetDto::Tcp { port } => format!("tcp:{port}"),
     };
+    let own = s
+        .pierlink
+        .then(|| {
+            d.pierlink_desktops
+                .iter()
+                .find(|p| !p.stale && Some(p.display) == s.display)
+        })
+        .flatten();
     Some(DesktopSessionDto {
         key,
         display: s.display,
@@ -227,15 +298,8 @@ fn session_dto(s: &vnc::VncSession, d: &VncDetection) -> Option<DesktopSessionDt
             _ => None,
         },
         pierlink: s.pierlink,
-        name: s
-            .pierlink
-            .then(|| {
-                d.pierlink_desktops
-                    .iter()
-                    .find(|p| !p.stale && Some(p.display) == s.display)
-                    .map(|p| p.desktop_name.clone())
-            })
-            .flatten(),
+        name: own.map(|p| p.desktop_name.clone()),
+        light: own.is_some_and(|p| p.desktop_id == vnc::LIGHT_DESKTOP_ID),
     })
 }
 
@@ -307,7 +371,7 @@ pub async fn desktop_detect(
                 Err(e) => eprintln!("清理残留桌面记录失败: 服务器={server_id}, 错误={}", e.code),
             }
         }
-        lock(&app.state::<DesktopState>().tools).insert(server_id.clone(), d.tools.clone());
+        remember(&app, &server_id, &d);
         let sessions: Vec<DesktopSessionDto> = d
             .sessions
             .iter()
@@ -315,13 +379,14 @@ pub async fn desktop_detect(
             .collect();
         let missing = missing_tools(&d.tools);
         let dto = DesktopDetectionDto {
-            install_command: vnc::install_command(&d.distro, d.package_manager, false),
-            install_command_light: vnc::install_command(&d.distro, d.package_manager, true),
-            // 没有桌面环境、缺工具时，能免 sudo 获取轻量桌面也能新建（它自带需要的工具）
-            can_create: (!d.desktops.is_empty() && missing.is_empty()) || d.light_desktop_available,
+            install_command: vnc::install_command(&d.distro, d.package_manager, d.root),
+            // 没有桌面环境时主操作是安装完整桌面；精简桌面只在装不了时作为退路
+            can_create: !d.desktops.is_empty() && missing.is_empty(),
             needs_server_program: !has_usable_tigervnc(&d),
             missing_tools: missing,
             official_ok: d.official_pkg.ok,
+            light_available: d.light_desktop_available,
+            package_busy: d.package_busy,
             desktops: d
                 .desktops
                 .iter()
@@ -329,22 +394,92 @@ pub async fn desktop_detect(
                     id: e.id.clone(),
                     name: e.name.clone(),
                     heavy: e.heavy,
-                    light: false,
                 })
-                .chain(
-                    (d.desktops.is_empty() && d.light_desktop_available).then(|| DesktopEnvDto {
-                        id: vnc::LIGHT_DESKTOP_ID.into(),
-                        name: String::new(),
-                        heavy: false,
-                        light: true,
-                    }),
-                )
                 .collect(),
             sessions,
         };
         eprintln!(
             "查找服务器桌面: 服务器={server_id}, 桌面数={}",
             dto.sessions.len()
+        );
+        Ok(dto)
+    })
+    .await
+    .map_err(failed)?
+}
+
+fn admin_name(admin: AdminAccess) -> &'static str {
+    match admin {
+        AdminAccess::Root => "root",
+        AdminAccess::NoPassword => "nopass",
+        AdminAccess::Password => "password",
+        AdminAccess::None => "none",
+    }
+}
+
+/// 检查结果 → 界面用的结构（KiB 换成字节）
+fn install_check_dto(check: &InstallCheck, system: &System) -> DesktopInstallCheckDto {
+    let kib = |n: u64| n as f64 * 1024.0;
+    DesktopInstallCheckDto {
+        admin: admin_name(check.admin).into(),
+        memory: kib(check.memory_kib),
+        available_memory: kib(check.available_memory_kib),
+        cpus: check.cpus,
+        download: check.download_bytes as f64,
+        installed: kib(check.installed_kib),
+        estimated: check.estimated,
+        disks: check
+            .disks
+            .iter()
+            .map(|d| DesktopDiskDto {
+                mount: d.mount.clone(),
+                available: kib(d.available_kib),
+                need: kib(d.need_kib),
+            })
+            .collect(),
+        enough_space: check.enough_space(),
+        low_spec: check.low_spec,
+        command: vnc::install_command(
+            &system.distro,
+            system.package_manager,
+            check.admin == AdminAccess::Root,
+        ),
+        light_available: system.light,
+    }
+}
+
+/// 安装完整桌面前检查服务器（只读）：管理员权限、磁盘空间、内存和 CPU、要下载和占用多少
+///
+/// :param server_id: 服务器 ID
+/// :return: 检查结果和安装命令
+#[tauri::command]
+#[specta::specta]
+pub async fn desktop_install_check(
+    app: AppHandle,
+    server_id: String,
+) -> Result<DesktopInstallCheckDto, AppError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let (program, cmd) = context(&app, &server_id)?;
+        let cached = lock(&app.state::<DesktopState>().systems)
+            .get(&server_id)
+            .cloned();
+        let system = match cached {
+            Some(system) => system,
+            None => {
+                let d = vnc::detect(&program, &cmd)?;
+                remember(&app, &server_id, &d);
+                System {
+                    distro: d.distro,
+                    package_manager: d.package_manager,
+                    light: d.light_desktop_available,
+                }
+            }
+        };
+        let check = vnc::install_check(&program, &cmd, &system.distro, system.package_manager)?;
+        let dto = install_check_dto(&check, &system);
+        eprintln!(
+            "安装桌面前检查: 服务器={server_id}, 权限={}, 空间够={}, 配置低={}, 估计={}",
+            dto.admin, dto.enough_space, dto.low_spec, dto.estimated
         );
         Ok(dto)
     })
@@ -468,7 +603,7 @@ fn create(
 ) -> Result<DesktopCreatedDto, AppError> {
     let (program, cmd) = context(app, server_id)?;
     let d = vnc::detect(&program, &cmd)?;
-    lock(&app.state::<DesktopState>().tools).insert(server_id.to_string(), d.tools.clone());
+    remember(app, server_id, &d);
     let opts = AcquireOptions {
         allow_official_download: request.allow_official_download,
         manual_package: request
@@ -482,7 +617,7 @@ fn create(
         }
     };
     let xvnc = vnc::acquire_xvnc(&program, &cmd, &d, opts, &report, cancel)?;
-    // 轻量桌面：先取（带进度），新建时就不用再下载
+    // 精简桌面：先取（带进度），新建时就不用再下载
     if request.desktop_id == vnc::LIGHT_DESKTOP_ID {
         vnc::acquire_light_desktop(&program, &cmd, &report, cancel)?;
     }
@@ -521,6 +656,7 @@ fn create(
             system_unit: None,
             pierlink: true,
             name: Some(created.desktop_name.clone()),
+            light: created.desktop_id == vnc::LIGHT_DESKTOP_ID,
         },
         may_end_on_logout: created.linger_failed && kills_on_logout,
     })

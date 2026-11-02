@@ -28,12 +28,20 @@ export type HostKeyStep =
   | { kind: "trusted" }
   | { kind: "confirm"; probeId: string; host: string; level: number; keyType: string; fingerprint: string };
 
+/** 打开终端的附加选项 */
+export interface OpenOptions {
+  /** 服务器终端断开后在同一个窗格重连：shell 从断开前的目录启动（只在装了命令预测的钩子时生效） */
+  startDir?: string | null;
+  /** 本机 PowerShell 不发提示音（设置里关掉了“PowerShell 提示音”） */
+  quietBell?: boolean;
+}
+
 /** 终端后端：Tauri 实现和浏览器预览实现都遵守这个接口 */
 export interface TerminalBackend {
   /** 是否是浏览器里的预览实现 */
   readonly preview: boolean;
   /** prediction：装上命令预测的 shell 钩子（服务器 bash、zsh 和本机 Git Bash；其他终端忽略） */
-  open(spec: OpenSpec, cols: number, rows: number, onEvent: (e: TerminalEvent) => void, prediction?: boolean): Promise<string>;
+  open(spec: OpenSpec, cols: number, rows: number, onEvent: (e: TerminalEvent) => void, prediction?: boolean, options?: OpenOptions): Promise<string>;
   write(id: string, data: string): Promise<void>;
   resize(id: string, cols: number, rows: number): Promise<void>;
   /** 告诉后端前端已经处理完多少字节（流量控制） */

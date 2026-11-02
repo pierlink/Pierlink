@@ -2,6 +2,7 @@
 mod acquire;
 mod desktop;
 mod detection;
+mod install_check;
 mod model;
 mod parse;
 mod relay;
@@ -11,7 +12,8 @@ mod transport;
 
 pub use acquire::{acquire_light_desktop, acquire_xvnc};
 pub use desktop::{cleanup_stale, create_desktop, stop_desktop};
-pub use detection::{detect, install_command};
+pub use detection::{apt_packages, detect, install_command};
+pub use install_check::install_check;
 pub use model::*;
 pub use rfb::probe_rfb;
 pub use stream::{VncCloser, VncReader, VncStream, VncWriter};
@@ -21,6 +23,8 @@ pub use transport::open_stream;
 mod apt_tests;
 #[cfg(all(test, unix))]
 mod desktop_tests;
+#[cfg(all(test, unix))]
+mod install_tests;
 #[cfg(all(test, unix))]
 mod real_tests;
 #[cfg(test)]

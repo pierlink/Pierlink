@@ -178,6 +178,7 @@ fn run_once(ssh: &Path, key: &Path, user: &str) {
             login_shell: None,
             cwd_marker: Some("winE2E".into()),
             integration: false,
+            start_dir: None,
         },
         &opts,
     )

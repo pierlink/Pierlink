@@ -20,6 +20,18 @@ fail() {
     if [ "$1" = xkb_unavailable ]; then printf ',"install_command":'; json "$(xkb_install_command)"; fi
     printf '}'; exit 0
 }
+# KiB 转成给人看的大小（1024 进制）：不到 1 GB 按 MB 取整，否则保留一位小数。
+human_size() { awk -v k="$1" 'BEGIN { if (k >= 1048576) printf "%.1f GB", k / 1048576; else printf "%d MB", (k + 1023) / 1024 }'; }
+# 往家目录里放东西之前看剩余空间：路径所在文件系统可用的 KiB 少于第二个参数（已含余量）就停下，报出剩多少、要多少。
+# df 读不出数时不拦，真写满了软件源操作也会报“磁盘可用空间不足”。放进家目录的都是小包，放完至少还要剩 500 MiB。
+home_margin_kib=512000
+need_space() {
+    space_free=$(df -Pk -- "$1" 2>/dev/null | awk 'NR == 2 && $4 ~ /^[0-9]+$/ {print $4}')
+    [ -n "$space_free" ] && [ "$space_free" -lt "$2" ] || return 0
+    printf '{"error":"vnc.no_space","path":'; json "$1"
+    printf ',"available":'; json "$(human_size "$space_free")"
+    printf ',"need":'; json "$(human_size "$2")"; printf '}'; exit 0
+}
 # 变化的数值与库名独立返回，供原因译文插值。
 error_params() {
     if [ -n "${apt_status:-}" ]; then printf ',"exit_code":'; json "$apt_status"; fi

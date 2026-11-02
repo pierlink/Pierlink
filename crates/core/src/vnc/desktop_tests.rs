@@ -72,6 +72,8 @@ fn detection() -> VncDetection {
         sessions: vec![],
         desktops: vec![],
         light_desktop_available: false,
+        root: false,
+        package_busy: false,
         pierlink_desktops: vec![],
         tools: Tools::default(),
         xkb_namespace: None,

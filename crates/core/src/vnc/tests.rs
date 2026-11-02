@@ -157,20 +157,53 @@ fn 版本发行版与官方包前提() {
 }
 
 #[test]
-fn 安装命令覆盖轻桌面及企业发行版() {
+fn 安装命令装完整桌面_root_不带_sudo_且按发行版选图标主题() {
     let ubuntu = Distro {
         id: "ubuntu".into(),
         ..Default::default()
     };
     assert_eq!(
         install_command(&ubuntu, PackageManager::Apt, false).unwrap(),
-        "sudo apt-get update && sudo apt-get install -y tigervnc-standalone-server dbus-x11 xfce4 xfce4-terminal fonts-wqy-microhei"
+        "sudo apt-get update && sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends xfce4 xfce4-terminal xfce4-notifyd elementary-xfce-icon-theme greybird-gtk-theme librsvg2-common xdg-user-dirs dbus-x11 fonts-noto-cjk tigervnc-standalone-server"
     );
+    // root 登录：同样的包，命令里没有 sudo
     assert_eq!(
         install_command(&ubuntu, PackageManager::Apt, true).unwrap(),
-        "sudo apt-get update && sudo apt-get install -y tigervnc-standalone-server dbus-x11 openbox xterm fonts-wqy-microhei"
+        "apt-get update && env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends xfce4 xfce4-terminal xfce4-notifyd elementary-xfce-icon-theme greybird-gtk-theme librsvg2-common xdg-user-dirs dbus-x11 fonts-noto-cjk tigervnc-standalone-server"
     );
-    for (id, light) in [("rhel", false), ("rocky", false), ("almalinux", true)] {
+    // 从 Ubuntu 派生的发行版用 Ubuntu 的图标主题；Debian 系用 Debian 给 XFCE 配的 Tango
+    let mint = Distro {
+        id: "linuxmint".into(),
+        id_like: vec!["ubuntu".into(), "debian".into()],
+        ..Default::default()
+    };
+    assert_eq!(apt_packages(&mint), apt_packages(&ubuntu));
+    let debian = Distro {
+        id: "debian".into(),
+        ..Default::default()
+    };
+    let packages = apt_packages(&debian);
+    assert!(packages.contains(&"tango-icon-theme"));
+    assert!(!packages.contains(&"elementary-xfce-icon-theme"));
+    for required in [
+        "xfce4",
+        "xfce4-terminal",
+        "dbus-x11",
+        "fonts-noto-cjk",
+        "tigervnc-standalone-server",
+    ] {
+        assert!(packages.contains(&required), "缺少 {required}");
+    }
+    // 不装浏览器，也不点名会带来登录界面、屏保的包
+    for unwanted in ["firefox", "chromium", "lightdm", "xorg", "xfce4-goodies"] {
+        assert!(!packages.contains(&unwanted));
+    }
+    // 包名都只含小写字母、数字和 +.-，可以直接拼进命令
+    assert!(apt_packages(&ubuntu).iter().all(|p| {
+        p.bytes()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || b"+.-".contains(&c))
+    }));
+    for id in ["rhel", "rocky", "almalinux"] {
         assert_eq!(
             install_command(
                 &Distro {
@@ -178,7 +211,7 @@ fn 安装命令覆盖轻桌面及企业发行版() {
                     ..Default::default()
                 },
                 PackageManager::Dnf,
-                light
+                false
             )
             .unwrap(),
             "sudo dnf install -y epel-release && sudo dnf install -y tigervnc-server dbus-x11 google-noto-sans-cjk-ttc-fonts && sudo dnf groupinstall -y \"Xfce\""
@@ -190,14 +223,12 @@ fn 安装命令覆盖轻桌面及企业发行版() {
         id_like: vec!["rhel".into(), "fedora".into()],
         ..Default::default()
     };
-    assert!(
-        install_command(&stream, PackageManager::Dnf, false)
-            .unwrap()
-            .starts_with("sudo dnf install -y epel-release && ")
-    );
-    // 没有轻量桌面的 dnf 系统照样给 XFCE
     assert_eq!(
-        install_command(&Distro::default(), PackageManager::Dnf, true).unwrap(),
+        install_command(&stream, PackageManager::Dnf, true).unwrap(),
+        "dnf install -y epel-release && dnf install -y tigervnc-server dbus-x11 google-noto-sans-cjk-ttc-fonts && dnf groupinstall -y \"Xfce\""
+    );
+    assert_eq!(
+        install_command(&Distro::default(), PackageManager::Dnf, false).unwrap(),
         "sudo dnf install -y tigervnc-server dbus-x11 @xfce-desktop-environment"
     );
     assert_eq!(install_command(&ubuntu, PackageManager::None, false), None);

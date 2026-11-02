@@ -21,6 +21,8 @@ if [ "$source" = apt ]; then
     relative=usr/bin/Xtigervnc
 else
     package=$work/package.tar.gz
+    # 官方包最多 64 MiB，再取出两个程序，按 128 MiB 算
+    need_space "$work" $((131072 + home_margin_kib))
     if command -v curl >/dev/null; then
         bounded 125 curl -fL --connect-timeout 15 --max-time 120 --max-filesize 67108864 --proto '=https' --proto-redir '=https' -o "$package" "$url" >/dev/null 2>&1 || fail download_failed 'vnc.server_download_failed' '服务器下载失败'
     elif command -v wget >/dev/null; then

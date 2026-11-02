@@ -441,6 +441,41 @@ await rec.step(p, "打开“右键复制粘贴”：有选中时右键复制、�
   return "右键复制、右键粘贴各一次，没有菜单";
 });
 
+await rec.step(p, "设置里关掉“PowerShell 提示音”：新开的 PowerShell 不响（PSReadLine 的 BellStyle 为 None）；打开后照旧", async () => {
+  const sel = `[role=switch][aria-label="PowerShell beep"]`;
+  const toggle = async (on) => {
+    await u.clickText("Settings", "nav");
+    await u.clickText("Terminal", ".settings__nav");
+    await u.waitFor(`!!document.querySelector(${JSON.stringify(sel)})`, "设置里的“PowerShell 提示音”");
+    if ((await p.js(`document.querySelector(${JSON.stringify(sel)}).getAttribute('aria-checked')`)) !== String(on)) await u.click(sel);
+    await u.waitFor(`document.querySelector(${JSON.stringify(sel)})?.getAttribute('aria-checked')===${JSON.stringify(String(on))}`, "开关切换好");
+    await u.clickText("Workspace", "nav");
+    await sleep(600);
+  };
+  const term = `([...document.querySelectorAll('.pane-slot')].filter(s=>s.style.display!=='none')[0]?.querySelector('.xterm-rows')?.innerText||'')`;
+  // 设置只对新开的终端生效：退出 PowerShell，按 Enter 重新打开，再读 PSReadLine 的 BellStyle
+  const bellStyle = async (what) => {
+    await freshPrompt();
+    await u.typeLine("exit");
+    await u.waitFor(`!!document.querySelector('.pane-slot:not([style*="none"]) .term-endcard')`, `${what}：PowerShell 退出`, 15000);
+    await u.enter();
+    await u.waitFor(`!document.querySelector('.pane-slot:not([style*="none"]) .term-endcard') && /PS .+>\\s*$/.test(${term})`, `${what}：重新打开的 PowerShell 提示符`, 30000);
+    await u.typeLine(`"PL-BELL=" + (Get-PSReadLineOption).BellStyle`);
+    return await u.waitFor(`(()=>{const m=${term}.match(/^PL-BELL=(\\w+)\\s*$/m); return m && m[1];})()`, `${what}：读到 BellStyle`, 15000);
+  };
+  await toggle(false);
+  let off;
+  try {
+    off = await bellStyle("关掉提示音后");
+  } finally {
+    await toggle(true);
+  }
+  if (off !== "None") throw new Error(`关掉提示音后 BellStyle 是 ${off}，应为 None`);
+  const on = await bellStyle("打开提示音后");
+  if (on === "None") throw new Error("打开提示音后 BellStyle 还是 None");
+  return `关：${off}；开：${on}`;
+});
+
 // ---------- 5. 分屏与拖动 ----------
 await rec.step(p, "分屏后拖动窗格换位置，终端不重建", async () => {
   // 只在当前标签里操作：先切到第一个标签，标记它可见的第一个终端

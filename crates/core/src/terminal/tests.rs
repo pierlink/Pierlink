@@ -982,6 +982,7 @@ fn 系统ssh退出事件保留命令生成的实际钩子状态() {
                 login_shell: None,
                 cwd_marker: None,
                 integration: true,
+                start_dir: None,
             },
             &CommonOpts {
                 has_remote_command: Some(has_remote_command),

@@ -26,6 +26,8 @@ export interface AppSettings {
     broadcastConfirmDanger: boolean;
     /** 命令预测：输入时在光标后面用浅色显示用过的命令（服务器 bash、zsh 和本机 Git Bash） */
     commandPrediction: boolean;
+    /** 本机 PowerShell 的提示音（退格删到头、补全不到时“咚”一声，是 PowerShell 自己发的）；关掉后新开的 PowerShell 不响 */
+    powershellBell: boolean;
   };
   files: {
     /** 拖动传输时遇到同名文件直接覆盖：不先统计、不弹“有同名项”的选择框 */
@@ -62,7 +64,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   theme: "dark",
   language: "system",
   closeToTray: true,
-  terminal: { fontSize: 13, cursorStyle: "bar", cursorWidth: 2, cursorBlink: true, scrollback: 10000, defaultShell: null, confirmMultilinePaste: true, rightClickCopyPaste: false, confirmClose: true, broadcastConfirmDanger: true, commandPrediction: true },
+  terminal: { fontSize: 13, cursorStyle: "bar", cursorWidth: 2, cursorBlink: true, scrollback: 10000, defaultShell: null, confirmMultilinePaste: true, rightClickCopyPaste: false, confirmClose: true, broadcastConfirmDanger: true, commandPrediction: true, powershellBell: true },
   files: { overwriteOnDrop: false },
   desktop: { openInWindow: false },
   updates: { autoCheck: true },
@@ -109,6 +111,7 @@ export function normalizeSettings(raw: unknown): AppSettings {
       broadcastConfirmDanger: bool(t.broadcastConfirmDanger, d.terminal.broadcastConfirmDanger),
       confirmClose: bool(t.confirmClose, d.terminal.confirmClose),
       commandPrediction: bool(t.commandPrediction, d.terminal.commandPrediction),
+      powershellBell: bool(t.powershellBell, d.terminal.powershellBell),
     },
     files: { overwriteOnDrop: bool(f.overwriteOnDrop, d.files.overwriteOnDrop) },
     desktop: { openInWindow: bool(dk.openInWindow, d.desktop.openInWindow) },

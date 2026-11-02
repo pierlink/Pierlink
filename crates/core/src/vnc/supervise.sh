@@ -116,7 +116,8 @@ if [ -n "${light_prefix:-}" ]; then
 EOF
 fi
 # 登录 shell 可能重写环境，因此在登录初始化之后再次设置。
-session_command="$(session_environment)export DISPLAY=$(shell_quote "$DISPLAY") XAUTHORITY=$(shell_quote "$XAUTHORITY") XDG_SESSION_TYPE=x11 XDG_CURRENT_DESKTOP=$(shell_quote "$desktop_names") DESKTOP_SESSION=$(shell_quote "$desktop_id"); unset SESSION_MANAGER DBUS_SESSION_BUS_ADDRESS; exec $dbus $desktop_exec"
+# XFCE 面板第一次启动时直接用默认布局（4.14 及更早会弹框问用默认还是空面板）；别的桌面不认这个变量。
+session_command="$(session_environment)export DISPLAY=$(shell_quote "$DISPLAY") XAUTHORITY=$(shell_quote "$XAUTHORITY") XDG_SESSION_TYPE=x11 XDG_CURRENT_DESKTOP=$(shell_quote "$desktop_names") DESKTOP_SESSION=$(shell_quote "$desktop_id") XFCE_PANEL_MIGRATE_DEFAULT=1; unset SESSION_MANAGER DBUS_SESSION_BUS_ADDRESS; exec $dbus $desktop_exec"
 "${SHELL:-/bin/sh}" -l -c "$session_command" & desktop_pid=$!
 printf ready > "$lock/result"
 wait "$desktop_pid"

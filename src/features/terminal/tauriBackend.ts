@@ -18,7 +18,7 @@ export function createTauriBackend(): TerminalBackend {
   const queues = new Map<string, Promise<unknown>>();
   return {
     preview: false,
-    async open(spec, cols, rows, onEvent, prediction = false) {
+    async open(spec, cols, rows, onEvent, prediction = false, options = {}) {
       // 先建立接收通道再发起打开：后端可能在命令返回之前就开始推送输出
       const channel = new Channel<TerminalEventDto_Deserialize>();
       channel.onmessage = (e) => {
@@ -26,9 +26,9 @@ export function createTauriBackend(): TerminalBackend {
         else if (e.kind === "stage") onEvent({ kind: "stage", stage: e.stage });
         else onEvent({ kind: "exited", code: e.code ?? null, closedByUser: e.closedByUser, auth: e.auth ?? null, hooked: e.hooked });
       };
-      if (spec.kind === "local") return unwrap(await commands.terminalOpenLocal(spec.shellId, cols, rows, prediction, channel));
-      if (spec.kind === "server") return unwrap(await commands.terminalOpenServer(spec.serverId, cols, rows, prediction, channel));
-      return unwrap(await commands.terminalOpenQuick(spec.host, spec.port, spec.user, cols, rows, prediction, channel));
+      if (spec.kind === "local") return unwrap(await commands.terminalOpenLocal(spec.shellId, cols, rows, prediction, options.quietBell ?? false, channel));
+      if (spec.kind === "server") return unwrap(await commands.terminalOpenServer(spec.serverId, cols, rows, prediction, options.startDir ?? null, channel));
+      return unwrap(await commands.terminalOpenQuick(spec.host, spec.port, spec.user, cols, rows, prediction, options.startDir ?? null, channel));
     },
     write(id, data) {
       const next = (queues.get(id) ?? Promise.resolve())

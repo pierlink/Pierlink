@@ -18,6 +18,16 @@ pub struct BuiltinTerminal {
     cancelled: Arc<AtomicBool>,
     integration: bool,
     marker: Option<String>,
+    /// 断开后重连时 shell 启动的目录（只在注入了标记时生效）
+    start_dir: Option<String>,
+}
+
+/// 断开后重连：让内置 SSH 的终端从原来的目录启动（系统 OpenSSH 的写在 Purpose::Terminal 里）。
+/// 只在装了提示符钩子时生效；目录进不去就留在主目录。
+pub fn set_start_dir(kind: &mut TerminalKind, dir: Option<String>) {
+    if let TerminalKind::BuiltinRemote(terminal) = kind {
+        terminal.start_dir = dir;
+    }
 }
 
 /// 按 request.server 的终端功能选择引擎，返回供 TerminalSpec 使用的终端类型。
@@ -49,6 +59,7 @@ pub fn remote(
         cancelled: request.cancelled,
         integration,
         marker: cwd_marker,
+        start_dir: None,
     })))
 }
 
@@ -87,13 +98,15 @@ impl BuiltinTerminal {
                 progress(ConnectStage::Session);
                 let integration = self.integration
                     && !windows_server(connection.remote_sshid().unwrap_or_default());
-                let command =
-                    match crate::ssh::args::terminal_command(&self.server.login_shell, integration)
-                    {
-                        Ok(command) => command,
-                        // 保留参数错误；只让 SSH 通道错误触发连接池重试。
-                        Err(error) => return Ok(Err(error)),
-                    };
+                let command = match crate::ssh::args::terminal_command_in(
+                    &self.server.login_shell,
+                    integration,
+                    self.start_dir.as_deref(),
+                ) {
+                    Ok(command) => command,
+                    // 保留参数错误；只让 SSH 通道错误触发连接池重试。
+                    Err(error) => return Ok(Err(error)),
+                };
                 terminal_result(
                     connection.terminal(
                         &pty(cols, rows),

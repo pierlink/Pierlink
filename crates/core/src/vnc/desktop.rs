@@ -68,6 +68,7 @@ pub(super) fn decode_error(value: Value) -> Result<Value, AppError> {
             "download_limit",
             "light_unavailable",
             "xkb_unavailable",
+            "no_space",
         ];
         let suffix = code
             .strip_prefix("vnc.")
@@ -88,6 +89,9 @@ pub(super) fn decode_error(value: Value) -> Result<Value, AppError> {
             "limit_bytes",
             "total_bytes",
             "install_command",
+            "path",
+            "available",
+            "need",
         ] {
             if let Some(text) = value[key].as_str() {
                 let safe = redact(text, &[]);
