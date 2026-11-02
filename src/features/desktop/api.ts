@@ -162,7 +162,7 @@ export function getDesktopApi(): Promise<DesktopApi> {
 }
 
 /** 预览里的安装命令 */
-const PREVIEW_INSTALL = "sudo apt-get update && sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends xfce4 xfce4-terminal xfce4-notifyd elementary-xfce-icon-theme greybird-gtk-theme librsvg2-common xdg-user-dirs dbus-x11 fonts-noto-cjk tigervnc-standalone-server";
+const PREVIEW_INSTALL = "sudo apt-get update && sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y -o Dpkg::Progress-Fancy=1 --no-install-recommends xfce4 xfce4-terminal xfce4-notifyd elementary-xfce-icon-theme greybird-gtk-theme librsvg2-common xdg-user-dirs dbus-x11 fonts-noto-cjk tigervnc-standalone-server";
 
 /**
  * 浏览器预览：一个已有的 TigerVNC :1（XFCE），连上是假服务器画的桌面。网址参数：

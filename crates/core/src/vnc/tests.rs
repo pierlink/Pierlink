@@ -164,12 +164,12 @@ fn 安装命令装完整桌面_root_不带_sudo_且按发行版选图标主题()
     };
     assert_eq!(
         install_command(&ubuntu, PackageManager::Apt, false).unwrap(),
-        "sudo apt-get update && sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends xfce4 xfce4-terminal xfce4-notifyd elementary-xfce-icon-theme greybird-gtk-theme librsvg2-common xdg-user-dirs dbus-x11 fonts-noto-cjk tigervnc-standalone-server"
+        "sudo apt-get update && sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y -o Dpkg::Progress-Fancy=1 --no-install-recommends xfce4 xfce4-terminal xfce4-notifyd elementary-xfce-icon-theme greybird-gtk-theme librsvg2-common xdg-user-dirs dbus-x11 fonts-noto-cjk tigervnc-standalone-server"
     );
     // root 登录：同样的包，命令里没有 sudo
     assert_eq!(
         install_command(&ubuntu, PackageManager::Apt, true).unwrap(),
-        "apt-get update && env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends xfce4 xfce4-terminal xfce4-notifyd elementary-xfce-icon-theme greybird-gtk-theme librsvg2-common xdg-user-dirs dbus-x11 fonts-noto-cjk tigervnc-standalone-server"
+        "apt-get update && env DEBIAN_FRONTEND=noninteractive apt-get install -y -o Dpkg::Progress-Fancy=1 --no-install-recommends xfce4 xfce4-terminal xfce4-notifyd elementary-xfce-icon-theme greybird-gtk-theme librsvg2-common xdg-user-dirs dbus-x11 fonts-noto-cjk tigervnc-standalone-server"
     );
     // 从 Ubuntu 派生的发行版用 Ubuntu 的图标主题；Debian 系用 Debian 给 XFCE 配的 Tango
     let mint = Distro {

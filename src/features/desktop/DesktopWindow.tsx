@@ -17,6 +17,15 @@ export function desktopWindowUrl(serverId: string, name: string): string {
 }
 
 /** 独立窗口：只有一个桌面窗格，自动连上这台服务器上次连的桌面 */
+/** 独立窗口里装桌面：窗口里开不了终端，请主窗口开一个连这台服务器的终端自动运行安装命令（主窗口会提到前面） */
+export const DESKTOP_INSTALL_EVENT = "pierlink://desktop-install";
+function requestInstallTerminal(serverId: string) {
+  return (command: string): boolean => {
+    void import("@tauri-apps/api/event").then(({ emitTo }) => emitTo("main", DESKTOP_INSTALL_EVENT, { serverId, command })).catch(() => undefined);
+    return true;
+  };
+}
+
 export function DesktopWindow() {
   const { t } = useTranslation();
   const query = new URLSearchParams(location.hash.slice(DESKTOP_WINDOW_HASH.length).replace(/^\?/, ""));
@@ -26,7 +35,8 @@ export function DesktopWindow() {
   useEffect(() => { document.title = title; }, [title]);
   return (
     <div style={{ height: "100vh", display: "flex", flexDirection: "column", background: "var(--surface-term)" }}>
-      <DesktopPane serverId={serverId} visible standalone windowTitle={title} title={<span className="pane__title pl-ellipsis"><strong>{title}</strong></span>} />
+      <DesktopPane serverId={serverId} visible standalone windowTitle={title} title={<span className="pane__title pl-ellipsis"><strong>{title}</strong></span>}
+        onInstallTerminal={requestInstallTerminal(serverId)} />
       {/* 和主窗口一样的悬停提示（浏览器自带的提示点过以后要移出再移入才显示） */}
       <Tooltips />
     </div>

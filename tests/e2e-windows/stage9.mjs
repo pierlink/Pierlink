@@ -443,11 +443,13 @@ await rec.step(p, "安装桌面（一）：没有桌面环境的服务器上点�
   if (state !== "ready") throw new Error(`检查结果不能装（${state}）：${dialog}`);
   // root 登录：命令不带 sudo
   const command = await p.js(`document.querySelector('.desk-install .mcp-cmd code')?.textContent || ''`);
-  if (!/^apt-get update && env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends .*xfce4 /.test(command)) throw new Error(`安装命令不对：${command}`);
-  await u.clickText("Install in terminal", ".pl-dialog");
+  if (!/^apt-get update && env DEBIAN_FRONTEND=noninteractive apt-get install -y -o Dpkg::Progress-Fancy=1 --no-install-recommends .*xfce4 /.test(command)) throw new Error(`安装命令不对：${command}`);
+  await u.clickText("Start install", ".pl-dialog");
   await u.waitFor(`${visiblePanes}.length >= 2`, "桌面下面开出一个终端", 30000);
   await u.waitFor(`/Installing desktop/.test(${inDesk(".desk__card")}?.innerText||'')`, "桌面卡片变成“正在安装”", 15000);
   await u.waitFor(`${visiblePanes}.some(s=>/apt-get update/.test(s.querySelector('.xterm-rows')?.innerText||''))`, "终端里输入了安装命令", 60000);
+  // 卡片上显示阶段进度（更新软件源 / 下载第几个包 / 安装百分比）和终端最后一行
+  await u.waitFor(`/Updating package lists|Downloading packages|Installing/.test(${inDesk(".desk__card")}?.innerText||'') && !!(${inDesk(".desk__install-line")}?.textContent||'').trim()`, "卡片上的安装进度", 120000);
   install.started = true;
   return `检查结果：${dialog.replace(/\s+/g, " ").slice(0, 200)}`;
 });

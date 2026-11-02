@@ -207,7 +207,7 @@ pub fn install_command(distro: &Distro, pm: PackageManager, root: bool) -> Optio
     let sudo = if root { "" } else { "sudo " };
     match pm {
         PackageManager::Apt => Some(format!(
-            "{sudo}apt-get update && {sudo}env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends {}",
+            "{sudo}apt-get update && {sudo}env DEBIAN_FRONTEND=noninteractive apt-get install -y -o Dpkg::Progress-Fancy=1 --no-install-recommends {}",
             apt_packages(distro).join(" ")
         )),
         PackageManager::Dnf => {

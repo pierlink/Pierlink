@@ -251,8 +251,13 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
     // 响铃：Codex 等你确认、回答时（窗口不在前台）会发；交给上层决定要不要提醒
     term.onBell(() => cb.current.onAttention?.());
     // 程序发的“光标闪 / 不闪”（\e[?12h / \e[?12l）：tmux、screen 每次显示光标都带 \e[?12l，vim、htop 退出时也发。
-    // xterm 收到后直接改掉“光标闪烁”这个设置，这个终端之后一直不闪。以设置里的开关为准：每段输出解析完就改回来。
+    // xterm 收到后会直接改掉“光标闪烁”这个设置，这个终端之后一直不闪。以设置里的开关为准：
+    // 单独发的直接吃掉（不改设置，也就不重画光标：每重画一次闪烁就从头开始，看起来忽快忽慢、连闪两下）；
+    // 和别的模式写在一起的（如 \e[?12;25h）照常处理，解析完再把设置改回来。
     // 程序用 \e[N q 指定的光标形状和闪不闪不受影响（程序退出时会自己恢复）
+    for (const final of ["h", "l"] as const) {
+      term.parser.registerCsiHandler({ prefix: "?", final }, (params) => params.length === 1 && params[0] === 12);
+    }
     term.onWriteParsed(() => {
       const blink = cb.current.opts.cursorBlink;
       if (term.options.cursorBlink !== blink) term.options.cursorBlink = blink;

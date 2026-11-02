@@ -12,7 +12,8 @@ import { reorder, tabPart, zoneAt, zoneBox, type Box, type DragWhat, type DropAt
 import { TerminalView, type TermHandle } from "./TerminalView";
 import { DesktopPane } from "../desktop/DesktopPane";
 import { focusDesktopWindow, openDesktopWindow, useDesktopPopouts } from "../desktop/popouts";
-import { desktopWindowUrl } from "../desktop/DesktopWindow";
+import { DESKTOP_INSTALL_EVENT, desktopWindowUrl } from "../desktop/DesktopWindow";
+import { reportInstallOutput } from "../desktop/installProgress";
 import type { Connecting, HostKeyStep, OpenSpec, RemoteSpec } from "./types";
 import { parseQuickTarget } from "./util";
 import { droppedText } from "./localPaths";
@@ -456,6 +457,8 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
   const probeSeq = useRef<Record<string, number>>({});
   /** 窗格连上后要自动输入的命令（安装桌面）：输入后删掉，重新连接不再输入 */
   const autoCommands = useRef(new Map<string, string>());
+  /** 装桌面的终端窗格 → 服务器 ID：它的输出拿去显示安装进度 */
+  const installPanes = useRef(new Map<string, string>());
   /** 同时有几个窗格要确认指纹时排队，一次只弹一个 */
   const hostKeyQueue = useRef<Extract<Pending, { kind: "hostkey" }>[]>([]);
   const pendingRef = useRef<Pending | null>(null);
@@ -475,7 +478,11 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
     } else {
       id = add(conn.spec, conn.title, conn.subtitle, conn.target, conn.files, conn.ai, false, connecting);
     }
-    if (conn.run) autoCommands.current.set(id, conn.run);
+    if (conn.run) {
+      autoCommands.current.set(id, conn.run);
+      // 装桌面的终端：输出交给桌面卡片显示进度
+      if (conn.spec.kind === "server") installPanes.current.set(id, conn.spec.serverId);
+    }
     if (conn.phone !== undefined) phoneOpens.current[id] = conn.phone;
     paneConns.current[id] = conn;
     probePane(id);
@@ -671,6 +678,22 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
       (e: unknown) => console.error(e),
     );
   };
+  // 独立桌面窗口里点了“开始安装”：新标签里连这台服务器，连上后自动输入安装命令，主窗口提到前面
+  const installRef = useRef<(serverId: string, command: string) => void>(() => {});
+  installRef.current = (serverId, command) => {
+    const s = servers.find((x) => x.id === serverId);
+    if (!s) return;
+    connectPane({ spec: { kind: "server", serverId: s.id }, title: s.name, subtitle: s.address, quick: null, target: null, run: command });
+    void import("@tauri-apps/api/window").then(({ getCurrentWindow }) => { const w = getCurrentWindow(); void w.unminimize(); void w.show(); void w.setFocus(); }).catch(() => undefined);
+  };
+  useEffect(() => {
+    if (!inTauri) return;
+    let off: (() => void) | undefined;
+    let alive = true;
+    void import("@tauri-apps/api/event").then(({ listen }) => listen<{ serverId: string; command: string }>(DESKTOP_INSTALL_EVENT, (e) => installRef.current(e.payload.serverId, e.payload.command)))
+      .then((u) => { if (alive) off = u; else u(); }, () => undefined);
+    return () => { alive = false; off?.(); };
+  }, []);
   // AI 请求打开终端：服务器走正常连接流程（指纹、密码照常由用户处理）；本机打开 PowerShell
   useEffect(() => {
     let alive = true;
@@ -1518,7 +1541,11 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
                         ? !servers.find((x) => p.spec.kind === "server" && x.id === p.spec.serverId)?.noPrediction : undefined}
                       broadcasting={inBroadcast}
                       onInput={inBroadcast ? (data) => onBroadcastInput(tab.key, id, data) : undefined}
-                      onOutput={inBroadcast ? (tail) => onBroadcastOutput(tab.key, id, tail) : undefined}
+                      onOutput={inBroadcast || installPanes.current.has(id) ? (tail) => {
+                        if (inBroadcast) onBroadcastOutput(tab.key, id, tail);
+                        const installing = installPanes.current.get(id);
+                        if (installing) reportInstallOutput(installing, tail);
+                      } : undefined}
                       onToggleBroadcast={multi ? () => toggleBroadcast(tab.key) : undefined}
                       onHandle={(h) => {
                         if (!h) { handles.current.delete(id); return; }

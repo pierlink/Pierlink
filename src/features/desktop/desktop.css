@@ -63,3 +63,5 @@
 .desk__reasons li > span:first-child { color: var(--text-muted); }
 /* 画面上方的一行提示 */
 .desk__note { position: absolute; top: 8px; left: 50%; transform: translateX(-50%); z-index: 2; display: flex; align-items: center; gap: 6px; max-width: calc(100% - 32px); padding: 4px 6px 4px 12px; border-radius: var(--r-md); background: var(--panel-solid); border: 1px solid var(--border); box-shadow: var(--shadow-pop); font-size: var(--fs-xs); }
+/* 安装中：终端最后一行输出，固定一行高（有没有输出都不跳） */
+.desk__install-line { min-height: 1.5em; margin: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: var(--fs-xs); color: var(--text-muted); }

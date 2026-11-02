@@ -17,6 +17,7 @@ import {
 } from "./api";
 import { desktopActions, INSTALL_POLL_MS, INSTALL_WAIT_MS, installFinished, LIGHT_DESKTOP_ID, preferredDesktop } from "./install";
 import { InstallDialog, InstallingCard, type InstallHint } from "./InstallDesktop";
+import { resetInstallProgress } from "./installProgress";
 import "./desktop.css";
 
 type Quality = "low" | "medium" | "high";
@@ -364,6 +365,7 @@ export function DesktopPane({ serverId, visible, title, controls, windowTitle, s
 
   // 确认安装：在下面开终端运行安装命令（独立窗口里开不了，改为复制命令），这里等它装好
   const startInstall = (command: string, password: boolean) => {
+    resetInstallProgress(serverId);
     setInstallFor(null);
     const inTerminal = !!onInstallTerminal && onInstallTerminal(command);
     if (!inTerminal) void writeClipboardText(command).catch(() => undefined);
@@ -649,7 +651,7 @@ export function DesktopPane({ serverId, visible, title, controls, windowTitle, s
             onInstall={() => setInstallFor(phase.detection)} />
         )}
         {phase.kind === "installing" && (
-          <InstallingCard command={phase.command} hint={phase.hint} timedOut={phase.timedOut} onRecheck={() => void detect(false)} />
+          <InstallingCard serverId={serverId} since={phase.since} command={phase.command} hint={phase.hint} timedOut={phase.timedOut} onRecheck={() => void detect(false)} />
         )}
         {phase.kind === "creating" && (
           <div className="desk__card">

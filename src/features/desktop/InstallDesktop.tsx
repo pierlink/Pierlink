@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useInstallProgress } from "./installProgress";
 import { useTranslation } from "react-i18next";
 import { Button, Dialog } from "../../components";
 import { formatError } from "../../errors";
@@ -102,7 +103,10 @@ export function InstallDialog({ serverId, command, inTerminal, onInstall, onLigh
  * 正在安装：提示看下面的终端（或运行复制的命令），可以再复制一次命令、点“重新查找”。
  * 等了太久（timedOut）时停下进度条，提示装好后自己点“重新查找”
  */
-export function InstallingCard({ command, hint, timedOut, onRecheck }: {
+export function InstallingCard({ serverId, since, command, hint, timedOut, onRecheck }: {
+  serverId: string;
+  /** 开始安装的时间（毫秒） */
+  since: number;
   command: string;
   hint: InstallHint;
   timedOut: boolean;
@@ -110,14 +114,37 @@ export function InstallingCard({ command, hint, timedOut, onRecheck }: {
 }) {
   const { t } = useTranslation();
   const [copied, setCopied] = useState(false);
-  const text = timedOut ? t("desktop.install.notYet", { button: t("desktop.recheck") })
+  const progress = useInstallProgress(serverId, true);
+  // 已用时间每秒走一次
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+  const seconds = Math.max(0, Math.floor((now - since) / 1000));
+  const elapsed = t("desktop.install.elapsed", { min: Math.floor(seconds / 60), sec: String(seconds % 60).padStart(2, "0") });
+  // 阶段和进度：还没有终端输出时（在等 sudo 密码、命令还没输入）照原来的提示
+  const stage = !progress ? (timedOut ? t("desktop.install.notYet", { button: t("desktop.recheck") })
     : hint === "password" ? t("desktop.install.followPassword")
-      : hint === "copied" ? t("desktop.install.followCopied") : t("desktop.install.follow");
+      : hint === "copied" ? t("desktop.install.followCopied") : t("desktop.install.follow"))
+    : progress.stage === "error" ? t("desktop.install.stageError")
+      : progress.stage === "install" ? (progress.percent !== null ? t("desktop.install.stageInstallPct", { pct: progress.percent }) : t("desktop.install.stageInstall"))
+        : progress.stage === "download" ? (progress.total ? t("desktop.install.stageDownload", { got: progress.got, total: progress.total }) : t("desktop.install.stageDownloadStart"))
+          : t("desktop.install.stageUpdate");
+  // 进度条：下载占前一半，安装占后一半；不知道进度时显示忙碌条
+  const pct = !progress || progress.stage === "error" ? null
+    : progress.stage === "install" ? (progress.percent !== null ? 50 + progress.percent / 2 : null)
+      : progress.stage === "download" && progress.total ? Math.min(50, (progress.got / progress.total) * 50) : null;
   return (
     <div className="desk__card desk__card--installing">
       <b>{t("desktop.install.installing")}</b>
-      <p role="status">{text}</p>
-      <div className="desk__progress" aria-hidden="true">{!timedOut && <span className="desk__progress-busy" />}</div>
+      <p role="status" className={progress?.stage === "error" ? "desk__error" : undefined}>{stage}</p>
+      <div className="desk__progress" aria-hidden="true">
+        {pct !== null ? <span className="desk__progress-bar" style={{ width: `${pct}%` }} /> : !timedOut && progress?.stage !== "error" && <span className="desk__progress-busy" />}
+      </div>
+      {/* 终端最后一行和已用时间：固定占两行，有没有输出都不跳 */}
+      <p className="desk__install-line mono" title={progress?.line}>{progress?.line ?? ""}</p>
+      <p className="desk__hint">{elapsed}</p>
       <div className="desk__actions">
         <Button onClick={() => { void writeClipboardText(command).then(() => setCopied(true), () => undefined); }}>
           {copied ? t("desktop.copied") : t("desktop.install.copy")}
