@@ -107,6 +107,19 @@ await rec.step(p, "终端光标在闪（系统要求减少动画时也闪），�
   return `系统要求减少动画=${r.reduced}；闪烁动画 ${r.dur} × ${r.count}`;
 });
 
+await rec.step(p, "程序把光标换成闪烁方块（\\e[1 q）：“灭”的半拍光标下的字是原来的颜色，不变成光标色；\\e[0 q 换回竖线", async () => {
+  await u.typeLine('Write-Host -NoNewline "$([char]27)[1 q"');
+  // 停住动画，分别取“亮”（0.3 秒）和“灭”（0.9 秒）时这一格的颜色
+  const r = await u.waitFor(`(()=>{const c=document.querySelector('.xterm-rows.xterm-focus .xterm-cursor.xterm-cursor-blink'); if(!c || !c.classList.contains('pl-cursor-block')) return null; const a=c.getAnimations()[0]; if(!a) return null; a.pause(); const at=(t)=>{a.currentTime=t; const s=getComputedStyle(c); return {bg:s.backgroundColor,color:s.color};}; const on=at(300), off=at(900); a.play(); return {on, off, row:getComputedStyle(c.closest('.xterm-rows')).color, name:getComputedStyle(c).animationName, xtermBlock:c.classList.contains('xterm-cursor-block')};})()`, "闪烁的方块光标", 15000);
+  if (r.name !== "pl-cursor-block" || r.xtermBlock) throw new Error(`方块光标没换成自己的样式：${JSON.stringify(r)}`);
+  if (r.on.bg === "rgba(0, 0, 0, 0)" || r.on.color === r.on.bg) throw new Error(`“亮”的时候不是方块：${JSON.stringify(r)}`);
+  if (r.off.color === r.on.bg) throw new Error(`“灭”的时候字变成了光标色：${JSON.stringify(r)}`);
+  if (r.off.color !== r.row || r.off.bg !== "rgba(0, 0, 0, 0)") throw new Error(`“灭”的时候不是这一格原来的样子：${JSON.stringify(r)}`);
+  await u.typeLine('Write-Host -NoNewline "$([char]27)[0 q"');
+  await u.waitFor(`!!document.querySelector('.xterm-rows.xterm-focus .xterm-cursor.xterm-cursor-bar')`, "换回竖线光标", 15000);
+  return `亮 ${r.on.bg} / ${r.on.color}；灭 ${r.off.bg} / ${r.off.color}`;
+});
+
 await rec.step(p, "切到设置页再切回来，终端和内容都还在", async () => {
   await u.clickText("Settings", "nav");
   await sleep(500);

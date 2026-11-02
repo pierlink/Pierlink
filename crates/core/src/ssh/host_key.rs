@@ -242,7 +242,11 @@ fn parse_prompt(text: &str) -> Result<Option<HostKeyInfo>, AppError> {
     let host = text
         .rsplit_once("The authenticity of host '")
         .and_then(|(_, s)| s.split_once("' "))
-        .map(|(s, _)| s);
+        // 经 ProxyCommand（代理）连接时 OpenSSH 拿不到 IP，括号里写的是这句内部说明，不给用户看
+        .map(|(s, _)| {
+            s.strip_suffix(" (<no hostip for proxy command>)")
+                .unwrap_or(s)
+        });
     // OpenSSH 10 以前是“ED25519 key fingerprint is SHA256:….”，之后是“… key fingerprint is: SHA256:…”（有冒号、没句号）
     let key = text.lines().find_map(|line| {
         let line = line.trim();
@@ -1126,6 +1130,14 @@ mod tests {
         assert_eq!(info.host, "host (127.0.0.1)");
         assert_eq!(info.key_type, "ED25519");
         assert_eq!(info.fingerprint, format!("SHA256:{}", "b".repeat(43)));
+        let proxied = format!(
+            "The authenticity of host '[192.0.2.7]:2222 (<no hostip for proxy command>)' can't be established.\r\nED25519 key fingerprint is: SHA256:{}\r\nAre you sure you want to continue connecting (yes/no/[fingerprint])? ",
+            "c".repeat(43)
+        );
+        assert_eq!(
+            parse_prompt(&proxied).unwrap().unwrap().host,
+            "[192.0.2.7]:2222"
+        );
         assert_eq!(
             parse_prompt("REMOTE HOST IDENTIFICATION HAS CHANGED")
                 .unwrap_err()

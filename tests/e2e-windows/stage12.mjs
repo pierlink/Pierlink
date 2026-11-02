@@ -157,8 +157,11 @@ async function openServer(name, marker) {
   await u.clickText("Workspace", "header nav");
   const slots = await p.js(`document.querySelectorAll('.pane-slot').length`);
   await u.click(".srv-row", await serverRow(name), "left", 2);
-  await u.waitFor(`document.querySelectorAll('.pane-slot').length > ${slots} || /Trust and connect/.test(document.querySelector('.pl-dialog')?.innerText||'')`, "新开了终端或出现指纹确认", 30000);
-  if (await p.js(`/Trust and connect/.test(document.querySelector('.pl-dialog')?.innerText||'')`)) {
+  const trust = `/Trust and connect/.test(document.querySelector('.pl-dialog')?.innerText||'')`;
+  await u.waitFor(`document.querySelectorAll('.pane-slot').length > ${slots} || ${trust}`, "新开了终端或出现指纹确认", 30000);
+  // 新窗格马上就开出来，指纹确认框要等握手做完才出（经代理时更晚）：等提示符的同时看到确认框就点信任
+  await u.waitFor(`${trust} || ${BASH_PROMPT}`, "指纹确认或 bash 提示符", 30000);
+  if (await p.js(trust)) {
     await u.clickText("Trust and connect", ".pl-dialog");
     await u.waitFor(`!document.querySelector('.pl-dialog')`, "指纹确认对话框关闭", 30000);
   }

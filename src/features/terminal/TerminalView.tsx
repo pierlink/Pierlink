@@ -220,6 +220,18 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
     term.loadAddon(new WebLinksAddon((_e, url) => { if (!term.hasSelection()) cb.current.openLink(url); }));
     term.open(el);
     fit.fit();
+    // 闪烁的方块光标（设置里选的，或程序用 \e[1 q 要的）：换成自己的样式，“灭”的半拍不再把字染成光标色（见 terminal.css）
+    const rows = el.querySelector(".xterm-rows");
+    const blockCursor = new MutationObserver(() => {
+      for (const c of rows?.querySelectorAll(".xterm-cursor-blink.xterm-cursor-block") ?? []) c.classList.replace("xterm-cursor-block", "pl-cursor-block");
+    });
+    if (rows) blockCursor.observe(rows, { subtree: true, childList: true, attributes: true, attributeFilter: ["class"] });
+    const cursorColors = () => {
+      const theme = currentTerminalTheme();
+      el.style.setProperty("--pl-term-cursor", theme.cursor ?? "");
+      el.style.setProperty("--pl-term-cursor-accent", theme.cursorAccent ?? "");
+    };
+    cursorColors();
     // 当前目录报告：OSC 7（file://主机/路径）和 OSC 9;9（Windows Terminal 约定，"路径"）
     term.parser.registerOscHandler(7, (data) => {
       const path = parseOsc7(data);
@@ -812,7 +824,7 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
     void document.fonts?.ready.then(doResize);
 
     // 主题切换时更新终端配色
-    const mo = new MutationObserver(() => { term.options.theme = currentTerminalTheme(); });
+    const mo = new MutationObserver(() => { term.options.theme = currentTerminalTheme(); cursorColors(); });
     mo.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
 
     // 窗格里先核对指纹的：通过后由下面的 effect 打开（之前空终端里不显示光标）
@@ -835,6 +847,7 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
       if (timer) clearTimeout(timer);
       ro.disconnect();
       mo.disconnect();
+      blockCursor.disconnect();
       term.textarea?.removeEventListener("paste", onPaste, true);
       for (const name of imeEvents) term.textarea?.removeEventListener(name, anchorIme);
       term.textarea?.removeEventListener("blur", dropIme);

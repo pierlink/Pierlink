@@ -14,6 +14,17 @@
   animation-duration: 1.2s !important;
   animation-iteration-count: infinite !important;
 }
+/* 闪烁的方块光标：xterm 自带的动画在“灭”的半拍把光标下的字染成光标色（看着像字变蓝了）。
+   TerminalView 把这一格的 xterm-cursor-block 换成 pl-cursor-block，xterm 的方块样式就不再套上来：
+   “亮”的半拍画方块；“灭”的半拍取动画外的样子，也就是这一格原来的字色和底色。
+   这一格没有静态样式，方块全靠动画画：时长和次数来自上面那条规则（它压住全局“减少动画”），改那条时这里一起看 */
+@keyframes pl-cursor-block {
+  0%, 50% { background-color: var(--pl-term-cursor); color: var(--pl-term-cursor-accent); }
+}
+.xterm .xterm-rows.xterm-focus .xterm-cursor.xterm-cursor-blink.pl-cursor-block {
+  animation-name: pl-cursor-block;
+  animation-timing-function: step-start;
+}
 
 /* 终端窗格：宿主元素铺满，提示条浮在顶部 */
 .term-pane {
