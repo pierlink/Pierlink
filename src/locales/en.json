@@ -55,6 +55,7 @@
     "section": {
       "appearance": "General",
       "terminal": "Terminal",
+      "shortcuts": "Shortcuts",
       "files": "File transfer",
       "sync": "Sync",
       "ai": "AI access",
@@ -88,8 +89,6 @@
       "rightClickCopyPasteHint": "Right-click copies the selection, or pastes when nothing is selected; the menu no longer opens",
       "pasteConfirm": "Confirm before pasting several lines",
       "pasteConfirmHint": "Every pasted line may run as a command",
-      "shortcuts": "Copy and paste",
-      "shortcutsHint": "Ctrl+C copies when text is selected and interrupts the program otherwise; Ctrl+V pastes; in split panes, Ctrl+Shift+B toggles broadcast input",
       "closeConfirm": "Confirm before closing a terminal tab",
       "closeConfirmHint": "Closing a running tab ends its programs",
       "broadcastDanger": "Confirm dangerous commands when broadcasting",
@@ -1797,7 +1796,7 @@
     "restoredDeleted": "Server deleted",
     "restoredDeletedDetail": "This server was removed from the list and can't be reconnected.",
     "broadcast": {
-      "start": "Broadcast input (Ctrl+Shift+B)",
+      "start": "Broadcast input",
       "joinPane": "Join broadcast",
       "leavePane": "Leave broadcast",
       "stop": "Stop broadcast",
@@ -3394,5 +3393,59 @@
     "poppedTitle": "Opened in a separate window",
     "showHere": "Show here",
     "popOutFailed": "Couldn't open the separate window: {{reason}}"
+  },
+  "shortcuts": {
+    "lead": "Click a key, then press the new combination. Esc cancels.",
+    "press": "Press keys…",
+    "none": "Not set",
+    "reset": "Reset to default",
+    "clear": "Clear",
+    "resetAll": "Reset all",
+    "defaultKey": "Default: {{key}}",
+    "defaultNone": "No default",
+    "terminalUses": "Programs in the terminal won't get this key",
+    "taken": "{{key}} is used by “{{name}}”",
+    "reservedFor": "{{key}} is used for {{use}}",
+    "restoreTaken": "The default {{key}} is used by “{{name}}”",
+    "needModifier": "Include Ctrl or Alt",
+    "winKey": "The Windows key can't be used",
+    "unsupported": "This key can't be used",
+    "reserved": "Fixed in the terminal: Ctrl+C copies selected text (otherwise it interrupts the program), Ctrl+V pastes, Shift+Enter inserts a new line.",
+    "noOverview": "This pane has no overview",
+    "use": {
+      "copy": "copying in the terminal",
+      "paste": "pasting in the terminal",
+      "newline": "new lines in the terminal",
+      "closeWindow": "closing the window",
+      "windowMenu": "the window menu"
+    },
+    "group": {
+      "tabs": "Tabs and panes",
+      "panels": "Panels",
+      "pages": "Pages",
+      "font": "Terminal font"
+    },
+    "action": {
+      "newTab": "New terminal tab",
+      "quickConnect": "Quick connect",
+      "closePane": "Close pane",
+      "nextTab": "Next tab",
+      "prevTab": "Previous tab",
+      "splitRight": "Split right",
+      "splitDown": "Split down",
+      "broadcast": "Broadcast input",
+      "toggleFiles": "Show or hide files",
+      "toggleOverview": "Show or hide overview",
+      "togglePanel": "Show or hide tool panel",
+      "snippets": "Snippets",
+      "searchServers": "Search servers",
+      "goWorkspace": "Go to Workspace",
+      "goSync": "Go to Sync",
+      "goMcp": "Go to MCP",
+      "openSettings": "Open settings",
+      "fontBigger": "Larger font",
+      "fontSmaller": "Smaller font",
+      "fontReset": "Reset font size"
+    }
   }
 }

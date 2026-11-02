@@ -469,6 +469,17 @@ fn local_unread_channel_60s_isolated_bounded_complete() {
     let mut flood = connection.exec("head -c 8388608 /dev/zero", &[]).unwrap();
     let mut echo = connection.exec("exec cat", &[]).unwrap();
     let before = connection.statistics().key_exchanges;
+    // 先等通道 A 灌满窗口（灌的途中每 64K 换一次钥，要换几十次），之后它一直没人读、卡在那里，再量通道 B
+    let filling = Instant::now();
+    while flood.buffered_bytes() < window {
+        assert!(
+            filling.elapsed() < Duration::from_secs(30),
+            "通道 A 30 秒内没灌满窗口"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    // 通道 B 真被通道 A 堵住时会一直卡住；300ms 给 CI 机器的抖动和偶尔的换钥留余量
+    let bound = Duration::from_millis(300);
     let started = Instant::now();
     for second in 0..60 {
         let round = Instant::now();
@@ -476,16 +487,12 @@ fn local_unread_channel_60s_isolated_bounded_complete() {
         let mut reply = [0; 4096];
         echo.stdout.read_exact(&mut reply).unwrap();
         assert_eq!(reply, [b'b'; 4096]);
-        assert!(
-            round.elapsed() < Duration::from_millis(100),
-            "通道 B 往返超出 100ms"
-        );
+        let took = round.elapsed();
+        assert!(took < bound, "第 {second} 秒通道 B 往返用了 {took:?}");
         let ping = Instant::now();
         connection.ping().unwrap();
-        assert!(
-            ping.elapsed() < Duration::from_millis(100),
-            "SSH ping 超出 100ms"
-        );
+        let took = ping.elapsed();
+        assert!(took < bound, "第 {second} 秒 SSH ping 用了 {took:?}");
         assert!(flood.buffered_bytes() <= window);
         std::thread::sleep(
             (started + Duration::from_secs(second + 1)).saturating_duration_since(Instant::now()),

@@ -415,6 +415,41 @@ mod tests {
         }
     }
     #[test]
+    fn 锁在途中被拆掉或被别人接手时退出不报错也不删别人的锁() {
+        for shell in ["/bin/sh", "/bin/dash"] {
+            let root = crate::test_support::tempdir();
+            let program = SshProgram { path: shell.into() };
+            let lock = root.path().join(".ssh/.pierlink-lock");
+            // 假 awk：脚本拿到锁以后才调用它，先动一下锁再交给真的 awk
+            let awk = root.path().join("awk");
+            let fake = |action: &str| {
+                fs::write(
+                    &awk,
+                    format!("#!/bin/sh\n{action}\nexec /usr/bin/awk \"$@\"\n"),
+                )
+                .unwrap();
+                fs::set_permissions(&awk, fs::Permissions::from_mode(0o700)).unwrap();
+            };
+            let mut cmd = command(root.path());
+            cmd.env.push((
+                "PATH".into(),
+                format!("{}:/usr/bin:/bin", root.path().display()),
+            ));
+            fake("rm -rf \"$HOME/.ssh/.pierlink-lock\"");
+            assert_eq!(
+                install(&program, &cmd, KEY).unwrap().outcome,
+                InstallOutcome::Installed
+            );
+            assert!(!lock.exists());
+            fake("printf '1\\n' > \"$HOME/.ssh/.pierlink-lock/owner\"");
+            assert_eq!(
+                remove(&program, &cmd, KEY).unwrap(),
+                RemoveOutcome::Removed { count: 1 }
+            );
+            assert_eq!(fs::read_to_string(lock.join("owner")).unwrap(), "1\n");
+        }
+    }
+    #[test]
     fn s15_s17_s20_脚本边界与并发() {
         for shell in ["/bin/sh", "/bin/dash"] {
             let root = crate::test_support::tempdir();

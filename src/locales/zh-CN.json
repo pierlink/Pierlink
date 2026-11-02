@@ -55,6 +55,7 @@
     "section": {
       "appearance": "常规",
       "terminal": "终端",
+      "shortcuts": "快捷键",
       "files": "文件传输",
       "sync": "同步",
       "ai": "AI 接入",
@@ -88,8 +89,6 @@
       "rightClickCopyPasteHint": "选中文字时右键复制，没选中时右键粘贴；打开后右键不再弹出菜单",
       "pasteConfirm": "粘贴多行内容前确认",
       "pasteConfirmHint": "多行内容的每一行都可能被当成命令执行",
-      "shortcuts": "复制与粘贴",
-      "shortcutsHint": "选中文字时 Ctrl+C 复制，没选中时 Ctrl+C 照常中断程序；Ctrl+V 粘贴；分屏时 Ctrl+Shift+B 开关广播输入",
       "closeConfirm": "关闭终端标签前确认",
       "closeConfirmHint": "关闭正在运行的标签会结束里面的程序",
       "broadcastDanger": "广播时确认危险命令",
@@ -1795,7 +1794,7 @@
     "restoredDeleted": "服务器已删除",
     "restoredDeletedDetail": "这台服务器已经从列表里删除，无法重新连接。",
     "broadcast": {
-      "start": "广播输入（Ctrl+Shift+B）",
+      "start": "广播输入",
       "joinPane": "加入广播",
       "leavePane": "退出广播",
       "stop": "结束广播",
@@ -3354,5 +3353,59 @@
     "poppedTitle": "已在独立窗口打开",
     "showHere": "在这里显示",
     "popOutFailed": "没能在独立窗口打开：{{reason}}"
+  },
+  "shortcuts": {
+    "lead": "点一下按键，再按新的组合键；Esc 取消。",
+    "press": "按下组合键…",
+    "none": "未设置",
+    "reset": "恢复默认",
+    "clear": "清空",
+    "resetAll": "全部恢复默认",
+    "defaultKey": "默认 {{key}}",
+    "defaultNone": "默认不设",
+    "terminalUses": "终端里的程序收不到这个键",
+    "taken": "{{key}} 已用于“{{name}}”",
+    "reservedFor": "{{key}} 用于{{use}}",
+    "restoreTaken": "默认的 {{key}} 已用于“{{name}}”",
+    "needModifier": "要带 Ctrl 或 Alt",
+    "winKey": "不能用 Win 键",
+    "unsupported": "这个键不能用",
+    "reserved": "终端里固定：选中文字时 Ctrl+C 复制（没选中时照常中断程序），Ctrl+V 粘贴，Shift+Enter 换行。",
+    "noOverview": "当前窗格没有概况",
+    "use": {
+      "copy": "终端复制",
+      "paste": "终端粘贴",
+      "newline": "终端换行",
+      "closeWindow": "关闭窗口",
+      "windowMenu": "窗口菜单"
+    },
+    "group": {
+      "tabs": "标签和窗格",
+      "panels": "面板",
+      "pages": "页面",
+      "font": "终端字号"
+    },
+    "action": {
+      "newTab": "新建终端标签",
+      "quickConnect": "快速连接",
+      "closePane": "关闭当前窗格",
+      "nextTab": "下一个标签",
+      "prevTab": "上一个标签",
+      "splitRight": "左右分屏",
+      "splitDown": "上下分屏",
+      "broadcast": "广播输入",
+      "toggleFiles": "显示/隐藏文件栏",
+      "toggleOverview": "显示/隐藏概况",
+      "togglePanel": "显示/隐藏工具面板",
+      "snippets": "命令片段",
+      "searchServers": "搜索服务器",
+      "goWorkspace": "切到工作区",
+      "goSync": "切到同步",
+      "goMcp": "切到 MCP",
+      "openSettings": "打开设置",
+      "fontBigger": "放大字号",
+      "fontSmaller": "缩小字号",
+      "fontReset": "还原字号"
+    }
   }
 }

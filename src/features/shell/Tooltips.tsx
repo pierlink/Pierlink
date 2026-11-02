@@ -36,6 +36,13 @@ function holdable(el: HTMLElement, text: string): boolean {
 
 interface Tip { text: string; x: number; y: number; below: boolean; hold: boolean; /** 元素的上下边（放不下时翻到另一边用） */ top: number; bottom: number; gap: number; flipped?: boolean }
 
+/** 收起当前的提示（Tooltips 挂载后才有） */
+let hideCurrent: (() => void) | null = null;
+/** 收起当前显示的提示：快捷键拦下的按键不会再传到这里的按键监听，由快捷键处理时调用 */
+export function hideTooltip(): void {
+  hideCurrent?.();
+}
+
 /**
  * 全局鼠标提示，代替浏览器自带的 title 提示。
  * 自带提示的问题：点过的按钮要移出再移入才会再显示；样式也和主题不一致。
@@ -148,7 +155,9 @@ export function Tooltips() {
     document.addEventListener("keydown", onKey, true);
     document.addEventListener("wheel", onScroll, { capture: true, passive: true });
     window.addEventListener("blur", hide);
+    hideCurrent = hide;
     return () => {
+      if (hideCurrent === hide) hideCurrent = null;
       clear();
       mo.disconnect();
       document.removeEventListener("pointerover", onOver, true);

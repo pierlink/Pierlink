@@ -20,6 +20,7 @@ import { UpdateNotice } from "./features/updates/UpdateNotice";
 import { McpConfirmHost } from "./features/mcp/McpConfirmHost";
 import { PairRequestHost } from "./features/mobile/PairRequestHost";
 import { McpPage } from "./features/mcp/McpPage";
+import { ShortcutHost } from "./features/shortcuts/ShortcutHost";
 
 /** 应用外壳：标题栏 + 当前页面。各页面在后续阶段实现。 */
 export default function App() {
@@ -55,11 +56,12 @@ export default function App() {
       <UpdateNotice />
       <McpConfirmHost />
       <PairRequestHost />
+      <ShortcutHost onPage={setPage} />
       <TitleBar page={page} onPage={setPage} showGallery={showGallery} />
       <main style={{ flex: 1, minHeight: 0, padding: "0 8px 8px", display: "flex" }}>
         {/* 工作区一直保留（只隐藏），切到其他页面再回来时终端会话和标签都还在 */}
         <div style={{ flex: 1, minWidth: 0, display: page === "workspace" ? "flex" : "none" }}>
-          <WorkspacePage />
+          <WorkspacePage active={page === "workspace"} />
         </div>
         {/* 设置页打开过一次后也一直保留（只隐藏），没保存的修改（如排除规则草稿）切页面不会丢 */}
         {settingsSeen && (

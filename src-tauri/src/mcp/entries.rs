@@ -110,8 +110,22 @@ fn token_key(server_id: &str) -> String {
     format!("pierlink/mcp/{server_id}/token")
 }
 
+/// 令牌的读、建、换排队做：第一次添加入口时，开入口和设置页的检测会同时来要令牌，
+/// 不排队的话两边各建一个、后存的盖掉先存的，服务器上写的令牌就和正在运行的入口对不上（AI 连上来被拒）
+static TOKENS: Mutex<()> = Mutex::new(());
+
+fn tokens_lock() -> MutexGuard<'static, ()> {
+    TOKENS.lock().unwrap_or_else(|p| p.into_inner())
+}
+
 /// 这台服务器入口的令牌：凭据管理器里有就用，没有就新建一个存进去
 pub(super) fn token(server_id: &str) -> Result<Zeroizing<String>, AppError> {
+    let _tokens = tokens_lock();
+    token_locked(server_id)
+}
+
+/// token() 的正文：调用方已经拿着 TOKENS
+fn token_locked(server_id: &str) -> Result<Zeroizing<String>, AppError> {
     let store = crate::sync::credential_store()?;
     if let Some(token) = store.get(&token_key(server_id))? {
         return Ok(Zeroizing::new(token));
@@ -232,9 +246,13 @@ impl Entries {
         let server = crate::servers::load(app, server_id)?;
         // 开启入口是用户明确的操作（或程序启动）：之前因为登录上限停下的，照常再去服务器登录一次
         crate::builtin::clear_auth_limit(app, server_id);
-        let token = token(server_id)?;
-        service.add_secret(token.clone());
-        let entry = service.start_http_entry(server_id, token)?;
+        // 取令牌和用它开本机服务在同一把锁里：换令牌插不进两步中间（插进来的话新令牌存下了，本机服务却还认旧的）
+        let entry = {
+            let _tokens = tokens_lock();
+            let token = token_locked(server_id)?;
+            service.add_secret(token.clone());
+            service.start_http_entry(server_id, token)?
+        };
         // 后面任何一步失败都要把刚起来的本机服务停掉
         if let Err(e) = start_tunnel(app, &server, port, entry.local_port) {
             service.stop_http_entry(server_id);
@@ -293,10 +311,13 @@ impl Entries {
         service: &Arc<McpService>,
         server_id: &str,
     ) -> Result<(), AppError> {
-        let token = pierlink_core::mcp::token::new_token();
-        crate::sync::credential_store()?.set(&token_key(server_id), &token)?;
-        service.add_secret(token.clone());
-        service.set_token(server_id, token);
+        {
+            let _tokens = tokens_lock();
+            let token = pierlink_core::mcp::token::new_token();
+            crate::sync::credential_store()?.set(&token_key(server_id), &token)?;
+            service.add_secret(token.clone());
+            service.set_token(server_id, token);
+        }
         let connected = {
             let mut running = self.lock();
             match running.get_mut(server_id) {
@@ -581,5 +602,36 @@ fn run_on_server_value(
 fn emit(app: &AppHandle, states: Vec<McpEntryStateDto>) {
     if let Err(e) = app.emit(super::ENTRIES_EVENT, states) {
         eprintln!("推送 AI 接入服务器入口状态失败: 错误={e}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn 同时第一次要令牌时大家拿到同一个且和存下的一致() {
+        const N: usize = 16;
+        let id = "并发要令牌的服务器";
+        let barrier = std::sync::Barrier::new(N);
+        let got: Vec<String> = std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..N)
+                .map(|_| {
+                    scope.spawn(|| {
+                        barrier.wait();
+                        token(id).unwrap().to_string()
+                    })
+                })
+                .collect();
+            handles.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+        assert!(got.iter().all(|t| *t == got[0]));
+        let saved = saved_token(id).unwrap();
+        assert_eq!(saved.as_str(), got[0]);
+        // Windows 上是真的凭据管理器：测完删掉
+        crate::sync::credential_store()
+            .unwrap()
+            .delete(&token_key(id))
+            .unwrap();
     }
 }

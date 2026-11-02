@@ -34,6 +34,8 @@ import { ServerOverview } from "../monitor/ServerOverview";
 import { useServerMonitor } from "../monitor/useServerMonitor";
 
 import { overviewAuto as overviewDefault } from "../monitor/overviewPref";
+import { useShortcut, useShortcutBindings, withShortcut } from "../shortcuts/runtime";
+import { formatCombo } from "../shortcuts/keys";
 
 /** 服务器终端的概况：采样一直开着（隐藏时放慢），显示时浮在终端右上角 */
 function PaneOverview({ serverId, visible }: { serverId: string; visible: boolean }) {
@@ -235,7 +237,7 @@ export interface OpenRequest { id: string; mode: "tab" | "split" | "desktop"; n:
 export interface SnippetRequest { text: string; execute: boolean; n: number }
 
 /** 终端区域：标签栏 + 每个标签一组分屏窗格（隐藏的标签和窗格都保持会话） */
-export function TerminalArea({ servers, serversLoaded = true, openRequest, onConnections, onActiveServer, panelOpen, onTogglePanel, snippetRequest, onSnippetTargets }: {
+export function TerminalArea({ servers, serversLoaded = true, openRequest, onConnections, onActiveServer, panelOpen, onTogglePanel, snippetRequest, onSnippetTargets, active = true, focusRequest = 0 }: {
   servers: ServerView[];
   /** 服务器列表已经读取过（之前不能据此判断恢复的窗格对应的服务器是否已删除） */
   serversLoaded?: boolean;
@@ -251,6 +253,10 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
   snippetRequest?: SnippetRequest | null;
   /** 命令片段现在会发到几个窗格（0 = 没有可用的终端），变化时通知 */
   onSnippetTargets?: (count: number) => void;
+  /** 工作区正在显示：只有这时终端区的快捷键才响应 */
+  active?: boolean;
+  /** 每次加一：把焦点给当前标签的当前终端（如用快捷键收起了焦点所在的工具面板） */
+  focusRequest?: number;
 }) {
   const { t } = useTranslation();
   const hide = useHideAddresses();
@@ -279,6 +285,20 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
   panesRef.current = panes;
   const activeTabRef = useRef<string | null>(null);
   activeTabRef.current = activeTab;
+  /**
+   * 用键盘切过去（或关掉有焦点的窗格后轮到）的标签：提交后把焦点给它当前窗格的终端。
+   * 这个标签里的远程桌面不自己拿键盘（拿了以后按键都归远程桌面，再按 Ctrl+Tab 就切不出去了），点一下画面才交给它。
+   */
+  const [keyFocus, setKeyFocus] = useState<{ tab: string; pane: string } | null>(null);
+  useEffect(() => {
+    if (!keyFocus) return;
+    handles.current.get(keyFocus.pane)?.focus();
+    setKeyFocus(null);
+  }, [keyFocus]);
+  useEffect(() => {
+    const tab = focusRequest ? tabsRef.current.find((x) => x.key === activeTabRef.current) : undefined;
+    if (tab) handles.current.get(tab.active)?.focus();
+  }, [focusRequest]);
   // 每次发起连接加一；用户中途关掉对话框后，迟到的结果据此丢弃
   const attempt = useRef(0);
 
@@ -289,10 +309,10 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
   // 广播时的提示（某个窗格退出了广播等），几秒后消失
   const [broadcastNotice, setBroadcastNotice] = useState<string | null>(null);
   const noticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const showBroadcastNotice = (text: string) => {
+  const showBroadcastNotice = (text: string, ms = 8000) => {
     setBroadcastNotice(text);
     if (noticeTimer.current) clearTimeout(noticeTimer.current);
-    noticeTimer.current = setTimeout(() => setBroadcastNotice(null), 8000);
+    noticeTimer.current = setTimeout(() => setBroadcastNotice(null), ms);
   };
   // 每个标签一份按键行缓冲（判断危险命令用）
   const lineBuffers = useRef(new Map<string, LineBuffer>());
@@ -829,8 +849,15 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
   };
   const closeQuick = () => { attempt.current++; setPending(null); };
 
-  /** 去掉一些窗格；标签里的窗格全去掉时连标签一起关掉 */
-  const dropPanes = (tabKey: string, ids: string[]) => {
+  /**
+   * 去掉一些窗格；标签里的窗格全去掉时连标签一起关掉。
+   * 去掉的是当前标签里有焦点的窗格（或在关闭确认框里点的关闭）时，把焦点给关完以后的当前窗格，不然焦点掉到页面上，打字没反应。
+   * @param fromDialog 在关闭确认框里点的（框关掉后原来有焦点的终端已经没了）
+   */
+  const dropPanes = (tabKey: string, ids: string[], fromDialog = false) => {
+    const focused = document.activeElement;
+    const refocus = tabKey === activeTabRef.current && (fromDialog || !focused || focused === document.body
+      || ids.some((id) => !!document.querySelector(`[data-pane="${CSS.escape(id)}"]`)?.contains(focused)));
     for (const id of ids) {
       phoneOpened(id, null, { code: "ssh.auth_cancelled", params: {} });
       autoCommands.current.delete(id);
@@ -851,7 +878,10 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
     tabsRef.current = next;
     setTabs(next);
     // 关掉的是当前标签：切到原位置上的下一个（没有就前一个）
-    if (!layout && activeTabRef.current === tabKey) setActiveTab(next[Math.min(index, next.length - 1)]?.key ?? null);
+    const nowActive = !layout && activeTabRef.current === tabKey ? next[Math.min(index, next.length - 1)]?.key ?? null : activeTabRef.current;
+    if (nowActive !== activeTabRef.current) setActiveTab(nowActive);
+    const focusTab = refocus ? next.find((x) => x.key === nowActive) : undefined;
+    if (focusTab) setKeyFocus({ tab: focusTab.key, pane: focusTab.active });
     setPanes((ps) => { const out = { ...ps }; for (const id of ids) delete out[id]; return out; });
   };
   /**
@@ -1068,7 +1098,7 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
     const tab = tabsRef.current.find((x) => x.key === tabKey);
     return tab ? paneIds(tab.layout).filter((id) => panesRef.current[id]?.session && panesRef.current[id]?.status === "running" && !panesRef.current[id]?.restored) : [];
   };
-  /** 开关当前标签的广播输入（Ctrl+Shift+B）：打开时所有已连接的窗格都参与 */
+  /** 开关当前标签的广播输入（快捷键默认 Ctrl+Shift+B）：打开时所有已连接的窗格都参与 */
   const toggleBroadcast = (tabKey: string) => {
     lineBuffers.current.delete(tabKey);
     if (broadcastRef.current[tabKey]) {
@@ -1310,6 +1340,62 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
     setSplitMenu({ x: Math.max(8, r.right - 260), y: r.bottom + 4, tab, pane: paneId, dir });
   };
 
+  // ---------- 快捷键（工作区显示时才响应） ----------
+  const currentTab = () => tabsRef.current.find((x) => x.key === activeTabRef.current) ?? null;
+  const currentPane = () => { const tab = currentTab(); return tab ? panesRef.current[tab.active] ?? null : null; };
+  /** 切到后面（step 为 1）或前面（-1）的标签，到头了绕回来 */
+  const cycleTab = (step: number) => {
+    const list = tabsRef.current;
+    if (list.length < 2) return;
+    const i = list.findIndex((x) => x.key === activeTabRef.current);
+    const next = list[(i + step + list.length) % list.length];
+    setKeyFocus({ tab: next.key, pane: next.active });
+    setActiveTab(next.key);
+    clearAttention(paneIds(next.layout));
+  };
+  /** 在当前窗格旁边开一个同样的终端；窗格太小放不下时提示；没有标签时开默认本机终端 */
+  const splitByKey = (dir: Dir) => {
+    const tab = currentTab();
+    if (!tab) { openDefault(null); return; }
+    if (!canSplit(tab.active, dir)) { showBroadcastNotice(dir === "row" ? t("terminal.tooNarrow") : t("terminal.tooShort"), 4000); return; }
+    splitSame(tab.key, tab.active, dir);
+  };
+  useShortcut("newTab", () => { openDefault(null); }, active);
+  useShortcut("quickConnect", () => { if (!pendingRef.current) setPending({ kind: "quick", value: "", error: null, target: null }); }, active);
+  useShortcut("closePane", () => {
+    const tab = currentTab();
+    if (tab) requestClose(tab.key, paneIds(tab.layout).length > 1 ? tab.active : null);
+  }, active);
+  useShortcut("nextTab", () => cycleTab(1), active);
+  useShortcut("prevTab", () => cycleTab(-1), active);
+  useShortcut("splitRight", () => splitByKey("row"), active);
+  useShortcut("splitDown", () => splitByKey("col"), active);
+  useShortcut("broadcast", () => { if (activeTabRef.current) toggleBroadcast(activeTabRef.current); }, active);
+  useShortcut("toggleFiles", () => {
+    const p = currentPane();
+    if (!p || p.desktop) return;
+    // 收起时焦点在这个文件栏里：还给终端，不然焦点掉到页面上
+    const inside = !!document.activeElement?.closest(`[data-pane="${CSS.escape(p.id)}"] .files`);
+    updatePane(p.id, (x) => ({ files: { ...x.files, open: !x.files.open } }));
+    if (p.files.open && inside) requestAnimationFrame(() => handles.current.get(p.id)?.focus());
+  }, active);
+  useShortcut("toggleOverview", () => {
+    const p = currentPane();
+    if (!p || p.spec.kind !== "server" || p.restored || p.desktop) { showBroadcastNotice(t("shortcuts.noOverview"), 3000); return; }
+    updatePane(p.id, (x) => ({ overview: !x.overview }));
+  }, active);
+  // 按钮提示里带上快捷键
+  const bindings = useShortcutBindings();
+  const keyText = {
+    files: formatCombo(bindings.toggleFiles),
+    overview: formatCombo(bindings.toggleOverview),
+    splitRight: formatCombo(bindings.splitRight),
+    splitDown: formatCombo(bindings.splitDown),
+    broadcast: formatCombo(bindings.broadcast),
+    closePane: formatCombo(bindings.closePane),
+  };
+  const withKey = (label: string, key: string) => withShortcut(t, label, key);
+
   const closing = pending?.kind === "close" ? (() => {
     const tab = tabs.find((x) => x.key === pending.tab);
     if (!tab) return null;
@@ -1402,7 +1488,7 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
                         })()}
                         {p.spec.kind === "server" && !p.restored && (
                           <button type="button" className={`pane__btn${p.overview ? " pane__btn--on" : ""}`} aria-pressed={p.overview}
-                            title={p.overview ? t("monitor.hide") : t("monitor.show")} aria-label={t("monitor.show")}
+                            title={withKey(p.overview ? t("monitor.hide") : t("monitor.show"), keyText.overview)} aria-label={t("monitor.show")}
                             onClick={() => updatePane(id, (x) => ({ overview: !x.overview }))}>
                             <Gauge size={14} />
                           </button>
@@ -1413,29 +1499,29 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
                             <Monitor size={14} />
                           </button>
                         )}
-                        <button type="button" className={`pane__btn${p.files.open ? " pane__btn--on" : ""}`} aria-pressed={p.files.open} title={t("terminal.files")} aria-label={t("terminal.files")}
+                        <button type="button" className={`pane__btn${p.files.open ? " pane__btn--on" : ""}`} aria-pressed={p.files.open} title={withKey(t("terminal.files"), keyText.files)} aria-label={t("terminal.files")}
                           onClick={() => updatePane(id, (x) => ({ files: { ...x.files, open: !x.files.open } }))}>
                           <FolderOpen size={14} />
                         </button>
-                        <button type="button" className="pane__btn pane__btn--split" title={t("workspace.splitRight")} aria-label={t("workspace.splitRight")} aria-haspopup="menu"
+                        <button type="button" className="pane__btn pane__btn--split" title={withKey(t("workspace.splitRight"), keyText.splitRight)} aria-label={t("workspace.splitRight")} aria-haspopup="menu"
                           onClick={(e) => openSplitMenu(e.currentTarget, tab.key, id, "row")}>
                           <Columns2 size={14} />
                         </button>
-                        <button type="button" className="pane__btn pane__btn--split" title={t("workspace.splitDown")} aria-label={t("workspace.splitDown")} aria-haspopup="menu"
+                        <button type="button" className="pane__btn pane__btn--split" title={withKey(t("workspace.splitDown"), keyText.splitDown)} aria-label={t("workspace.splitDown")} aria-haspopup="menu"
                           onClick={(e) => openSplitMenu(e.currentTarget, tab.key, id, "col")}>
                           <Rows2 size={14} />
                         </button>
                         {multi && !p.restored && (
                           <button type="button" className={`pane__btn${inBroadcast ? " pane__btn--broadcast" : ""}`}
                             aria-pressed={members ? inBroadcast : false}
-                            title={members ? (inBroadcast ? t("terminal.broadcast.leavePane") : t("terminal.broadcast.joinPane")) : t("terminal.broadcast.start")}
+                            title={members ? (inBroadcast ? t("terminal.broadcast.leavePane") : t("terminal.broadcast.joinPane")) : withKey(t("terminal.broadcast.start"), keyText.broadcast)}
                             aria-label={members ? (inBroadcast ? t("terminal.broadcast.leavePane") : t("terminal.broadcast.joinPane")) : t("terminal.broadcast.start")}
                             onClick={() => (members ? toggleMember(tab.key, id) : toggleBroadcast(tab.key))}>
                             <Radio size={14} />
                           </button>
                         )}
                         {multi && (
-                          <button type="button" className="pane__btn pane__btn--close" title={t("terminal.closePane")} aria-label={t("terminal.closePane")} onClick={() => requestClose(tab.key, id)}>
+                          <button type="button" className="pane__btn pane__btn--close" title={withKey(t("terminal.closePane"), keyText.closePane)} aria-label={t("terminal.closePane")} onClick={() => requestClose(tab.key, id)}>
                             <X size={14} />
                           </button>
                         )}
@@ -1478,6 +1564,7 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
                       <DesktopPane
                         serverId={p.spec.serverId}
                         visible={visible}
+                        grabKeyboard={keyFocus?.tab !== tab.key}
                         windowTitle={shown(p.spec, p.title)}
                         onPoppedOut={() => dropPanes(tab.key, [id])}
                         onInstallTerminal={(command) => openInstallTerminal(tab.key, id, (p.spec as { serverId: string }).serverId, command)}
@@ -1488,16 +1575,16 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
                         )}
                         controls={(
                           <>
-                            <button type="button" className="pane__btn pane__btn--split" title={t("workspace.splitRight")} aria-label={t("workspace.splitRight")} aria-haspopup="menu"
+                            <button type="button" className="pane__btn pane__btn--split" title={withKey(t("workspace.splitRight"), keyText.splitRight)} aria-label={t("workspace.splitRight")} aria-haspopup="menu"
                               onClick={(e) => openSplitMenu(e.currentTarget, tab.key, id, "row")}>
                               <Columns2 size={14} />
                             </button>
-                            <button type="button" className="pane__btn pane__btn--split" title={t("workspace.splitDown")} aria-label={t("workspace.splitDown")} aria-haspopup="menu"
+                            <button type="button" className="pane__btn pane__btn--split" title={withKey(t("workspace.splitDown"), keyText.splitDown)} aria-label={t("workspace.splitDown")} aria-haspopup="menu"
                               onClick={(e) => openSplitMenu(e.currentTarget, tab.key, id, "col")}>
                               <Rows2 size={14} />
                             </button>
                             {multi && (
-                              <button type="button" className="pane__btn pane__btn--close" title={t("terminal.closePane")} aria-label={t("terminal.closePane")} onClick={() => requestClose(tab.key, id)}>
+                              <button type="button" className="pane__btn pane__btn--close" title={withKey(t("terminal.closePane"), keyText.closePane)} aria-label={t("terminal.closePane")} onClick={() => requestClose(tab.key, id)}>
                                 <X size={14} />
                               </button>
                             )}
@@ -1546,7 +1633,6 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
                         const installing = installPanes.current.get(id);
                         if (installing) reportInstallOutput(installing, tail);
                       } : undefined}
-                      onToggleBroadcast={multi ? () => toggleBroadcast(tab.key) : undefined}
                       onHandle={(h) => {
                         if (!h) { handles.current.delete(id); return; }
                         handles.current.set(id, h);
@@ -1665,7 +1751,7 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
           onDismiss={() => setPending(null)}
           actions={<>
             <Button onClick={() => setPending(null)}>{t("common.cancel")}</Button>
-            <Button variant="danger" onClick={() => { setPending(null); dropPanes(pending.tab, closing.ids); }}>
+            <Button variant="danger" onClick={() => { setPending(null); dropPanes(pending.tab, closing.ids, true); }}>
               {pending.pane ? t("terminal.closePane") : t("terminal.closeTab")}
             </Button>
           </>}

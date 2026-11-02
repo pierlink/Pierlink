@@ -303,6 +303,8 @@ await rec.step(p, "服务器入口：WSL 里的 AI 带令牌连 127.0.0.1:47821�
   await u.waitFor(`!!${lxRow}`, "服务器入口出现在列表里");
   await check("Run commands on this Windows computer");
   await u.waitFor(`/Running/.test(${lxRow}?.querySelector('.task-row__detail')?.textContent||'')`, "服务器入口运行中", 60000);
+  // 隧道一连上就显示“运行中”，服务器上的 mcp.json 随后才写好：等页面说写好了再让 AI 去读
+  await u.waitFor(`/mcp\\.json on the server is ready/.test(document.querySelector('.mcp-oneclick')?.textContent||'')`, "服务器上的 mcp.json 写好", 30000);
   // 在 WSL 里用 python 当 HTTP 客户端：读 ~/.pierlink/mcp.json 里的地址和令牌。
   // 用 wsl.exe -e 直接执行，不经过 bash（否则脚本里的 $(...) 会先被 bash 当成命令替换）
   const script = [

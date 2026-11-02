@@ -21,7 +21,6 @@
 .set-num { display: inline-flex; align-items: center; gap: 6px; }
 .set-num input { width: 96px; text-align: right; }
 .set-num__suffix { color: var(--text-dim); font-size: var(--fs-sm); }
-.set-kbd { font-size: var(--fs-xs); color: var(--text-muted); padding: 3px 8px; border-radius: var(--r-sm); background: var(--chip); }
 .set-rules { padding: 14px 16px; gap: 10px; }
 .set-rules__actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 

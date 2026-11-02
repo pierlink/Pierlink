@@ -447,4 +447,12 @@ fn 新建的桌面会话让_xfce_面板直接用默认布局() {
     })
     .unwrap();
     assert!(script.contains("XFCE_PANEL_MIGRATE_DEFAULT=1"));
+    // 登录前后两处都固定用 X11、去掉 WAYLAND_DISPLAY（GTK 默认先连 Wayland，WSLg 下 XFCE 起不来）
+    assert_eq!(script.matches("GDK_BACKEND=x11").count(), 2);
+    assert_eq!(
+        script
+            .matches("unset SESSION_MANAGER DBUS_SESSION_BUS_ADDRESS WAYLAND_DISPLAY")
+            .count(),
+        2
+    );
 }

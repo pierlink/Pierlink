@@ -27,6 +27,7 @@ import { passwordBus } from "../passwords/bus";
 import { KittyKeyboard, localShellFamily, newlineKey, parseOsc52 } from "./kittyKeys";
 import { Prediction } from "./prediction";
 import { historyScope } from "./predict";
+import { shortcutOf } from "../shortcuts/runtime";
 
 interface Props {
   backend: TerminalBackend;
@@ -59,8 +60,6 @@ interface Props {
   onInput?: (data: string) => boolean;
   /** 广播时把最近一段输出交给上层（用来识别密码提示） */
   onOutput?: (tail: string) => void;
-  /** 按了 Ctrl+Shift+B：开关广播输入 */
-  onToggleBroadcast?: () => void;
   /** 终端创建后交出操作句柄（命令片段用），销毁时交出 null */
   onHandle?: (h: TermHandle | null) => void;
   /** 终端当前目录（不知道时为 null）：右键菜单“复制当前目录”“在资源管理器中打开”用 */
@@ -117,14 +116,14 @@ const WHEEL_LINE_PX = 33;
  * 会话断开或退出后，终端内容留着，最下面写一行说明，正中间放一张带“重新连接”的卡片，按 Enter 也能重新连接；
  * 登录失败、没能打开时盖上一块提示，提供“重新连接”和“关闭标签”。不自动重连，也不自动关闭标签（设计 3.9）。
  */
-export function TerminalView({ backend, spec, visible, confirmPaste, openLink, onStatus, onError, onCloseTab, closeLabel, onCwd, onCommand, onAttention, onSession, broadcasting, onInput, onOutput, onToggleBroadcast, onHandle, cwd, onSplit, canSplit, fileDrop, prediction, serverPrediction, connectTitle, phoneCols, precheck, onCancelConnect, onRetryConnect, autoCommand, onAutoCommandSent }: Props) {
+export function TerminalView({ backend, spec, visible, confirmPaste, openLink, onStatus, onError, onCloseTab, closeLabel, onCwd, onCommand, onAttention, onSession, broadcasting, onInput, onOutput, onHandle, cwd, onSplit, canSplit, fileDrop, prediction, serverPrediction, connectTitle, phoneCols, precheck, onCancelConnect, onRetryConnect, autoCommand, onAutoCommandSent }: Props) {
   const { t } = useTranslation();
   const host = useRef<HTMLDivElement>(null);
   // 回调放进 ref，避免它们变化时重建终端
   const { settings } = useSettings();
   const opts = settings.terminal;
-  const cb = useRef({ confirmPaste, openLink, onStatus, onError, onCwd, onCommand, onAttention, onSession, t, opts, broadcasting, onInput, onOutput, onToggleBroadcast, onHandle, cwd, onSplit, canSplit, prediction, precheck, onRetryConnect, autoCommand, onAutoCommandSent });
-  cb.current = { confirmPaste, openLink, onStatus, onError, onCwd, onCommand, onAttention, onSession, t, opts, broadcasting, onInput, onOutput, onToggleBroadcast, onHandle, cwd, onSplit, canSplit, prediction, precheck, onRetryConnect, autoCommand, onAutoCommandSent };
+  const cb = useRef({ confirmPaste, openLink, onStatus, onError, onCwd, onCommand, onAttention, onSession, t, opts, broadcasting, onInput, onOutput, onHandle, cwd, onSplit, canSplit, prediction, precheck, onRetryConnect, autoCommand, onAutoCommandSent });
+  cb.current = { confirmPaste, openLink, onStatus, onError, onCwd, onCommand, onAttention, onSession, t, opts, broadcasting, onInput, onOutput, onHandle, cwd, onSplit, canSplit, prediction, precheck, onRetryConnect, autoCommand, onAutoCommandSent };
   /** 指纹还没核对通过：先不打开会话 */
   const held = !!precheck && precheck.phase !== "go";
   /** 会话已经开始打开（核对通过后只开一次；之后的重新连接走 reopen） */
@@ -737,11 +736,13 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
     pasteRef.current = doPaste;
 
     // 复制粘贴快捷键：有选中文字时 Ctrl+C、Ctrl+Shift+C 复制（和 Windows Terminal 一样复制后取消选中），
-    // 没有选中时 Ctrl+C 照常发给程序（中断）；Ctrl+V、Ctrl+Shift+V 粘贴；Ctrl+Shift+B 开关广播输入。
+    // 没有选中时 Ctrl+C 照常发给程序（中断）；Ctrl+V、Ctrl+Shift+V 粘贴。
     // 拦下的按键要阻止浏览器默认动作：Ctrl+V 在浏览器里本身就是粘贴，不阻止会再粘贴一次（粘贴两份）
     term.attachCustomKeyEventHandler((ev) => {
       // 会话结束后 Tab 交给浏览器：焦点能移到中间卡片上的“关闭”“重新连接”
       if (exited && ev.key === "Tab") return false;
+      // 应用的快捷键（新建标签、开关文件栏等）：放行给应用，不发给终端里的程序
+      if (shortcutOf(ev)) return false;
       // 正在显示命令预测时，→ 补全整条、Ctrl+→ 补一个词
       const predicted = prediction.handleKey(ev);
       if (predicted !== null) return predicted;
@@ -758,15 +759,12 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
         return false;
       }
       if (!ev.ctrlKey || ev.altKey || ev.metaKey) return true;
-      if (ev.code !== "KeyC" && ev.code !== "KeyV" && ev.code !== "KeyB") return true;
+      if (ev.code !== "KeyC" && ev.code !== "KeyV") return true;
       // 只按 Ctrl+C、没有选中文字：交给 xterm 发给程序
       if (ev.code === "KeyC" && !ev.shiftKey && !term.hasSelection()) return true;
-      if (ev.code === "KeyB" && (!ev.shiftKey || !cb.current.onToggleBroadcast)) return true;
       ev.preventDefault();
       if (ev.type !== "keydown") return false;
-      if (ev.code === "KeyB") {
-        cb.current.onToggleBroadcast?.();
-      } else if (ev.code === "KeyC") {
+      if (ev.code === "KeyC") {
         const sel = term.getSelection();
         if (sel) {
           copyText.current(sel);

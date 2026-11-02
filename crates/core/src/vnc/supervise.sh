@@ -103,8 +103,10 @@ created=$(date +%s)000
     printf ',"linger_failed":%s}' "$linger_failed"
 } > "$lock/state" || { printf failed > "$lock/result"; exit; }
 chmod 600 "$lock/state" && mv -- "$lock/state" "$state_dir/$display.json" || { printf failed > "$lock/result"; exit; }
-export DISPLAY=:$display XAUTHORITY=$xauth_file XDG_SESSION_TYPE=x11 XDG_CURRENT_DESKTOP=$desktop_names DESKTOP_SESSION=$desktop_id
-unset SESSION_MANAGER DBUS_SESSION_BUS_ADDRESS
+# 会话里固定用 X11：GTK 程序默认先连 Wayland，XDG_RUNTIME_DIR 里有 wayland-0（WSLg，或这个用户正登录着 Wayland 桌面）时
+# 会连到那边，XFCE 再把这个显示名交给面板、窗口管理器，它们打不开就退出，桌面起不来；从桌面里打开的程序也会跑到那边去
+export DISPLAY=:$display XAUTHORITY=$xauth_file XDG_SESSION_TYPE=x11 XDG_CURRENT_DESKTOP=$desktop_names DESKTOP_SESSION=$desktop_id GDK_BACKEND=x11
+unset SESSION_MANAGER DBUS_SESSION_BUS_ADDRESS WAYLAND_DISPLAY
 if [ -n "${light_prefix:-}" ]; then
     XDG_CACHE_HOME=$state_dir/$display.cache
     private_dir "$XDG_CACHE_HOME"
@@ -117,7 +119,7 @@ EOF
 fi
 # 登录 shell 可能重写环境，因此在登录初始化之后再次设置。
 # XFCE 面板第一次启动时直接用默认布局（4.14 及更早会弹框问用默认还是空面板）；别的桌面不认这个变量。
-session_command="$(session_environment)export DISPLAY=$(shell_quote "$DISPLAY") XAUTHORITY=$(shell_quote "$XAUTHORITY") XDG_SESSION_TYPE=x11 XDG_CURRENT_DESKTOP=$(shell_quote "$desktop_names") DESKTOP_SESSION=$(shell_quote "$desktop_id") XFCE_PANEL_MIGRATE_DEFAULT=1; unset SESSION_MANAGER DBUS_SESSION_BUS_ADDRESS; exec $dbus $desktop_exec"
+session_command="$(session_environment)export DISPLAY=$(shell_quote "$DISPLAY") XAUTHORITY=$(shell_quote "$XAUTHORITY") XDG_SESSION_TYPE=x11 XDG_CURRENT_DESKTOP=$(shell_quote "$desktop_names") DESKTOP_SESSION=$(shell_quote "$desktop_id") GDK_BACKEND=x11 XFCE_PANEL_MIGRATE_DEFAULT=1; unset SESSION_MANAGER DBUS_SESSION_BUS_ADDRESS WAYLAND_DISPLAY; exec $dbus $desktop_exec"
 "${SHELL:-/bin/sh}" -l -c "$session_command" & desktop_pid=$!
 printf ready > "$lock/result"
 wait "$desktop_pid"

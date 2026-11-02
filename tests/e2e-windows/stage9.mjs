@@ -477,7 +477,16 @@ await rec.step(p, "安装桌面（三）：新建 XFCE 桌面，画面不是纯�
   let colors = 0;
   const deadline = Date.now() + 90000;
   while (Date.now() < deadline && (colors = await canvasColors()) < 3) await sleep(2000);
-  if (colors < 3) throw new Error(`XFCE 桌面画面还是纯色（取样颜色数 ${colors}）`);
+  if (colors < 3) {
+    // 会话退出后日志还留在服务器上：带上最新那份的末尾和桌面相关的进程，好查是哪一步退出的
+    let detail;
+    try {
+      detail = asRoot("f=$(ls -t /root/.local/state/pierlink/vnc/*.log 2>/dev/null | head -n 1); if [ -n \"$f\" ]; then echo \"== $f\"; tail -n 60 \"$f\"; else echo '== 没有会话日志'; fi; echo '== 进程'; ps -eo pid,ppid,args | grep -iE 'xfce|xfwm|xfdesktop|Xtigervnc|dbus' | grep -v grep | cut -c1-200", 30000);
+    } catch (e) {
+      detail = `取会话日志失败：${e.message}`;
+    }
+    throw new Error(`XFCE 桌面画面还是纯色（取样颜色数 ${colors}）\n${detail}`);
+  }
   const sessions = asRoot("ps -eo comm= | grep -cE '^(xfce4-session|xfwm4|xfce4-panel|Xtigervnc)$' || true").trim();
   await clickInDesk('[aria-label="Close desktop"]');
   await u.clickText("Close desktop", ".pl-dialog");

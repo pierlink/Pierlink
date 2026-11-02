@@ -8,6 +8,16 @@ lock="$sshdir/.pierlink-lock"
 # 移除时连授权文件都没有：没什么可删，也不必加锁（~/.ssh 可能不存在，锁建不起来）
 if [ "$action" = remove ] && [ ! -e "$file" ] && [ ! -L "$file" ]; then printf '{"status":"not_found"}'; exit 0; fi
 if [ "$action" != list ]; then
+# 锁里记下拿锁进程的真实进程号（子 shell 里的 $$ 还是外层的，所以问一个子进程它的父进程是谁）。
+# 退出时只有拿锁的这个进程、且锁还是自己的才删：锁已经不在或被别人拿走时不报错，也不删别人的锁。
+# 进程号在拿锁前先问好：建好锁到设好退出清理之间没有会失败的命令，不会留下没人删的锁
+lock_pid=$(exec /bin/sh -c 'echo "$PPID"')
+release() {
+    [ "$(exec /bin/sh -c 'echo "$PPID"')" = "$lock_pid" ] || return 0
+    [ "$(cat "$lock/owner" 2>/dev/null)" = "$lock_pid" ] || return 0
+    rm -f "$lock/new" "$lock/owner"
+    rmdir "$lock" 2>/dev/null || :
+}
 i=0
 while ! mkdir "$lock" 2>/dev/null; do
     # GNU stat 和 busybox stat 均支持秒级修改时间；无法读取时不冒险清锁。
@@ -16,7 +26,7 @@ while ! mkdir "$lock" 2>/dev/null; do
         now=$(date +%s)
         case "$modified" in ''|*[!0-9]*) modified=0;; esac
         if [ "$modified" -gt 0 ] && [ "$((now-modified))" -gt 600 ]; then
-            # 先原子改名再删除：别人刚建的新锁不会被误删（改名失败说明已被别人处理，继续等）
+            # 先改名再删：删的只是改名搬走的那一个（改名失败说明别人已经处理了，继续等）
             stale="$lock.stale.$$"
             if mv "$lock" "$stale" 2>/dev/null; then rm -rf "$stale"; continue; fi
         fi
@@ -24,7 +34,8 @@ while ! mkdir "$lock" 2>/dev/null; do
     i=$((i+1)); [ "$i" -lt 11 ] || exit 71
     sleep 1
 done
-trap 'rm -f "$lock/new"; rmdir "$lock"' EXIT
+trap release EXIT
+printf '%s\n' "$lock_pid" > "$lock/owner"
 fi
 trap 'exit 72' HUP INT TERM
 if [ "$action" = remove ] && [ -L "$file" ]; then printf '{"status":"symlink"}'; exit 0; fi

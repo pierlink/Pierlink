@@ -1,4 +1,5 @@
 import type { ThemePref } from "../../theme";
+import { normalizeShortcuts, type ShortcutOverrides } from "../shortcuts/actions";
 
 /** 应用设置。新增字段必须给默认值（旧版本保存的设置里没有它）。 */
 export interface AppSettings {
@@ -52,6 +53,8 @@ export interface AppSettings {
     keepVersions: boolean;
     ignoreRules: string[];
   };
+  /** 快捷键：只记和默认不一样的动作（null 为清空，不用快捷键）；默认键见 shortcuts/actions.ts */
+  shortcuts: ShortcutOverrides;
 }
 
 /** 设计 3.3 的默认排除规则 */
@@ -70,6 +73,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   updates: { autoCheck: true },
   notices: { builtinSsh: false },
   syncDefaults: { watchDelayS: 10, conflictMode: "ask", keepVersions: true, ignoreRules: DEFAULT_IGNORE_RULES },
+  shortcuts: {},
 };
 
 const clamp = (v: unknown, lo: number, hi: number, d: number) =>
@@ -123,5 +127,6 @@ export function normalizeSettings(raw: unknown): AppSettings {
       keepVersions: bool(s.keepVersions, d.syncDefaults.keepVersions),
       ignoreRules: rules,
     },
+    shortcuts: normalizeShortcuts(r.shortcuts),
   };
 }

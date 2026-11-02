@@ -135,9 +135,11 @@ function savePrefs(p: ViewPrefs) {
  * 服务器桌面窗格：检测服务器上的 VNC 桌面，选一个连接，用 noVNC 显示。
  * 数据经 SSH 走后端，本机和服务器都不开端口。
  */
-export function DesktopPane({ serverId, visible, title, controls, windowTitle, standalone, onPoppedOut, onInstallTerminal }: {
+export function DesktopPane({ serverId, visible, grabKeyboard = true, title, controls, windowTitle, standalone, onPoppedOut, onInstallTerminal }: {
   serverId: string;
   visible: boolean;
+  /** 切到这个标签时把键盘交给远程桌面；用快捷键切标签经过时为 false（拿了键盘再按 Ctrl+Tab 就切不出去了） */
+  grabKeyboard?: boolean;
   /** 独立窗口的标题（如“gpu-dev 桌面”）；不给就不显示“在独立窗口打开” */
   windowTitle?: string;
   /** 自己就是独立窗口 */
@@ -425,9 +427,11 @@ export function DesktopPane({ serverId, visible, title, controls, windowTitle, s
     return () => clearInterval(timer);
   }, [phase.kind]);
 
-  // 切回这个标签时把键盘交给远程桌面
+  // 切回这个标签时把键盘交给远程桌面（用快捷键切过来时不给，见 grabKeyboard）
+  const grabRef = useRef(grabKeyboard);
+  grabRef.current = grabKeyboard;
   useEffect(() => {
-    if (visible && phase.kind === "connected") rfbRef.current?.focus();
+    if (visible && phase.kind === "connected" && grabRef.current) rfbRef.current?.focus();
   }, [visible, phase.kind]);
 
   // 全屏：整个页面全屏、桌面铺满窗口。只让桌面这一块全屏时，noVNC 挂在页面上的鼠标指针和悬停提示都看不见

@@ -24,6 +24,7 @@ import { ServerExportDialog } from "../servers/ServerExportDialog";
 import { ImportReportDialog } from "../settings/ImportReportDialog";
 import { importServers, type ImportResult } from "../settings/profileApi";
 import { writeClipboardText } from "../shell/clipboard";
+import { useShortcut } from "../shortcuts/runtime";
 
 type Modal =
   | { kind: "edit"; server: ServerRecord | null }
@@ -63,8 +64,11 @@ function loadPanel(): { open: boolean; page: ToolPage } {
   }
 }
 
-/** 工作区：服务器列表 | 终端标签区 | 工具面板，底部状态栏。 */
-export function WorkspacePage() {
+/**
+ * 工作区：服务器列表 | 终端标签区 | 工具面板，底部状态栏。
+ * @param active 工作区正在显示（切到别的页面时只是隐藏）：只有这时工作区的快捷键才响应
+ */
+export function WorkspacePage({ active = true }: { active?: boolean }) {
   const { t } = useTranslation();
   const { servers: records, loaded: serversLoaded, loadError, reload, save, remove, setFavorite, setCommandPrediction } = useServers();
   const [connections, setConnections] = useState<Record<string, "online" | "connecting">>({});
@@ -85,6 +89,22 @@ export function WorkspacePage() {
   // 命令片段：发送请求交给终端区；终端区报告现在会发到几个窗格
   const [snippetRequest, setSnippetRequest] = useState<SnippetRequest | null>(null);
   const [snippetTargets, setSnippetTargets] = useState(0);
+  const searchRef = useRef<HTMLInputElement>(null);
+
+  // 用快捷键收起工具面板时焦点在面板里：请终端区把焦点还给当前终端（每次加一），不然焦点掉到页面上
+  const [focusRequest, setFocusRequest] = useState(0);
+  const focusBackIfInPanel = () => { if (document.activeElement?.closest(".ws__tool")) setFocusRequest((n) => n + 1); };
+
+  // 快捷键：工具面板开关；命令片段（面板已经开在片段页时收起）；搜索服务器
+  useShortcut("togglePanel", () => {
+    if (panel.open) focusBackIfInPanel();
+    setPanel((x) => ({ ...x, open: !x.open }));
+  }, active);
+  useShortcut("snippets", () => {
+    if (panel.open && panel.page === "snippets") focusBackIfInPanel();
+    setPanel((x) => (x.open && x.page === "snippets" ? { ...x, open: false } : { open: true, page: "snippets" }));
+  }, active);
+  useShortcut("searchServers", () => { searchRef.current?.focus(); searchRef.current?.select(); }, active);
 
   // 开发预览：#workspace-link 打开第一台导入服务器的设置
   const linkDemo = useRef(false);
@@ -133,6 +153,7 @@ export function WorkspacePage() {
           servers={views}
           selectedId={server?.id ?? null}
           onSelect={setSelected}
+          searchRef={searchRef}
           actions={{
             onAdd: () => setModal({ kind: "edit", server: null }),
             onImport: () => setModal({ kind: "import" }),
@@ -169,6 +190,8 @@ export function WorkspacePage() {
           onTogglePanel={() => setPanel((x) => ({ ...x, open: !x.open }))}
           snippetRequest={snippetRequest}
           onSnippetTargets={setSnippetTargets}
+          active={active}
+          focusRequest={focusRequest}
         />
         {panel.open && (
           <ToolPanel

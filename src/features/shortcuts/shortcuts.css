@@ -1,0 +1,31 @@
+/* 设置 → 快捷键 */
+.sc-head { display: flex; align-items: center; gap: 12px; }
+.sc-head .set-lead { flex: 1; min-width: 0; }
+.sc-group { display: flex; flex-direction: column; gap: 6px; }
+.sc-group__title { margin: 0; font-size: var(--fs-sm); font-weight: 600; color: var(--text-muted); }
+.sc-row { display: flex; align-items: center; gap: 8px; min-height: 44px; padding: 6px 10px 6px 16px; border-top: 1px solid var(--border); }
+.sc-row:first-child { border-top: 0; }
+.sc-row__name { flex: none; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 提示位置一直占着（空的时候也在）：冲突原因出现、消失都不挤动按键和按钮 */
+.sc-row__note { flex: 1; min-width: 0; text-align: right; font-size: var(--fs-xs); color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sc-row__note--warn { color: var(--warn); }
+.sc-row__note--danger { color: var(--danger); }
+/* 按键：固定宽度，录制时文字变了也不动 */
+.sc-key {
+  flex: none; width: 13em; height: var(--h-control-sm); padding: 0 8px; border: 1px solid var(--border); border-radius: var(--r-sm);
+  background: var(--chip); color: var(--text); font-size: var(--fs-xs); text-align: center; cursor: pointer;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.sc-key:hover { border-color: var(--border-strong); }
+.sc-key--empty { color: var(--text-dim); }
+.sc-key[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
+/* 用不了的“恢复默认”“清空”（已是默认、没有快捷键）淡一些 */
+.sc-row .pl-icon-btn:disabled { opacity: 0.35; cursor: default; }
+.sc-reserved { font-size: var(--fs-xs); }
+
+@media (max-width: 760px) {
+  /* 窄的时候提示另起一行（同样一直占着） */
+  .sc-row { flex-wrap: wrap; }
+  .sc-row__name { flex: 1; max-width: none; }
+  .sc-row__note { order: 1; flex-basis: 100%; min-height: 1.5em; text-align: left; }
+}

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { useTranslation } from "react-i18next";
 import { ArrowDownUp, Check, ChevronDown, Copy, Eye, EyeOff, Monitor, Plus, RefreshCw, Search } from "lucide-react";
 import { IconButton, Menu, Segmented, StatusDot, useContextMenu, type MenuEntry } from "../../components";
@@ -39,7 +39,14 @@ export interface ServerActions {
  * 左侧服务器列表：搜索、筛选、分组、右键菜单。双击或回车打开终端。
  * 每行地址右边有复制按钮（复制 IP）；顶部的小眼睛把所有 IP 显示成圆点（防止截图泄露，复制照样是真实地址）。
  */
-export function ServerSidebar({ servers, selectedId, onSelect, actions }: { servers: ServerView[]; selectedId: string | null; onSelect: (id: string) => void; actions: ServerActions }) {
+export function ServerSidebar({ servers, selectedId, onSelect, actions, searchRef }: {
+  servers: ServerView[];
+  selectedId: string | null;
+  onSelect: (id: string) => void;
+  actions: ServerActions;
+  /** 搜索框（“搜索服务器”快捷键把焦点给它） */
+  searchRef?: RefObject<HTMLInputElement | null>;
+}) {
   const { t } = useTranslation();
   const { settings } = useSettings();
   const [query, setQuery] = useState("");
@@ -128,7 +135,7 @@ export function ServerSidebar({ servers, selectedId, onSelect, actions }: { serv
       <label className="srv-search">
         <Search size={13} aria-hidden="true" />
         <span className="visually-hidden">{t("common.search")}</span>
-        <input type="search" placeholder={t("workspace.searchServers")} value={query} onChange={(e) => setQuery(e.target.value)} />
+        <input ref={searchRef} type="search" placeholder={t("workspace.searchServers")} value={query} onChange={(e) => setQuery(e.target.value)} />
       </label>
       <Segmented
         label={t("workspace.servers")}

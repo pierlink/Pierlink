@@ -5,6 +5,9 @@ import { IconButton, Menu, StatusDot, type MenuEntry } from "../../components";
 import { localShellName } from "../terminal/backend";
 import type { ServerView, TabView } from "./types";
 import { maskHost, useHideAddresses } from "./hideAddresses";
+import { useSettings } from "../settings/store";
+import { useShortcutBindings, withShortcut } from "../shortcuts/runtime";
+import { formatCombo } from "../shortcuts/keys";
 
 const dotTone = { online: "ok", connecting: "warn", offline: "neutral" } as const;
 
@@ -35,6 +38,10 @@ export function TabBar({ tabs, activeId, servers, localShells, onActivate, onClo
   const moreRef = useRef<HTMLButtonElement>(null);
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   const hide = useHideAddresses();
+  const keys = useShortcutBindings();
+  // “新建终端标签”快捷键打开的本机终端：设置里选的，没选或已不存在时用检测出的默认项（和终端区的规则一样）
+  const { settings } = useSettings();
+  const defaultShell = localShells.find((x) => x.id === settings.terminal.defaultShell) ?? localShells.find((x) => x.isDefault) ?? localShells[0];
   const stripRef = useRef<HTMLDivElement>(null);
   // 鼠标在标签上时，滚轮左右滚动标签（不用去点细细的滚动条）。触控板左右滑动照常交给浏览器
   useEffect(() => {
@@ -52,10 +59,10 @@ export function TabBar({ tabs, activeId, servers, localShells, onActivate, onClo
   const entries: MenuEntry[] = [
     { kind: "header", id: "h1", label: t("workspace.serversHeader") },
     ...servers.map((s) => ({ id: `srv-${s.id}`, label: hide ? maskHost(`${s.name}  ·  ${s.address}`, s.host) : `${s.name}  ·  ${s.address}`, onSelect: () => onPickServer(s.id) })),
-    { id: "quick", label: `${t("terminal.quickConnect")}…`, onSelect: onQuickConnect },
+    { id: "quick", label: `${t("terminal.quickConnect")}…`, shortcut: formatCombo(keys.quickConnect, " ") || undefined, onSelect: onQuickConnect },
     { kind: "separator", id: "s1" },
     { kind: "header", id: "h2", label: t("workspace.localShells") },
-    ...localShells.map((l) => ({ id: `sh-${l.id}`, label: localShellName(l), shortcut: l.isDefault ? "Ctrl Shift T" : undefined, onSelect: () => onPickShell(l.id) })),
+    ...localShells.map((l) => ({ id: `sh-${l.id}`, label: localShellName(l), shortcut: l.id === defaultShell?.id ? formatCombo(keys.newTab, " ") || undefined : undefined, onSelect: () => onPickShell(l.id) })),
   ];
 
   return (
@@ -93,7 +100,7 @@ export function TabBar({ tabs, activeId, servers, localShells, onActivate, onClo
       ))}
       </div>
       <span className="pl-split" style={{ height: 30, flex: "none", background: "var(--accent-soft)", borderColor: "transparent" }}>
-        <button type="button" className="pl-split__main" aria-label={t("workspace.newTab")} title={t("workspace.newTab")} style={{ padding: "0 8px" }} onClick={onNewDefault}>
+        <button type="button" className="pl-split__main" aria-label={t("workspace.newTab")} title={withShortcut(t, t("workspace.newTab"), formatCombo(keys.newTab))} style={{ padding: "0 8px" }} onClick={onNewDefault}>
           <Plus size={14} />
         </button>
         <button
@@ -116,9 +123,9 @@ export function TabBar({ tabs, activeId, servers, localShells, onActivate, onClo
           <button type="button" className="broadcast-chip__stop" onClick={broadcast.onStop}>{t("terminal.broadcast.stop")}</button>
         </span>
       )}
-      <IconButton label={t("workspace.splitRight")} title={t("workspace.splitRight")} aria-haspopup="menu" onClick={(e) => onSplit(e.currentTarget)}><Columns2 size={15} /></IconButton>
+      <IconButton label={t("workspace.splitRight")} title={withShortcut(t, t("workspace.splitRight"), formatCombo(keys.splitRight))} aria-haspopup="menu" onClick={(e) => onSplit(e.currentTarget)}><Columns2 size={15} /></IconButton>
       {onTogglePanel && (
-        <IconButton label={t("panel.toggle")} title={t("panel.toggle")} aria-pressed={!!panelOpen} className={panelOpen ? "pl-icon-btn--on" : undefined} onClick={onTogglePanel}><PanelRight size={15} /></IconButton>
+        <IconButton label={t("panel.toggle")} title={withShortcut(t, t("panel.toggle"), formatCombo(keys.togglePanel))} aria-pressed={!!panelOpen} className={panelOpen ? "pl-icon-btn--on" : undefined} onClick={onTogglePanel}><PanelRight size={15} /></IconButton>
       )}
       {menu && <Menu x={menu.x} y={menu.y} entries={entries} label={t("workspace.chooseTerminal")} onClose={() => setMenu(null)} />}
     </div>

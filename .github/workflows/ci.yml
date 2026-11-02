@@ -625,6 +625,12 @@ jobs:
         env:
           E2E_OUT: ${{ runner.temp }}\e2e-out
         run: node tests/e2e-windows/stage12.mjs
+      - name: 快捷键：终端里按键新建标签、开关文件栏和概况、切标签（按键不进终端）；设置里冲突不保存、改键后新键生效旧键失效、恢复默认
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        env:
+          E2E_OUT: ${{ runner.temp }}\e2e-out
+        run: node tests/e2e-windows/stage13.mjs
       - name: 静默卸载（不删数据）：程序没了、数据还在
         if: ${{ !cancelled() }}
         shell: pwsh

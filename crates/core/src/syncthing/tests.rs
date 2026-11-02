@@ -291,10 +291,14 @@ fn 管理页真实登录注销与无效口令() {
 }
 // 两个真实 Syncthing 互相发现并同步，Windows CI 机器上偶尔超过 30 秒；失败时报调用处的行号
 #[track_caller]
-fn until(mut condition: impl FnMut() -> bool) {
-    let deadline = Instant::now() + Duration::from_secs(60);
+fn until(condition: impl FnMut() -> bool) {
+    until_for(60, condition);
+}
+/// 每 0.1 秒看一次条件，最多等 secs 秒
+fn until_for(secs: u64, mut condition: impl FnMut() -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(secs);
     while !condition() {
-        assert!(Instant::now() < deadline, "60 秒内条件未满足");
+        assert!(Instant::now() < deadline, "{secs} 秒内条件未满足");
         thread::sleep(Duration::from_millis(100));
     }
 }
@@ -506,7 +510,8 @@ fn y4_y25_y26_双实例同步排除及关闭旧版本时保留冲突() {
         matches!((x,y),(Some(x),Some(y)) if !x["local"]["blocksHash"].is_null() && x["local"]["blocksHash"]!=y["local"]["blocksHash"])
     });
     pair(&ia, &ib);
-    until(|| {
+    // 重新连上、交换索引之后才生成冲突副本：Windows CI 上偶尔超过一分钟
+    until_for(180, || {
         [&fa.path, &fb.path].iter().any(|p| {
             fs::read_dir(p)
                 .unwrap()
