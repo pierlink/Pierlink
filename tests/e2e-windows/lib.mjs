@@ -223,3 +223,48 @@ export function diagnose(pid, outDir) {
 export function killApp(exe) {
   try { execFileSync("taskkill", ["/IM", exe.split(/[\\/]/).pop(), "/F"], { stdio: "ignore" }); } catch { /* 已经退出 */ }
 }
+
+/**
+ * 转圈动画（像 npm install 那样每帧分三次写：回行首、清行、写一个字符）期间光标稳不稳。
+ * 先等光标所在行只剩一个转圈字符，再在 3 秒内记下每次画面变化时光标在第几列、这一行是什么
+ * （xterm 每帧最多改一次 DOM）。光标不在第 1 列（转圈字符后面）或者没画出来，都算“跳了一下”。
+ * :param p: 调试连接
+ * :param rows: 取终端 .xterm-rows 元素的页面表达式
+ * :return: { bad: 跳的次数, badMs: 跳开的总毫秒数, summary: 中文说明 }
+ */
+export async function spinnerCursor(p, rows) {
+  const { waitFor } = ui(p);
+  await waitFor(`(()=>{const c=(${rows})?.querySelector('.xterm-cursor'); const t=(c?.parentElement.textContent||'').trimEnd(); return !!c && /^[-\\\\|/]$/.test(t);})()`, "出现转圈字符", 15000);
+  const { states, end } = await p.js(`new Promise((resolve)=>{const rows=${rows}; const t0=performance.now(); const out=[]; const snap=()=>{const c=rows.querySelector('.xterm-cursor'); let col=null, text=null; if(c){col=0; for(let n=c.previousSibling;n;n=n.previousSibling) col+=(n.textContent||'').length; text=(c.parentElement.textContent||'').trimEnd();} const last=out[out.length-1]; if(!last||last.col!==col||last.text!==text) out.push({t:Math.round(performance.now()-t0), col, text});}; const mo=new MutationObserver(snap); mo.observe(rows,{subtree:true,childList:true,characterData:true,attributes:true,attributeFilter:['class']}); snap(); setTimeout(()=>{mo.disconnect(); resolve({states:out, end:Math.round(performance.now()-t0)});},3000);})`);
+  let bad = 0, badMs = 0;
+  states.forEach((s, i) => {
+    if (s.col === 1) return;
+    bad += 1;
+    badMs += (states[i + 1]?.t ?? end) - s.t;
+  });
+  const sample = states.slice(0, 12).map((s) => `${s.t}ms:${s.col === null ? "无光标" : `第${s.col}列`}「${s.text ?? ""}」`).join(" ");
+  return { bad, badMs, summary: `3 秒内画面变化 ${states.length} 次，光标离开转圈字符后面 ${bad} 次、共 ${badMs} 毫秒；前几次：${sample}` };
+}
+
+/**
+ * 光标闪得匀不匀：ms 毫秒里逐帧看光标亮还是灭，记下每次切换的时刻。
+ * 竖线光标亮的时候有不透明的 inset 阴影，方块亮的时候有底色，下划线亮的时候有下边框。
+ * :param p: 调试连接
+ * :param rows: 取终端 .xterm-rows 元素的页面表达式
+ * :param ms: 观察多久
+ * :return: { flips: 切换时刻, gaps: 相邻两次切换的间隔, redraws: 光标元素换新的次数, missing: 没画光标的帧数, frames, summary }
+ */
+export async function blinkRhythm(p, rows, ms = 6000) {
+  const r = await p.js(`new Promise((resolve)=>{const rows=${rows}; const t0=performance.now(); let last=null, el=null, redraws=0, missing=0, frames=0; const flips=[]; const lit=(c)=>{const s=getComputedStyle(c); if(c.classList.contains('xterm-cursor-bar')) return s.boxShadow!=='none' && !s.boxShadow.startsWith('rgba(0, 0, 0, 0)'); if(c.classList.contains('xterm-cursor-underline')) return s.borderBottomStyle!=='hidden' && s.borderBottomStyle!=='none'; return s.backgroundColor!=='rgba(0, 0, 0, 0)' && s.backgroundColor!=='transparent';}; const tick=()=>{frames++; const c=rows.querySelector('.xterm-cursor'); const t=performance.now()-t0; if(!c) missing++; else { if(el && c!==el) redraws++; el=c; const v=lit(c); if(last!==null && v!==last) flips.push(Math.round(t)); last=v; } if(t<${ms}) requestAnimationFrame(tick); else resolve({flips, redraws, missing, frames}); }; requestAnimationFrame(tick);})`);
+  const gaps = r.flips.slice(1).map((x, i) => x - r.flips[i]);
+  return { ...r, gaps, summary: `${ms / 1000} 秒 ${r.frames} 帧里亮灭切换 ${r.flips.length} 次，间隔 ${gaps.join("、") || "（没有）"} 毫秒；光标重画 ${r.redraws} 次，没画光标 ${r.missing} 帧` };
+}
+
+/**
+ * 闪得匀：至少切换 7 次，间隔在 0.6 秒上下 70 毫秒以内，一直画着光标。
+ * CI 机器偶尔卡一下会让一次间隔偏得多：允许一次，但也不能偏过 300 毫秒（节奏乱的时候偏的不止一次）
+ */
+export const blinkSteady = (r) => {
+  const off = r.gaps.filter((g) => Math.abs(g - 600) > 70);
+  return r.flips.length >= 7 && off.length <= 1 && off.every((g) => Math.abs(g - 600) <= 300) && r.missing === 0;
+};

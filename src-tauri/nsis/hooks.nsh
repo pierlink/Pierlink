@@ -1,13 +1,13 @@
 ; Pierlink 安装/卸载钩子（由 Tauri 的 NSIS 模板在对应位置插入）
 ;
-; 安装或卸载前结束 Pierlink 自己启动的本机同步服务（syncthing.exe）：
-; 应用被安装程序关闭时它可能还在运行，会占着要覆盖或删除的 syncthing.exe。
-; 只结束程序路径在安装目录里的 syncthing.exe，用户自己装的 Syncthing 不受影响。
+; 安装或卸载前结束 Pierlink 自己启动的本机同步服务（syncthing.exe）和终端宿主（随包的 OpenConsole.exe）：
+; 应用被安装程序关闭时它们可能还在运行（比如 Pierlink 异常退出后），会占着要覆盖或删除的程序文件。
+; 只结束程序路径在安装目录里的，用户自己装的 Syncthing、Windows Terminal 不受影响。
 ; 安装目录经环境变量传给 PowerShell，路径里有引号等字符也不会出错。
 
 !macro PierlinkStopSyncthing
   System::Call 'Kernel32::SetEnvironmentVariable(t "PIERLINK_INSTDIR", t "$INSTDIR")'
-  nsExec::Exec `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "$$d = [IO.Path]::GetFullPath($$env:PIERLINK_INSTDIR).TrimEnd('\') + '\'; Get-Process -Name syncthing -ErrorAction SilentlyContinue | Where-Object { $$_.Path -and $$_.Path.StartsWith($$d, [StringComparison]::OrdinalIgnoreCase) } | Stop-Process -Force -ErrorAction SilentlyContinue"`
+  nsExec::Exec `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "$$d = [IO.Path]::GetFullPath($$env:PIERLINK_INSTDIR).TrimEnd('\') + '\'; Get-Process -Name syncthing, OpenConsole -ErrorAction SilentlyContinue | Where-Object { $$_.Path -and $$_.Path.StartsWith($$d, [StringComparison]::OrdinalIgnoreCase) } | Stop-Process -Force -ErrorAction SilentlyContinue"`
   Pop $0
   Sleep 500
 !macroend
@@ -31,6 +31,13 @@
 ; 旧数据只在默认安装目录（%LOCALAPPDATA%\Pierlink）里，安装到别处时不碰，避免误删同名目录。
 !macro NSIS_HOOK_POSTUNINSTALL
   Delete "$INSTDIR\syncthing\pierlink.lock"
+  ; 资源管理器右键菜单“在 Pierlink 中打开”（由程序按设置写在当前用户下，见 src-tauri/src/explorer_menu.rs）。
+  ; 更新时不删：新版本启动后会按设置重新写
+  ${If} $UpdateMode <> 1
+    DeleteRegKey HKCU "Software\Classes\Directory\Background\shell\Pierlink"
+    DeleteRegKey HKCU "Software\Classes\Directory\shell\Pierlink"
+    DeleteRegKey HKCU "Software\Classes\Drive\shell\Pierlink"
+  ${EndIf}
   ${If} $DeleteAppDataCheckboxState = 1
   ${AndIf} $UpdateMode <> 1
   ${AndIf} $INSTDIR == "$LOCALAPPDATA\Pierlink"

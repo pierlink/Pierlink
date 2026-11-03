@@ -1,6 +1,7 @@
 // 下载并准备随安装包分发的第三方程序：
 //   - Syncthing：本机用的 windows-amd64 syncthing.exe；上传到服务器用的 linux-amd64 / linux-arm64 程序（预先 gzip，减少上传量）
 //   - Win32-OpenSSH 客户端：ssh.exe、ssh-keygen.exe 及其依赖的 libcrypto.dll（设计第 0 节“SSH 程序”）
+//   - 微软的 ConPTY（conpty.dll + OpenConsole.exe，和 Windows Terminal 用的是同一份）：本机终端和服务器终端都跑在它里面
 //   - 以上组件的许可证文件，放到 licenses/ 下随安装包分发
 // 版本和官方压缩包的 SHA-256 固定写在下面，下载后逐个核对，不一致立即失败。
 // 输出到 src-tauri/resources/（不提交到仓库），syncthing/manifest.json 记录解压后程序的 SHA-256。
@@ -31,10 +32,31 @@ const OPENSSH = {
   files: ["ssh.exe", "ssh-keygen.exe", "libcrypto.dll"],
 };
 
+/**
+ * 微软在 NuGet 发布的 ConPTY（MIT 许可，二进制带微软签名）。系统自带的老 ConPTY 会自己重画屏幕，
+ * 程序分几次写的画面（比如 npm 的转圈：回行首、清行、写字符）会把中间状态也发出来，光标来回跳；新版原样转发。
+ * conpty.dll 先找同目录的 OpenConsole.exe，找不到就用系统的 conhost.exe，所以两个文件放在一起。
+ * 不能只靠它这样退回：它会带着系统 conhost 不认的参数去启动，终端全开不了，所以 windows.rs 加载前自己核对
+ * 两个文件都在、版本号相同。
+ * SHA-256 为 NuGet 上 .nupkg 文件的值
+ */
+const CONPTY = {
+  version: "1.24.261001001",
+  url: "https://api.nuget.org/v3-flatcontainer/microsoft.windows.console.conpty/1.24.261001001/microsoft.windows.console.conpty.1.24.261001001.nupkg",
+  file: "Microsoft.Windows.Console.ConPTY.1.24.261001001.nupkg",
+  sha256: "4d6aaddc1d2385c9f5897df28f33879f699f8f2783315d5204cf3d8c3616ac5f",
+  /** 包里的路径 → 放到 resources/conpty/ 下的文件名，以及最小大小（取错文件时立即失败） */
+  files: [
+    ["runtimes/win-x64/native/conpty.dll", "conpty.dll", 50 * 1024],
+    ["build/native/runtimes/x64/OpenConsole.exe", "OpenConsole.exe", 500 * 1024],
+  ],
+};
+
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const resDir = join(root, "src-tauri", "resources");
 const outDir = join(resDir, "syncthing");
 const sshDir = join(resDir, "openssh");
+const conptyDir = join(resDir, "conpty");
 const licDir = join(resDir, "licenses");
 const cacheDir = join(root, ".cache-downloads");
 
@@ -154,6 +176,16 @@ async function main() {
     if (buf.length < 100 * 1024) throw new Error(`取出的文件大小异常: 文件=${f}, 大小=${buf.length}`);
     await writeFile(join(sshDir, f), buf);
     log(`准备完成: 文件=openssh/${f}, 大小=${buf.length}`);
+  }
+
+  // 微软的 ConPTY（许可证原文由 gen-notices.mjs 从 scripts/third-party-licenses/ 复制）
+  await mkdir(conptyDir, { recursive: true });
+  const conpty = await download(CONPTY.file, CONPTY.sha256, CONPTY.url);
+  for (const [from, to, min] of CONPTY.files) {
+    const buf = extractFromZip(conpty, from);
+    if (buf.length < min) throw new Error(`取出的文件大小异常: 文件=${from}, 大小=${buf.length}`);
+    await writeFile(join(conptyDir, to), buf);
+    log(`准备完成: 文件=conpty/${to}, 版本=${CONPTY.version}, 大小=${buf.length}`);
   }
 
   // 许可证

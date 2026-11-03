@@ -40,7 +40,7 @@ if-addrs = "=0.15.0"
 tokio = { version = "1", features = ["rt-multi-thread"] }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { workspace = true, features = ["Win32_System_Console", "Win32_System_DataExchange", "Win32_System_Memory"] }
+windows-sys = { workspace = true, features = ["Win32_System_Console", "Win32_System_DataExchange", "Win32_System_Memory", "Win32_System_Registry"] }
 # 把服务器文件拖到资源管理器：自己实现 COM 接口（IDataObject、IDropSource）要用 windows 的 implement 宏，
 # 宏展开后直接引用 windows-core，所以两个都要列。和 tauri/wry 用的是同一个版本（Cargo.lock 里已有，不引入新包）
 windows = { version = "0.62", features = [

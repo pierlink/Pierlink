@@ -9,6 +9,7 @@ mod data;
 mod deploy;
 mod desktop;
 mod drag_out;
+mod explorer_menu;
 mod files;
 mod forwards;
 mod history;
@@ -51,6 +52,8 @@ fn specta_builder() -> Builder<tauri::Wry> {
         app_info,
         app_shell::app_shell_config,
         app_shell::app_tray_available,
+        explorer_menu::app_take_open_dirs,
+        explorer_menu::explorer_menu_config,
         mcp::mcp_settings_get,
         mcp::mcp_settings_set,
         mcp::mcp_status,
@@ -78,6 +81,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
         data::app_db_restored,
         data::app_data_problem,
         terminal::list_local_shells,
+        terminal::terminal_engine_config,
         terminal::terminal_open_local,
         terminal::terminal_open_quick,
         terminal::terminal_write,
@@ -324,13 +328,17 @@ pub fn run() {
     }
     tauri::Builder::default()
         // 单实例必须最先注册：再次启动应用时只激活已有窗口，新进程随即退出（L2）
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+        // 运行中又从资源管理器右键菜单打开（带 --open-dir）：把目录交给已有窗口
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            explorer_menu::forward(app, &args);
             app_shell::show_main(app);
         }))
         // 自动更新：从公开仓库的 Releases 检查、下载并校验签名（公钥在 tauri.conf.json）
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .manage(app_shell::ShellState::default())
+        // 从资源管理器右键菜单启动时带的目录：界面加载好后来取
+        .manage(explorer_menu::OpenDirs::from_args(&args))
         .manage(terminal::TerminalState::new())
         .manage(sync::syncthing_ui::SyncthingUiState::default())
         .manage(files::FilesState::default())
@@ -376,6 +384,13 @@ pub fn run() {
         })
         .setup(move |app| {
             builder.mount_events(app);
+            // 终端用随安装包带的微软 ConPTY（和 Windows Terminal 同一份）：系统自带的会把程序分几次写的画面
+            // 中间状态也发出来（npm 转圈时光标来回跳）。目录里文件不全时自动用系统自带的
+            #[cfg(windows)]
+            match app.path().resource_dir() {
+                Ok(dir) => pierlink_core::terminal::use_bundled_conpty(dir.join("conpty")),
+                Err(e) => eprintln!("找不到资源目录，终端用系统自带的 ConPTY: 错误={e}"),
+            }
             // 最先确定数据目录：旧版本的数据在安装目录里，先搬到新位置
             let prepared = data::prepare_data_dir(app.handle());
             create_main_window(app.handle())?;

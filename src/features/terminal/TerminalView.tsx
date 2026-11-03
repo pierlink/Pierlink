@@ -94,6 +94,8 @@ interface Props {
 const AUTO_QUIET_MS = 600;
 /** 自动命令：登录完成后最多等这么久（毫秒）就输入 */
 const AUTO_WAIT_MS = 8000;
+/** 光标闪一轮（亮、灭各一半）的毫秒数，和 terminal.css 里的 animation-duration 一致 */
+const CURSOR_BLINK_MS = 1200;
 
 /** 从外部操作终端：粘贴、输入都走终端自己的输入通道（广播、回车计数照常生效） */
 export interface TermHandle {
@@ -220,12 +222,26 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
     term.loadAddon(new WebLinksAddon((_e, url) => { if (!term.hasSelection()) cb.current.openLink(url); }));
     term.open(el);
     fit.fit();
-    // 闪烁的方块光标（设置里选的，或程序用 \e[1 q 要的）：换成自己的样式，“灭”的半拍不再把字染成光标色（见 terminal.css）
+    // 光标闪烁按固定节拍走。xterm 每重画一次光标所在的行，就换一个新的光标元素，CSS 动画从头开始（先亮 0.6 秒）：
+    // 程序隔一会儿重画一次输入行（Codex、Claude Code 的状态栏、转圈，PowerShell 重画提示符）时，
+    // 闪烁就忽快忽慢、连闪两下，甚至一直亮着。新出现的光标元素按节拍对齐相位；只有你按键、粘贴、
+    // 点进终端时才从“亮”重新开始（打字时光标一直看得见）
     const rows = el.querySelector(".xterm-rows");
+    let blinkStart = performance.now();
+    const alignBlink = () => {
+      const phase = (performance.now() - blinkStart) % CURSOR_BLINK_MS;
+      for (const c of rows?.querySelectorAll(".xterm-cursor.xterm-cursor-blink") ?? []) {
+        for (const a of c.getAnimations()) a.currentTime = phase;
+      }
+    };
+    const restartBlink = () => { blinkStart = performance.now(); alignBlink(); };
+    // 闪烁的方块光标（设置里选的，或程序用 \e[1 q 要的）：换成自己的样式，“灭”的半拍不再把字染成光标色（见 terminal.css）
     const blockCursor = new MutationObserver(() => {
       for (const c of rows?.querySelectorAll(".xterm-cursor-blink.xterm-cursor-block") ?? []) c.classList.replace("xterm-cursor-block", "pl-cursor-block");
+      alignBlink();
     });
     if (rows) blockCursor.observe(rows, { subtree: true, childList: true, attributes: true, attributeFilter: ["class"] });
+    term.textarea?.addEventListener("focus", restartBlink);
     const cursorColors = () => {
       const theme = currentTerminalTheme();
       el.style.setProperty("--pl-term-cursor", theme.cursor ?? "");
@@ -411,6 +427,10 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
     let id: string | null = null;
     // 会话 ID 返回之前就到达的输出，先累计字节数，拿到 ID 后再一并确认（否则流量控制会少算）
     let earlyBytes = 0;
+    // 会话 ID 返回之前终端替程序回的应答（DA1 等）：先存着，拿到 ID 后按顺序补发。
+    // 随包的 ConPTY 一启动就问 DA1，等不到回答要卡 3 秒才让 shell 起来；用户按的键照旧不存
+    let opening = false;
+    let earlyReplies: string[] = [];
     let exited = false;
     /** 服务器 shell 最后报告的目录（装了命令预测的钩子时每次出提示符都报）：只在这个窗格断开后重连时用 */
     let lastCwd: string | null = null;
@@ -512,6 +532,7 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
       tail = "";
       setEnded(null);
       earlyBytes = 0;
+      earlyReplies = [];
       const pre = cb.current.precheck;
       const fromPrecheck = !precheckUsed && !!pre && pre.phase === "go";
       precheckUsed = true;
@@ -523,6 +544,7 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
       const now = performance.now();
       setSteps(lastStep ? { at: lastStep, stepStart: now, start: fromPrecheck && pre ? pre.start : now, failed: false } : null);
       cb.current.onStatus?.("running");
+      opening = true;
       try {
         const newId = await backend.open(spec, term.cols, term.rows, (e) => {
           if (disposed) return;
@@ -596,11 +618,13 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
               else end({ kind: "exited", code: e.code ?? null });
             }
           }
-        }, !!cb.current.prediction, { startDir, quietBell: !cb.current.opts.powershellBell });
+        }, !!cb.current.prediction, { startDir, quietBell: !cb.current.opts.powershellBell, systemConpty: cb.current.opts.systemConpty });
+        opening = false;
         if (disposed) { void backend.close(newId); return; }
         // 已经结束（连上前就断了，退出事件先到）：不再记这个会话
         if (exited) return;
         id = newId;
+        for (const data of earlyReplies.splice(0)) void backend.write(newId, data).catch(() => undefined);
         cb.current.onSession?.(newId);
         if (earlyBytes > 0) {
           void backend.ack(newId, earlyBytes);
@@ -609,6 +633,8 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
         // 连接过程中点了“断开”
         if (manual) void backend.close(newId).catch(() => undefined);
       } catch (err) {
+        opening = false;
+        earlyReplies = [];
         exited = true;
         cb.current.onStatus?.("exited");
         // 连接过程中点了“断开”，之后连接失败：照样显示“已断开”
@@ -682,9 +708,12 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
       }
     };
 
+    /** 打开期间的应答最多存 64 个（正常只有一两个） */
+    const keepEarly = (data: string) => { if (earlyReplies.length < 64) earlyReplies.push(data); };
     // 终端对程序查询的回答：只发给这个会话（不走广播）
     const reply = (data: string) => {
       if (id && !exited) void backend.write(id, data).catch(() => undefined);
+      else if (opening) keepEarly(data);
     };
     // 结束时把光标藏了，term.reset() 又不会把它显示回来（xterm 的 reset 不清光标隐藏状态），这里显示回来
     const reopen = (focus = false) => {
@@ -720,7 +749,10 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
       }
       // 广播输入：由上层发给参与广播的所有窗格（包括这一个）。终端替程序回的应答（焦点进出、设备属性、
       // 光标位置、颜色）和鼠标报告只属于这个窗格，不广播
-      if (looksTyped(data) && cb.current.onInput?.(data)) return;
+      const typed = looksTyped(data);
+      if (typed) restartBlink();
+      if (typed && cb.current.onInput?.(data)) return;
+      if (!id && opening && !typed) keepEarly(data);
       if (id) {
         backend.write(id, data).catch((err: unknown) => {
           // 会话刚好结束（断网、程序退出）：中间的卡片会说明，不再弹“会话不存在或已关闭”
@@ -848,6 +880,7 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
       ro.disconnect();
       mo.disconnect();
       blockCursor.disconnect();
+      term.textarea?.removeEventListener("focus", restartBlink);
       term.textarea?.removeEventListener("paste", onPaste, true);
       for (const name of imeEvents) term.textarea?.removeEventListener(name, anchorIme);
       term.textarea?.removeEventListener("blur", dropIme);

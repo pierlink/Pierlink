@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Pierlink",
-  "version": "1.1.1",
+  "version": "1.2.0",
   "identifier": "com.pierlink.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -71,6 +71,8 @@
       "resources/openssh/ssh.exe": "openssh/ssh.exe",
       "resources/openssh/ssh-keygen.exe": "openssh/ssh-keygen.exe",
       "resources/openssh/libcrypto.dll": "openssh/libcrypto.dll",
+      "resources/conpty/conpty.dll": "conpty/conpty.dll",
+      "resources/conpty/OpenConsole.exe": "conpty/OpenConsole.exe",
       "resources/licenses/Win32-OpenSSH-LICENSE.txt": "licenses/Win32-OpenSSH-LICENSE.txt",
       "resources/licenses/Win32-OpenSSH-NOTICE.txt": "licenses/Win32-OpenSSH-NOTICE.txt",
       "resources/licenses/Syncthing-LICENSE.txt": "licenses/Syncthing-LICENSE.txt",
@@ -78,6 +80,8 @@
       "resources/licenses/THIRD-PARTY-NOTICES.txt": "licenses/THIRD-PARTY-NOTICES.txt",
       "resources/licenses/Pierlink-LICENSE.txt": "licenses/Pierlink-LICENSE.txt",
       "resources/licenses/LibreSSL-LICENSE.txt": "licenses/LibreSSL-LICENSE.txt",
+      "resources/licenses/ConPTY-LICENSE.txt": "licenses/ConPTY-LICENSE.txt",
+      "resources/licenses/ConPTY-NOTICE.txt": "licenses/ConPTY-NOTICE.txt",
       "../dist-mobile/": "mobile/"
     }
   },

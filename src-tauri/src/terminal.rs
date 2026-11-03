@@ -453,7 +453,21 @@ pub async fn list_local_shells(app: AppHandle) -> Result<Vec<LocalShellInfo>, Ap
     .await
 }
 
+/// 界面在每次开终端前同步：新开的终端是否改用 Windows 自带的终端引擎（系统 ConPTY），
+/// 不用随安装包带的新版；已经开着的终端不受影响。只在 Windows 上起作用。
+///
+/// :param system: 设置里“用 Windows 自带的终端引擎”是否打开
+#[tauri::command]
+#[specta::specta]
+pub fn terminal_engine_config(system: bool) {
+    #[cfg(windows)]
+    pierlink_core::terminal::use_system_conpty(system);
+    #[cfg(not(windows))]
+    let _ = system;
+}
+
 /// 打开本机终端，返回会话 ID。quiet_bell：设置里关掉了“PowerShell 提示音”。
+/// start_dir：从资源管理器右键菜单打开时的目录；为 null 或目录已不存在时从用户主目录开始。
 #[tauri::command]
 #[specta::specta]
 #[allow(clippy::too_many_arguments)] // Tauri 命令的参数直接对应前端调用，拆成结构体反而不直观
@@ -465,6 +479,7 @@ pub async fn terminal_open_local(
     rows: u16,
     prediction: bool,
     quiet_bell: bool,
+    start_dir: Option<String>,
     on_event: Channel<TerminalEventDto>,
 ) -> Result<String, AppError> {
     let owner = webview.label().to_owned();
@@ -476,16 +491,22 @@ pub async fn terminal_open_local(
             .find(|s| s.id == shell_id)
             .or_else(|| shells::fallback_default(&all, &shell_id))
             .ok_or_else(|| AppError::new("terminal.shell_not_found").with("shell_id", &shell_id))?;
+        let start = local_start_dir(start_dir.as_deref(), shell);
+        let mut env = local_env(shell, prediction);
+        // Git Bash 的登录脚本默认先 cd 到主目录，带上它才留在指定的目录
+        if start.is_some() && shell.kind == shells::ShellKind::GitBash {
+            env.push(("CHERE_INVOKING".into(), "1".into()));
+        }
         let spec = TerminalSpec {
             kind: TerminalKind::Local {
                 program: shell.program.clone(),
                 args: local_args(shell, quiet_bell),
                 // 和 Windows Terminal 一样从用户主目录开始；不设置时会继承 Pierlink 进程的目录
                 //（从开始菜单启动时是安装目录）
-                cwd: user_home(),
+                cwd: start.or_else(user_home),
                 // 提示符钩子（报告当前目录给文件面板）需要的环境变量；
                 // Git Bash 打开命令预测时再装上提示符标记和命令记录
-                env: local_env(shell, prediction),
+                env,
             },
             cols,
             rows,
@@ -983,6 +1004,23 @@ pub async fn open_in_browser(url: String) -> Result<(), AppError> {
     tauri::async_runtime::spawn_blocking(move || pierlink_core::links::open_in_browser(&url))
         .await
         .map_err(|e| AppError::new("link.open_failed").with("reason", e.to_string()))?
+}
+
+/// 本机终端指定的起始目录：存在才用（右键菜单打开后目录被删了、改名了，就从主目录开始）。
+/// 命令提示符不接受网络路径（\\服务器\共享、\\wsl.localhost\…）当当前目录，会报错后落到 C:\Windows，也从主目录开始
+fn local_start_dir(dir: Option<&str>, shell: &LocalShell) -> Option<std::path::PathBuf> {
+    let dir = dir?;
+    if shell.kind == shells::ShellKind::Cmd && dir.starts_with(r"\\") {
+        eprintln!("命令提示符不能从网络路径开始，改从主目录开始: 目录={dir}");
+        return None;
+    }
+    let path = std::path::PathBuf::from(dir);
+    if path.is_absolute() && path.is_dir() {
+        Some(path)
+    } else {
+        eprintln!("起始目录不存在，改从主目录开始: 目录={}", path.display());
+        None
+    }
 }
 
 /// 用户主目录（Windows 为 %USERPROFILE%）；取不到或不是目录时返回 None，沿用进程当前目录

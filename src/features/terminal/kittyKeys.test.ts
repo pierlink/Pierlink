@@ -54,20 +54,40 @@ describe("kitty 键盘协议", () => {
 describe("Shift+Enter、Ctrl+Enter：和常用终端一样是换行，原生功能不变", () => {
   const shift = key({ key: "Enter", shiftKey: true });
   const ctrl = key({ key: "Enter", ctrlKey: true });
-  const at = (local: "powershell" | "cmd" | "other" | null, altScreen = false, kitty = false) => ({ kitty, local, altScreen });
+  const at = (local: "powershell" | "cmd" | "wsl" | "other" | null, altScreen = false, kitty = false) => ({ kitty, local, altScreen });
+  const realShift = "\x1b[13;28;13;1;16;1_\x1b[13;28;13;0;16;1_";
+  const realCtrl = "\x1b[13;28;10;1;8;1_\x1b[13;28;10;0;8;1_";
+  const realCtrlJ = "\x1b[74;36;10;1;8;1_\x1b[74;36;10;0;8;1_";
   it("服务器上和本机 Git Bash、WSL 的 shell：插入换行不执行", () => {
     for (const ev of [shift, ctrl]) {
       expect(newlineKey(ev, at(null))).toBe("\x16\n");
       expect(newlineKey(ev, at("other"))).toBe("\x16\n");
+      expect(newlineKey(ev, at("wsl"))).toBe("\x16\n");
     }
+  });
+  it("本机 Git Bash 里的全屏程序（在 Git Bash 里开的 Codex 等 Windows 程序）：原样交给控制台", () => {
+    expect(newlineKey(shift, at("other", true))).toBe(realShift);
+    expect(newlineKey(ctrl, at("other", true))).toBe(realCtrl);
+    expect(newlineKey(key({ key: "j", ctrlKey: true }), at("other", true))).toBe(realCtrlJ);
+    expect(newlineKey(shift, at("other", true, true))).toBe("\x1b[13;2u");
   });
   it("程序开启了 kitty 协议：都按 Shift+Enter 发", () => {
     expect(newlineKey(shift, at(null, false, true))).toBe("\x1b[13;2u");
     expect(newlineKey(ctrl, at(null, true, true))).toBe("\x1b[13;2u");
   });
-  it("全屏程序（含 screen、tmux 里的 Claude Code）发换行符", () => {
+  it("服务器上、WSL 里的全屏程序（含 screen、tmux 里的 Claude Code）发换行符", () => {
     expect(newlineKey(shift, at(null, true))).toBe("\n");
-    expect(newlineKey(ctrl, at("powershell", true))).toBe("\n");
+    expect(newlineKey(ctrl, at("wsl", true))).toBe("\n");
+    expect(newlineKey(key({ key: "j", ctrlKey: true }), at("wsl", true))).toBeNull();
+  });
+  it("本机 PowerShell、命令提示符里的全屏程序（本机的 Codex）：照样原样交给控制台，不换成换行符（控制台会把它变成 Ctrl+Enter）", () => {
+    for (const shell of ["powershell", "cmd"] as const) {
+      expect(newlineKey(shift, at(shell, true))).toBe(realShift);
+      expect(newlineKey(ctrl, at(shell, true))).toBe(realCtrl);
+      expect(newlineKey(key({ key: "j", ctrlKey: true }), at(shell, true))).toBe(realCtrlJ);
+    }
+    // 程序自己开了 kitty 协议时照协议发
+    expect(newlineKey(shift, at("powershell", true, true))).toBe("\x1b[13;2u");
   });
   it("本机 PowerShell、命令提示符：三个键都把真实按键交给 Windows 控制台", () => {
     for (const shell of ["powershell", "cmd"] as const) {
@@ -88,7 +108,7 @@ describe("Shift+Enter、Ctrl+Enter：和常用终端一样是换行，原生功�
     expect(localShellFamily("c:\\windows\\system32\\windowspowershell\\v1.0\\powershell.exe")).toBe("powershell");
     expect(localShellFamily("c:\\windows\\system32\\cmd.exe")).toBe("cmd");
     expect(localShellFamily("c:\\program files\\git\\bin\\bash.exe")).toBe("other");
-    expect(localShellFamily("c:\\windows\\system32\\wsl.exe#ubuntu")).toBe("other");
+    expect(localShellFamily("c:\\windows\\system32\\wsl.exe#ubuntu")).toBe("wsl");
   });
 });
 

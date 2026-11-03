@@ -38,7 +38,7 @@ function nothingToLose(s: ExitSummary): boolean {
 
 /**
  * 退出确认（设计 1.4，异常清单 L3、L11）：
- * - 把“关闭窗口时缩到托盘”和托盘菜单文字同步给 Rust 端；
+ * - 把“关闭窗口时缩到托盘”和托盘菜单文字同步给 Rust 端，资源管理器右键菜单也在这里按设置注册或删除；
  * - 收到退出请求（托盘“退出”、或关掉缩到托盘后关闭窗口）时，先确认收到（否则 Rust 端几秒后直接退出），
  *   再查询未同步文件数和打开的终端数；没有任何会中断的内容时直接退出，否则弹出确认框。
  */
@@ -67,6 +67,12 @@ export function ExitGuard() {
       }))
       .catch(() => { /* 外壳保持默认：缩到托盘、中文菜单 */ });
   }, [settings.closeToTray, t, i18n.language]);
+
+  // 资源管理器右键菜单“在 Pierlink 中打开”：按设置注册或删除，文字随界面语言
+  useEffect(() => {
+    if (!inTauri) return;
+    void shell().then((c) => c.explorerMenuConfig(settings.terminal.explorerMenu, t("explorer.openHere"))).catch(() => { /* 右键菜单保持原样 */ });
+  }, [settings.terminal.explorerMenu, t, i18n.language]);
 
   const quit = useCallback(() => {
     setQuitting(true);

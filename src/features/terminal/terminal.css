@@ -8,7 +8,7 @@
   scrollbar-width: thin;
   scrollbar-color: var(--chip) transparent;
 }
-/* 光标闪烁：一亮一灭各 0.6 秒（xterm 自带的是各 0.5 秒，用户嫌快）。
+/* 光标闪烁：一亮一灭各 0.6 秒（xterm 自带的是各 0.5 秒，用户嫌快；改这里要一起改 TerminalView 的 CURSOR_BLINK_MS）。
    系统要求减少动画时（Windows 关了“动画效果”），全局样式会停掉所有动画；光标闪烁是设置里单独的开关，照常闪 */
 .xterm .xterm-rows .xterm-cursor.xterm-cursor-blink {
   animation-duration: 1.2s !important;

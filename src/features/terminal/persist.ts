@@ -34,7 +34,7 @@ export interface SavedWorkspace {
 function isSpec(v: unknown): v is OpenSpec {
   const s = v as Record<string, unknown> | null;
   if (!s || typeof s !== "object") return false;
-  if (s.kind === "local") return typeof s.shellId === "string";
+  if (s.kind === "local") return typeof s.shellId === "string" && (s.startDir === undefined || s.startDir === null || typeof s.startDir === "string");
   if (s.kind === "server") return typeof s.serverId === "string";
   if (s.kind === "quick") return typeof s.host === "string" && typeof s.port === "number" && (s.user === null || typeof s.user === "string");
   return false;

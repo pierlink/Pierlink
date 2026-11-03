@@ -20,7 +20,7 @@ use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent}
 use tauri::{AppHandle, Emitter, Manager, Window, Wry};
 
 /// 主窗口标签
-const MAIN: &str = "main";
+pub(crate) const MAIN: &str = "main";
 /// 通知界面“用户要退出”的事件名，载荷是退出请求编号
 pub const EXIT_EVENT: &str = "pierlink://exit-requested";
 /// 界面多久没有确认收到退出请求就直接退出

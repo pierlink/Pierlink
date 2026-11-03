@@ -15,7 +15,7 @@ import { focusDesktopWindow, openDesktopWindow, useDesktopPopouts } from "../des
 import { DESKTOP_INSTALL_EVENT, desktopWindowUrl } from "../desktop/DesktopWindow";
 import { reportInstallOutput } from "../desktop/installProgress";
 import type { Connecting, HostKeyStep, OpenSpec, RemoteSpec } from "./types";
-import { parseQuickTarget } from "./util";
+import { folderName, parseQuickTarget } from "./util";
 import { droppedText } from "./localPaths";
 import { openInBrowser, writeClipboardText } from "../shell/clipboard";
 import { inTauri } from "../shell/TitleBar";
@@ -139,6 +139,12 @@ function canSplit(paneId: string, dir: Dir): boolean {
   if (!r.width || !r.height) return true;
   return (dir === "row" ? r.width : r.height) >= PANE_MIN[dir] * 2;
 }
+
+/** 能打字的输入框（切回标签时把焦点还给它）；复选框、单选、滑块这类开关不算 */
+const TEXT_ENTRY = "input:not([type]), input[type=text], input[type=search], input[type=url], input[type=email], input[type=password], input[type=number], input[type=tel], textarea, [contenteditable='true']";
+
+/** 与 Rust 端 explorer_menu::OPEN_DIR_EVENT 一致：资源管理器右键菜单有新的目录要打开 */
+const OPEN_DIR_EVENT = "pierlink://open-dir";
 
 /** 读取上次的标签布局，转成初始状态。开发预览的 demo 网址不恢复（自动打开演示终端） */
 function restoreWorkspace(): { tabs: Tab[]; panes: Record<string, Pane>; active: string | null; seq: number } {
@@ -299,6 +305,49 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
     const tab = focusRequest ? tabsRef.current.find((x) => x.key === activeTabRef.current) : undefined;
     if (tab) handles.current.get(tab.active)?.focus();
   }, [focusRequest]);
+  // 切回一个标签、回到工作区页面时，键盘焦点回到离开前的地方：那个窗格的终端，或者当时在打字的输入框
+  // （文件栏的路径框等）；没有记录时给当前窗格的终端。以前点完标签还要再点一下终端才能打字
+  const mainRef = useRef<HTMLElement>(null);
+  const lastFocus = useRef(new Map<string, { pane: string; el: HTMLElement | null }>());
+  useEffect(() => {
+    const main = mainRef.current;
+    if (!main) return;
+    const onFocusIn = (e: FocusEvent) => {
+      const target = e.target instanceof HTMLElement ? e.target : null;
+      const pane = target?.closest<HTMLElement>("[data-pane]")?.dataset.pane;
+      const tab = pane ? tabsRef.current.find((x) => paneIds(x.layout).includes(pane)) : undefined;
+      if (!target || !pane || !tab) return;
+      // 只记打字的地方；点过的按钮、开关不记（回来时给这个窗格的终端）
+      const typing = target.matches(TEXT_ENTRY) && !target.classList.contains("xterm-helper-textarea");
+      lastFocus.current.set(tab.key, { pane, el: typing ? target : null });
+    };
+    main.addEventListener("focusin", onFocusIn);
+    return () => main.removeEventListener("focusin", onFocusIn);
+  }, []);
+  const restoreFocus = (tabKey: string) => {
+    requestAnimationFrame(() => {
+      // 等界面切过去；期间又切走了、开着对话框时不动
+      if (activeTabRef.current !== tabKey || document.querySelector(".pl-dialog")) return;
+      const tab = tabsRef.current.find((x) => x.key === tabKey);
+      if (!tab) return;
+      const saved = lastFocus.current.get(tabKey);
+      const pane = saved && paneIds(tab.layout).includes(saved.pane) ? saved.pane : tab.active;
+      const p = panesRef.current[pane];
+      // 远程桌面窗格切回来时自己会拿键盘；AI 正在用的终端（你没接管）不抢焦点，和 AI 开终端时一样
+      if (!p || p.desktop || (p.ai && !p.ai.takenOver)) return;
+      // 回到的不是当前窗格（分屏里点过别的窗格）：当前窗格跟着换，快捷键、命令片段才作用在键盘所在的窗格
+      if (pane !== tab.active) focusPane(tabKey, pane);
+      if (saved?.el && saved.pane === pane && saved.el.isConnected && saved.el.offsetWidth > 0) saved.el.focus({ preventScroll: true });
+      else handles.current.get(pane)?.focus();
+    });
+  };
+  // 从别的页面回到工作区
+  const wasActive = useRef(active);
+  useEffect(() => {
+    if (active && !wasActive.current && activeTabRef.current) restoreFocus(activeTabRef.current);
+    wasActive.current = active;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active]);
   // 每次发起连接加一；用户中途关掉对话框后，迟到的结果据此丢弃
   const attempt = useRef(0);
 
@@ -400,12 +449,45 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
     const s = shells.find((x) => x.id === shellId);
     return s ? add({ kind: "local", shellId: s.id }, localShellName(s), t("workspace.local"), target) : null;
   };
+  /** 设置里选了默认终端且仍存在就用它，否则用检测出的默认项 */
+  const defaultShell = () => shells.find((x) => x.id === settings.terminal.defaultShell) ?? shells.find((x) => x.isDefault) ?? shells[0];
   const openDefault = (target: Target): string | null => {
     if (!shellsLoaded) { pendingDefault.current = { target }; return null; }
-    // 设置里选了默认终端且仍存在就用它，否则用检测出的默认项
-    const d = shells.find((x) => x.id === settings.terminal.defaultShell) ?? shells.find((x) => x.isDefault) ?? shells[0];
+    const d = defaultShell();
     return d ? openShellIn(d.id, target) : null;
   };
+  // 资源管理器右键“在 Pierlink 中打开”：每个目录新开一个标签，默认本机终端从那个目录开始。
+  // 启动时命令行带的、运行中转过来的目录都在后端排队，这里取走；本机终端列表还没出来就先记着
+  const pendingDirs = useRef<string[]>([]);
+  const openDirsRef = useRef<(dirs: string[]) => void>(() => {});
+  openDirsRef.current = (dirs) => {
+    if (!shellsLoaded) { pendingDirs.current.push(...dirs); return; }
+    const d = defaultShell();
+    if (!d) return;
+    for (const dir of dirs) add({ kind: "local", shellId: d.id, startDir: dir }, folderName(dir), localShellName(d), null);
+  };
+  useEffect(() => {
+    if (!inTauri || backend.preview) return;
+    let alive = true;
+    let off: (() => void) | undefined;
+    const take = () => {
+      void import("../../bindings/commands")
+        .then(({ commands }) => commands.appTakeOpenDirs())
+        .then((dirs) => { if (alive && dirs.length) openDirsRef.current(dirs); }, () => undefined);
+    };
+    // 监听注册好之后再取一次：注册完成之前到的通知会错过，目录还在队列里
+    void import("@tauri-apps/api/event").then(({ listen }) => listen(OPEN_DIR_EVENT, take))
+      .then((u) => { if (alive) { off = u; take(); } else u(); }, () => undefined);
+    take();
+    return () => { alive = false; off?.(); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  useEffect(() => {
+    if (!shellsLoaded || !pendingDirs.current.length) return;
+    const dirs = pendingDirs.current;
+    pendingDirs.current = [];
+    openDirsRef.current(dirs);
+  }, [shellsLoaded]);
 
   useEffect(() => {
     if (!shellsLoaded || !pendingDefault.current) return;
@@ -855,6 +937,8 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
    * @param fromDialog 在关闭确认框里点的（框关掉后原来有焦点的终端已经没了）
    */
   const dropPanes = (tabKey: string, ids: string[], fromDialog = false) => {
+    const saved = lastFocus.current.get(tabKey);
+    if (saved && ids.includes(saved.pane)) lastFocus.current.delete(tabKey);
     const focused = document.activeElement;
     const refocus = tabKey === activeTabRef.current && (fromDialog || !focused || focused === document.body
       || ids.some((id) => !!document.querySelector(`[data-pane="${CSS.escape(id)}"]`)?.contains(focused)));
@@ -1404,7 +1488,7 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
   })() : null;
 
   return (
-    <section className="ws__main" aria-label={t("workspace.newTab")}>
+    <section ref={mainRef} className="ws__main" aria-label={t("workspace.newTab")}>
       <TabBar
         broadcast={activeTab && broadcast[activeTab] ? { count: broadcast[activeTab].length, hint: t("terminal.broadcast.hint"), onStop: () => toggleBroadcast(activeTab) } : undefined}
         tabs={tabViews}
@@ -1414,6 +1498,7 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
         onActivate={(key) => {
           if (suppressClick.current) return;
           setActiveTab(key);
+          restoreFocus(key);
           // 点开这个标签就算看到了：不再提醒（不管窗口当时算不算在前台）
           const tab = tabs.find((x) => x.key === key);
           if (tab) clearAttention(paneIds(tab.layout));

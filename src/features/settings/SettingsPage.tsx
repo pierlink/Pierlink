@@ -230,6 +230,12 @@ export function SettingsPage({ version }: { version: string | null }) {
             <Row label={t("settings.term.powershellBell")} hint={t("settings.term.powershellBellHint")}>
               <Switch label={t("settings.term.powershellBell")} checked={term.powershellBell} onChange={(v) => setTerm({ powershellBell: v })} />
             </Row>
+            <Row label={t("settings.term.explorerMenu")} hint={t("settings.term.explorerMenuHint")}>
+              <Switch label={t("settings.term.explorerMenu")} checked={term.explorerMenu} onChange={(v) => setTerm({ explorerMenu: v })} />
+            </Row>
+            <Row label={t("settings.term.systemConpty")} hint={t("settings.term.systemConptyHint")}>
+              <Switch label={t("settings.term.systemConpty")} checked={term.systemConpty} onChange={(v) => setTerm({ systemConpty: v })} />
+            </Row>
             <Row label={t("settings.term.clearHistory")} hint={historyCleared ? t("settings.term.historyCleared") : undefined}>
               <Button size="sm" onClick={() => { void clearHistory().then(() => setHistoryCleared(true), (e: unknown) => setHistoryError(formatError(e))); }}>{t("settings.term.clearHistoryButton")}</Button>
             </Row>

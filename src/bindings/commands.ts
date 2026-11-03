@@ -17,6 +17,19 @@ export const commands = {
 	appShellConfig: (closeToTray: boolean, labels: TrayLabels) => __TAURI_INVOKE<void>("app_shell_config", { closeToTray, labels }),
 	/**  托盘是否可用（界面据此决定设置项是否可选、退出确认框里是否提供“缩到托盘”） */
 	appTrayAvailable: () => __TAURI_INVOKE<boolean>("app_tray_available"),
+	/**
+	 *  界面取走等着打开的目录（界面加载好时、收到 pierlink://open-dir 时调用），每个目录在新标签里开一个本机终端。
+	 * 
+	 *  :return: 目录列表（取走后清空）
+	 */
+	appTakeOpenDirs: () => __TAURI_INVOKE<string[]>("app_take_open_dirs"),
+	/**
+	 *  界面把设置同步过来：打开时注册（或更新）右键菜单项，文字随界面语言；关掉时删除。只在 Windows 上做事。
+	 * 
+	 *  :param enabled: 设置里“资源管理器右键菜单”是否打开
+	 *  :param label: 菜单项文字（当前界面语言）
+	 */
+	explorerMenuConfig: (enabled: boolean, label: string) => __TAURI_INVOKE<void>("explorer_menu_config", { enabled, label }),
 	/**  读 AI 接入设置 */
 	mcpSettingsGet: () => typedError<McpSettingsDto_Serialize, AppError>(__TAURI_INVOKE("mcp_settings_get")),
 	/**
@@ -128,8 +141,18 @@ export const commands = {
 	appDataProblem: () => __TAURI_INVOKE<AppError | null>("app_data_problem"),
 	/**  列出本机终端，并标出默认项（PowerShell 7 → Windows PowerShell → Git Bash → 其他 → 命令提示符）。 */
 	listLocalShells: () => typedError<LocalShellInfo[], AppError>(__TAURI_INVOKE("list_local_shells")),
-	/**  打开本机终端，返回会话 ID。quiet_bell：设置里关掉了“PowerShell 提示音”。 */
-	terminalOpenLocal: (shellId: string, cols: number, rows: number, prediction: boolean, quietBell: boolean, onEvent: Channel<TerminalEventDto_Deserialize>) => typedError<string, AppError>(__TAURI_INVOKE("terminal_open_local", { shellId, cols, rows, prediction, quietBell, onEvent })),
+	/**
+	 *  界面在每次开终端前同步：新开的终端是否改用 Windows 自带的终端引擎（系统 ConPTY），
+	 *  不用随安装包带的新版；已经开着的终端不受影响。只在 Windows 上起作用。
+	 * 
+	 *  :param system: 设置里“用 Windows 自带的终端引擎”是否打开
+	 */
+	terminalEngineConfig: (system: boolean) => __TAURI_INVOKE<void>("terminal_engine_config", { system }),
+	/**
+	 *  打开本机终端，返回会话 ID。quiet_bell：设置里关掉了“PowerShell 提示音”。
+	 *  start_dir：从资源管理器右键菜单打开时的目录；为 null 或目录已不存在时从用户主目录开始。
+	 */
+	terminalOpenLocal: (shellId: string, cols: number, rows: number, prediction: boolean, quietBell: boolean, startDir: string | null, onEvent: Channel<TerminalEventDto_Deserialize>) => typedError<string, AppError>(__TAURI_INVOKE("terminal_open_local", { shellId, cols, rows, prediction, quietBell, startDir, onEvent })),
 	/**
 	 *  快速连接：按 `用户@主机:端口` 打开远程终端（应用内新建的连接，不读用户 ssh config）。
 	 *  前端应先用 `host_key_check` 在应用内确认指纹；若未确认，ssh 仍会在终端里自行询问。

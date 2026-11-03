@@ -79,34 +79,38 @@ const WIN32_SHIFT_ENTER = "\x1b[13;28;13;1;16;1_\x1b[13;28;13;0;16;1_";
 const WIN32_CTRL_ENTER = "\x1b[13;28;10;1;8;1_\x1b[13;28;10;0;8;1_";
 const WIN32_CTRL_J = "\x1b[74;36;10;1;8;1_\x1b[74;36;10;0;8;1_";
 
-/** 本机终端是哪种 shell（按程序路径判断；本机终端的 id 就是小写的程序完整路径） */
-export function localShellFamily(shellId: string): "powershell" | "cmd" | "other" {
+/** 本机终端是哪种 shell（按程序路径判断；本机终端的 id 就是小写的程序完整路径，WSL 后面带 #发行版）。other：Git Bash 等 */
+export function localShellFamily(shellId: string): "powershell" | "cmd" | "wsl" | "other" {
   const exe = shellId.split("#")[0].toLowerCase();
   if (/(^|[\\/])(pwsh|powershell)\.exe$/.test(exe)) return "powershell";
   if (/(^|[\\/])cmd\.exe$/.test(exe)) return "cmd";
+  if (/(^|[\\/])wsl\.exe$/.test(exe)) return "wsl";
   return "other";
 }
 
 /**
- * Shift+Enter、Ctrl+Enter、Ctrl+J 发什么。和常用终端一样，它们在有多行输入的地方都是换行，各环境原有的功能不变：
- * - 程序开启了 kitty 协议：Shift+Enter、Ctrl+Enter 按 Shift+Enter 发（Claude Code、Codex 等把它当换行）；
- * - 全屏程序（备用屏，含 screen、tmux 里的 Claude Code）：Shift+Enter、Ctrl+Enter 发换行符 Ctrl+J（它们的换行键；vim 等当回车）；
- * - 本机 PowerShell、命令提示符：三个键都把真实按键交给 Windows 控制台，按原生规则处理
- *   （PowerShell：Shift+Enter 加一行；命令提示符：Shift+Enter 是回车，Ctrl+Enter、Ctrl+J 没有反应）；
- * - 其他 shell（服务器上、本机 Git Bash、WSL）：Shift+Enter、Ctrl+Enter 发 Ctrl+V 再接换行符，bash、zsh 插入换行不执行。
- * 返回 null 表示照常处理（其他键，以及不在本机控制台时的 Ctrl+J：照常发换行符）。
+ * Shift+Enter、Ctrl+Enter、Ctrl+J 发什么：
+ * - 原样交给 Windows 控制台（和 Windows Terminal 一样，不做转换，由程序自己处理）：本机 PowerShell、命令提示符；
+ *   本机 Git Bash 里的全屏程序（多半是 Windows 程序，比如在 Git Bash 里开的 Codex）。
+ *   1.2.0 以前它们的全屏程序会被换成换行符，控制台又把换行符变成 Ctrl+Enter，本机的 Codex 就不换行了；
+ * - 服务器上、WSL 里的程序，和 Git Bash 的提示符：是 Unix 程序，收不到“Shift”这个修饰键，只能换个说法：
+ *   程序开了 kitty 协议就按协议发 `ESC[13;2u`（Claude Code、Codex 当换行）；全屏程序（备用屏，含 screen、tmux
+ *   里的 Claude Code）发换行符 Ctrl+J（它们的换行键）；shell 里发 Ctrl+V 再接换行符，bash、zsh 插入换行不执行；
+ * - 程序自己开了 kitty 协议时（本机控制台里也一样，比如 PowerShell 里开的 ssh 连着服务器上的 Codex）一律按协议发。
+ * 返回 null 表示照常处理（其他键，以及不原样交给控制台时的 Ctrl+J：照常发换行符）。
  */
 export function newlineKey(
   ev: Pick<KeyboardEvent, "key" | "shiftKey" | "altKey" | "ctrlKey" | "metaKey">,
-  where: { kitty: boolean; local: "powershell" | "cmd" | "other" | null; altScreen: boolean },
+  where: { kitty: boolean; local: "powershell" | "cmd" | "wsl" | "other" | null; altScreen: boolean },
 ): string | null {
   if (ev.altKey || ev.metaKey) return null;
-  const console = (where.local === "powershell" || where.local === "cmd") && !where.altScreen && !where.kitty;
-  if (ev.ctrlKey && !ev.shiftKey && ev.key.toLowerCase() === "j") return console ? WIN32_CTRL_J : null;
+  const native = where.local === "powershell" || where.local === "cmd" || (where.local === "other" && where.altScreen);
+  const passThrough = native && !where.kitty;
+  if (ev.ctrlKey && !ev.shiftKey && ev.key.toLowerCase() === "j") return passThrough ? WIN32_CTRL_J : null;
   if (ev.key !== "Enter" || ev.shiftKey === ev.ctrlKey) return null;
+  if (passThrough) return ev.shiftKey ? WIN32_SHIFT_ENTER : WIN32_CTRL_ENTER;
   if (where.kitty) return "\x1b[13;2u";
   if (where.altScreen) return "\n";
-  if (console) return ev.shiftKey ? WIN32_SHIFT_ENTER : WIN32_CTRL_ENTER;
   return "\x16\n";
 }
 

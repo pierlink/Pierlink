@@ -29,6 +29,10 @@ export interface AppSettings {
     commandPrediction: boolean;
     /** 本机 PowerShell 的提示音（退格删到头、补全不到时“咚”一声，是 PowerShell 自己发的）；关掉后新开的 PowerShell 不响 */
     powershellBell: boolean;
+    /** 资源管理器右键菜单里的“在 Pierlink 中打开”：在那个目录新开本机终端 */
+    explorerMenu: boolean;
+    /** 新开的终端用 Windows 自带的终端引擎（系统 ConPTY），不用随安装包带的新版；随包的显示不对时让用户自己退回 */
+    systemConpty: boolean;
   };
   files: {
     /** 拖动传输时遇到同名文件直接覆盖：不先统计、不弹“有同名项”的选择框 */
@@ -67,7 +71,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   theme: "dark",
   language: "system",
   closeToTray: true,
-  terminal: { fontSize: 13, cursorStyle: "bar", cursorWidth: 2, cursorBlink: true, scrollback: 10000, defaultShell: null, confirmMultilinePaste: true, rightClickCopyPaste: false, confirmClose: true, broadcastConfirmDanger: true, commandPrediction: true, powershellBell: true },
+  terminal: { fontSize: 13, cursorStyle: "bar", cursorWidth: 2, cursorBlink: true, scrollback: 10000, defaultShell: null, confirmMultilinePaste: true, rightClickCopyPaste: false, confirmClose: true, broadcastConfirmDanger: true, commandPrediction: true, powershellBell: true, explorerMenu: true, systemConpty: false },
   files: { overwriteOnDrop: false },
   desktop: { openInWindow: false },
   updates: { autoCheck: true },
@@ -116,6 +120,8 @@ export function normalizeSettings(raw: unknown): AppSettings {
       confirmClose: bool(t.confirmClose, d.terminal.confirmClose),
       commandPrediction: bool(t.commandPrediction, d.terminal.commandPrediction),
       powershellBell: bool(t.powershellBell, d.terminal.powershellBell),
+      explorerMenu: bool(t.explorerMenu, d.terminal.explorerMenu),
+      systemConpty: bool(t.systemConpty, d.terminal.systemConpty),
     },
     files: { overwriteOnDrop: bool(f.overwriteOnDrop, d.files.overwriteOnDrop) },
     desktop: { openInWindow: bool(dk.openInWindow, d.desktop.openInWindow) },

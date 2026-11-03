@@ -79,3 +79,14 @@ export function parseOsc99(data: string): string | null {
   if (s.length >= 2 && s.startsWith('"') && s.endsWith('"')) s = s.slice(1, -1);
   return s || null;
 }
+
+/**
+ * 从资源管理器右键菜单打开的标签标题：文件夹名；磁盘根目录写成 `C:\`。
+ * @param dir 目录（Windows 路径，可能带结尾的反斜杠）
+ * @returns 标题
+ */
+export function folderName(dir: string): string {
+  const trimmed = dir.replace(/[\\/]+$/, "");
+  if (/^[A-Za-z]:$/.test(trimmed)) return `${trimmed}\\`;
+  return trimmed.split(/[\\/]/).pop() || dir;
+}

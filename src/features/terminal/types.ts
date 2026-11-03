@@ -1,6 +1,7 @@
 /** 终端会话的打开方式 */
 export type OpenSpec =
-  | { kind: "local"; shellId: string }
+  /** startDir：从资源管理器右键菜单打开时的目录（没有时从用户主目录开始） */
+  | { kind: "local"; shellId: string; startDir?: string | null }
   | { kind: "quick"; host: string; port: number; user: string | null }
   /** 已保存的服务器（使用它的私钥、登录 shell、保存的密码等设置） */
   | { kind: "server"; serverId: string };
@@ -34,6 +35,8 @@ export interface OpenOptions {
   startDir?: string | null;
   /** 本机 PowerShell 不发提示音（设置里关掉了“PowerShell 提示音”） */
   quietBell?: boolean;
+  /** 用 Windows 自带的终端引擎（设置里打开了“用 Windows 自带的终端引擎”） */
+  systemConpty?: boolean;
 }
 
 /** 终端后端：Tauri 实现和浏览器预览实现都遵守这个接口 */

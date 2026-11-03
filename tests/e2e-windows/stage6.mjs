@@ -9,7 +9,7 @@ import net from "node:net";
 import { join } from "node:path";
 import { execFileSync, spawn } from "node:child_process";
 import { openSync } from "node:fs";
-import { killApp, launchApp, pwsh, recorder, sleep } from "./lib.mjs";
+import { killApp, launchApp, pwsh, recorder, sleep, spinnerCursor } from "./lib.mjs";
 
 const EXE = process.env.PIERLINK_EXE;
 const OUT = process.env.E2E_OUT && join(process.env.E2E_OUT, "阶段6");
@@ -461,6 +461,18 @@ await rec.step(conn, "程序发了“光标不闪”（\\e[?12l，tmux、screen 
   const blink = await u.waitFor(`(()=>{const c=${pane}?.querySelector('.xterm-rows .xterm-cursor'); return c ? {blink: c.classList.contains('xterm-cursor-blink'), cls: c.className} : null;})()`, "终端光标", 8000);
   if (!blink.blink) throw new Error(`收到 \\e[?12l 后光标不闪了：${blink.cls}`);
   return blink.cls;
+});
+
+await rec.step(conn, "服务器上的转圈动画（每帧分三次写）时光标一直在转圈字符后面，不来回跳", async () => {
+  if (!HAVE_LINUX) throw new Error("没有 WSL Linux 服务器");
+  const pane = `[...document.querySelectorAll('.pane-slot')].filter(s=>s.style.display!=='none')[0]`;
+  await clickVisible(".xterm-screen", 0);
+  // bash 的 printf 每次单独写一次，和 npm 一样：回行首、清行、写字符
+  await u.typeLine("f='-\\|/'; for i in $(seq 0 45); do printf '\\033[1G'; printf '\\033[0K'; printf '%s' \"${f:i%4:1}\"; sleep 0.13; done; printf '\\033[1G\\033[0KPL-SPIN-DONE\\n'");
+  const r = await spinnerCursor(p, `${pane}?.querySelector('.xterm-rows')`);
+  await u.waitFor(`/^PL-SPIN-DONE\\s*$/m.test(${pane}?.querySelector('.xterm-rows')?.innerText||'')`, "转圈结束", 15000);
+  if (r.bad > 2 || r.badMs > 60) throw new Error(r.summary);
+  return r.summary;
 });
 
 await rec.step(conn, "断开后点“重新连接”：回到断开前的目录；重新连接以外（新开终端）照常从主目录开始", async () => {

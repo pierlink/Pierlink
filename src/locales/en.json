@@ -97,6 +97,10 @@
       "predictionHint": "Shows commands you have run as you type; → accepts, Ctrl+→ accepts a word.",
       "powershellBell": "PowerShell beep",
       "powershellBellHint": "The sound PowerShell makes when there is nothing to delete or complete; turn off to silence new PowerShell tabs",
+      "explorerMenu": "Explorer context menu",
+      "explorerMenuHint": "Right-click a folder and choose “Open in Pierlink” to open a local terminal there; on Windows 11 it is under “Show more options”",
+      "systemConpty": "Use the Windows built-in terminal engine",
+      "systemConptyHint": "Turn on only if new terminals display incorrectly; by default Pierlink uses the newer engine it ships with (the same one as Windows Terminal)",
       "clearHistory": "Command history",
       "clearHistoryButton": "Clear command history",
       "historyCleared": "Cleared"
@@ -2392,6 +2396,9 @@
     "trashConfirmBody": "This deletes {{size}} ({{count}} files) of old versions and can't be undone.",
     "trashCleared": "Cleared {{name}}: removed {{size}} ({{count}} files)",
     "trashFailed": "{{name}}: {{reason}}"
+  },
+  "explorer": {
+    "openHere": "Open in Pierlink"
   },
   "tray": {
     "open": "Open Pierlink",

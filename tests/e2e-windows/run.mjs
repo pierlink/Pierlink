@@ -6,11 +6,11 @@
 //   PIERLINK_TEST_WIN_SSHD_KEY   本机 sshd 的登录私钥（没有时跳过服务器相关步骤）
 //   PIERLINK_TEST_WIN_SSHD_USER  本机 sshd 的登录用户
 // 每一步截图；某一步失败不中断后面的步骤。全部通过时退出码为 0。
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
-import { connect, killApp, launchApp, recorder, sleep, ui } from "./lib.mjs";
+import { dirname, join } from "node:path";
+import { blinkRhythm, blinkSteady, connect, killApp, launchApp, pwsh, recorder, sleep, spinnerCursor, ui } from "./lib.mjs";
 
 const EXE = process.env.PIERLINK_EXE;
 const OUT = process.env.E2E_OUT;
@@ -107,6 +107,41 @@ await rec.step(p, "终端光标在闪（系统要求减少动画时也闪），�
   return `系统要求减少动画=${r.reduced}；闪烁动画 ${r.dur} × ${r.count}`;
 });
 
+await rec.step(p, "闲着的 PowerShell：光标亮灭各 0.6 秒，节奏不乱", async () => {
+  await u.click(".xterm-screen");
+  await sleep(300);
+  const r = await blinkRhythm(p, "document.querySelector('.xterm-rows')");
+  if (!blinkSteady(r)) throw new Error(r.summary);
+  return r.summary;
+});
+
+await rec.step(p, "程序不定时重画输入行（像 Codex、Claude Code 的状态栏）：光标照样亮灭各 0.6 秒，不被重画打乱", async () => {
+  const js = join(OUT, "pl-redraw.js");
+  writeFileSync(js, "const seq=[700,450,900,350,800,1000,500,650];let k=0;process.stdout.write('> abc');(function next(){setTimeout(()=>{process.stdout.write('\\r> abc\\x1b[K');if(++k<14)next();else process.stdout.write('\\r\\npl-redraw-done\\n');},seq[k%seq.length]);})();\n");
+  await u.click(".xterm-screen");
+  await u.typeLine(`& "${process.execPath}" "${js}"`);
+  await u.waitFor(`/^> abc\\s*$/m.test(document.querySelector('.xterm-rows').innerText)`, "程序画出输入行", 15000);
+  const r = await blinkRhythm(p, "document.querySelector('.xterm-rows')");
+  await u.waitFor(`/^pl-redraw-done\\s*$/m.test(document.querySelector('.xterm-rows').innerText)`, "程序结束", 20000);
+  rmSync(js, { force: true });
+  if (r.redraws < 3) throw new Error(`程序没怎么重画，测不出来：${r.summary}`);
+  if (!blinkSteady(r)) throw new Error(r.summary);
+  return r.summary;
+});
+
+await rec.step(p, "终端失去焦点再回来（新版 ConPTY 打开了焦点上报）：PowerShell 输入行里不多出东西", async () => {
+  await u.click(".xterm-screen");
+  await p.js(`document.querySelector('.xterm-helper-textarea')?.blur()`);
+  await sleep(400);
+  await u.click(".xterm-screen");
+  await sleep(400);
+  await u.typeLine("echo pl-focus-ok");
+  const text = await u.waitFor(`(()=>{const t=document.querySelector('.xterm-rows').innerText; return /^pl-focus-ok\\s*$/m.test(t) ? t : null;})()`, "命令输出", 10000);
+  const line = text.split("\n").reverse().find((l) => l.includes("echo pl-focus-ok")) ?? "";
+  if (/\[[IO]/.test(line)) throw new Error(`输入行里多了焦点上报：${line}`);
+  return line.trim();
+});
+
 await rec.step(p, "程序把光标换成闪烁方块（\\e[1 q）：“灭”的半拍光标下的字是原来的颜色，不变成光标色；\\e[0 q 换回竖线", async () => {
   await u.typeLine('Write-Host -NoNewline "$([char]27)[1 q"');
   // 停住动画，分别取“亮”（0.3 秒）和“灭”（0.9 秒）时这一格的颜色
@@ -120,6 +155,28 @@ await rec.step(p, "程序把光标换成闪烁方块（\\e[1 q）：“灭”的
   return `亮 ${r.on.bg} / ${r.on.color}；灭 ${r.off.bg} / ${r.off.color}`;
 });
 
+await rec.step(p, "终端用的是随安装包带的 ConPTY：控制台宿主是安装目录里的 OpenConsole.exe", async () => {
+  const want = join(dirname(EXE), "conpty", "OpenConsole.exe").toLowerCase();
+  const out = pwsh(`Get-CimInstance Win32_Process -Filter "Name='OpenConsole.exe'" | ForEach-Object { $_.ExecutablePath } | Sort-Object -Unique`);
+  // 资源目录是 \\?\ 开头的写法，进程路径也带着它
+  const running = out.split(/\r?\n/).map((x) => x.trim().replace(/^\\\\\?\\/, "").toLowerCase()).filter(Boolean);
+  if (!running.includes(want)) throw new Error(`没有安装目录里的 OpenConsole.exe 在运行：${out || "（一个都没有）"}`);
+  return out;
+});
+
+await rec.step(p, "转圈动画（和 npm install 一样分三次写：回行首、清行、写字符）时光标一直在转圈字符后面，不来回跳", async () => {
+  // npm 的转圈：每 130 毫秒 cursorTo(0)、clearLine(1)、写一个字符，三次单独写到 stderr
+  const js = join(OUT, "pl-spin.js");
+  writeFileSync(js, "const s=process.stderr,f=['-','\\\\','|','/'];let i=0;s.write(f[0]);const t=setInterval(()=>{i=(i+1)%4;s.cursorTo(0);s.clearLine(1);s.write(f[i]);},130);setTimeout(()=>{clearInterval(t);s.cursorTo(0);s.clearLine(1);s.write('pl-spin-done\\n');},6000);\n");
+  await u.click(".xterm-screen");
+  await u.typeLine(`& "${process.execPath}" "${js}"`);
+  const r = await spinnerCursor(p, "document.querySelector('.xterm-rows')");
+  await u.waitFor(`/^pl-spin-done\\s*$/m.test(document.querySelector('.xterm-rows').innerText)`, "转圈结束", 15000);
+  rmSync(js, { force: true });
+  if (r.bad > 2 || r.badMs > 60) throw new Error(r.summary);
+  return r.summary;
+});
+
 await rec.step(p, "切到设置页再切回来，终端和内容都还在", async () => {
   await u.clickText("Settings", "nav");
   await sleep(500);
@@ -127,6 +184,39 @@ await rec.step(p, "切到设置页再切回来，终端和内容都还在", asyn
   await sleep(500);
   const text = await u.termText();
   if (!text?.includes("pl-e2e-hello")) throw new Error(`终端内容丢了：${text}`);
+});
+
+/** 键盘焦点在看得见的终端里 */
+const focusInVisibleTerminal = `(()=>{const a=document.activeElement; const s=a?.closest('.pane-slot'); return !!a && a.classList.contains('xterm-helper-textarea') && !!s && s.style.display!=='none';})()`;
+
+await rec.step(p, "从设置页回到工作区：不用再点终端，直接能打字", async () => {
+  await u.click(".xterm-screen");
+  await u.clickText("Settings", "nav");
+  await sleep(500);
+  await u.clickText("Workspace", "nav");
+  await u.waitFor(focusInVisibleTerminal, "焦点回到终端", 5000);
+  await u.typeLine("echo pl-page-refocus");
+  await u.waitFor(`/^pl-page-refocus\\s*$/m.test(document.querySelector('.pane-slot:not([style*="none"]) .xterm-rows')?.innerText||'')`, "命令进了终端", 10000);
+  return "回到工作区后直接打字进了终端";
+});
+
+await rec.step(p, "从别的标签点回来：焦点回到这个标签的终端，直接能打字", async () => {
+  const before = await counts(p);
+  await u.click('.tabbar button[aria-label="New terminal tab"]');
+  await u.waitFor(`document.querySelectorAll('.tab').length === ${before.tabs + 1}`, "第二个标签", 15000);
+  await u.waitFor(`(()=>{const s=[...document.querySelectorAll('.pane-slot')].filter(s=>s.style.display!=='none'); return /PS |>/.test(s[0]?.querySelector('.xterm-rows')?.innerText||'');})()`, "新终端出现提示符", 30000);
+  // 点回第一个标签，不点终端直接打字
+  await u.click(".tab", 0);
+  await u.waitFor(focusInVisibleTerminal, "焦点回到第一个标签的终端", 5000);
+  await u.typeLine("echo pl-tab-refocus");
+  await u.waitFor(`/^pl-tab-refocus\\s*$/m.test(document.querySelector('.pane-slot:not([style*="none"]) .xterm-rows')?.innerText||'')`, "命令进了第一个标签的终端", 10000);
+  // 关掉第二个标签，标签数回到原样
+  await u.click(".tab", before.tabs);
+  await sleep(300);
+  await u.click(".tab[aria-selected=true] .tab__close");
+  await u.waitFor(`document.querySelectorAll('.tab').length === ${before.tabs}`, "关掉第二个标签", 8000);
+  await u.click(".tab", 0);
+  return "点回标签后直接打字进了终端";
 });
 
 await rec.step(p, "新建终端菜单：有 Git Bash，没有对勾，第一项不高亮", async () => {
@@ -139,6 +229,24 @@ await rec.step(p, "新建终端菜单：有 Git Bash，没有对勾，第一项�
   if (info.checks.includes("✓")) throw new Error("菜单里有对勾");
   if (info.focus === "menuitem") throw new Error("打开菜单时焦点落在了第一项上");
   return info.items.join(" | ");
+});
+
+await rec.step(p, "新开命令提示符很快出提示符（新版 ConPTY 启动时先问终端一句，回答不能丢，否则白等 3 秒）", async () => {
+  const before = await counts(p);
+  await u.click(".pl-split__more");
+  await sleep(300);
+  const t0 = Date.now();
+  await u.clickText("Command Prompt", ".pl-menu");
+  await u.waitFor(`document.querySelectorAll('.tab').length === ${before.tabs + 1}`, "多出一个标签", 10000);
+  await u.waitFor(`(()=>{const s=[...document.querySelectorAll('.pane-slot')].filter(s=>s.style.display!=='none'); return /^[A-Z]:\\\\[^>]*>\\s*$/m.test(s[0]?.querySelector('.xterm-rows')?.innerText||'');})()`, "命令提示符", 15000);
+  const ms = Date.now() - t0;
+  // 关掉这个标签（空闲，直接关），标签数回到原样：后面的步骤按标签数写的
+  await u.click(".tab[aria-selected=true] .tab__close");
+  await u.waitFor(`document.querySelectorAll('.tab').length === ${before.tabs}`, "关掉命令提示符的标签", 8000);
+  await u.click(".tab", 0);
+  await sleep(300);
+  if (ms > 2500) throw new Error(`用了 ${ms} 毫秒才出提示符`);
+  return `${ms} 毫秒`;
 });
 
 // ---------- 2. 文件列表跟随本机目录 ----------
@@ -295,6 +403,51 @@ await rec.step(p, "PowerShell 里 Shift+Enter 换行不执行，回车后两行�
   if (/^PLSE1\s*$/m.test(before)) throw new Error(`Shift+Enter 直接执行了：${before.slice(-300)}`);
   await u.enter();
   await u.waitFor(`(()=>{const s=[...document.querySelectorAll('.pane-slot')].filter(s=>s.style.display!=='none')[0]?.querySelector('.xterm-rows')?.innerText||''; return /^PLSE1\s*$/m.test(s) && /^PLSE2\s*$/m.test(s);})()`, "两行命令都执行了", 10000);
+});
+
+/** 和 Codex 一样读 Windows 控制台原生按键的全屏程序：进备用屏读一个键，回主屏打印 PL-KEY=键+修饰键；最多等 15 秒 */
+const READKEY_PS1 = join(OUT, "pl-readkey.ps1");
+writeFileSync(READKEY_PS1, [
+  'Write-Host -NoNewline "$([char]27)[?1049h"',
+  "$sw = [Diagnostics.Stopwatch]::StartNew()",
+  "while (-not [Console]::KeyAvailable -and $sw.Elapsed.TotalSeconds -lt 15) { Start-Sleep -Milliseconds 50 }",
+  "$k = if ([Console]::KeyAvailable) { [Console]::ReadKey($true) }",
+  'Write-Host -NoNewline "$([char]27)[?1049l"',
+  "\"PL-KEY=$(if ($k) { \"$($k.Key)+$($k.Modifiers)\" } else { 'none' })\"",
+  "",
+].join("\r\n"));
+const visibleRows = `(document.querySelector('.pane-slot:not([style*="none"]) .xterm-rows')?.innerText||'')`;
+/** 在当前终端里跑 command（启动读键程序），等进了备用屏按 Shift+Enter，返回程序读到的键 */
+async function shiftEnterInReadKey(command) {
+  await u.click(".pane-slot:not([style*='none']) .xterm-screen");
+  await u.typeLine(command);
+  await u.waitFor(`${visibleRows}.trim() === ''`, "进了备用屏", 15000);
+  await u.key("Enter", "Enter", 13, 8, "\r");
+  return u.waitFor(`(()=>{const m=${visibleRows}.match(/^PL-KEY=(\\S+)\\s*$/m); return m && m[1];})()`, "程序读到的按键", 20000);
+}
+
+await rec.step(p, "本机 PowerShell 里的全屏程序（像本机的 Codex）：Shift+Enter 原样收到 Shift+Enter（和 Windows Terminal 一样），不会变成 Ctrl+Enter", async () => {
+  const got = await shiftEnterInReadKey(`& "${READKEY_PS1}"`);
+  if (got !== "Enter+Shift") throw new Error(`程序读到的是 ${got}，应为 Enter+Shift`);
+  return got;
+});
+
+await rec.step(p, "本机 Git Bash 里开的 Windows 全屏程序（像在 Git Bash 里开 Codex）：Shift+Enter 也原样收到", async () => {
+  const before = await counts(p);
+  await u.click(".pl-split__more");
+  await sleep(300);
+  await u.clickText("Git Bash", ".pl-menu");
+  await u.waitFor(`document.querySelectorAll('.tab').length === ${before.tabs + 1}`, "多出一个标签", 10000);
+  await u.waitFor(`/\\$ *$/m.test(${visibleRows})`, "Git Bash 提示符", 30000);
+  try {
+    const got = await shiftEnterInReadKey(`powershell.exe -NoProfile -ExecutionPolicy Bypass -File '${READKEY_PS1}'`);
+    if (got !== "Enter+Shift") throw new Error(`程序读到的是 ${got}，应为 Enter+Shift`);
+    return got;
+  } finally {
+    await sleep(800);
+    await closeCurrentTab(before.tabs);
+    await u.click(".tab", 0);
+  }
 });
 
 await rec.step(p, "Ctrl+V 也只粘贴一次", async () => {
@@ -635,6 +788,137 @@ await rec.step(() => p, "强制结束后重新打开：布局恢复，服务器�
     await u.waitFor(`![...document.querySelectorAll('.term-ended--restored')].some(e=>e.getBoundingClientRect().width>0)`, "按 Enter 后开始连接", 20000);
   }
   return `之前 ${JSON.stringify(before)}，之后 ${JSON.stringify(after)}`;
+});
+
+// ---------- 8. 资源管理器右键菜单“在 Pierlink 中打开” ----------
+const MENU_KEYS = ["Directory\\Background\\shell\\Pierlink", "Directory\\shell\\Pierlink", "Drive\\shell\\Pierlink"];
+/** 读一处右键菜单项（当前用户的注册表）：文字、图标、命令；没有这一项时返回 null */
+function menuEntry(key) {
+  const out = pwsh(`$k='HKCU:\\Software\\Classes\\${key}'; if (-not (Test-Path -LiteralPath $k)) { 'null' } else { $a=Get-ItemProperty -LiteralPath $k; $c=Get-ItemProperty -LiteralPath ($k + '\\command') -ErrorAction SilentlyContinue; [pscustomobject]@{label=$a.'(default)'; icon=$a.Icon; command=$c.'(default)'} | ConvertTo-Json -Compress }`);
+  return JSON.parse(out);
+}
+/** 等三处菜单项都注册（want=true）或都删掉（want=false） */
+async function menuState(want) {
+  for (let i = 0; i < 40; i++) {
+    const all = MENU_KEYS.map(menuEntry);
+    if (all.every((e) => !!e === want)) return all;
+    await sleep(500);
+  }
+  throw new Error(`右键菜单项${want ? "没有都注册" : "没有都删掉"}：${JSON.stringify(MENU_KEYS.map(menuEntry))}`);
+}
+/** 像资源管理器那样执行菜单命令：把 %V 换成目录，命令行原样交给 CreateProcess（不再加引号、不转义） */
+function runMenuCommand(command, dir, env = process.env) {
+  const m = command.replace("%V", dir).match(/^"([^"]+)" (.*)$/);
+  if (!m) throw new Error(`菜单命令格式不对：${command}`);
+  const child = spawn(m[1], [m[2]], { argv0: `"${m[1]}"`, windowsVerbatimArguments: true, detached: true, stdio: "ignore", env });
+  child.unref();
+}
+/** 当前显示的终端里 PowerShell 提示符中的目录 */
+const visiblePrompt = `(()=>{const s=[...document.querySelectorAll('.pane-slot')].filter(s=>s.style.display!=='none'); const m=(s[0]?.querySelector('.xterm-rows')?.innerText||'').match(/PS (.+?)>/); return m && m[1];})()`;
+/** 执行菜单命令后：多出一个标签，里面的终端就在 dir */
+async function openedAt(cmd, dir, want = dir) {
+  const before = await counts(p);
+  runMenuCommand(cmd, dir);
+  await u.waitFor(`document.querySelectorAll('.tab').length === ${before.tabs + 1}`, "多出一个标签", 20000);
+  const prompt = await u.waitFor(visiblePrompt, "新标签里的 PowerShell 提示符", 30000);
+  if (prompt.toLowerCase() !== want.toLowerCase()) throw new Error(`起始目录是 ${prompt}，应为 ${want}`);
+  await closeCurrentTab(before.tabs);
+  return prompt;
+}
+/**
+ * 关掉当前标签，等标签数回到 tabs。刚跑完命令时 Git Bash 还在算提示符（里面要跑 git），
+ * 这时关会先问一句“还有程序在运行”：照常点“关闭标签”
+ */
+async function closeCurrentTab(tabs) {
+  await u.click(".tab[aria-selected=true] .tab__close");
+  for (let i = 0; i < 25; i++) {
+    if (await p.js(`document.querySelectorAll('.tab').length === ${tabs}`)) return;
+    if (await p.js(`!!document.querySelector('.pl-dialog')`)) await u.clickText("Close tab", ".pl-dialog");
+    await sleep(400);
+  }
+  throw new Error(`刚开的标签没关掉：${(await u.dialogText()) || "没有对话框"}`);
+}
+const MENU_DIR = join(HOME, "pl e2e 右键 目录");
+mkdirSync(MENU_DIR, { recursive: true });
+
+await rec.step(p, "资源管理器右键菜单：文件夹、空白处、磁盘三处都有“Open in Pierlink”，图标和命令都指向装好的 Pierlink.exe", async () => {
+  const all = await menuState(true);
+  const want = `"${EXE}" --open-dir "%V"`;
+  all.forEach((e, i) => {
+    if (e.label !== "Open in Pierlink") throw new Error(`${MENU_KEYS[i]} 的文字是 ${e.label}`);
+    if (e.command?.toLowerCase() !== want.toLowerCase()) throw new Error(`${MENU_KEYS[i]} 的命令是 ${e.command}，应为 ${want}`);
+    if (e.icon?.toLowerCase() !== EXE.toLowerCase()) throw new Error(`${MENU_KEYS[i]} 的图标是 ${e.icon}`);
+  });
+  return all[0].command;
+});
+
+await rec.step(p, "Pierlink 开着时在带空格和中文的文件夹里右键打开：新标签里的 PowerShell 就在这个目录", async () => {
+  return openedAt(menuEntry(MENU_KEYS[0]).command, MENU_DIR);
+});
+
+await rec.step(p, "右键磁盘打开 C:\\（命令行里是 \"C:\\\"，反斜杠会转义引号）：新标签在 C:\\", async () => {
+  return openedAt(menuEntry(MENU_KEYS[2]).command, "C:\\");
+});
+
+await rec.step(p, "默认终端改成 Git Bash 后从右键菜单打开：Git Bash 留在这个目录（登录脚本不切回主目录）", async () => {
+  const dir = join(HOME, "pl e2e gitbash");
+  mkdirSync(dir, { recursive: true });
+  const combo = '[role=combobox][aria-label="Default local terminal"]';
+  const pick = async (name) => {
+    await u.clickText("Settings", "nav");
+    // 设置页显示出来（隐藏时下拉框量出来是 0 宽，点了也没用）、下拉列表打开以后再点
+    await u.waitFor(`(document.querySelector(${JSON.stringify(combo)})?.getBoundingClientRect().width || 0) > 0`, "设置页的默认终端下拉框", 10000);
+    await u.click(combo);
+    await u.waitFor(`!!document.querySelector('[role=listbox]')`, "下拉列表", 5000);
+    await u.clickText(name, "[role=listbox]");
+    await u.waitFor(`(document.querySelector(${JSON.stringify(combo)})?.textContent || '').trim().startsWith(${JSON.stringify(name)})`, `默认终端选中 ${name}`, 5000);
+    await u.clickText("Workspace", "nav");
+  };
+  await pick("Git Bash");
+  try {
+    const before = await counts(p);
+    runMenuCommand(menuEntry(MENU_KEYS[1]).command, dir);
+    await u.waitFor(`document.querySelectorAll('.tab').length === ${before.tabs + 1}`, "多出一个标签", 20000);
+    await u.waitFor(`(()=>{const s=[...document.querySelectorAll('.pane-slot')].filter(s=>s.style.display!=='none'); return /\\$ *$/m.test(s[0]?.querySelector('.xterm-rows')?.innerText||'');})()`, "Git Bash 提示符", 30000);
+    await u.typeLine("echo PL-PWD=$(pwd)");
+    const pwd = await u.waitFor(`(()=>{const s=[...document.querySelectorAll('.pane-slot')].filter(s=>s.style.display!=='none'); const m=(s[0]?.querySelector('.xterm-rows')?.innerText||'').match(/^PL-PWD=(.+)$/m); return m && m[1].trim();})()`, "pwd 的输出", 15000);
+    if (!pwd.endsWith("/pl e2e gitbash")) throw new Error(`Git Bash 的目录是 ${pwd}，应在 ${dir}`);
+    await closeCurrentTab(before.tabs);
+    return pwd;
+  } finally {
+    await pick("Automatic");
+  }
+});
+
+await rec.step(p, "设置里关掉“Explorer context menu”：三处菜单项都删掉；再打开又都注册回来", async () => {
+  const sel = `[role=switch][aria-label="Explorer context menu"]`;
+  await u.clickText("Settings", "nav");
+  await u.waitFor(`document.querySelector('${sel}')?.getAttribute('aria-checked') === 'true'`, "开关默认打开");
+  await u.click(sel);
+  await menuState(false);
+  await u.click(sel);
+  await menuState(true);
+  await u.clickText("Workspace", "nav");
+  return "关掉后删除、打开后恢复";
+});
+
+await rec.step(() => p, "Pierlink 没开时从右键菜单打开：启动后直接在这个目录开一个本机终端", async () => {
+  const cmd = menuEntry(MENU_KEYS[0]).command;
+  const before = await counts(p);
+  p.close();
+  kill();
+  await sleep(2000);
+  runMenuCommand(cmd, MENU_DIR, { ...process.env, PIERLINK_E2E_DEVTOOLS_PORT: String(PORT) });
+  p = await connect(PORT, 90000);
+  u = ui(p);
+  await u.waitFor(`!!document.querySelector('.tabbar')`, "工作区加载完成", 60000);
+  // 上次的标签先恢复出来，新标签加在后面并切过去
+  await u.waitFor(`document.querySelectorAll('.tab').length === ${before.tabs + 1}`, "恢复的标签之外多出一个", 30000);
+  const prompt = await u.waitFor(visiblePrompt, "新标签里的 PowerShell 提示符", 30000);
+  if (prompt.toLowerCase() !== MENU_DIR.toLowerCase()) throw new Error(`起始目录是 ${prompt}，应为 ${MENU_DIR}`);
+  // 关掉它：后面的阶段接着用这次的标签布局
+  await closeCurrentTab(before.tabs);
+  return prompt;
 });
 
 if (p.errors.length) console.log("页面错误：", p.errors.join("\n"));

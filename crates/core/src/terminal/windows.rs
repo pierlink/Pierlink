@@ -8,14 +8,203 @@ use std::{
         ffi::OsStrExt,
         io::{AsRawHandle, FromRawHandle, OwnedHandle},
     },
-    path::Path,
-    sync::Mutex,
+    path::{Path, PathBuf},
+    sync::{
+        Mutex, OnceLock,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, Instant},
 };
 use windows_sys::Win32::{
     Foundation::*,
-    System::{Console::*, JobObjects::*, Pipes::CreatePipe, Threading::*},
+    Storage::FileSystem::{
+        GetFileVersionInfoSizeW, GetFileVersionInfoW, VS_FIXEDFILEINFO, VerQueryValueW,
+    },
+    System::{
+        Console::*,
+        JobObjects::*,
+        LibraryLoader::{
+            GetProcAddress, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR, LOAD_LIBRARY_SEARCH_SYSTEM32,
+            LoadLibraryExW,
+        },
+        Pipes::CreatePipe,
+        Threading::*,
+    },
 };
+use windows_sys::core::HRESULT;
+
+/// 一套 ConPTY 函数：系统自带的（kernel32），或随安装包带的微软新版（conpty.dll）。
+struct Api {
+    create: unsafe extern "system" fn(COORD, HANDLE, HANDLE, u32, *mut HPCON) -> HRESULT,
+    resize: unsafe extern "system" fn(HPCON, COORD) -> HRESULT,
+    close: unsafe extern "system" fn(HPCON),
+    /// 创建时的选项
+    flags: u32,
+    name: &'static str,
+}
+/// 系统自带的 ConPTY；不带任何选项，不继承外部光标（隐藏指纹探测没有外部终端可提供光标位置）
+static SYSTEM: Api = Api {
+    create: CreatePseudoConsole,
+    resize: ResizePseudoConsole,
+    close: ClosePseudoConsole,
+    flags: 0,
+    name: "系统自带",
+};
+/// 新版 ConPTY 的选项：逐个字符量宽度（和 wcswidth 一样）。不带时按字素簇量，带变体选择符的 emoji 会比
+/// xterm.js（Unicode 11 宽度，逐个字符）多算一格，PSReadLine 这类按控制台光标位置重画的程序就会错位
+const GLYPH_WIDTH_WCSWIDTH: u32 = 0x10;
+/// 随安装包带的 ConPTY 所在目录（应用启动时设置）
+static BUNDLED_DIR: OnceLock<PathBuf> = OnceLock::new();
+
+/// 应用启动时、打开任何终端之前调用：之后的终端优先用 dir 里随安装包带的微软 ConPTY
+/// （conpty.dll + OpenConsole.exe，和 Windows Terminal 用的是同一份）。
+/// 系统自带的老 ConPTY 会自己重画屏幕，程序分几次写的画面（比如 npm 的转圈：回行首、清行、写字符）
+/// 会把中间状态也发出来，光标来回跳；新版原样转发程序写的内容。不调用时一律用系统自带的。
+///
+/// :param dir: 放 conpty.dll 和 OpenConsole.exe 的目录
+pub fn use_bundled_conpty(dir: PathBuf) {
+    let _ = BUNDLED_DIR.set(dir);
+}
+
+/// 设置里选了“用 Windows 自带的终端引擎”：之后新开的终端不用随包的 ConPTY
+static PREFER_SYSTEM: AtomicBool = AtomicBool::new(false);
+
+/// 界面同步设置时调用：打开后新开的终端用系统自带的 ConPTY（随包的新版显示不对时让用户自己退回），
+/// 已经开着的终端不受影响。环境变量 PIERLINK_CONPTY=system 也一样（测试和排查问题用）。
+///
+/// :param yes: 是否改用系统自带的
+pub fn use_system_conpty(yes: bool) {
+    PREFER_SYSTEM.store(yes, Ordering::SeqCst);
+}
+
+/// 这次新开终端用哪一套 ConPTY
+fn current_api() -> &'static Api {
+    if PREFER_SYSTEM.load(Ordering::SeqCst)
+        || std::env::var_os("PIERLINK_CONPTY").is_some_and(|v| v == "system")
+    {
+        return &SYSTEM;
+    }
+    bundled().unwrap_or(&SYSTEM)
+}
+
+/// 随包的 ConPTY；没设置目录、文件不全或加载失败时为 None（结果只记一次日志）
+fn bundled() -> Option<&'static Api> {
+    static API: OnceLock<Option<Api>> = OnceLock::new();
+    API.get_or_init(|| {
+        let dir = BUNDLED_DIR.get()?;
+        match load_bundled(dir) {
+            Ok((api, version)) => {
+                eprintln!(
+                    "终端用随安装包带的 ConPTY: 目录={}, 版本={version}",
+                    dir.display()
+                );
+                Some(api)
+            }
+            Err(e) => {
+                eprintln!(
+                    "随包 ConPTY 不可用，改用系统自带的: 目录={}, 原因={e}",
+                    dir.display()
+                );
+                None
+            }
+        }
+    })
+    .as_ref()
+}
+
+/// 文件资源里的版本号（a.b.c.d 合成一个数，便于比较）；读不到时返回 None
+fn file_version(path: &Path) -> Option<u64> {
+    let name = wide(path.as_os_str()).ok()?;
+    let size = unsafe { GetFileVersionInfoSizeW(name.as_ptr(), std::ptr::null_mut()) };
+    if size == 0 {
+        return None;
+    }
+    let mut data = vec![0u8; size as usize];
+    if unsafe { GetFileVersionInfoW(name.as_ptr(), 0, size, data.as_mut_ptr().cast()) } == 0 {
+        return None;
+    }
+    let mut info: *mut std::ffi::c_void = std::ptr::null_mut();
+    let mut len = 0u32;
+    let root = [u16::from(b'\\'), 0];
+    let found = unsafe { VerQueryValueW(data.as_ptr().cast(), root.as_ptr(), &mut info, &mut len) };
+    if found == 0 || info.is_null() || (len as usize) < std::mem::size_of::<VS_FIXEDFILEINFO>() {
+        return None;
+    }
+    // SAFETY：info 指向 data 里的 VS_FIXEDFILEINFO；data 按字节分配，按不对齐的方式读
+    let fixed = unsafe { std::ptr::read_unaligned(info.cast::<VS_FIXEDFILEINFO>()) };
+    Some((u64::from(fixed.dwFileVersionMS) << 32) | u64::from(fixed.dwFileVersionLS))
+}
+
+/// 版本号写成 a.b.c.d
+fn version_text(v: u64) -> String {
+    let part = |shift: u32| (v >> shift) & 0xffff;
+    format!("{}.{}.{}.{}", part(48), part(32), part(16), part(0))
+}
+
+/// 加载随包的 ConPTY，返回函数和版本号
+fn load_bundled(dir: &Path) -> Result<(Api, String), String> {
+    let (dll_path, host) = (dir.join("conpty.dll"), dir.join("OpenConsole.exe"));
+    // 两个文件必须在一起、而且是同一版：conpty.dll 在同目录找不到 OpenConsole.exe 时会去起系统的 conhost.exe，
+    // 还带着系统 conhost 不认的参数（--textMeasurement），终端一个都开不了；两边版本不同时启动参数也可能对不上
+    // （比如更新时 OpenConsole.exe 被占用没覆盖上）
+    if !host.is_file() {
+        return Err("缺少 OpenConsole.exe".into());
+    }
+    let version = match (file_version(&dll_path), file_version(&host)) {
+        (Some(a), Some(b)) if a == b => version_text(a),
+        (a, b) => {
+            return Err(format!(
+                "conpty.dll 和 OpenConsole.exe 版本不一致: {} / {}",
+                a.map_or("读不到".into(), version_text),
+                b.map_or("读不到".into(), version_text)
+            ));
+        }
+    };
+    let dll = wide(dll_path.as_os_str()).map_err(|_| "路径含空字符".to_string())?;
+    // 依赖只从它自己的目录和 System32 找，不按当前目录、PATH 搜索
+    let module = unsafe {
+        LoadLibraryExW(
+            dll.as_ptr(),
+            std::ptr::null_mut(),
+            LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32,
+        )
+    };
+    if module.is_null() {
+        return Err(format!(
+            "加载 conpty.dll 失败: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    // 模块不释放：整个进程都用它
+    let symbol = |name: &std::ffi::CStr| unsafe { GetProcAddress(module, name.as_ptr().cast()) };
+    let (Some(create), Some(resize), Some(close)) = (
+        symbol(c"ConptyCreatePseudoConsole"),
+        symbol(c"ConptyResizePseudoConsole"),
+        symbol(c"ConptyClosePseudoConsole"),
+    ) else {
+        return Err("conpty.dll 缺少需要的函数".into());
+    };
+    // SAFETY：三个函数的签名与 conpty.h 一致（和 kernel32 的同名函数相同）
+    let api = unsafe {
+        Api {
+            create: std::mem::transmute::<
+                unsafe extern "system" fn() -> isize,
+                unsafe extern "system" fn(COORD, HANDLE, HANDLE, u32, *mut HPCON) -> HRESULT,
+            >(create),
+            resize: std::mem::transmute::<
+                unsafe extern "system" fn() -> isize,
+                unsafe extern "system" fn(HPCON, COORD) -> HRESULT,
+            >(resize),
+            close: std::mem::transmute::<
+                unsafe extern "system" fn() -> isize,
+                unsafe extern "system" fn(HPCON),
+            >(close),
+            flags: GLYPH_WIDTH_WCSWIDTH,
+            name: "随安装包",
+        }
+    };
+    Ok((api, version))
+}
 fn failed() -> AppError {
     error(
         "spawn_failed",
@@ -63,6 +252,8 @@ pub(crate) struct Pair {
 }
 pub(crate) struct Master {
     console: HPCON,
+    /// 创建 console 用的那套函数；调整大小、关闭必须用同一套
+    api: &'static Api,
     closer: Mutex<Option<std::sync::mpsc::SyncSender<()>>>,
     close_worker: Mutex<Option<std::thread::JoinHandle<()>>>,
     reader: File,
@@ -80,21 +271,32 @@ pub(crate) fn open(size: PtySize) -> Result<Pair, AppError> {
     let (reader, output) = pipe()?;
     let mut console = 0;
     let coord = dimensions(size)?;
-    // 保持 flags=0，不继承外部光标；隐藏指纹探测没有外部终端可提供光标位置。
-    // ConPTY 仍可能发送 DA1 查询，隐藏探测由 host_key 回答，交互终端由 xterm.js 回答。
-    if unsafe {
-        CreatePseudoConsole(
+    // 不继承外部光标；ConPTY 仍可能发送 DA1 查询，隐藏探测由 host_key 回答，交互终端由 xterm.js 回答。
+    let create = |api: &Api, console: &mut HPCON| unsafe {
+        (api.create)(
             coord,
             input.as_raw_handle(),
             output.as_raw_handle(),
-            0,
-            &mut console,
+            api.flags,
+            console,
         )
-    } < 0
-    {
+    };
+    let mut api = current_api();
+    let mut result = create(api, &mut console);
+    if result < 0 && !std::ptr::eq(api, &SYSTEM) {
+        // 比如 OpenConsole.exe 被安全软件拦下：这一次改用系统自带的
+        eprintln!(
+            "{}的 ConPTY 创建失败，改用系统自带的: 错误码={result:#x}",
+            api.name
+        );
+        api = &SYSTEM;
+        result = create(api, &mut console);
+    }
+    if result < 0 {
         return Err(failed());
     }
     // ClosePseudoConsole 可能等待管道被排空；独立线程关闭，读取与回调继续运行。
+    let close = api.close;
     let (tx, rx) = std::sync::mpsc::sync_channel(1);
     let close_worker =
         match std::thread::Builder::new()
@@ -102,13 +304,13 @@ pub(crate) fn open(size: PtySize) -> Result<Pair, AppError> {
             .spawn(move || {
                 let _ = rx.recv();
                 unsafe {
-                    ClosePseudoConsole(console);
+                    close(console);
                 }
             }) {
             Ok(worker) => worker,
             Err(_) => {
                 unsafe {
-                    ClosePseudoConsole(console);
+                    close(console);
                 }
                 return Err(failed());
             }
@@ -116,6 +318,7 @@ pub(crate) fn open(size: PtySize) -> Result<Pair, AppError> {
     Ok(Pair {
         master: Box::new(Master {
             console,
+            api,
             closer: Mutex::new(Some(tx)),
             close_worker: Mutex::new(Some(close_worker)),
             reader,
@@ -168,7 +371,7 @@ impl Master {
                 "终端已结束",
             ));
         }
-        if unsafe { ResizePseudoConsole(self.console, dimensions(size)?) } < 0 {
+        if unsafe { (self.api.resize)(self.console, dimensions(size)?) } < 0 {
             return Err(error(
                 "resize_failed",
                 "terminal.resize_conpty",
@@ -928,6 +1131,31 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn 读得到系统程序的版本号() {
+        let root = std::env::var_os("SystemRoot")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(r"C:\Windows"));
+        let version = file_version(&root.join(r"System32\kernel32.dll"))
+            .unwrap_or_else(|| panic!("kernel32.dll 应带版本号"));
+        assert!(version >> 48 >= 6, "版本号={}", version_text(version));
+        assert!(file_version(&root.join("不存在的程序.dll")).is_none());
+    }
+
+    #[test]
+    fn 随包_conpty_文件不全或版本不同时不加载() {
+        let root = crate::test_support::tempdir();
+        assert_eq!(
+            load_bundled(root.path()).err().as_deref(),
+            Some("缺少 OpenConsole.exe")
+        );
+        // 没有版本资源的两个文件：读不到版本号，按不一致处理
+        std::fs::write(root.path().join("OpenConsole.exe"), b"").unwrap();
+        std::fs::write(root.path().join("conpty.dll"), b"").unwrap();
+        let err = load_bundled(root.path()).err().unwrap_or_default();
+        assert!(err.contains("版本不一致"), "{err}");
     }
 
     #[test]

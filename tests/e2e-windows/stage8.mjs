@@ -500,7 +500,7 @@ await rec.step(p, "手机输入：电脑上给权限后能在本机终端执行�
   const pasted = await phoneFetch("POST", `/api/terminals/${id}/input`, { text: 'Write-Output "pl-m$(1+0)"\nWrite-Output "pl-m$(1+1)"', paste: true });
   const go = await phoneFetch("POST", `/api/terminals/${id}/input`, { keys: ["Enter"] });
   if (pasted.status >= 300 || go.status >= 300) throw new Error(`多行粘贴失败：${pasted.status} ${pasted.text.slice(0, 200)} / ${go.status}`);
-  await waitScreen(/^pl-m1$[\s\S]*^pl-m2$/m, "多行粘贴");
+  await waitScreen(/^pl-m1[ \t]*$[\s\S]*^pl-m2[ \t]*$/m, "多行粘贴");
   // 读屏：指定行数，带颜色的行
   const sized = await phoneFetch("GET", `/api/terminals/${id}/screen?lines=20`);
   if (!Array.isArray(sized.json?.lines) || sized.json.lines.length > 20 || sized.json.lines.length === 0) throw new Error(`读屏行数或带颜色的行不对：${sized.text.slice(0, 200)}`);
@@ -517,12 +517,14 @@ await rec.step(p, "手机输入：电脑上给权限后能在本机终端执行�
   const fit = await phoneFetch("POST", `/api/terminals/${id}/size`, { cols: 60, rows: 20 });
   if (fit.status >= 300 || fit.json?.ok !== true) throw new Error(`改尺寸失败：${fit.status} ${fit.text.slice(0, 200)}`);
   await phoneFetch("POST", `/api/terminals/${id}/input`, { text: '"PLW=$($Host.UI.RawUI.WindowSize.Width)"\r' });
-  await waitScreen(/^PLW=60$/m, "改成 60 列");
+  await waitScreen(/^PLW=60[ \t]*$/m, "改成 60 列");
   const restore = await phoneFetch("POST", `/api/terminals/${id}/size`, { restore: true });
   if (restore.status >= 300) throw new Error(`恢复尺寸失败：${restore.status}`);
-  await phoneFetch("POST", `/api/terminals/${id}/input`, { text: '"PLR=$($Host.UI.RawUI.WindowSize.Width)"\r' });
-  const restored = await waitScreen(/^PLR=\d+$/m, "恢复尺寸");
-  const width = Number(/^PLR=(\d+)$/m.exec(restored)[1]);
+  // 改回原宽度后后端的屏幕副本不重排（新版 ConPTY 不再整屏重画，PowerShell 按重排后的坐标重写输入行），
+  // 清屏之前上面几行会错位（见待办）：先清屏再读
+  await phoneFetch("POST", `/api/terminals/${id}/input`, { text: 'Clear-Host; "PLR=$($Host.UI.RawUI.WindowSize.Width)"\r' });
+  const restored = await waitScreen(/^PLR=\d+[ \t]*$/m, "恢复尺寸");
+  const width = Number(/^PLR=(\d+)[ \t]*$/m.exec(restored)[1]);
   if (!(width > 60)) throw new Error(`恢复后宽度应该大于 60：${width}`);
   if ((await phoneFetch("POST", `/api/terminals/${id}/size`, { cols: 10, rows: 20 })).status !== 400) throw new Error("10 列应该 400");
   // 手机请电脑新开终端：本机终端开好后在列表里、能读屏；有 WSL 服务器时也开一个服务器终端；服务器 ID 不对时 400

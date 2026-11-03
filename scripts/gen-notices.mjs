@@ -8,6 +8,8 @@
 // 输出到 src-tauri/resources/licenses/（不提交到仓库，每次打包前重新生成）：
 //   - THIRD-PARTY-NOTICES.txt：第三方组件汇总
 //   - LibreSSL-LICENSE.txt：随 Win32-OpenSSH 分发的 libcrypto.dll（LibreSSL）的许可证
+//   - ConPTY-LICENSE.txt、ConPTY-NOTICE.txt：随包分发的微软 ConPTY（conpty.dll、OpenConsole.exe）的许可证，
+//     和编进它的第三方组件的声明（microsoft/terminal 的 NOTICE.md）
 //   - Pierlink-LICENSE.txt：Pierlink 自己的许可证（英文正式文本 + 中文参考译文），安装器的许可证页也用它
 // 用法：node scripts/gen-notices.mjs
 import { execFileSync } from "node:child_process";
@@ -156,14 +158,16 @@ async function main() {
     ...npm.filter((p) => /MPL/.test(p.license)).map((p) => `  ${p.name} ${p.version}: https://www.npmjs.com/package/${p.name}/v/${p.version}`),
   ];
   const header = "Pierlink 使用的第三方组件及其许可证\nThird-party components used by Pierlink and their licenses\n\n"
-    + "Syncthing、Win32-OpenSSH、LibreSSL（Win32-OpenSSH 附带的 libcrypto.dll）的许可证见同目录下的单独文件。\n"
-    + "Licenses for Syncthing, Win32-OpenSSH and LibreSSL (libcrypto.dll shipped with Win32-OpenSSH) are in separate files in this directory.\n\n"
+    + "Syncthing、Win32-OpenSSH、LibreSSL（Win32-OpenSSH 附带的 libcrypto.dll）、微软 ConPTY（conpty.dll、OpenConsole.exe）的许可证见同目录下的单独文件。\n"
+    + "Licenses for Syncthing, Win32-OpenSSH, LibreSSL (libcrypto.dll shipped with Win32-OpenSSH) and Microsoft ConPTY (conpty.dll, OpenConsole.exe) are in separate files in this directory.\n\n"
     + "按 MPL-2.0 发布的组件，源代码可以从以下地址获取 / Source code of the MPL-2.0 licensed components is available at:\n"
     + `  Syncthing ${syncthing}: https://github.com/syncthing/syncthing/tree/${syncthing}\n`
     + `${mpl.join("\n")}\n\n`;
   await mkdir(outDir, { recursive: true });
   await writeFile(outFile, `${header}${r.text}\n\n${n.text}\n`);
   await writeFile(join(outDir, "LibreSSL-LICENSE.txt"), readFileSync(join(fallbackDir, "LibreSSL.txt")));
+  await writeFile(join(outDir, "ConPTY-LICENSE.txt"), readFileSync(join(fallbackDir, "microsoft-terminal.txt")));
+  await writeFile(join(outDir, "ConPTY-NOTICE.txt"), readFileSync(join(fallbackDir, "microsoft-terminal-NOTICE.txt")));
   // 安装器许可证页和安装目录里的 Pierlink 许可证：英文正式文本在前，中文参考译文在后
   // 转成纯文本：去掉标题井号、引用符号和链接语法（安装器许可证页原样显示）
   const plain = (md) => md.replace(/^#{1,6}\s+/gm, "").replace(/^>\s?/gm, "").replace(/\[([^\]]+)\]\([^)]+\)/g, "$1");

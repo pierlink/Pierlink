@@ -274,6 +274,16 @@ jobs:
       - run: npm ci
       - name: 准备随包分发的 Syncthing 与 OpenSSH（固定版本，校验 SHA-256）
         run: node scripts/fetch-bundled.mjs
+      - name: 核对随包 ConPTY 的微软签名
+        shell: pwsh
+        run: |
+          foreach ($f in 'src-tauri\resources\conpty\conpty.dll', 'src-tauri\resources\conpty\OpenConsole.exe') {
+            $s = Get-AuthenticodeSignature $f
+            if ($s.Status -ne 'Valid' -or $s.SignerCertificate.Subject -notmatch 'O=Microsoft Corporation') {
+              throw "$f 的签名不对：状态=$($s.Status)，签名者=$($s.SignerCertificate.Subject)"
+            }
+            "$f 签名有效：$($s.SignerCertificate.Subject)"
+          }
       - name: 生成第三方许可证汇总
         run: node scripts/gen-notices.mjs
       - name: 构建前端（Tauri 编译时需要 dist 目录）
@@ -719,6 +729,16 @@ jobs:
       - run: npm ci
       - name: 准备随包分发的 Syncthing 与 OpenSSH（固定版本，校验 SHA-256）
         run: node scripts/fetch-bundled.mjs
+      - name: 核对随包 ConPTY 的微软签名
+        shell: pwsh
+        run: |
+          foreach ($f in 'src-tauri\resources\conpty\conpty.dll', 'src-tauri\resources\conpty\OpenConsole.exe') {
+            $s = Get-AuthenticodeSignature $f
+            if ($s.Status -ne 'Valid' -or $s.SignerCertificate.Subject -notmatch 'O=Microsoft Corporation') {
+              throw "$f 的签名不对：状态=$($s.Status)，签名者=$($s.SignerCertificate.Subject)"
+            }
+            "$f 签名有效：$($s.SignerCertificate.Subject)"
+          }
       - name: 生成第三方许可证汇总
         run: node scripts/gen-notices.mjs
       - name: 临时签名密钥和本机更新地址（只用于这次运行，和正式的签名密钥无关）

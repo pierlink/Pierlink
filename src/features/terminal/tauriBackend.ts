@@ -16,6 +16,8 @@ export function createTauriBackend(): TerminalBackend {
   // 每个会话的写入排成一队：Tauri 的异步命令会并发执行，连续两次写入（例如粘贴后紧跟一个回车）
   // 可能后发先到，回车先到就会执行半截命令。上一次写完（成功或失败）才发下一次
   const queues = new Map<string, Promise<unknown>>();
+  /** 后端当前用的终端引擎（null：还没告诉过它） */
+  let engine: boolean | null = null;
   return {
     preview: false,
     async open(spec, cols, rows, onEvent, prediction = false, options = {}) {
@@ -26,7 +28,10 @@ export function createTauriBackend(): TerminalBackend {
         else if (e.kind === "stage") onEvent({ kind: "stage", stage: e.stage });
         else onEvent({ kind: "exited", code: e.code ?? null, closedByUser: e.closedByUser, auth: e.auth ?? null, hooked: e.hooked });
       };
-      if (spec.kind === "local") return unwrap(await commands.terminalOpenLocal(spec.shellId, cols, rows, prediction, options.quietBell ?? false, channel));
+      // 先把“用 Windows 自带的终端引擎”告诉后端，等它生效再开（启动时自动重开的终端也照设置来）
+      const system = options.systemConpty ?? false;
+      if (engine !== system) { await commands.terminalEngineConfig(system); engine = system; }
+      if (spec.kind === "local") return unwrap(await commands.terminalOpenLocal(spec.shellId, cols, rows, prediction, options.quietBell ?? false, spec.startDir ?? null, channel));
       if (spec.kind === "server") return unwrap(await commands.terminalOpenServer(spec.serverId, cols, rows, prediction, options.startDir ?? null, channel));
       return unwrap(await commands.terminalOpenQuick(spec.host, spec.port, spec.user, cols, rows, prediction, options.startDir ?? null, channel));
     },

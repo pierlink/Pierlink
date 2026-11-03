@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { base64ToBytes, needsPasteConfirm, parseQuickTarget, parseOsc7, parseOsc99 } from "./util";
+import { base64ToBytes, folderName, needsPasteConfirm, parseQuickTarget, parseOsc7, parseOsc99 } from "./util";
 
 describe("快速连接解析", () => {
   it("常见写法", () => {
@@ -53,5 +53,14 @@ describe("当前目录报告", () => {
     expect(parseOsc99('"C:\\Users\\me"')).toBe("C:\\Users\\me");
     expect(parseOsc99("C:\\x")).toBe("C:\\x");
     expect(parseOsc99('""')).toBeNull();
+  });
+});
+
+describe("folderName", () => {
+  it("取文件夹名，磁盘根目录写成 C:\\", () => {
+    expect(folderName("C:\\Users\\me\\项目 A")).toBe("项目 A");
+    expect(folderName("D:\\work\\")).toBe("work");
+    expect(folderName("C:\\")).toBe("C:\\");
+    expect(folderName("\\\\wsl.localhost\\Ubuntu\\home\\pl")).toBe("pl");
   });
 });

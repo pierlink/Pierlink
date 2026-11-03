@@ -52,7 +52,7 @@ libc.workspace = true
 [target.'cfg(windows)'.dependencies]
 keyring-core.workspace = true
 windows-native-keyring-store.workspace = true
-windows-sys = { workspace = true, features = ["Win32_NetworkManagement_IpHelper", "Win32_Networking_WinSock", "Win32_Globalization", "Win32_System_Registry", "Win32_System_Console", "Win32_System_Pipes", "Win32_Storage_FileSystem", "Win32_System_Diagnostics_ToolHelp", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_System_DataExchange", "Win32_System_Memory", "Win32_Security_Authorization", "Win32_System_IO"] }
+windows-sys = { workspace = true, features = ["Win32_NetworkManagement_IpHelper", "Win32_Networking_WinSock", "Win32_Globalization", "Win32_System_Registry", "Win32_System_Console", "Win32_System_Pipes", "Win32_Storage_FileSystem", "Win32_System_Diagnostics_ToolHelp", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_System_DataExchange", "Win32_System_Memory", "Win32_Security_Authorization", "Win32_System_IO", "Win32_System_LibraryLoader"] }
 
 [dev-dependencies]
 tempfile.workspace = true

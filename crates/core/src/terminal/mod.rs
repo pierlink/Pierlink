@@ -20,6 +20,8 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
+#[cfg(windows)]
+pub use windows::{use_bundled_conpty, use_system_conpty};
 mod builtin;
 mod busy;
 mod input;
