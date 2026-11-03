@@ -7,6 +7,10 @@ mod write_tests;
 
 const USER_IDLE: Duration = Duration::from_secs(2);
 const ESC_KEY: &[u8] = b"\x1b[27;1;27;1;0;1_\x1b[27;1;27;0;0;1_";
+/// 程序发来的文字和末尾回车之间至少隔这么久再写回车，和人打完字再按回车一样。
+/// Codex 这类程序把几毫秒内连续到达的字符当成粘贴，粘贴后约 120 毫秒内的回车只换行、不发送
+/// （Windows 控制台没有粘贴事件，只能按到达快慢判断）。
+pub const SUBMIT_GAP: Duration = Duration::from_millis(500);
 
 /// 只记解析位置，不保存输入内容；识别被系统短写或分块拆开的按键序列。
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
@@ -188,6 +192,12 @@ impl TerminalManager {
         Ok(())
     }
 
+    /// id 的输入队列里还有没写出的字节（包括等着写的回车）；终端不存在返回 false。
+    pub fn input_pending(&self, id: &str) -> bool {
+        self.get(id)
+            .is_ok_and(|session| lock(&session.input).bytes > 0)
+    }
+
     /// 返回 id 的用户输入代数；每次非空用户输入或接管加一，终端不存在返回错误。
     pub fn control_generation(&self, id: &str) -> Result<u64, AppError> {
         Ok(lock(&self.get(id)?.input).generation)
@@ -222,6 +232,8 @@ fn write_queued_input(
 ) {
     let conpty = lock(input).conpty;
     let mut win32 = Win32Input::default();
+    // 最近一次写出自动化文字（回车以外的字节）的时间：之后的回车要等满 SUBMIT_GAP
+    let mut typed_at: Option<Instant> = None;
     loop {
         if lock(flow).stopped {
             lock(input).clear();
@@ -257,11 +269,40 @@ fn write_queued_input(
                     break;
                 }
             }
+            // 自动化输入末尾的回车单独写，离上次写出文字不到 SUBMIT_GAP 就先等
+            let text_len =
+                remaining.len() - remaining.iter().rev().take_while(|&&b| b == b'\r').count();
+            if source == InputSource::Automation
+                && !escaped
+                && text_len == 0
+                && let Some(wait) = typed_at.map(|at| SUBMIT_GAP.saturating_sub(at.elapsed()))
+                && !wait.is_zero()
+            {
+                // 用户队列里有输入（终端应答等，不改代数）：先让它写出，回车放回队首，回来接着等
+                {
+                    let mut input = lock(input);
+                    if !input.user.is_empty() {
+                        input
+                            .automation
+                            .push_front((remaining.to_vec(), Some(generation)));
+                        requeued = remaining.len();
+                        break;
+                    }
+                }
+                let flow = lock(flow);
+                if !flow.stopped {
+                    let _ = wake.wait_timeout(flow, wait);
+                }
+                continue;
+            }
             // 分块写入使用户活动和接管能够在下一块生效。
             let escaping = escaped && remaining.len() == 1;
             let count = remaining.len() - usize::from(escaped);
             let count = if source == InputSource::Automation {
-                count.min(4096)
+                // 文字写到末尾回车之前为止
+                count
+                    .min(4096)
+                    .min(if text_len > 0 { text_len } else { count })
             } else {
                 count
             };
@@ -278,6 +319,9 @@ fn write_queued_input(
                 Ok(n) => {
                     if conpty {
                         win32 = win32.after(&chunk[..n]);
+                    }
+                    if source == InputSource::Automation && chunk[..n].iter().any(|&b| b != b'\r') {
+                        typed_at = Some(Instant::now());
                     }
                     if escaping {
                         escape_written += n;

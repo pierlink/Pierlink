@@ -21,6 +21,8 @@ describe("normalizeSettings", () => {
     expect(s.terminal.fontSize).toBe(24);
     expect(s.terminal.scrollback).toBe(1000);
     expect(s.terminal.cursorStyle).toBe("bar");
+    expect(normalizeSettings({ terminal: { attention: "loud" } }).terminal.attention).toBe("all");
+    expect(normalizeSettings({ terminal: { attention: "tab" } }).terminal.attention).toBe("tab");
     expect(s.syncDefaults.watchDelayS).toBe(1);
   });
   it("保留合法的值，排除规则去掉空行", () => {

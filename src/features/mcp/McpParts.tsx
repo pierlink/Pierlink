@@ -69,10 +69,12 @@ export function EntryPermissions({ entry, servers, exclude, server, onChange }: 
   const { t } = useTranslation();
   const [folder, setFolder] = useState("");
   const others = servers.filter((s) => s.id !== exclude);
+  // 服务器入口：写明是哪台服务器上的 AI（以前只写“可以操作的其他服务器”，看不出是谁去操作）
+  const self = servers.find((s) => s.id === exclude)?.name;
   const serverList = (
     <>
-      <div className="mcp-perms__label">{server ? t("mcp.otherServers") : t("mcp.servers")}</div>
-      {others.length === 0 && <span className="set-row__hint">{t("mcp.noServers")}</span>}
+      <div className="mcp-perms__label">{server && self ? t("mcp.otherServers", { name: self }) : t("mcp.servers")}</div>
+      <span className="set-row__hint">{others.length === 0 ? t("mcp.noServers") : t("mcp.serversHint")}</span>
       <div className="mcp-perms__servers">
         {others.map((s) => (
           <Checkbox key={s.id} label={s.name} checked={entry.servers.includes(s.id)} onChange={() => onChange(toggleServer(entry, s.id))} />

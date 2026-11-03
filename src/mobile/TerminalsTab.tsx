@@ -472,9 +472,9 @@ function TerminalView({ me, term, pending, onOpenConfirms, onBack, onAuthLost }:
   const sendText = async (enter: boolean) => {
     const value = text.replace(/\r\n?/g, "\n");
     if (!value) { if (enter) await enqueue([{ keys: ["Enter"] }]); return; }
-    // 多行：先按粘贴写进去，回车单独发（同一次写进去的回车会被 Claude Code 当成粘贴内容里的换行）
+    // 多行按粘贴写进去；末尾的回车由电脑那边隔一会儿再写（紧跟着写进去的回车会被 Codex、Claude Code 当成粘贴里的换行）
     const queue: InputRequest[] = value.includes("\n")
-      ? [{ text: value, paste: true }, ...(enter ? [{ keys: ["Enter"] }] : [])]
+      ? [{ text: enter ? `${value}\r` : value, paste: true }]
       : [{ text: enter ? `${value}\r` : value }];
     await enqueue(queue, value);
   };

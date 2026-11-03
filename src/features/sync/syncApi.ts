@@ -39,7 +39,10 @@ export interface SyncStatusRecord {
   files: number;
   bytes: number;
   needBytes: number;
+  /** 同步失败的文件（最多 100 个） */
   errors: { path: string; reason: string }[];
+  /** 同步失败的文件总数（可能比 errors 多） */
+  errorCount: number;
   /** needsPassword：没连上是因为缺密码（这次运行还没输），界面给出“输入密码”；needsLogin：要验证码、后台登不上，界面给出“登录” */
   servers: { serverId: string; connected: boolean; needsPassword?: boolean; needsLogin?: boolean; completion: number | null; error: unknown }[];
   /** 因一次删除大量文件被自动暂停 */
@@ -251,7 +254,7 @@ function createPreviewSyncApi(): SyncApi {
       const t = tasks.find((x) => x.id === id);
       return {
         state: t?.paused ? "paused" : m?.state === "syncing" ? "syncing" : m?.state === "error" ? "error" : "idle",
-        files: m?.files ?? 0, bytes: m?.bytes ?? 0, needBytes: m?.state === "syncing" ? 38 * 1024 * 1024 : 0, errors: [],
+        files: m?.files ?? 0, bytes: m?.bytes ?? 0, needBytes: m?.state === "syncing" ? 38 * 1024 * 1024 : 0, errors: [], errorCount: 0,
         servers: (t?.endpoints ?? []).map((e) => ({ serverId: e.serverId, connected: m?.state !== "error", completion: m?.state === "syncing" ? 62 : 100, error: null })),
         localChanges: t?.localMode === "receiveOnly" && !reverted.has(id) ? 3 : 0,
       };

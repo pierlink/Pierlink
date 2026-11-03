@@ -10,8 +10,8 @@ pub type HostFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, AppError>> + 
 
 /// 手机终端输入；keys 只接受 Enter、Tab、Shift+Tab、Backspace、Escape、方向键、Home、End 和 Ctrl+C/D/J/M/U。
 /// text 与 keys 二选一，confirmed 只表示手机已完成危险命令的二次确认。
-/// paste 只能用于 text，将含换行和制表符的正文作为一次粘贴；推荐再单独发送 Enter 提交。
-/// 兼容正文末尾的一个回车：宿主须将该回车放在括号粘贴结束标记之后发送。
+/// paste 只能用于 text，将含换行和制表符的正文作为一次粘贴；正文末尾可带一个回车表示提交：
+/// 宿主须将该回车放在括号粘贴结束标记之后，隔 SUBMIT_GAP 再写。
 #[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct TerminalInput {

@@ -263,6 +263,14 @@ await rec.step(p, "文件列表跟随 PowerShell 的 cd", async () => {
   return `跟随到 ${dir}，再回到 ${HOME}`;
 });
 
+await rec.step(p, "文件栏路径后面的复制按钮：一点就复制当前目录的完整路径，按钮变成对勾", async () => {
+  setClipboard("pl-before-copy");
+  await u.click(".files__copy");
+  // 对勾只亮 1.5 秒，先等对勾再读剪贴板（读剪贴板要起 PowerShell，慢）
+  await u.waitFor("!!document.querySelector('.files__copy--done')", "按钮变成对勾", 10000);
+  return await waitClipboard(HOME, "剪贴板里是当前目录的完整路径");
+});
+
 // ---------- 3. 文件右键菜单：新建、编辑、改名、删除 ----------
 // 找到文件行并先滚动到可见区域（CI 屏幕只有 1024×768，家目录文件多时会在列表下面）
 const fileRow = (name) => `(()=>{const r=[...document.querySelectorAll('.files__row')].find(r=>r.querySelector('.files__name')?.textContent===${JSON.stringify(name)}); if(!r) return null; r.scrollIntoView({block:'center'}); const b=r.getBoundingClientRect(); return {x:b.x+40,y:b.y+b.height/2};})()`;

@@ -1288,8 +1288,10 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
   /** 窗格现在看得见（所在标签是当前标签、工作区页面在显示） */
   const paneShown = (paneId: string) => (document.querySelector<HTMLElement>(`[data-pane="${CSS.escape(paneId)}"]`)?.offsetWidth ?? 0) > 0;
   const raiseAttention = (paneId: string) => {
-    if (document.hasFocus() && paneShown(paneId)) return;
+    const mode = settings.terminal.attention;
+    if (mode === "off" || (document.hasFocus() && paneShown(paneId))) return;
     setAttention((cur) => (cur.has(paneId) ? cur : new Set(cur).add(paneId)));
+    if (mode !== "all") return;
     // 同一个窗格 30 秒内只闪一次任务栏
     const now = Date.now();
     if (now - (attentionAt.current.get(paneId) ?? 0) < 30_000) return;
@@ -1302,6 +1304,10 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
   };
   const clearAttention = (ids: string[]) =>
     setAttention((cur) => (ids.some((id) => cur.has(id)) ? new Set([...cur].filter((id) => !ids.includes(id))) : cur));
+  // 设置里关掉提醒：已经亮着的提醒点也去掉
+  useEffect(() => {
+    if (settings.terminal.attention === "off") setAttention((cur) => (cur.size ? new Set() : cur));
+  }, [settings.terminal.attention]);
   // 切到标签、窗口回到前台、从别的页面切回工作区时：看得见的窗格不再提醒
   useEffect(() => {
     if (!attention.size) return;

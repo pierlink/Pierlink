@@ -2698,7 +2698,10 @@ export type SyncStatusDto_Deserialize = {
 	files: number | null,
 	bytes: number | null,
 	needBytes: number | null,
+	/**  同步失败的文件（最多 100 个） */
 	errors: SyncErrorDto[],
+	/**  同步失败的文件总数（可能比 errors 多） */
+	errorCount: number,
 	servers: ServerStatusDto_Deserialize[],
 	/**  因一次删除大量文件被自动暂停（需要用户确认后再继续） */
 	deletionGuardPaused: boolean,
@@ -2712,7 +2715,10 @@ export type SyncStatusDto_Serialize = {
 	files: number | null,
 	bytes: number | null,
 	needBytes: number | null,
+	/**  同步失败的文件（最多 100 个） */
 	errors: SyncErrorDto[],
+	/**  同步失败的文件总数（可能比 errors 多） */
+	errorCount: number,
 	servers: ServerStatusDto_Serialize[],
 	/**  因一次删除大量文件被自动暂停（需要用户确认后再继续） */
 	deletionGuardPaused: boolean,

@@ -97,6 +97,13 @@
       "predictionHint": "Shows commands you have run as you type; → accepts, Ctrl+→ accepts a word.",
       "powershellBell": "PowerShell beep",
       "powershellBellHint": "The sound PowerShell makes when there is nothing to delete or complete; turn off to silence new PowerShell tabs",
+      "attention": "Bell alerts",
+      "attentionHint": "When a program rings the bell or sends a notification (for example Codex waiting for you), a dot appears on tabs you aren't looking at, and the taskbar button flashes while the window is in the background",
+      "attentionOption": {
+        "all": "Dot and taskbar flash",
+        "tab": "Dot only",
+        "off": "Off"
+      },
       "explorerMenu": "Explorer context menu",
       "explorerMenuHint": "Right-click a folder and choose “Open in Pierlink” to open a local terminal there; on Windows 11 it is under “Show more options”",
       "systemConpty": "Use the Windows built-in terminal engine",
@@ -2036,6 +2043,8 @@
       "folderError": "Sync error",
       "serverOffline": "A server is disconnected; sync resumes automatically",
       "syncing": "{{size}} left",
+      "syncingWithErrors_one": "{{size}} left · 1 file failed",
+      "syncingWithErrors_other": "{{size}} left · {{count}} files failed",
       "scanning": "Scanning files…",
       "synced": "Up to date · {{n}} files · {{size}}",
       "guardPaused": "Many files were deleted at once; paused automatically",
@@ -2044,7 +2053,10 @@
       "needPassword": "Waiting for the password of {{name}}"
     },
     "errorsTitle": "Files that failed to sync",
+    "errorsCount_one": "1 file failed to sync",
+    "errorsCount_other": "{{count}} files failed to sync",
     "errorsHint": "They're retried automatically once the cause is fixed.",
+    "errorsMore": "Showing the first {{count}}",
     "removeTask": "Remove task",
     "removeTitle": "Remove sync task {{name}}?",
     "removeBody": "Only this sync is cancelled; files on both sides stay: this computer {{local}}; server {{remote}}.",
@@ -3066,7 +3078,8 @@
     "aiOnServer": "On a server",
     "aiOnThisPc": "On this computer",
     "foldersHint": "This limits only the file tools; to keep the AI inside these folders, leave “Run commands” unchecked",
-    "otherServers": "Other servers it can use",
+    "otherServers": "Other servers the AI on {{name}} can use",
+    "serversHint": "On the servers you check, it can run commands and read and write files through Pierlink",
     "confirmConnections": "Ask me before an AI can connect",
     "confirmConnectionsHint": "Turn this on if you share this server with others"
   },

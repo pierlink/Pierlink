@@ -262,3 +262,72 @@ fn 转义按键写入失败时清空原始容量() {
         assert!(input.automation.is_empty());
     }
 }
+
+#[test]
+fn 自动化文字后的回车隔一会儿再写() {
+    // 同一条里的文字和回车
+    let input = queued(false, InputSource::Automation, &[b"ab\r"]);
+    let mut times = Vec::new();
+    let writes = record(input, usize::MAX, |_, _| times.push(Instant::now()));
+    assert_eq!(writes, [b"ab".to_vec(), b"\r".to_vec()]);
+    assert!(times[1] - times[0] >= SUBMIT_GAP);
+    // 文字和回车分两次发：回车照样等
+    let input = queued(false, InputSource::Automation, &[b"a\rb", b"\r\r"]);
+    let mut times = Vec::new();
+    let writes = record(input, usize::MAX, |_, _| times.push(Instant::now()));
+    assert_eq!(writes, [b"a\rb".to_vec(), b"\r\r".to_vec()]);
+    assert!(times[1] - times[0] >= SUBMIT_GAP);
+}
+
+#[test]
+fn 用户输入和单独的回车不等() {
+    let started = Instant::now();
+    let writes = record(
+        queued(false, InputSource::User, &[b"ab\r"]),
+        usize::MAX,
+        |_, _| {},
+    );
+    assert_eq!(writes, [b"ab\r".to_vec()]);
+    let writes = record(
+        queued(false, InputSource::Automation, &[b"\r"]),
+        usize::MAX,
+        |_, _| {},
+    );
+    assert_eq!(writes, [b"\r".to_vec()]);
+    assert!(started.elapsed() < SUBMIT_GAP / 2);
+}
+
+#[test]
+fn 等回车期间用户打字就不再提交() {
+    let input = queued(false, InputSource::Automation, &[b"ab\r"]);
+    let writes = record(input, usize::MAX, |chunk, input| {
+        let mut input = lock(input);
+        if chunk == b"ab" {
+            input.generation += 1;
+            input.user_at = Some(Instant::now());
+            input.user.push_back(b"u".to_vec());
+            input.bytes += 1;
+        } else if chunk == b"u" {
+            input.user_at = None;
+        }
+    });
+    assert_eq!(writes, [b"ab".to_vec(), b"u".to_vec()]);
+}
+
+#[test]
+fn 等回车期间终端应答先写出() {
+    let input = queued(false, InputSource::Automation, &[b"ab\r"]);
+    let mut times = Vec::new();
+    let writes = record(input, usize::MAX, |chunk, input| {
+        times.push(Instant::now());
+        if chunk == b"ab" {
+            // 终端应答进用户队列，不改代数
+            let mut input = lock(input);
+            input.user.push_back(b"\x1b[I".to_vec());
+            input.bytes += 3;
+        }
+    });
+    assert_eq!(writes, [b"ab".to_vec(), b"\x1b[I".to_vec(), b"\r".to_vec()]);
+    assert!(times[1] - times[0] < SUBMIT_GAP / 2);
+    assert!(times[2] - times[0] >= SUBMIT_GAP);
+}

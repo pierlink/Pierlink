@@ -1014,6 +1014,8 @@ async fn 终端登记退出清理会话断开保留以及拒绝用户终端() {
             .len(),
         1
     );
+    // AI 的回车在文字写出 SUBMIT_GAP 后才写；先按 Ctrl+D 的话回车作废，Ctrl+D 落在没提交的行上不会退出
+    tokio::time::sleep(crate::terminal::SUBMIT_GAP + Duration::from_millis(300)).await;
     fixture.host.terminals.write(&id, b"\x04").unwrap();
     until(|| {
         lock(&fixture.host.events)

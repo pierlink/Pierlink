@@ -436,7 +436,10 @@ pub struct SyncStatusDto {
     pub files: f64,
     pub bytes: f64,
     pub need_bytes: f64,
+    /// 同步失败的文件（最多 100 个）
     pub errors: Vec<SyncErrorDto>,
+    /// 同步失败的文件总数（可能比 errors 多）
+    pub error_count: u32,
     pub servers: Vec<ServerStatusDto>,
     /// 因一次删除大量文件被自动暂停（需要用户确认后再继续）
     pub deletion_guard_paused: bool,
@@ -803,6 +806,7 @@ pub async fn sync_task_status(app: AppHandle, task_id: String) -> Result<SyncSta
             files: s.global_files as f64,
             bytes: s.global_bytes as f64,
             need_bytes: s.need_bytes as f64,
+            error_count: u32::try_from(s.error_count).unwrap_or(u32::MAX),
             errors: s
                 .errors
                 .into_iter()
@@ -916,13 +920,15 @@ pub fn tray_summary(app: &AppHandle) -> Option<TraySummary> {
             .collect();
         match sync::task_status(local, &task.folder_id, &servers) {
             Ok(s) => {
+                // 正在拉取时个别文件失败仍算同步中（和同步页一样），停下来以后才算出问题
+                let pulling = s.state.starts_with("sync");
                 if guard_paused.contains(&task.folder_id)
                     || s.state == "error"
-                    || !s.errors.is_empty()
+                    || (s.error_count > 0 && !pulling)
                     || s.servers.iter().any(|x| !x.connected)
                 {
                     sum.problems += 1;
-                } else if s.need_bytes > 0 || s.state.starts_with("sync") {
+                } else if s.need_bytes > 0 || pulling {
                     sum.syncing += 1;
                 }
             }
@@ -1069,6 +1075,7 @@ fn empty_status(state: &str) -> SyncStatusDto {
         bytes: 0.0,
         need_bytes: 0.0,
         errors: vec![],
+        error_count: 0,
         servers: vec![],
         deletion_guard_paused: false,
         local_changes: 0.0,

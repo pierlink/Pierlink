@@ -121,6 +121,8 @@ function TaskDetail({ task, actions }: { task: SyncTaskView; actions?: SyncActio
     void getSyncApi().then((api) => api.editors(task.id)).then(setEditors, () => setEditors({ editors: [], preferred: null }));
   }, [task.id]);
   const preferredEditor = editors?.editors.find((e) => e.id === editors.preferred) ?? null;
+  const failedFiles = task.errors ?? [];
+  const failedCount = Math.max(task.errorCount ?? 0, failedFiles.length);
   const showNotice = (text: string) => { setNotice(text); setTimeout(() => setNotice((n) => (n === text ? null : n)), 8000); };
   const openEditor = (id: string | null) => {
     void getSyncApi().then((api) => api.openInEditor(task.id, id)).then(
@@ -235,21 +237,18 @@ function TaskDetail({ task, actions }: { task: SyncTaskView; actions?: SyncActio
         </Banner>
       )}
 
-      {task.errors && task.errors.length > 0 && (
+      {failedFiles.length > 0 && (
         <div className="sync-conflicts sync-errors" role="region" aria-label={t("sync.errorsTitle")}>
           <div className="sync-conflicts__head">
             <CircleAlert size={15} aria-hidden />
-            <b>{t("sync.errorsTitle")}</b>
+            <b>{t("sync.errorsCount", { count: failedCount })}</b>
             <span>{t("sync.errorsHint")}</span>
           </div>
-          {task.errors.slice(0, 50).map((e) => (
-            <div key={e.path} className="sync-conflict">
-              <span className="sync-conflict__text">
-                <span className="mono">{e.path}</span>
-                <span className="sync-conflict__other">{e.reason}</span>
-              </span>
-            </div>
-          ))}
+          {/* 只列文件，原因放在悬停提示里；列表长了在框里滚动 */}
+          <ul className="sync-errors__list">
+            {failedFiles.map((e) => <li key={e.path} className="sync-error mono" title={e.reason}>{e.path}</li>)}
+          </ul>
+          {failedCount > failedFiles.length && <span className="sync-errors__more">{t("sync.errorsMore", { count: failedFiles.length })}</span>}
         </div>
       )}
 

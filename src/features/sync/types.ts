@@ -122,8 +122,10 @@ export interface SyncTaskView {
   events: SyncEventView[];
   /** 还有更早的事件可以加载 */
   eventsHasMore: boolean;
-  /** 同步失败的文件（路径 + 原因） */
+  /** 同步失败的文件（路径 + 原因，按路径去重，最多 100 个） */
   errors?: { path: string; reason: string }[];
+  /** 同步失败的文件总数（可能比 errors 多） */
+  errorCount?: number;
   /** 因一次删除大量文件被自动暂停 */
   guardPaused?: boolean;
   /** 本机一侧的方式（receiveOnly = 本机只接收服务器的变化） */

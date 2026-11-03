@@ -272,7 +272,7 @@ fn url_of(addr: SocketAddr) -> String {
 }
 
 /// 按粘贴写入终端（和电脑上粘贴一样）：终端开了括号粘贴就包上标记，里面的换行写成回车；
-/// 末尾的回车放在结束标记之后，表示粘贴完再提交
+/// 末尾的回车放在结束标记之后，隔一会儿再写，表示粘贴完再提交
 fn write_paste(
     manager: &pierlink_core::terminal::TerminalManager,
     id: &str,
@@ -288,7 +288,23 @@ fn write_paste(
     } else {
         body
     };
-    manager.write(id, data.as_bytes())?;
+    write_then_enter(manager, id, data.as_bytes(), enter)
+}
+
+/// 写入文字，要提交时隔 SUBMIT_GAP 再写回车：Codex 这类程序把连续到达的文字当成粘贴，
+/// 紧跟着的回车只换行、不发送。在阻塞线程里调用。
+fn write_then_enter(
+    manager: &pierlink_core::terminal::TerminalManager,
+    id: &str,
+    body: &[u8],
+    enter: bool,
+) -> Result<(), AppError> {
+    if !body.is_empty() {
+        manager.write(id, body)?;
+        if enter {
+            std::thread::sleep(pierlink_core::terminal::SUBMIT_GAP);
+        }
+    }
     if enter {
         manager.write(id, b"\r")?;
     }
@@ -983,7 +999,12 @@ impl MobileHost for TauriMobileHost {
                 if paste {
                     write_paste(manager, &id, text)?;
                 } else {
-                    manager.write(&id, text.as_bytes())?;
+                    // 末尾的回车单独写（见 write_then_enter）
+                    let (body, enter) = match text.strip_suffix('\r') {
+                        Some(body) => (body, true),
+                        None => (text, false),
+                    };
+                    write_then_enter(manager, &id, body.as_bytes(), enter)?;
                 }
             }
             for key in &keys {

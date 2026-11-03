@@ -230,6 +230,14 @@ export function SettingsPage({ version }: { version: string | null }) {
             <Row label={t("settings.term.powershellBell")} hint={t("settings.term.powershellBellHint")}>
               <Switch label={t("settings.term.powershellBell")} checked={term.powershellBell} onChange={(v) => setTerm({ powershellBell: v })} />
             </Row>
+            <Row label={t("settings.term.attention")} hint={t("settings.term.attentionHint")}>
+              <RowSelect
+                label={t("settings.term.attention")}
+                value={term.attention}
+                onChange={(v) => setTerm({ attention: v as AppSettings["terminal"]["attention"] })}
+                options={(["all", "tab", "off"] as const).map((v) => ({ value: v, label: t(`settings.term.attentionOption.${v}`) }))}
+              />
+            </Row>
             <Row label={t("settings.term.explorerMenu")} hint={t("settings.term.explorerMenuHint")}>
               <Switch label={t("settings.term.explorerMenu")} checked={term.explorerMenu} onChange={(v) => setTerm({ explorerMenu: v })} />
             </Row>

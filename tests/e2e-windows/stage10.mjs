@@ -392,6 +392,26 @@ await rec.step(p, "Windows AI 终端：换行结尾的命令会执行；第一�
   return `终端 ${id.slice(0, 8)}…：命令已执行`;
 });
 
+await rec.step(p, "Windows AI 终端：文字和末尾的回车隔开写（Codex 这类程序不会把回车当成粘贴里的换行）", async () => {
+  if (!agent) throw new Error("没有客户端");
+  await u.clickText("Workspace", "header nav");
+  const opened = ok(await call(agent, "open_terminal", { target: "windows" }, "Allow this time", 150000));
+  const id = opened.terminal_id;
+  ok(await call(agent, "terminal_wait", { terminal_id: id, quiet_ms: 2000, timeout_secs: 30 }));
+  // 像 Codex 一样一个个读按键，量最后一个字到回车隔了多久（标记拼起来写，回显的命令里不会出现）
+  const script = "$w=[Diagnostics.Stopwatch]::StartNew(); $t=0; Write-Output ('pl-gap-' + 'ready'); while ($true) { $k=[Console]::ReadKey($true); if ($k.Key -eq 'Enter') { break }; $t=$w.ElapsedMilliseconds }; Write-Output ('pl-gap=' + ($w.ElapsedMilliseconds - $t) + 'ms')\n";
+  const started = ok(await callNoDialog(agent, "terminal_send", { terminal_id: id, text: script }));
+  const ready = ok(await call(agent, "terminal_wait", { terminal_id: id, pattern: "pl-gap-ready", since: started.cursor, timeout_secs: 30 }));
+  if (!ready.matched) throw new Error(`读按键的脚本没有运行：${JSON.stringify(ready).slice(0, 300)}`);
+  const sent = ok(await callNoDialog(agent, "terminal_send", { terminal_id: id, text: "abcdefghij\n" }));
+  const waited = ok(await call(agent, "terminal_wait", { terminal_id: id, pattern: "pl-gap=\\d+ms", since: sent.cursor, timeout_secs: 30 }));
+  const gap = Number(/pl-gap=(\d+)ms/.exec(waited.text ?? "")?.[1]);
+  // Codex 把粘贴后约 120 毫秒内的回车当换行；Pierlink 隔 500 毫秒写回车
+  if (!(gap >= 250)) throw new Error(`最后一个字到回车只隔了 ${gap} 毫秒：${JSON.stringify(waited).slice(0, 300)}`);
+  ok(await call(agent, "close_terminal", { terminal_id: id }));
+  return `最后一个字到回车隔了 ${gap} 毫秒`;
+});
+
 await rec.step(p, "run_command：Windows 上原生程序的退出码原样返回；最后一条成功时是 0", async () => {
   if (!agent) throw new Error("没有客户端");
   const failedRun = ok(await call(agent, "run_command", { target: "windows", command: "cmd /c exit 3" }));

@@ -45,6 +45,16 @@ function toConflicts(list: ConflictRecord[] | undefined): SyncConflictView[] {
 
 const POLL_MS = 4000;
 
+/** 按路径去重，保留第一次出现的 */
+function uniqueByPath<T extends { path: string }>(list: T[]): T[] {
+  const seen = new Set<string>();
+  return list.filter((e) => {
+    if (seen.has(e.path)) return false;
+    seen.add(e.path);
+    return true;
+  });
+}
+
 /** 任务记录 + 实时状态 → 界面视图 */
 function toView(
   t: SyncTaskRecord,
@@ -60,6 +70,13 @@ function toView(
   const percent = s && s.bytes > 0 ? Math.max(0, Math.min(100, Math.round(((s.bytes - s.needBytes) / s.bytes) * 100))) : 100;
   let state: SyncTaskView["state"];
   let detail: string;
+  // Syncthing 正在拉取（syncing，以及 sync-preparing、sync-waiting）：这时有个别文件失败也算“同步中”，
+  // 说明里带上失败的个数；停下来以后只剩失败的文件，才归到“出错”
+  const pulling = !!s && s.state.startsWith("sync");
+  // 失败的文件：同一路径扫描和拉取都失败时 Syncthing 报两条，只列一次；
+  // 总数以 Syncthing 报的为准（列表最多 100 个），减去列表里看到的重复
+  const failedFiles = uniqueByPath(s?.errors ?? []);
+  const failed = s ? Math.max((s.errorCount ?? 0) - (s.errors.length - failedFiles.length), failedFiles.length) : 0;
   if (s?.deletionGuardPaused) {
     state = "error";
     detail = tr("sync.detail.guardPaused");
@@ -72,9 +89,9 @@ function toView(
   } else if (s.state === "stopped") {
     state = "error";
     detail = tr("sync.detail.localStopped");
-  } else if (s.state === "error" || s.errors.length > 0) {
+  } else if (s.state === "error" || (failed > 0 && !pulling)) {
     state = "error";
-    detail = s.errors.length > 0 ? tr("sync.detail.fileErrors", { count: s.errors.length }) : tr("sync.detail.folderError");
+    detail = failed > 0 ? tr("sync.detail.fileErrors", { count: failed }) : tr("sync.detail.folderError");
   } else if (passwordServer) {
     state = "error";
     detail = tr("sync.detail.needPassword", { name: t.endpoints.find((e) => e.serverId === passwordServer.serverId)?.serverName ?? "" });
@@ -84,9 +101,11 @@ function toView(
   } else if (conflicts && conflicts.length > 0) {
     state = "conflict";
     detail = tr("sync.detail.conflicts", { count: conflicts.length });
-  } else if (s.state === "syncing" || s.state.startsWith("sync") || s.needBytes > 0) {
+  } else if (pulling || s.needBytes > 0) {
     state = "syncing";
-    detail = tr("sync.detail.syncing", { size: formatBytes(s.needBytes) });
+    detail = failed > 0
+      ? tr("sync.detail.syncingWithErrors", { size: formatBytes(s.needBytes), count: failed })
+      : tr("sync.detail.syncing", { size: formatBytes(s.needBytes) });
   } else if (s.state === "scanning") {
     state = "waiting";
     detail = tr("sync.detail.scanning");
@@ -119,7 +138,8 @@ function toView(
     conflicts: toConflicts(conflicts),
     events: toEvents(events, tr),
     eventsHasMore: false,
-    errors: s?.errors ?? [],
+    errors: failedFiles,
+    errorCount: failed,
     guardPaused: !!s?.deletionGuardPaused,
     localMode: t.localMode ?? "sendReceive",
     localChanges: s?.localChanges ?? 0,

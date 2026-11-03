@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
 import { useTranslation } from "react-i18next";
-import { ArrowDownToLine, ArrowUpFromLine, ChevronRight, Eye, EyeOff, File, FilePlus, Folder, FolderPlus, FolderSymlink, Link2, LocateFixed, RefreshCw, X } from "lucide-react";
+import { ArrowDownToLine, ArrowUpFromLine, Check, ChevronRight, Copy, Eye, EyeOff, File, FilePlus, Folder, FolderPlus, FolderSymlink, Link2, LocateFixed, RefreshCw, X } from "lucide-react";
 import { useContextMenu, type MenuEntry } from "../../components";
 import { formatError } from "../../errors";
 import i18n from "../../i18n";
@@ -308,6 +308,18 @@ export function FilePanel({ paneId, spec, title, cwd, commands, sessionId, onClo
   };
   /** 复制到剪贴板（多个路径每行一个） */
   const copy = (text: string) => void writeClipboardText(text);
+  // 路径后面的复制按钮：复制当前目录的完整路径，成功后对勾亮 1.5 秒（和服务器地址后面的复制按钮一样）
+  const [pathCopied, setPathCopied] = useState(false);
+  const copiedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (copiedTimer.current) clearTimeout(copiedTimer.current); }, []);
+  const copyCurrentPath = () => {
+    if (!path) return;
+    void writeClipboardText(path).then(() => {
+      setPathCopied(true);
+      if (copiedTimer.current) clearTimeout(copiedTimer.current);
+      copiedTimer.current = setTimeout(() => setPathCopied(false), 1500);
+    }, () => undefined);
+  };
   /** 空白处的菜单：新建、刷新、复制当前路径 */
   const backgroundMenu = (dir: string): MenuEntry[] => [
     { id: "new-dir", label: t("files.newFolder"), icon: <FolderPlus size={13} />, onSelect: () => setCreating("dir") },
@@ -417,6 +429,11 @@ export function FilePanel({ paneId, spec, title, cwd, commands, sessionId, onClo
               <button type="button" className={`files__crumb${i === all.length - 1 ? " files__crumb--cur" : ""}`} onClick={() => go(c.path)}>{c.name}</button>
             </span>
           ))}
+          {path && (
+            <button type="button" className={`files__copy${pathCopied ? " files__copy--done" : ""}`} title={t("files.copyCurrentPath")} aria-label={t("files.copyCurrentPath")} onClick={copyCurrentPath}>
+              {pathCopied ? <Check size={12} /> : <Copy size={12} />}
+            </button>
+          )}
         </div>
         <div className="files__tools">
           <button type="button" className="pane__btn" title={t("common.refresh")} aria-label={t("common.refresh")} disabled={!path} onClick={() => path && void load(path, true)}><RefreshCw size={13} className={loading ? "files__spin" : ""} /></button>

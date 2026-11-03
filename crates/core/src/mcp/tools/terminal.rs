@@ -479,6 +479,10 @@ fn wait_with_clock(
         if result.exited && (!pending || result.cursor == previous) {
             return Ok(result);
         }
+        // 还有输入没写出（例如隔 SUBMIT_GAP 才写的回车）时不算安静：命令还没提交
+        if m.input_pending(id) {
+            last_output = Instant::now();
+        }
         if quiet.is_some_and(|q| last_output.elapsed() >= q) {
             return Ok(result);
         }
@@ -636,6 +640,27 @@ mod tests {
         .unwrap()
     }
     #[test]
+    fn 回车还没写出时安静等待不返回() {
+        let m = TerminalManager::new();
+        let id = shell(&m);
+        let started = Instant::now();
+        let sent = terminal_send(&m, &id, Some("true\n"), &[]).unwrap();
+        let quiet = terminal_wait(
+            &m,
+            &id,
+            None,
+            Some(Duration::from_millis(100)),
+            Some(sent.cursor),
+            Duration::from_secs(5),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        assert!(!quiet.timed_out);
+        assert!(started.elapsed() >= crate::terminal::SUBMIT_GAP);
+        assert!(!m.input_pending(&id));
+        m.close(&id).unwrap();
+    }
+    #[test]
     fn 按键映射拒绝未知键并保持原子入队() {
         for (key, expected) in [
             ("Enter", "\r"),
@@ -667,7 +692,8 @@ mod tests {
         let m = TerminalManager::new();
         let id = shell(&m);
         terminal_send(&m, &id, Some("stty -echo\n"), &[]).unwrap();
-        std::thread::sleep(Duration::from_millis(100));
+        // 回车在文字写出 SUBMIT_GAP 后才写，等 stty 生效再发下一条
+        std::thread::sleep(crate::terminal::SUBMIT_GAP + Duration::from_millis(300));
         let start = m.output_since(&id, 0).unwrap().next;
         let sent = terminal_send(
             &m,

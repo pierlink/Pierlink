@@ -97,6 +97,13 @@
       "predictionHint": "输入时显示用过的命令，按 → 补全，Ctrl+→ 补一个词。",
       "powershellBell": "PowerShell 提示音",
       "powershellBellHint": "退格删到头、补全不到时 PowerShell 自己“咚”的一声；关掉后新开的 PowerShell 不响",
+      "attention": "响铃提醒",
+      "attentionHint": "程序响铃或发通知时（比如 Codex 等你确认），你没在看的标签上出现提醒点，窗口在后台时任务栏按钮闪烁",
+      "attentionOption": {
+        "all": "提醒点和任务栏闪烁",
+        "tab": "只显示提醒点",
+        "off": "不提醒"
+      },
       "explorerMenu": "资源管理器右键菜单",
       "explorerMenuHint": "右键文件夹选“在 Pierlink 中打开”，在那里新开本机终端；Windows 11 在“显示更多选项”里",
       "systemConpty": "用 Windows 自带的终端引擎",
@@ -2031,6 +2038,7 @@
       "folderError": "同步出错",
       "serverOffline": "有服务器连接中断，恢复后自动继续",
       "syncing": "剩余 {{size}}",
+      "syncingWithErrors": "剩余 {{size}} · {{count}} 个文件失败",
       "scanning": "正在扫描文件…",
       "synced": "已同步 · {{n}} 个文件 · {{size}}",
       "guardPaused": "一次删除了大量文件，已自动暂停",
@@ -2038,7 +2046,9 @@
       "needPassword": "等待输入 {{name}} 的密码"
     },
     "errorsTitle": "同步失败的文件",
+    "errorsCount": "{{count}} 个文件同步失败",
     "errorsHint": "修正原因后会自动重试。",
+    "errorsMore": "只列出前 {{count}} 个",
     "removeTask": "移除任务",
     "removeTitle": "移除同步任务 {{name}}？",
     "removeBody": "只取消这个同步，两端的文件都不会删除：本机 {{local}}；服务器 {{remote}}。",
@@ -3028,7 +3038,8 @@
     "aiOnServer": "装在服务器上",
     "aiOnThisPc": "装在这台电脑上",
     "foldersHint": "只限制文件工具；要让 AI 只能动这些文件夹，就不要勾“执行命令”",
-    "otherServers": "可以操作的其他服务器",
+    "otherServers": "{{name}} 上的 AI 还能操作的服务器",
+    "serversHint": "勾上的服务器，它能经 Pierlink 执行命令、读写文件",
     "confirmConnections": "AI 连上来时先问我",
     "confirmConnectionsHint": "和别人共用这台服务器时打开"
   },

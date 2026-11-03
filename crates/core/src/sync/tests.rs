@@ -212,7 +212,7 @@ mod mock {
                 if s.folders.is_empty() && s.index_reads > 1 {
                     return (404, json!({}));
                 }
-                json!({"localFiles":3,"globalFiles":5,"globalBytes":50,"needBytes":10,"state":"idle","receiveOnlyTotalItems":s.receive_only_items})
+                json!({"localFiles":3,"globalFiles":5,"globalBytes":50,"needBytes":10,"state":"idle","receiveOnlyTotalItems":s.receive_only_items,"errors":105})
             }
             "/rest/system/connections" => json!({"connections":{B:{"connected":true}}}),
             "/rest/db/completion" => {
@@ -799,6 +799,7 @@ mod mock {
         assert!(!status.servers[1].connected);
         assert!(status.servers[1].error.is_some());
         assert_eq!(status.errors.len(), 100);
+        assert_eq!(status.error_count, 105);
         let join = find_joinable(&link, "/project/sub/..").unwrap().unwrap();
         assert_eq!(join.folder_id, id);
         assert_eq!(join.ignores, ["target"]);

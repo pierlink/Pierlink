@@ -8,6 +8,16 @@
 .files__crumb { border: 0; background: none; padding: 2px 4px; border-radius: var(--r-sm); color: var(--text-muted); font: inherit; font-family: var(--font-mono); font-size: var(--fs-xs); cursor: pointer; max-width: 160px; overflow: hidden; text-overflow: ellipsis; }
 .files__crumb:hover { background: var(--hover); color: var(--text); }
 .files__crumb--cur { color: var(--text); font-weight: 600; }
+/* 复制当前目录的完整路径：紧跟在当前目录名后面（和服务器地址后面的复制按钮一样）。
+   路径太长时左边的目录被省略，按钮跟着当前目录名留在可见的一端；不占右边按钮的位置，行高不变 */
+.files__copy {
+  flex: none; display: grid; place-items: center; width: 18px; height: 16px; margin-left: 2px; padding: 0;
+  border: 0; border-radius: 4px; background: none; color: var(--text-dim); opacity: 0.6; cursor: pointer;
+  transition: opacity var(--dur-fast), color var(--dur-fast), background var(--dur-fast);
+}
+.files__head:hover .files__copy, .files__copy:focus-visible { opacity: 1; }
+.files__copy:hover { color: var(--text); background: var(--chip); }
+.files__copy--done, .files__copy--done:hover { opacity: 1; color: var(--ok); }
 .files__sep { color: var(--text-dim); flex: none; }
 .files__tools { display: flex; gap: 1px; flex: none; }
 .files__tools .pane__btn:disabled { opacity: 0.4; cursor: default; background: transparent; }

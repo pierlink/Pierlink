@@ -754,7 +754,10 @@ pub struct TaskStatus {
     pub need_bytes: u64,
     /// 本机只接收文件夹中的本地改动项目数（含文件、目录和删除）。
     pub local_changed_items: u64,
+    /// 同步失败的文件（最多 100 个）
     pub errors: Vec<FolderError>,
+    /// 同步失败的文件总数（可能比 errors 多）
+    pub error_count: u64,
     pub servers: Vec<ServerStatus>,
 }
 /// 根据本机 folder_id 状态和服务器 ID/设备 ID 列表返回分端状态；离线端不影响其他端查询。
@@ -792,6 +795,7 @@ pub fn task_status(
         need_bytes: status["needBytes"].as_u64().ok_or_else(invalid_response)?,
         local_changed_items: status["receiveOnlyTotalItems"].as_u64().unwrap_or(0),
         errors: Vec::new(),
+        error_count: 0,
         servers: Vec::new(),
     };
     if let Some(list) = errors["errors"].as_array() {
@@ -802,6 +806,11 @@ pub fn task_status(
             });
         }
     }
+    // 列表只取第一页；总数看文件夹状态里的 errors（扫描和拉取失败合计），两次查询之间有变化时取大的
+    result.error_count = status["errors"]
+        .as_u64()
+        .unwrap_or(0)
+        .max(result.errors.len() as u64);
     for (server_id, device_id) in servers {
         let connected = connections["connections"][device_id]["connected"]
             .as_bool()
