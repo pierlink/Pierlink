@@ -110,8 +110,48 @@ pub struct OutputRead {
     pub quiet_for: Duration,
 }
 
+/// 程序响铃或发通知（OSC 9、OSC 777 notify）：Codex、Claude Code 等你回答、做完一轮时会发。
+/// 解析器里记下来，Output 再按输出位置存起来给 terminal_wait 用
+#[derive(Default)]
+struct Watch {
+    notices: Vec<String>,
+}
+impl vt100::Callbacks for Watch {
+    fn audible_bell(&mut self, _: &mut vt100::Screen) {
+        self.notices.push("bell".into());
+    }
+    fn unhandled_osc(&mut self, _: &mut vt100::Screen, params: &[&[u8]]) {
+        let text = |parts: &[&[u8]]| {
+            parts
+                .iter()
+                .map(|p| String::from_utf8_lossy(p).into_owned())
+                .collect::<Vec<_>>()
+                .join(";")
+        };
+        match params {
+            // 9;数字 是进度条、当前目录等，不是通知
+            [b"9", rest @ ..] if !rest.is_empty() && !rest[0].iter().all(u8::is_ascii_digit) => {
+                self.notices.push(text(rest));
+            }
+            [b"777", b"notify", rest @ ..] if !rest.is_empty() => {
+                self.notices.push(text(rest).replacen(';', ": ", 1));
+            }
+            _ => {}
+        }
+    }
+}
+
+/// 最多记最近几条通知
+const NOTICES: usize = 16;
+
+fn new_parser(rows: u16, cols: u16) -> vt100::Parser<Watch> {
+    vt100::Parser::new_with_callbacks(rows, cols, HISTORY_LINES, Watch::default())
+}
+
 pub(super) struct Output {
-    parser: vt100::Parser,
+    parser: vt100::Parser<Watch>,
+    /// 程序发来的通知：（通知结束时的输出位置，内容；响铃为 bell）
+    notices: VecDeque<(u64, String)>,
     /// 屏幕副本的尺寸：解析器出错要重建时用（出错的解析器自己报的尺寸不可信）
     size: (u16, u16),
     /// 测试用：下一次解析时让解析器出错
@@ -127,7 +167,8 @@ pub(super) struct Output {
 impl Output {
     pub(super) fn new(cols: u16, rows: u16) -> Self {
         Self {
-            parser: vt100::Parser::new(rows, cols, HISTORY_LINES),
+            parser: new_parser(rows, cols),
+            notices: VecDeque::new(),
             size: (rows, cols),
             #[cfg(test)]
             fail_next: false,
@@ -166,6 +207,13 @@ impl Output {
         if processed.is_err() {
             self.rebuild_parser("解析输出");
         }
+        let end = self.position.saturating_add(bytes.len() as u64);
+        for text in std::mem::take(&mut self.parser.callbacks_mut().notices) {
+            if self.notices.len() >= NOTICES {
+                self.notices.pop_front();
+            }
+            self.notices.push_back((end, text));
+        }
     }
     fn rebuild_parser(&mut self, action: &str) {
         let (rows, cols) = self.size;
@@ -196,7 +244,7 @@ impl Output {
             vt100::MouseProtocolEncoding::Sgr => b"\x1b[?1006h",
         });
         eprintln!("终端屏幕副本出错，已重建: 动作={action}, 尺寸={cols}x{rows}");
-        self.parser = vt100::Parser::new(rows, cols, HISTORY_LINES);
+        self.parser = new_parser(rows, cols);
         self.parser.process(&modes);
     }
     fn feed(&mut self, event: &TerminalEvent) {
@@ -490,6 +538,16 @@ impl TerminalManager {
             .parser
             .screen()
             .bracketed_paste())
+    }
+
+    /// 返回 id 在输出位置 since 之后收到的第一条通知（响铃为 bell）和它的位置；没有返回 None。
+    /// 不存在的终端返回错误。
+    pub fn notice_after(&self, id: &str, since: u64) -> Result<Option<(u64, String)>, AppError> {
+        Ok(lock(&self.get(id)?.output)
+            .notices
+            .iter()
+            .find(|(at, _)| *at > since)
+            .cloned())
     }
 
     /// 返回 id 现在是否在备用屏（Codex、less、vim 这类全屏程序）；不存在的终端返回错误。
@@ -875,5 +933,39 @@ mod parser_mode_tests {
         assert!(screen.bracketed_paste());
         assert!(screen.application_cursor());
         assert_eq!(wheel_sequence(screen, true).unwrap(), b"\x1b[<64;40;8M");
+    }
+}
+
+#[cfg(test)]
+mod notice_tests {
+    use super::*;
+
+    #[test]
+    fn 记下响铃和通知_进度和当前目录不算() {
+        let mut output = Output::new(40, 4);
+        let mut ends = Vec::new();
+        for chunk in [
+            b"a\x07".to_vec(),
+            "\x1b]9;Question: 用哪个\x07".as_bytes().to_vec(),
+            b"\x1b]9;4;1;50\x07\x1b]9;9;C:\\x\x07".to_vec(),
+            b"\x1b]777;notify;Claude Code;Waiting for you\x1b\\".to_vec(),
+        ] {
+            output.feed(&TerminalEvent::Output(chunk));
+            ends.push(output.position);
+        }
+        let notices: Vec<_> = output.notices.iter().cloned().collect();
+        assert_eq!(
+            notices,
+            [
+                (ends[0], "bell".to_string()),
+                (ends[1], "Question: 用哪个".to_string()),
+                (ends[3], "Claude Code: Waiting for you".to_string()),
+            ]
+        );
+        // 重建副本后照样记
+        output.fail_next = true;
+        output.feed(&TerminalEvent::Output(b"x".to_vec()));
+        output.feed(&TerminalEvent::Output(b"\x07".to_vec()));
+        assert_eq!(output.notices.back().unwrap().1, "bell");
     }
 }

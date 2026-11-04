@@ -412,7 +412,8 @@ const CLIENT_NAMES = { claude: "Claude Code", codex: "Codex", cursor: "Cursor", 
 type ClientKey = keyof typeof CLIENT_NAMES;
 /** 本机能一键添加的；服务器上能一键添加的 */
 const LOCAL_CLIENTS: readonly ClientKey[] = ["claude", "codex", "cursor"];
-const SERVER_CLIENTS: readonly ClientKey[] = ["claude", "codex", "gemini"];
+// 1.2.3 起服务器上只给 Claude Code、Codex 的入口；Gemini CLI 的添加、移除功能都还在，要恢复把 "gemini" 加回来
+const SERVER_CLIENTS: readonly ClientKey[] = ["claude", "codex"];
 
 type T = ReturnType<typeof useTranslation>["t"];
 

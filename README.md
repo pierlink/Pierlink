@@ -56,7 +56,7 @@
 - AI 能查到自己能在哪些文件夹干活、有哪些 shell、同步的服务器路径对应 Windows 哪里；怎么做由 AI 自己决定
 - AI 可以自己开一个看得见的终端干活，你随时能接管
 - 危险操作（如 `rm -rf`、强制推送）要你确认；审批方式可选；每一步都有操作记录
-- 一键添加到 Claude Code / Codex / Cursor，服务器上的 Claude Code / Codex / Gemini CLI 也能一键接上；标题栏随时看得到 AI 在不在操作、刚做了什么和命令输出，一键全部停止
+- 一键添加到 Claude Code / Codex / Cursor，服务器上的 Claude Code / Codex 也能一键接上；标题栏随时看得到 AI 在不在操作、刚做了什么和命令输出，一键全部停止
 
 ![MCP 页：入口、一键添加、审批方式和权限](assets/readme/mcp-zh.png)
 

@@ -30,6 +30,10 @@ pub(super) static TOOLS: LazyLock<Vec<Tool>> = LazyLock::new(|| {
         "PageDown",
         "Insert",
         "Shift+Tab",
+        "Shift+Up",
+        "Shift+Down",
+        "Shift+Left",
+        "Shift+Right",
         "Ctrl+Space",
     ]
     .into_iter()
@@ -51,10 +55,10 @@ pub(super) static TOOLS: LazyLock<Vec<Tool>> = LazyLock::new(|| {
         ("open_terminal", "请用户界面打开可见的 AI 终端，返回 terminal_id。cwd 会以一行 cd 的形式回显。", json!({"target":target,"cwd":string,"title":string}), json!(["target"])),
         ("list_terminals", "返回 ai_terminals：AI 打开的、目标获准的终端，含 terminal_id、target（不含地址）和 cwd（未知为 null）。", json!({}), json!([])),
         ("close_terminal", "关闭已登记的 AI 终端，不能关闭用户自己的终端。", json!({"terminal_id":id}), json!(["terminal_id"])),
-        ("terminal_send", "发送文字或按键（支持 F1–F12、Insert、PageUp/PageDown、Shift+Tab、Alt+字母、Ctrl+Space，Ctrl+字母不区分大小写），text 的 CRLF 和 LF 都转换为 CR 提交。成功只表示已入队，返回 cursor（入队前的输出末尾字节游标）；把 cursor 作为 terminal_wait / terminal_read 的 since，就不会漏掉命令的输出；屏幕在等密码时发送文字会被拒绝，请用户在 Pierlink 里输入，按键仍允许。", json!({"terminal_id":id,"text":string,"keys":{"type":"array","items":{"type":"string","enum":keys}}}), json!(["terminal_id"])),
+        ("terminal_send", "发送文字或按键（支持 F1–F12、Insert、PageUp/PageDown、Shift+Tab、Shift+方向键、Alt+字母、Ctrl+Space，Ctrl+字母不区分大小写），text 的 CRLF 和 LF 都转换为 CR 提交。成功只表示已入队，返回 cursor（入队前的输出末尾字节游标）；把 cursor 作为 terminal_wait / terminal_read 的 since，就不会漏掉命令的输出；屏幕在等密码时发送文字会被拒绝，请用户在 Pierlink 里输入，按键仍允许。", json!({"terminal_id":id,"text":string,"keys":{"type":"array","items":{"type":"string","enum":keys}}}), json!(["terminal_id"])),
         ("terminal_read", "从 since 字节游标读取新输出；省略 since 从保留历史的开头读取。tail_bytes 只读最近 N 个原始字节（最多 64 KiB），与 since 同给时取较晚起点。单次最多 64 KiB 文字，停在完整字符和控制序列边界；返回 text、cursor（下次读取的字节偏移）、lost（起点之前的历史已丢失）、more（后面还有未读取的输出）。", json!({"terminal_id":id,"since":number,"tail_bytes":{"type":"integer","minimum":1,"maximum":65536}}), json!(["terminal_id"])),
         ("terminal_screen", "读取终端当前屏幕的文字。", json!({"terminal_id":id}), json!(["terminal_id"])),
-        ("terminal_wait", "从 since 字节游标等 pattern 正则匹配或输出安静 quiet_ms；省略 since 从调用时的输出末尾开始。pattern 默认多行模式，^/$ 匹配每行首尾；pattern 和 quiet_ms 都省略时 quiet_ms 默认 2000。返回 matched、text、cursor（下次读取的字节偏移）、lost（历史或等待缓冲已丢失部分输出）、exited（终端进程已退出）、timed_out（达到等待期限，命令可能仍在运行）；最长 1800 秒。", json!({"terminal_id":id,"pattern":string,"quiet_ms":{"type":"integer","minimum":1,"maximum":1800000},"since":number,"timeout_secs":wait_timeout}), json!(["terminal_id"])),
+        ("terminal_wait", "从 since 字节游标等 pattern 正则匹配或输出安静 quiet_ms；省略 since 从调用时的输出末尾开始。pattern 默认多行模式，^/$ 匹配每行首尾；pattern 和 quiet_ms 都省略时 quiet_ms 默认 2000。返回 matched、text、cursor（下次读取的字节偏移）、lost（历史或等待缓冲已丢失部分输出）、exited（终端进程已退出）、timed_out（达到等待期限，命令可能仍在运行）、notification（终端里的程序响铃或发通知时立即返回：响铃为 bell，Codex 提问、要批准、做完一轮时默认响铃，问题内容看 text 或 terminal_screen；程序发 OSC 9/777 通知时是通知文字；响铃也可能只是程序报错，没等到想要的就再等）；最长 1800 秒。等 Codex、Claude Code 这类 AI 程序时建议同时给 quiet_ms：它们干活时一直刷新进度，停下来通常是在等回答或已做完（Claude Code 默认不发通知，只能这样判断）。", json!({"terminal_id":id,"pattern":string,"quiet_ms":{"type":"integer","minimum":1,"maximum":1800000},"since":number,"timeout_secs":wait_timeout}), json!(["terminal_id"])),
         ("read_file", "读取 Windows 上授权文件夹内的文件，file_path 用 Windows 绝对路径。默认按行读，offset 从 1 开始，limit 默认 2000、最多 5000；返回带行号的文字、编码、换行、修改时间和 sha256；超过 64 MiB 时 sha256 为 null，sha256_skipped_reason 说明原因。byte_offset/max_bytes 改为按字节读取。.png/.jpg/.jpeg/.gif/.webp 图片不超过 2 MiB 时始终返回 MCP 图片内容，可直接查看。", json!({"file_path":id,"offset":{"type":"integer","minimum":1},"limit":{"type":"integer","minimum":1,"maximum":5000,"default":2000},"byte_offset":number,"max_bytes":{"type":"integer","minimum":1,"maximum":1048576}}), json!(["file_path"])),
         ("write_file", "写入 Windows 文件，file_path 用 Windows 绝对路径。会自动创建缺少的父目录。内容最多 5 MiB；不能覆盖已有二进制文件或超过 5 MiB 的已有文件。保持已有编码、BOM 和换行。expected_sha256 不符时拒绝覆盖；Windows 可执行类型（如 .ps1/.bat/.exe）和启动文件夹需要确认；授权目录中的 .js/.py/.sh 等开发源码按普通文件处理。", json!({"file_path":id,"content":string,"expected_sha256":id}), json!(["file_path","content"])),
         ("make_dir", "创建 Windows 授权范围内的目录及父目录，已有目录成功；不经过链接或目录联接。按写入规则审批。", json!({"path":id}), json!(["path"])),

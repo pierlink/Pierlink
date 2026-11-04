@@ -377,6 +377,31 @@ await rec.step(p, "终端：AI 终端里 Ctrl+C 中断、terminal_read 按游标
   return `终端 ${id.slice(0, 8)}… 已关闭`;
 });
 
+await rec.step(p, "AI 终端：程序进全屏时收到“没人在看”；程序响铃或发通知（Codex 提问那种）时 terminal_wait 立即返回并带上内容", async () => {
+  if (!agent) throw new Error("没有客户端");
+  if (!HAVE_LINUX) throw new Error("没有 WSL 里的 Linux 服务器");
+  await u.clickText("Workspace", "header nav");
+  const opened = ok(await call(agent, "open_terminal", { target: LX_NAME, cwd: "/tmp" }, "Allow this time", 150000));
+  const id = opened.terminal_id;
+  ok(await call(agent, "terminal_wait", { terminal_id: id, quiet_ms: 1500, timeout_secs: 30 }));
+  // AI 打开的终端没有键盘焦点：进全屏时该收到 ESC[O
+  // 先吃掉打开焦点报告时 xterm 自己报的那一次，再看进全屏时 Pierlink 报的
+  const sent = ok(await call(agent, "terminal_send", { terminal_id: id, text: "printf '\\033[?1004h'; IFS= read -rsn3 -t 5 _; printf '\\033[?1049h'; IFS= read -rsn3 -t 5 x; printf '\\033[?1049l\\033[?1004l'; printf 'pl-focus-%q\\n' \"$x\"\n" }));
+  // 回显的命令里是 %q，只有真的收到 ESC[O 才会打出 $'\E[O'
+  const focus = ok(await call(agent, "terminal_wait", { terminal_id: id, pattern: "pl-focus-\\$'\\\\E\\[O'", since: sent.cursor, timeout_secs: 30 }));
+  if (!focus.matched) throw new Error(`没收到“没人在看”的焦点报告：${JSON.stringify(focus).slice(0, 300)}`);
+  // 程序发通知：等的 pattern 永远不出现，也要马上返回并带上通知内容
+  // 通知后面再响一声：中间层吞掉 OSC 9 时也有响铃叫醒（内容的解析由单元测试覆盖）
+  const asked = ok(await call(agent, "terminal_send", { terminal_id: id, text: "sleep 1; printf '\\033]9;Question: %s\\007\\007' pl-q; sleep 20\n" }));
+  const started = Date.now();
+  const woke = ok(await call(agent, "terminal_wait", { terminal_id: id, pattern: "never-matches-pl", since: asked.cursor, timeout_secs: 15 }));
+  if (!["Question: pl-q", "bell"].includes(woke.notification) || woke.timed_out) throw new Error(`通知没有叫醒等待：${JSON.stringify(woke).slice(0, 300)}`);
+  const took = Date.now() - started;
+  ok(await call(agent, "terminal_send", { terminal_id: id, keys: ["Ctrl+C"] }));
+  ok(await call(agent, "close_terminal", { terminal_id: id }));
+  return `焦点报告 ESC[O；通知 ${woke.notification}，${took} 毫秒就返回`;
+});
+
 await rec.step(p, "Windows AI 终端：换行结尾的命令会执行；第一条命令不弹“内容未知”；send 返回的 cursor 直接给 wait 用", async () => {
   if (!agent) throw new Error("没有客户端");
   await u.clickText("Workspace", "header nav");

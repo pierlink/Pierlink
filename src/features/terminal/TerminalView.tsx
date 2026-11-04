@@ -321,6 +321,17 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
     };
     term.parser.registerCsiHandler({ prefix: "?", final: "h" }, watchCursor(true));
     term.parser.registerCsiHandler({ prefix: "?", final: "l" }, watchCursor(false));
+    // 程序进全屏时如实报一次现在有没有人在看这个终端。xterm 只在程序打开焦点报告（?1004h）和焦点变化时报；
+    // Windows 上焦点报告是控制台在程序启动前就打开的，之后启动的 Codex 一直以为有人在看，向你提问时就不响铃
+    // （它只在没人看时响）。AI 打开的终端没有焦点，报的是 ESC[O
+    term.parser.registerCsiHandler({ prefix: "?", final: "h" }, (params) => {
+      if (params.some((p) => p === 1049 || p === 1047 || p === 47)) {
+        queueMicrotask(() => {
+          if (term.modes.sendFocusMode) reply(document.hasFocus() && document.activeElement === term.textarea ? "\x1b[I" : "\x1b[O");
+        });
+      }
+      return false;
+    });
     // 软复位会把光标显示出来
     term.parser.registerCsiHandler({ intermediates: "!", final: "p" }, () => { cursorHidden = false; return false; });
     /**

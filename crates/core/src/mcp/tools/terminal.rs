@@ -39,6 +39,8 @@ pub struct TerminalWait {
     pub lost: bool,
     pub exited: bool,
     pub timed_out: bool,
+    /// 等待期间终端里的程序发来的通知（响铃为 bell），收到就立即返回
+    pub notification: Option<String>,
 }
 /// 按键名（Enter、Ctrl+C、Up……）对应的字节；不认识的按键返回 mcp.invalid_argument
 pub fn key_bytes(key: &str) -> Result<Vec<u8>, AppError> {
@@ -46,6 +48,10 @@ pub fn key_bytes(key: &str) -> Result<Vec<u8>, AppError> {
         "Enter" => b"\r",
         "Tab" => b"\t",
         "Shift+Tab" => b"\x1b[Z",
+        "Shift+Up" => b"\x1b[1;2A",
+        "Shift+Down" => b"\x1b[1;2B",
+        "Shift+Right" => b"\x1b[1;2C",
+        "Shift+Left" => b"\x1b[1;2D",
         "Esc" => b"\x1b",
         "Backspace" => b"\x7f",
         "Delete" => b"\x1b[3~",
@@ -421,6 +427,8 @@ fn wait_with_clock(
     };
     let mut positions = VecDeque::new();
     let mut last_output = Instant::now();
+    // 等待开始的位置之后，程序响铃或发通知（Codex、Claude Code 等人回答时会发）就立即返回
+    let begin = result.cursor;
     loop {
         if cancelled() {
             return Err(
@@ -479,6 +487,10 @@ fn wait_with_clock(
         if result.exited && (!pending || result.cursor == previous) {
             return Ok(result);
         }
+        if let Ok(Some((_, text))) = m.notice_after(id, begin) {
+            result.notification = Some(text);
+            return Ok(result);
+        }
         // 还有输入没写出（例如隔 SUBMIT_GAP 才写的回车）时不算安静：命令还没提交
         if m.input_pending(id) {
             last_output = Instant::now();
@@ -514,6 +526,8 @@ mod line_tests {
         );
         assert_eq!(super::key_bytes("Delete").unwrap(), b"\x1b[3~");
         assert_eq!(super::key_bytes("Shift+Tab").unwrap(), b"\x1b[Z");
+        assert_eq!(super::key_bytes("Shift+Left").unwrap(), b"\x1b[1;2D");
+        assert_eq!(super::key_bytes("Shift+Up").unwrap(), b"\x1b[1;2A");
     }
 
     #[test]
@@ -638,6 +652,33 @@ mod tests {
             &AtomicBool::new(false),
         )
         .unwrap()
+    }
+    #[test]
+    fn 程序发通知时等待立即返回() {
+        let m = TerminalManager::new();
+        let id = shell(&m);
+        let sent = terminal_send(
+            &m,
+            &id,
+            Some("sleep 1; printf '\\033]9;Question: %s\\007' pl-q; sleep 30\n"),
+            &[],
+        )
+        .unwrap();
+        let started = Instant::now();
+        let waited = terminal_wait(
+            &m,
+            &id,
+            Some(&Regex::new("never-matches").unwrap()),
+            None,
+            Some(sent.cursor),
+            Duration::from_secs(20),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        assert!(!waited.timed_out && !waited.matched, "{waited:?}");
+        assert_eq!(waited.notification.as_deref(), Some("Question: pl-q"));
+        assert!(started.elapsed() < Duration::from_secs(10));
+        m.close(&id).unwrap();
     }
     #[test]
     fn 回车还没写出时安静等待不返回() {
