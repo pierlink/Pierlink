@@ -505,6 +505,21 @@ await rec.step(p, "手机输入：电脑上给权限后能在本机终端执行�
   const sized = await phoneFetch("GET", `/api/terminals/${id}/screen?lines=20`);
   if (!Array.isArray(sized.json?.lines) || sized.json.lines.length > 20 || sized.json.lines.length === 0) throw new Error(`读屏行数或带颜色的行不对：${sized.text.slice(0, 200)}`);
   if ((await phoneFetch("GET", `/api/terminals/${id}/screen?lines=0`)).status !== 400) throw new Error("读屏行数为 0 应该 400");
+  // 往上翻、往下翻：提示符下不在备用屏（手机自己翻历史行），按键照样能发；
+  // 全屏程序（备用屏、没接管鼠标）里变成 ↑，程序自己翻（标记拼起来写，回显里不会出现）
+  if (sized.json?.alt !== false) throw new Error(`提示符下读屏应带 alt=false：${sized.text.slice(0, 200)}`);
+  const wheelAtPrompt = await phoneFetch("POST", `/api/terminals/${id}/input`, { keys: ["WheelUp"] });
+  if (wheelAtPrompt.status !== 200) throw new Error(`往上翻发不出去：${wheelAtPrompt.status} ${wheelAtPrompt.text.slice(0, 200)}`);
+  await phoneFetch("POST", `/api/terminals/${id}/input`, { text: "[Console]::Write([char]27 + '[?1049h'); $d=(Get-Date).AddSeconds(15); while (-not [Console]::KeyAvailable -and (Get-Date) -lt $d) { Start-Sleep -Milliseconds 50 }; $k = if ([Console]::KeyAvailable) { [Console]::ReadKey($true).Key } else { 'none' }; [Console]::Write([char]27 + '[?1049l'); Write-Output ('pl-wheel-' + $k)\r" });
+  let alt = false;
+  for (let i = 0; i < 30 && !alt; i++) {
+    await sleep(500);
+    alt = (await phoneFetch("GET", `/api/terminals/${id}/screen`)).json?.alt === true;
+  }
+  if (!alt) throw new Error("进了备用屏，读屏没有带 alt=true");
+  const wheelInApp = await phoneFetch("POST", `/api/terminals/${id}/input`, { keys: ["WheelUp"] });
+  if (wheelInApp.status !== 200) throw new Error(`全屏程序里往上翻发不出去：${wheelInApp.status} ${wheelInApp.text.slice(0, 200)}`);
+  await waitScreen(/^pl-wheel-UpArrow/m, "全屏程序里往上翻变成 ↑");
   // 发图片：存到本机数据目录，路径粘贴进终端（不执行）
   const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==", "base64");
   const img = await fetch(`${phone.base}/api/terminals/${id}/image`, { method: "POST", headers: { "User-Agent": PHONE_UA, Cookie: phone.cookie, "X-Pierlink": "1", "Content-Type": "image/png" }, body: png });

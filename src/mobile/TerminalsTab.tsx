@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
-import { ArrowDown, ArrowLeft, Bot, Eye, ImagePlus, MoreHorizontal, Plus, ShieldAlert } from "lucide-react";
+import { ArrowDown, ArrowLeft, Bot, ChevronDown, ChevronUp, Eye, ImagePlus, MoreHorizontal, Plus, ShieldAlert } from "lucide-react";
 import { api, ApiError, type InputRequest, type Me, type OverviewServer, type Screen, type TerminalItem } from "./api";
 import { handleError } from "./App";
 import { parseSgrLine, stripSgr, type Style } from "./ansi";
@@ -27,6 +27,10 @@ const KEYS: { key: string; label: string; title?: string }[] = [
 const LINES_STEPS = [300, 1000, 2000];
 /** 看着的时候多久读一次屏（毫秒） */
 const POLL_MS = 1000;
+/** 往上翻、往下翻之后多久再读一次屏（等程序重画） */
+const SOON_MS = 150;
+/** 往上翻、往下翻一次挪几行（有历史行时在手机上挪；全屏程序按它自己滚一格的距离） */
+const SCROLL_LINES = 5;
 /** 长按“发送”多久算长按（只输入不回车） */
 const LONG_PRESS_MS = 450;
 /** 按手机宽度显示：多久续一次期（电脑端 45 秒没收到就自动恢复） */
@@ -277,6 +281,8 @@ function TerminalView({ me, term, pending, onOpenConfirms, onBack, onAuthLost }:
   const [hasNew, setHasNew] = useState(false);
   /** 刚往上多要了行：下一次读到的要马上显示，并保持正在看的位置 */
   const loadingMore = useRef<{ height: number } | null>(null);
+  /** 马上再读一次屏（往上翻、往下翻之后），读屏的循环在下面设置 */
+  const pollSoon = useRef<(() => void) | null>(null);
   useWakeLock(true);
   // 告诉整页现在在看终端（顶栏让出来、键盘开着时底部标签让位，见 mobile.css）；不用 :has()，老浏览器也认
   useEffect(() => {
@@ -350,8 +356,14 @@ function TerminalView({ me, term, pending, onOpenConfirms, onBack, onAuthLost }:
   useEffect(() => {
     let alive = true;
     let timer: ReturnType<typeof setTimeout> | null = null;
+    /** 正在读；soon：读完后很快再读一次 */
+    let loading = false;
+    let soon = false;
+    const schedule = (ms: number) => { if (timer) clearTimeout(timer); timer = setTimeout(load, ms); };
     const load = () => {
-      if (document.visibilityState !== "visible") { timer = setTimeout(load, POLL_MS); return; }
+      timer = null;
+      if (document.visibilityState !== "visible") { schedule(POLL_MS); return; }
+      loading = true;
       api.screen(term.id, LINES_STEPS[linesStep]).then((s) => {
         if (!alive) return;
         const key = `${s.password}|${s.lines ? s.lines.join("\n") : s.text}`;
@@ -368,12 +380,19 @@ function TerminalView({ me, term, pending, onOpenConfirms, onBack, onAuthLost }:
         if (e instanceof ApiError && (e.status === 404 || e.code === "mobile.not_found")) { onBack(true); return; }
         const msg = handleError(e, onAuthLost);
         if (msg) setStatus({ text: msg });
-      }).finally(() => { if (alive) timer = setTimeout(load, POLL_MS); });
+      }).finally(() => {
+        loading = false;
+        if (alive) schedule(soon ? SOON_MS : POLL_MS);
+        soon = false;
+      });
     };
     load();
-    const wake = () => { if (document.visibilityState === "visible" && timer) { clearTimeout(timer); load(); } };
+    // 回到前台、往上翻或往下翻之后很快再读一次；正在读就等这次读完（不会同时开两个循环）
+    const readSoon = () => { if (loading) soon = true; else schedule(SOON_MS); };
+    pollSoon.current = readSoon;
+    const wake = () => { if (document.visibilityState === "visible") readSoon(); };
     document.addEventListener("visibilitychange", wake);
-    return () => { alive = false; if (timer) clearTimeout(timer); document.removeEventListener("visibilitychange", wake); };
+    return () => { alive = false; pollSoon.current = null; if (timer) clearTimeout(timer); document.removeEventListener("visibilitychange", wake); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [term.id, linesStep, onAuthLost]);
 
@@ -415,6 +434,18 @@ function TerminalView({ me, term, pending, onOpenConfirms, onBack, onAuthLost }:
       loadingMore.current = { height: el.scrollHeight };
       setLinesStep((n) => n + 1);
     }
+  };
+  /**
+   * 往上翻（-1）、往下翻（1）：有历史行就在手机上挪 SCROLL_LINES 行；
+   * 全屏程序（Codex、less、vim）没有历史行，让电脑像滚一格滚轮那样交给程序自己翻
+   */
+  const scrollStep = (dir: -1 | 1) => {
+    if (screen?.alt) {
+      void enqueue([{ keys: [dir < 0 ? "WheelUp" : "WheelDown"] }]).then((ok) => { if (ok) pollSoon.current?.(); });
+      return;
+    }
+    const el = screenRef.current;
+    if (el) el.scrollBy({ top: dir * cellSize(el).h * SCROLL_LINES });
   };
   const jumpToEnd = () => {
     const el = screenRef.current;
@@ -530,6 +561,8 @@ function TerminalView({ me, term, pending, onOpenConfirms, onBack, onAuthLost }:
   const updatePrefs = (patch: Partial<Prefs>) => setPrefs((p) => { const next = { ...p, ...patch }; savePrefs(next); return next; });
   // 等危险确认时先不让输入（这期间排队的输入不会发出去）
   const canType = me.permissions.input && !screen?.password && !danger;
+  /** 全屏程序里翻页要往程序里输入：只能看的手机、在等密码或危险确认时不能翻 */
+  const scrollOff = !!screen?.alt && !canType;
   const textRef = useRef<HTMLTextAreaElement>(null);
   // 输入框随内容长高（最多几行，再多就在框里滚）
   useLayoutEffect(() => {
@@ -572,6 +605,10 @@ function TerminalView({ me, term, pending, onOpenConfirms, onBack, onAuthLost }:
         {!follow && (
           <button type="button" className={`m-jump${hasNew ? " m-jump--new" : ""}`} onClick={jumpToEnd}><ArrowDown size={16} aria-hidden="true" />{t(hasNew ? "mobile.terminals.jumpNew" : "mobile.terminals.jump")}</button>
         )}
+        <div className="m-scroll" role="group" aria-label={t("mobile.terminals.scroll")}>
+          <button type="button" className="m-scroll__btn" aria-label={t("mobile.terminals.scrollUp")} disabled={scrollOff} onPointerDown={holdFocus} onClick={() => { scrollStep(-1); refocus(); }}><ChevronUp size={20} aria-hidden="true" /></button>
+          <button type="button" className="m-scroll__btn" aria-label={t("mobile.terminals.scrollDown")} disabled={scrollOff} onPointerDown={holdFocus} onClick={() => { scrollStep(1); refocus(); }}><ChevronDown size={20} aria-hidden="true" /></button>
+        </div>
       </div>
       {screen?.password && <p className="m-warn">{t("mobile.terminals.password")}</p>}
       {danger && (

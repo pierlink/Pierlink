@@ -284,7 +284,24 @@ impl TerminalManager {
             .spawn(move || {
                 // Ready 先于输出和退出；线程创建失败时不报告会话可用。
                 let _ = start.recv();
-                dispatch(&active, rx, on_event, log);
+                let callback = on_event.clone();
+                let dispatched = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    dispatch(&active, rx, on_event, log)
+                }));
+                if dispatched.is_err() {
+                    // 这个线程一停，输出没人读、输入和改尺寸也不再处理，界面上光标照闪、看着像活的：
+                    // 结束会话并告诉界面（显示已结束，可以重新连接）
+                    eprintln!("终端事件线程出错，结束会话: id={key}");
+                    active.stop();
+                    active.emit(
+                        &callback,
+                        TerminalEvent::Exited {
+                            code: None,
+                            closed_by_user: false,
+                            hooked: active.hooked,
+                        },
+                    );
+                }
                 // 先清理资源再移除条目；不会保留已退出会话的历史。
                 lock(&active.child).finish();
                 if let Some(sessions) = sessions.upgrade() {

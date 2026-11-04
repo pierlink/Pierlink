@@ -8,7 +8,8 @@ use tokio::sync::broadcast;
 /// 可取消的宿主调用；连接关闭或超时会释放 future，宿主须同时释放等待框及未执行的工作。
 pub type HostFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, AppError>> + Send + 'a>>;
 
-/// 手机终端输入；keys 只接受 Enter、Tab、Shift+Tab、Backspace、Escape、方向键、Home、End 和 Ctrl+C/D/J/M/U。
+/// 手机终端输入；keys 只接受 Enter、Tab、Shift+Tab、Backspace、Escape、方向键、Home、End、Ctrl+C/D/J/M/U，
+/// 以及 WheelUp、WheelDown（全屏程序里像滚一格滚轮，其他时候宿主不发）。
 /// text 与 keys 二选一，confirmed 只表示手机已完成危险命令的二次确认。
 /// paste 只能用于 text，将含换行和制表符的正文作为一次粘贴；正文末尾可带一个回车表示提交：
 /// 宿主须将该回车放在括号粘贴结束标记之后，隔 SUBMIT_GAP 再写。

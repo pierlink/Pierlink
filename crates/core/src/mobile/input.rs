@@ -98,8 +98,9 @@ impl Shared {
                         pending.text.pop();
                     }
                     "Ctrl+C" | "Ctrl+U" => pending = PendingLine::default(),
+                    // 往上翻、往下翻在全屏程序里可能变成方向键，按改过这一行处理
                     "Tab" | "ArrowUp" | "ArrowDown" | "ArrowLeft" | "ArrowRight" | "Home"
-                    | "End" => pending.edited = true,
+                    | "End" | "WheelUp" | "WheelDown" => pending.edited = true,
                     "Escape" | "Shift+Tab" | "Ctrl+D" => {}
                     _ => {
                         return Err(error(

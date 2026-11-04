@@ -148,6 +148,34 @@ async fn 反向制表和退出键保留未提交命令且默认不是粘贴() {
 }
 
 #[tokio::test]
+async fn 往上翻往下翻能发且算改过这一行() {
+    let entry = MemoryEntry::new();
+    let (_, cookie) = input_device(&entry).await;
+    for key in ["WheelUp", "WheelDown"] {
+        assert_eq!(
+            entry
+                .request("POST", INPUT, &cookie, json!({"keys":[key]}))
+                .await
+                .status,
+            200
+        );
+    }
+    let calls = lock(&entry.host.calls).clone();
+    let keys: Vec<_> = calls
+        .iter()
+        .filter(|v| v[0] == "input")
+        .map(|v| v[2]["keys"][0].clone())
+        .collect();
+    assert_eq!(keys, [json!("WheelUp"), json!("WheelDown")]);
+    // 全屏程序里可能变成方向键：下一次回车要按屏幕核对
+    assert!(
+        lock(&entry.server.shared.pending_lines)
+            .get("term")
+            .is_some_and(|line| line.edited)
+    );
+}
+
+#[tokio::test]
 async fn 多行粘贴整段发送并兼容独立回车和末尾回车() {
     let entry = MemoryEntry::new();
     let (_, cookie) = input_device(&entry).await;

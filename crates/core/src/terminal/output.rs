@@ -112,6 +112,11 @@ pub struct OutputRead {
 
 pub(super) struct Output {
     parser: vt100::Parser,
+    /// 屏幕副本的尺寸：解析器出错要重建时用（出错的解析器自己报的尺寸不可信）
+    size: (u16, u16),
+    /// 测试用：下一次解析时让解析器出错
+    #[cfg(test)]
+    fail_next: bool,
     history: VecDeque<u8>,
     newlines: usize,
     position: u64,
@@ -123,6 +128,9 @@ impl Output {
     pub(super) fn new(cols: u16, rows: u16) -> Self {
         Self {
             parser: vt100::Parser::new(rows, cols, HISTORY_LINES),
+            size: (rows, cols),
+            #[cfg(test)]
+            fail_next: false,
             history: VecDeque::new(),
             newlines: 0,
             position: 0,
@@ -132,7 +140,64 @@ impl Output {
         }
     }
     pub(super) fn resize(&mut self, cols: u16, rows: u16) {
-        self.parser.screen_mut().set_size(rows, cols);
+        self.size = (rows, cols);
+        let parser = &mut self.parser;
+        let resized = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            parser.screen_mut().set_size(rows, cols);
+        }));
+        if resized.is_err() {
+            self.rebuild_parser("改尺寸");
+        }
+    }
+    /// 把输出喂给屏幕副本。解析器（vt100）出错时换一个新的接着用：出错会让分发线程退出，
+    /// 读输出、写输入、改尺寸跟着全停，整个终端卡死（1.2.1 用户遇到过）；副本丢了只影响读屏
+    fn process(&mut self, bytes: &[u8]) {
+        #[cfg(test)]
+        let fail = std::mem::take(&mut self.fail_next);
+        #[cfg(not(test))]
+        let fail = false;
+        let parser = &mut self.parser;
+        let processed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if fail {
+                panic!("测试：解析器出错");
+            }
+            parser.process(bytes);
+        }));
+        if processed.is_err() {
+            self.rebuild_parser("解析输出");
+        }
+    }
+    fn rebuild_parser(&mut self, action: &str) {
+        let (rows, cols) = self.size;
+        // 程序打开过的模式带到新副本上：程序不会再发一遍，丢了的话手机的括号粘贴、往上翻（全屏、鼠标）都会错。
+        // 这几个只是读字段，出过错的解析器也能读
+        let old = self.parser.screen();
+        let mut modes = Vec::new();
+        for (on, seq) in [
+            (old.alternate_screen(), b"\x1b[?1049h".as_slice()),
+            (old.bracketed_paste(), b"\x1b[?2004h"),
+            (old.application_cursor(), b"\x1b[?1h"),
+            (old.application_keypad(), b"\x1b="),
+        ] {
+            if on {
+                modes.extend_from_slice(seq);
+            }
+        }
+        modes.extend_from_slice(match old.mouse_protocol_mode() {
+            vt100::MouseProtocolMode::None => b"".as_slice(),
+            vt100::MouseProtocolMode::Press => b"\x1b[?9h",
+            vt100::MouseProtocolMode::PressRelease => b"\x1b[?1000h",
+            vt100::MouseProtocolMode::ButtonMotion => b"\x1b[?1002h",
+            vt100::MouseProtocolMode::AnyMotion => b"\x1b[?1003h",
+        });
+        modes.extend_from_slice(match old.mouse_protocol_encoding() {
+            vt100::MouseProtocolEncoding::Default => b"".as_slice(),
+            vt100::MouseProtocolEncoding::Utf8 => b"\x1b[?1005h",
+            vt100::MouseProtocolEncoding::Sgr => b"\x1b[?1006h",
+        });
+        eprintln!("终端屏幕副本出错，已重建: 动作={action}, 尺寸={cols}x{rows}");
+        self.parser = vt100::Parser::new(rows, cols, HISTORY_LINES);
+        self.parser.process(&modes);
     }
     fn feed(&mut self, event: &TerminalEvent) {
         self.feed_at(event, Instant::now());
@@ -143,7 +208,7 @@ impl Output {
             if !bytes.is_empty() {
                 self.last_output = now;
             }
-            self.parser.process(bytes);
+            self.process(bytes);
             self.position = self.position.saturating_add(bytes.len() as u64);
             self.newlines += bytes.iter().filter(|&&b| b == b'\n').count();
             self.history.extend(bytes);
@@ -278,6 +343,48 @@ impl Output {
     }
 }
 
+/// 和电脑终端里滚一格滚轮一样（xterm.js 的做法）：不在备用屏时返回 None；
+/// 程序接管了鼠标就按它要的编码发一个滚轮事件，位置在横向中间、纵向上三分之一
+/// （Codex 的对话在输入框上面）；没接管鼠标就发一个上或下方向键（应用光标模式用 ESC O）。
+fn wheel_sequence(screen: &vt100::Screen, up: bool) -> Option<Vec<u8>> {
+    if !screen.alternate_screen() {
+        return None;
+    }
+    let (rows, cols) = screen.size();
+    // X10 模式（?9h）只报按键按下、没有滚轮事件，和 xterm.js 一样按没接管处理
+    if matches!(
+        screen.mouse_protocol_mode(),
+        vt100::MouseProtocolMode::None | vt100::MouseProtocolMode::Press
+    ) {
+        let prefix = if screen.application_cursor() {
+            b'O'
+        } else {
+            b'['
+        };
+        return Some(vec![0x1b, prefix, if up { b'A' } else { b'B' }]);
+    }
+    // 滚轮上、下是按键 64、65；坐标从 1 开始
+    let button = if up { 64 } else { 65 };
+    let (col, row) = (u32::from(cols / 2).max(1), u32::from(rows / 3).max(1));
+    Some(match screen.mouse_protocol_encoding() {
+        vt100::MouseProtocolEncoding::Sgr => format!("\x1b[<{button};{col};{row}M").into_bytes(),
+        encoding => {
+            // 默认编码每个值加 32 放进一个字节；UTF-8 编码大于 127 时写成 UTF-8 字符
+            let mut out = b"\x1b[M".to_vec();
+            for value in [button, col, row] {
+                let value = value + 32;
+                if encoding == vt100::MouseProtocolEncoding::Utf8 {
+                    let ch = char::from_u32(value.min(2047)).unwrap_or(' ');
+                    out.extend_from_slice(ch.encode_utf8(&mut [0; 4]).as_bytes());
+                } else {
+                    out.push(value.min(255) as u8);
+                }
+            }
+            out
+        }
+    })
+}
+
 // 只按已渲染单元格生成 SGR，不转发原始终端控制序列。
 fn formatted_row(screen: &vt100::Screen, row: u16) -> String {
     let cols = screen.size().1;
@@ -383,6 +490,23 @@ impl TerminalManager {
             .parser
             .screen()
             .bracketed_paste())
+    }
+
+    /// 返回 id 现在是否在备用屏（Codex、less、vim 这类全屏程序）；不存在的终端返回错误。
+    pub fn alternate_screen(&self, id: &str) -> Result<bool, AppError> {
+        Ok(lock(&self.get(id)?.output)
+            .parser
+            .screen()
+            .alternate_screen())
+    }
+
+    /// 手机上往上翻（up）或往下翻一次要写给 id 的字节，见 wheel_sequence；
+    /// 不在备用屏时返回 None（历史行由手机自己翻）；不存在的终端返回错误。
+    pub fn wheel_bytes(&self, id: &str, up: bool) -> Result<Option<Vec<u8>>, AppError> {
+        Ok(wheel_sequence(
+            lock(&self.get(id)?.output).parser.screen(),
+            up,
+        ))
     }
 
     /// 返回 id 当前累计输出字节数；不复制历史，不存在的终端返回错误。
@@ -648,5 +772,108 @@ mod formatted_tests {
             output.parser.process(b"x\r\n");
         }
         assert_eq!(check_lines(&output, usize::MAX).len(), HISTORY_LINES);
+    }
+}
+
+#[cfg(test)]
+mod wheel_tests {
+    use super::*;
+
+    fn wheel(cols: u16, setup: &str, up: bool) -> Option<Vec<u8>> {
+        let mut output = Output::new(cols, 24);
+        output.parser.process(setup.as_bytes());
+        wheel_sequence(output.parser.screen(), up)
+    }
+
+    #[test]
+    fn 普通屏不发_全屏程序按它的鼠标格式发滚轮或方向键() {
+        assert_eq!(wheel(80, "", true), None);
+        // 没接管鼠标：方向键，应用光标模式用 ESC O
+        assert_eq!(wheel(80, "\x1b[?1049h", true).unwrap(), b"\x1b[A");
+        assert_eq!(wheel(80, "\x1b[?1049h", false).unwrap(), b"\x1b[B");
+        assert_eq!(wheel(80, "\x1b[?1049h\x1b[?1h", true).unwrap(), b"\x1bOA");
+        assert_eq!(wheel(80, "\x1b[?1049h\x1b[?9h", true).unwrap(), b"\x1b[A");
+        // 接管了鼠标：SGR 编码，横向中间、纵向上三分之一
+        assert_eq!(
+            wheel(80, "\x1b[?1049h\x1b[?1000h\x1b[?1006h", true).unwrap(),
+            b"\x1b[<64;40;8M"
+        );
+        assert_eq!(
+            wheel(80, "\x1b[?1049h\x1b[?1003h\x1b[?1006h", false).unwrap(),
+            b"\x1b[<65;40;8M"
+        );
+        // 默认编码：每个值加 32；UTF-8 编码大于 127 时写成两个字节
+        assert_eq!(
+            wheel(80, "\x1b[?1049h\x1b[?1000h", true).unwrap(),
+            [b"\x1b[M".as_slice(), &[96, 72, 40]].concat()
+        );
+        assert_eq!(
+            wheel(300, "\x1b[?1049h\x1b[?1000h", true).unwrap(),
+            [b"\x1b[M".as_slice(), &[96, 182, 40]].concat()
+        );
+        assert_eq!(
+            wheel(300, "\x1b[?1049h\x1b[?1000h\x1b[?1005h", true).unwrap(),
+            [b"\x1b[M".as_slice(), &[96, 0xc2, 0xb6, 40]].concat()
+        );
+        // 退出全屏后不再发
+        assert_eq!(wheel(80, "\x1b[?1049h\x1b[?1000h\x1b[?1049l", true), None);
+    }
+}
+
+#[cfg(test)]
+mod parser_failure_tests {
+    use super::*;
+
+    #[test]
+    fn 屏幕副本出错时换新的接着用_历史和位置照常() {
+        let mut output = Output::new(20, 4);
+        output.feed(&TerminalEvent::Output(b"first\r\n".to_vec()));
+        output.fail_next = true;
+        output.feed(&TerminalEvent::Output(b"lost\r\n".to_vec()));
+        output.feed(&TerminalEvent::Output(b"after".to_vec()));
+        // 原始历史和位置一个字节都不少，读输出、等输出不受影响
+        assert_eq!(output.position, 18);
+        assert_eq!(
+            output.history.iter().copied().collect::<Vec<_>>(),
+            b"first\r\nlost\r\nafter"
+        );
+        // 新的副本从出错之后的输出开始
+        assert_eq!(output.recent(4), ["after"]);
+        assert_eq!(output.parser.screen().size(), (4, 20));
+    }
+}
+
+#[cfg(test)]
+mod parser_mode_tests {
+    use super::*;
+
+    #[test]
+    fn 改窄切开汉字后清行尾_副本重建而不是让分发线程退出() {
+        // vt100 0.16.2：改窄时新的最后一列是汉字的前半，之后清行尾会越界（1.2.1 用户的终端就这样卡死）
+        let mut output = Output::new(80, 4);
+        output.feed(&TerminalEvent::Output("中文".as_bytes().to_vec()));
+        output.resize(3, 4);
+        output.feed(&TerminalEvent::Output(b"\x1b[K".to_vec()));
+        assert_eq!(output.position, "中文".len() as u64 + 3);
+        // 出错后换了新的副本（旧画面没了），尺寸是改过的
+        assert!(output.recent(4).is_empty());
+        assert_eq!(output.parser.screen().size(), (4, 3));
+        output.feed(&TerminalEvent::Output(b"ok".to_vec()));
+        assert_eq!(output.recent(4), ["ok"]);
+    }
+
+    #[test]
+    fn 重建后保留全屏_括号粘贴和鼠标模式() {
+        let mut output = Output::new(80, 24);
+        output.feed(&TerminalEvent::Output(
+            b"\x1b[?1049h\x1b[?2004h\x1b[?1h\x1b[?1000h\x1b[?1006h".to_vec(),
+        ));
+        output.fail_next = true;
+        output.feed(&TerminalEvent::Output(b"x".to_vec()));
+        let screen = output.parser.screen();
+        assert!(screen.alternate_screen());
+        assert!(screen.bracketed_paste());
+        assert!(screen.application_cursor());
+        assert_eq!(wheel_sequence(screen, true).unwrap(), b"\x1b[<64;40;8M");
     }
 }

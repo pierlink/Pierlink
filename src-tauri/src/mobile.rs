@@ -971,6 +971,8 @@ impl MobileHost for TauriMobileHost {
                 "text": plain.join("\n"),
                 "lines": colored,
                 "password": pierlink_core::mcp::safety::looks_like_password_prompt(&screen),
+                // 全屏程序（备用屏）没有历史行：手机的往上翻、往下翻交给程序自己翻
+                "alt": manager.alternate_screen(&id)?,
             }))
         }))
     }
@@ -1008,6 +1010,18 @@ impl MobileHost for TauriMobileHost {
                 }
             }
             for key in &keys {
+                // 往上翻、往下翻：全屏程序里和电脑上滚一格滚轮一样，其他时候不发（手机自己翻历史行）
+                let wheel = match key.as_str() {
+                    "WheelUp" => Some(true),
+                    "WheelDown" => Some(false),
+                    _ => None,
+                };
+                if let Some(up) = wheel {
+                    if let Some(bytes) = manager.wheel_bytes(&id, up)? {
+                        manager.write(&id, &bytes)?;
+                    }
+                    continue;
+                }
                 let bytes = pierlink_core::mcp::tools::terminal::key_bytes(key_name(key))?;
                 manager.write(&id, &bytes)?;
             }

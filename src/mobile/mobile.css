@@ -112,6 +112,11 @@ body { margin: 0; background: var(--bg-solid); color: var(--text); font-family: 
 .m-screen--wrap .m-line { white-space: pre-wrap; overflow-wrap: anywhere; }
 .m-jump { position: absolute; right: 12px; bottom: 12px; display: inline-flex; align-items: center; gap: 4px; height: 36px; padding: 0 12px; border: 1px solid var(--border-strong); border-radius: 18px; background: var(--panel-solid); color: var(--text); font: inherit; font-size: 13px; font-weight: 600; box-shadow: 0 4px 14px rgb(0 0 0 / 0.25); }
 .m-jump--new { border-color: var(--accent); color: var(--accent); }
+/* 往上翻、往下翻：浮在画面右边、“最新”按钮上面，不占位置；连点不放大页面 */
+.m-scroll { position: absolute; right: 12px; bottom: 56px; display: flex; flex-direction: column; gap: 8px; }
+.m-scroll__btn { display: inline-flex; align-items: center; justify-content: center; width: 40px; height: 40px; padding: 0; border: 1px solid var(--border-strong); border-radius: 20px; background: var(--panel-solid); color: var(--text); opacity: 0.88; box-shadow: 0 4px 14px rgb(0 0 0 / 0.2); touch-action: manipulation; }
+.m-scroll__btn:active:not(:disabled) { opacity: 1; border-color: var(--accent); color: var(--accent); }
+.m-scroll__btn:disabled { opacity: 0.4; }
 .m-term__input { flex: 0 1 auto; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; padding: 6px 8px 4px; border-top: 1px solid var(--border); background: var(--panel-solid); }
 .m-choices { display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; }
 .m-choice { flex: none; display: flex; align-items: center; gap: 6px; max-width: 78vw; min-height: 44px; padding: 0 12px; border: 1px solid var(--border-strong); border-radius: var(--r-md); background: var(--field-solid); color: var(--text); font: inherit; font-size: 14px; }

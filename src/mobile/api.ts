@@ -12,7 +12,8 @@ export interface Overview { servers: OverviewServer[]; sync: OverviewSync[]; ai:
 /** 一个打开着的终端；cwd、busy、last 是电脑端能给时才有（当前目录、是否有程序在跑、最后一行） */
 export interface TerminalItem { id: string; title: string; kind: "windows" | "server"; server: string | null; busy: boolean | null; ai: boolean; cwd?: string | null; last?: string | null }
 /** 屏幕：text 是纯文字；lines 是同样的行带颜色码（电脑端支持时才有）；password 表示在等密码 */
-export interface Screen { text: string; lines?: string[]; password: boolean }
+/** alt：终端在备用屏（Codex、less、vim 这类全屏程序），没有历史行，往上翻、往下翻要交给程序 */
+export interface Screen { text: string; lines?: string[]; password: boolean; alt?: boolean }
 /** 往终端里输入：text 和 keys 二选一；paste 表示 text 按粘贴写入（多行不会一行一行地提交） */
 export interface InputRequest { text?: string; keys?: string[]; paste?: boolean; confirmed?: boolean }
 export interface ConfirmItem { id: number; kind: string; entry: string; client: string; targets?: string[]; target: string | null; action: string | null; ageMs: number }
