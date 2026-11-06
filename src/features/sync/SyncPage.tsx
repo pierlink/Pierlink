@@ -17,13 +17,22 @@ type Filter = "all" | "syncing" | "conflict" | "error" | "paused";
 
 /** 任务状态 → 颜色语气 */
 const tone: Record<SyncTaskState, "ok" | "accent" | "warn" | "danger" | "neutral"> = {
-  synced: "ok", syncing: "accent", waiting: "accent", conflict: "warn", error: "danger", paused: "neutral",
+  synced: "ok", syncing: "accent", waiting: "accent", conflict: "warn", error: "danger", paused: "neutral", partial: "warn",
 };
 
 function matches(task: SyncTaskView, f: Filter): boolean {
   if (f === "all") return true;
   if (f === "syncing") return task.state === "syncing" || task.state === "waiting";
   return task.state === f;
+}
+
+/** Syncthing 的英文失败原因 → 一句短话；认不出来的取原文最后一段（完整原文在悬停提示里） */
+function shortReason(reason: string, t: (k: string) => string): string {
+  if (/access is denied|permission denied|operation not permitted/i.test(reason)) return t("sync.reason.denied");
+  if (/used by another process|sharing violation|resource busy/i.test(reason)) return t("sync.reason.busy");
+  if (/name too long|path too long|extension is too long/i.test(reason)) return t("sync.reason.tooLong");
+  if (/no space left|not enough space|disk full/i.test(reason)) return t("sync.reason.noSpace");
+  return reason.split(": ").pop()?.trim() || reason;
 }
 
 /** 规则是否属于“敏感文件”类（默认不同步，用醒目颜色标出） */
@@ -244,9 +253,14 @@ function TaskDetail({ task, actions }: { task: SyncTaskView; actions?: SyncActio
             <b>{t("sync.errorsCount", { count: failedCount })}</b>
             <span>{t("sync.errorsHint")}</span>
           </div>
-          {/* 只列文件，原因放在悬停提示里；列表长了在框里滚动 */}
+          {/* 文件和一句话原因，英文原文在悬停提示里；列表长了在框里滚动 */}
           <ul className="sync-errors__list">
-            {failedFiles.map((e) => <li key={e.path} className="sync-error mono" title={e.reason}>{e.path}</li>)}
+            {failedFiles.map((e) => (
+              <li key={e.path} className="sync-error" title={e.reason}>
+                <span className="sync-error__path mono">{e.path}</span>
+                <span className="sync-error__reason">{shortReason(e.reason, t)}</span>
+              </li>
+            ))}
           </ul>
           {failedCount > failedFiles.length && <span className="sync-errors__more">{t("sync.errorsMore", { count: failedFiles.length })}</span>}
         </div>

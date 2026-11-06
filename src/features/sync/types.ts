@@ -56,7 +56,8 @@ export interface DeployReportView {
 export type DeployPhase = "review" | "running" | "done" | "failed";
 
 /** 同步任务的总体状态 */
-export type SyncTaskState = "synced" | "syncing" | "conflict" | "error" | "paused" | "waiting";
+/** partial：其他文件已同步，只有个别文件过不去 */
+export type SyncTaskState = "synced" | "syncing" | "conflict" | "error" | "paused" | "waiting" | "partial";
 
 /** 任务里的一台服务器 */
 export interface SyncEndpointView {

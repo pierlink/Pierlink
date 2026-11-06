@@ -870,6 +870,8 @@ pub struct TraySummary {
     pub syncing: usize,
     /// 出错、服务器离线、被删除保护暂停的任务
     pub problems: usize,
+    /// 其他文件已同步、只有个别文件过不去的任务（不算出问题，但要让人知道）
+    pub partial: usize,
     /// 有没暂停的任务，但本机同步服务没有运行
     pub stopped: bool,
 }
@@ -920,14 +922,15 @@ pub fn tray_summary(app: &AppHandle) -> Option<TraySummary> {
             .collect();
         match sync::task_status(local, &task.folder_id, &servers) {
             Ok(s) => {
-                // 正在拉取时个别文件失败仍算同步中（和同步页一样），停下来以后才算出问题
+                // 个别文件过不去不算出问题（其他文件照常同步，和同步页的“部分未同步”一样）
                 let pulling = s.state.starts_with("sync");
                 if guard_paused.contains(&task.folder_id)
                     || s.state == "error"
-                    || (s.error_count > 0 && !pulling)
                     || s.servers.iter().any(|x| !x.connected)
                 {
                     sum.problems += 1;
+                } else if s.error_count > 0 && !pulling {
+                    sum.partial += 1;
                 } else if s.need_bytes > 0 || pulling {
                     sum.syncing += 1;
                 }

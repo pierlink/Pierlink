@@ -46,6 +46,7 @@ pub struct TrayLabels {
     pub status_syncing: String,
     pub status_paused: String,
     pub status_problem: String,
+    pub status_partial: String,
     pub status_stopped: String,
     pub status_unavailable: String,
 }
@@ -63,6 +64,7 @@ impl Default for TrayLabels {
             status_syncing: "同步：{count} 个任务 · {n} 个同步中".into(),
             status_paused: "同步：{count} 个任务 · 全部已暂停".into(),
             status_problem: "同步：{count} 个任务 · {n} 个有问题".into(),
+            status_partial: "同步：{count} 个任务 · {n} 个部分未同步".into(),
             status_stopped: "同步：本机同步服务没有运行".into(),
             status_unavailable: "同步：数据暂不可用".into(),
         }
@@ -102,6 +104,8 @@ fn status_text(l: &TrayLabels, s: &sync::TraySummary) -> (String, bool) {
         fill(&l.status_problem, s.problems)
     } else if s.syncing > 0 {
         fill(&l.status_syncing, s.syncing)
+    } else if s.partial > 0 {
+        fill(&l.status_partial, s.partial)
     } else {
         fill(&l.status_synced, 0)
     };
@@ -554,6 +558,7 @@ mod tests {
             paused,
             syncing,
             problems,
+            partial: 0,
             stopped,
         };
         assert_eq!(
@@ -580,6 +585,15 @@ mod tests {
         assert_eq!(
             status_text(&l, &s(2, 0, 0, 0, false)).0,
             "同步：2 个任务 · 全部已同步"
+        );
+        let partial = sync::TraySummary {
+            tasks: 2,
+            partial: 1,
+            ..Default::default()
+        };
+        assert_eq!(
+            status_text(&l, &partial).0,
+            "同步：2 个任务 · 1 个部分未同步"
         );
         assert_eq!(label("   ", "默认"), "默认");
         assert_eq!(label(&"长".repeat(100), "x").chars().count(), LABEL_MAX);

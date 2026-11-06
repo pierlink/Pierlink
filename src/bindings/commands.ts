@@ -2902,6 +2902,7 @@ export type TrayLabels = {
 	statusSyncing: string,
 	statusPaused: string,
 	statusProblem: string,
+	statusPartial: string,
 	statusStopped: string,
 	statusUnavailable: string,
 };

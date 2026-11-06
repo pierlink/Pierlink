@@ -1965,7 +1965,8 @@
       "waiting": "等待中",
       "conflict": "{{count}} 个冲突",
       "error": "出错",
-      "paused": "已暂停"
+      "paused": "已暂停",
+      "partial": "部分未同步"
     },
     "pause": "暂停",
     "resume": "继续同步",
@@ -2035,6 +2036,7 @@
       "loading": "正在读取状态…",
       "localStopped": "本机同步服务没有运行",
       "fileErrors": "{{count}} 个文件同步失败",
+      "partial": "其他文件已同步 · {{count}} 个文件无法同步",
       "folderError": "同步出错",
       "serverOffline": "有服务器连接中断，恢复后自动继续",
       "syncing": "剩余 {{size}}",
@@ -2045,9 +2047,15 @@
       "conflicts": "{{count}} 个冲突",
       "needPassword": "等待输入 {{name}} 的密码"
     },
+    "reason": {
+      "denied": "没有权限",
+      "busy": "被其他程序占用",
+      "tooLong": "路径太长",
+      "noSpace": "磁盘空间不足"
+    },
     "errorsTitle": "同步失败的文件",
     "errorsCount": "{{count}} 个文件同步失败",
-    "errorsHint": "修正原因后会自动重试。",
+    "errorsHint": "其他文件照常同步，修正原因后会自动重试。",
     "errorsMore": "只列出前 {{count}} 个",
     "removeTask": "移除任务",
     "removeTitle": "移除同步任务 {{name}}？",
@@ -2404,6 +2412,7 @@
     "statusSyncing": "同步：{count} 个任务 · {n} 个同步中",
     "statusPaused": "同步：{count} 个任务 · 全部已暂停",
     "statusProblem": "同步：{count} 个任务 · {n} 个有问题",
+    "statusPartial": "同步：{count} 个任务 · {n} 个部分未同步",
     "statusStopped": "同步：本机同步服务没有运行",
     "statusUnavailable": "同步：数据暂不可用"
   },

@@ -71,7 +71,7 @@ function toView(
   let state: SyncTaskView["state"];
   let detail: string;
   // Syncthing 正在拉取（syncing，以及 sync-preparing、sync-waiting）：这时有个别文件失败也算“同步中”，
-  // 说明里带上失败的个数；停下来以后只剩失败的文件，才归到“出错”
+  // 说明里带上失败的个数；停下来以后只剩个别文件过不去，算“部分未同步”（其他文件照常同步，不算出错）
   const pulling = !!s && s.state.startsWith("sync");
   // 失败的文件：同一路径扫描和拉取都失败时 Syncthing 报两条，只列一次；
   // 总数以 Syncthing 报的为准（列表最多 100 个），减去列表里看到的重复
@@ -89,7 +89,7 @@ function toView(
   } else if (s.state === "stopped") {
     state = "error";
     detail = tr("sync.detail.localStopped");
-  } else if (s.state === "error" || (failed > 0 && !pulling)) {
+  } else if (s.state === "error") {
     state = "error";
     detail = failed > 0 ? tr("sync.detail.fileErrors", { count: failed }) : tr("sync.detail.folderError");
   } else if (passwordServer) {
@@ -101,6 +101,11 @@ function toView(
   } else if (conflicts && conflicts.length > 0) {
     state = "conflict";
     detail = tr("sync.detail.conflicts", { count: conflicts.length });
+  } else if (failed > 0 && !pulling) {
+    // 没在拉取、还有失败的文件：其他都已经试过了。本机写不进去的文件一直算“还没下载”（needBytes），
+    // 两次重试之间是空闲的，要排在“同步中”前面，不然一直显示同步中
+    state = "partial";
+    detail = tr("sync.detail.partial", { count: failed });
   } else if (pulling || s.needBytes > 0) {
     state = "syncing";
     detail = failed > 0

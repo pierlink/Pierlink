@@ -66,6 +66,7 @@ export interface AppSettings {
 /** 设计 3.3 的默认排除规则 */
 export const DEFAULT_IGNORE_RULES = [
   "(?d)node_modules", "(?d).venv", "(?d)__pycache__", "(?d)target", "(?d)dist", "(?d)build", "(?d).cache",
+  "(?d).pytest_cache", "(?d).mypy_cache", "(?d).ruff_cache",
   "(?d)*.tmp", ".env", "*.pem", "*.key", "(?d).git", "(?d)Thumbs.db", "(?d)desktop.ini", "(?d)~$*", "(?d)*.pierlink-part",
 ];
 

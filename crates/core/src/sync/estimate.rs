@@ -457,8 +457,8 @@ fn exclusion_reason(rule: &str) -> &'static str {
         "node_modules" | ".venv" => "依赖目录",
         ".git" => "版本库",
         ".env" | "*.pem" | "*.key" => "敏感文件",
-        "__pycache__" | "target" | "dist" | "build" | ".cache" | "*.tmp" | "Thumbs.db"
-        | "desktop.ini" | "~$*" => "缓存",
+        "__pycache__" | "target" | "dist" | "build" | ".cache" | ".pytest_cache"
+        | ".mypy_cache" | ".ruff_cache" | "*.tmp" | "Thumbs.db" | "desktop.ini" | "~$*" => "缓存",
         _ => "自定义规则",
     }
 }

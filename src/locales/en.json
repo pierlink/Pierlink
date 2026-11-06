@@ -1968,7 +1968,8 @@
       "error": "Error",
       "paused": "Paused",
       "conflict_one": "1 conflict",
-      "conflict_other": "{{count}} conflicts"
+      "conflict_other": "{{count}} conflicts",
+      "partial": "Partly synced"
     },
     "pause": "Pause",
     "resume": "Resume",
@@ -2040,6 +2041,8 @@
       "localStopped": "The local sync service isn't running",
       "fileErrors_one": "1 file failed to sync",
       "fileErrors_other": "{{count}} files failed to sync",
+      "partial_one": "Everything else is up to date · 1 file can't sync",
+      "partial_other": "Everything else is up to date · {{count}} files can't sync",
       "folderError": "Sync error",
       "serverOffline": "A server is disconnected; sync resumes automatically",
       "syncing": "{{size}} left",
@@ -2052,10 +2055,16 @@
       "conflicts_other": "{{count}} conflicts",
       "needPassword": "Waiting for the password of {{name}}"
     },
+    "reason": {
+      "denied": "No permission",
+      "busy": "In use by another program",
+      "tooLong": "Path too long",
+      "noSpace": "Not enough disk space"
+    },
     "errorsTitle": "Files that failed to sync",
     "errorsCount_one": "1 file failed to sync",
     "errorsCount_other": "{{count}} files failed to sync",
-    "errorsHint": "They're retried automatically once the cause is fixed.",
+    "errorsHint": "Other files keep syncing; these are retried once the cause is fixed.",
     "errorsMore": "Showing the first {{count}}",
     "removeTask": "Remove task",
     "removeTitle": "Remove sync task {{name}}?",
@@ -2423,6 +2432,7 @@
     "statusSyncing": "Sync · tasks: {count} · syncing: {n}",
     "statusPaused": "Sync · tasks: {count} · all paused",
     "statusProblem": "Sync · tasks: {count} · with problems: {n}",
+    "statusPartial": "Sync · tasks: {count} · partly synced: {n}",
     "statusStopped": "Sync: the local sync service isn't running",
     "statusUnavailable": "Sync: data unavailable"
   },

@@ -63,7 +63,7 @@ export function ExitGuard() {
         open: t("tray.open"), quit: t("tray.quit"), syncPage: t("tray.syncPage"), pauseAll: t("tray.pauseAll"), resumeAll: t("tray.resumeAll"),
         // 状态一行是模板：{count}、{n} 由外壳填入（这里不让 i18next 插值）
         statusNone: t("tray.statusNone"), statusSynced: t("tray.statusSynced"), statusSyncing: t("tray.statusSyncing"),
-        statusPaused: t("tray.statusPaused"), statusProblem: t("tray.statusProblem"), statusStopped: t("tray.statusStopped"), statusUnavailable: t("tray.statusUnavailable"),
+        statusPaused: t("tray.statusPaused"), statusProblem: t("tray.statusProblem"), statusPartial: t("tray.statusPartial"), statusStopped: t("tray.statusStopped"), statusUnavailable: t("tray.statusUnavailable"),
       }))
       .catch(() => { /* 外壳保持默认：缩到托盘、中文菜单 */ });
   }, [settings.closeToTray, t, i18n.language]);
