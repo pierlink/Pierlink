@@ -512,6 +512,46 @@ export function DesktopPane({ serverId, visible, grabKeyboard = true, title, con
     };
   }, [clip]);
 
+  // Ctrl+空格：Windows 装了中文输入法时是系统切换输入法的键，程序收不到。画面有焦点时让后端截住空格交过来，
+  // 这里补发给远程（Ctrl 已经由 noVNC 发了）；失去焦点时关掉，按下没松开的空格补一个松开
+  useEffect(() => {
+    const el = screenRef.current;
+    if (!el) return;
+    let alive = true;
+    let off: (() => void) | undefined;
+    let spaceDown = false;
+    const XK_SPACE = 0x20;
+    const focused = () => document.hasFocus() && el.contains(document.activeElement);
+    const release = () => {
+      if (spaceDown) { rfbRef.current?.sendKey(XK_SPACE, "Space", false); spaceDown = false; }
+    };
+    const onIn = () => { void getDesktopApi().then((api) => api.captureCtrlSpace(true)).catch(() => undefined); };
+    const onOut = () => {
+      if (focused()) return;
+      release();
+      void getDesktopApi().then((api) => api.captureCtrlSpace(false)).catch(() => undefined);
+    };
+    void getDesktopApi().then((api) => api.onCtrlSpace((down) => {
+      if (!focused() && !(spaceDown && !down)) return;
+      const rfb = rfbRef.current;
+      if (!rfb) return;
+      rfb.sendKey(XK_SPACE, "Space", down);
+      spaceDown = down;
+    })).then((u) => { if (alive) off = u; else u(); }, () => undefined);
+    el.addEventListener("focusin", onIn);
+    el.addEventListener("focusout", onOut);
+    window.addEventListener("blur", onOut);
+    return () => {
+      alive = false;
+      off?.();
+      el.removeEventListener("focusin", onIn);
+      el.removeEventListener("focusout", onOut);
+      window.removeEventListener("blur", onOut);
+      release();
+      void getDesktopApi().then((api) => api.captureCtrlSpace(false)).catch(() => undefined);
+    };
+  }, []);
+
   // 换分辨率：跟随窗口交给 noVNC；原始改回连上时的尺寸；预设直接改（服务器还没说支持时先记下）
   const applyResolution = (rfb: RFB, resolution: string, pierlink: boolean) => {
     const mode = effectiveResolution(resolution, pierlink);

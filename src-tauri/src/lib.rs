@@ -8,6 +8,7 @@ mod convert;
 mod data;
 mod deploy;
 mod desktop;
+mod desktop_keys;
 mod drag_out;
 mod explorer_menu;
 mod files;
@@ -169,6 +170,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
         desktop::desktop_save_password,
         desktop::desktop_forget_password,
         desktop::desktop_open_window,
+        desktop_keys::desktop_capture_ctrl_space,
         profile::profile_export,
         profile::profile_import,
         profile::servers_export,

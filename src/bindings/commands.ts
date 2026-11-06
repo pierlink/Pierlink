@@ -487,6 +487,8 @@ export const commands = {
 	 *  :param url: 页面地址，必须是 index.html#desktop-window?… 这样的独立窗口地址
 	 */
 	desktopOpenWindow: (serverId: string, title: string, url: string) => typedError<null, AppError>(__TAURI_INVOKE("desktop_open_window", { serverId, title, url })),
+	/**  远程桌面画面拿到焦点时打开、失去焦点时关掉：打开期间 Ctrl+空格不让 Windows 拿去切输入法，交给远程桌面。只在 Windows 上起作用。 */
+	desktopCaptureCtrlSpace: (enabled: boolean) => __TAURI_INVOKE<void>("desktop_capture_ctrl_space", { enabled }),
 	/**
 	 *  导出到文件：弹出“另存为”，写入 JSON
 	 * 

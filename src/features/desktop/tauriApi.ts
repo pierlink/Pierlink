@@ -105,6 +105,13 @@ export function createTauriDesktopApi(): DesktopApi {
     async forgetPassword(serverId, key) {
       unwrap(await commands.desktopForgetPassword(serverId, key));
     },
+    async captureCtrlSpace(enabled) {
+      await commands.desktopCaptureCtrlSpace(enabled);
+    },
+    async onCtrlSpace(cb) {
+      const { listen } = await import("@tauri-apps/api/event");
+      return listen<boolean>("pierlink://desktop-ctrl-space", (e) => cb(e.payload));
+    },
     async create(serverId, request, onProgress) {
       const channel = new Channel<DesktopCreateProgress>();
       // f64 在绑定里可能是 null（NaN 序列化成 null），按 0 处理

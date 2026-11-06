@@ -132,6 +132,9 @@ export interface DesktopApi {
   savedPassword(serverId: string, key: string): Promise<string | null>;
   savePassword(serverId: string, key: string, password: string): Promise<void>;
   forgetPassword(serverId: string, key: string): Promise<void>;
+  /** 远程画面有焦点时打开：Ctrl+空格（Windows 的切换输入法键）交给远程；onSpace 收到截住的空格（true 按下） */
+  captureCtrlSpace(enabled: boolean): Promise<void>;
+  onCtrlSpace(cb: (down: boolean) => void): Promise<() => void>;
   /** 新建 Pierlink 桌面；onProgress 报获取和启动的进度 */
   create(serverId: string, request: DesktopCreateRequest, onProgress: (p: DesktopCreateProgress) => void): Promise<DesktopCreated>;
   cancelCreate(task: string): Promise<void>;
@@ -226,6 +229,8 @@ function previewApi(): DesktopApi {
     async savedPassword(serverId, key) { return passwords.get(`${serverId}/${key}`) ?? null; },
     async savePassword(serverId, key, password) { passwords.set(`${serverId}/${key}`, password); },
     async forgetPassword(serverId, key) { passwords.delete(`${serverId}/${key}`); },
+    async captureCtrlSpace() {},
+    async onCtrlSpace() { return () => {}; },
     async create(_serverId, request, onProgress) {
       const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
       onProgress({ kind: "step", source: "Installed" });
