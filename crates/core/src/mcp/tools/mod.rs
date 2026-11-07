@@ -1,14 +1,17 @@
 //! 工具定义、参数校验与阻塞分发。后续具体实现沿用这里的权限和取消边界。
+mod copy;
 mod encoding;
 pub mod files;
 pub(super) mod jobs;
 pub mod local;
+pub(super) mod open;
 mod read;
 mod schema;
 mod search;
 pub mod sync;
 pub mod terminal;
 pub mod terminals;
+mod transfer;
 use super::{
     Approval, Confirmation, HostEvent, Permissions, RunLimits, Target, TargetKind,
     TerminalOpenRequest, lock, safety,
@@ -22,6 +25,7 @@ use rmcp::{
     model::{JsonObject, Tool},
 };
 use serde_json::{Value, json};
+use ssh_key::encoding::base64::{Base64, Encoding};
 use std::{
     sync::{
         Arc,
@@ -62,11 +66,20 @@ fn number(args: &JsonObject, key: &str, default: u64) -> u64 {
 fn timeout(args: &JsonObject) -> Duration {
     Duration::from_secs(number(args, "timeout_secs", 120))
 }
+/// 按 list_targets 给的 target 名、id（几台电脑上都一样的服务器标识）或这台电脑的记录 ID 找目标
+pub(super) fn find_target<'a>(targets: &'a [Target], name: &str) -> Option<&'a Target> {
+    targets.iter().find(|target| {
+        target.target == name || target.id == name || target.key.as_deref() == Some(name)
+    })
+}
 fn target<'a>(targets: &'a [Target], name: &str) -> Result<&'a Target, Failure> {
-    targets
-        .iter()
-        .find(|target| target.target == name || target.id == name)
-        .ok_or_else(|| schema::invalid("mcp.target_does_not_exist", "目标不存在").into())
+    find_target(targets, name).ok_or_else(|| {
+        schema::invalid(
+            "mcp.target_does_not_exist",
+            "目标不存在：用 list_targets 返回的 target 或 id；几台电脑同时接入时用户换了电脑，请重新调用 list_targets",
+        )
+        .into()
+    })
 }
 fn check_cancel(cancelled: &AtomicBool) -> Result<(), AppError> {
     if cancelled.load(Ordering::Acquire) {
@@ -173,6 +186,10 @@ pub(super) fn execute(
             let mut values = Vec::new();
             for target in &targets {
                 let mut value = json!(target);
+                // id 给几台电脑上都一样的服务器标识（用户换了电脑也能用）
+                if let Some(key) = &target.key {
+                    value["id"] = json!(key);
+                }
                 value["commands"] =
                     json!(target.kind == TargetKind::Server || permissions.windows_commands);
                 if target.kind == TargetKind::Windows {
@@ -247,15 +264,45 @@ pub(super) fn execute(
         | "terminal_wait" => terminal_call(
             shared,
             &terminal_targets(&permissions, &targets),
+            &permissions.folders,
             name,
             args,
             &cancelled,
             &mut approval,
         ),
-        "read_file" | "write_file" | "edit_file" | "make_dir" | "delete_path" | "rename_path"
-        | "search" | "find_files" | "list_dir" => {
+        "read_file" | "read_files" | "write_file" | "edit_file" | "make_dir" | "delete_path"
+        | "rename_path" | "copy_path" | "search" | "find_files" | "list_dir" => {
             file_call(&permissions, name, args, &cancelled, &mut approval)
         }
+        "open_path" => {
+            // 打开文件会启动程序：和执行命令一样要单独的“执行命令”权限
+            windows_commands_allowed(&permissions, &windows_target())?;
+            let opening = open::check(
+                &permissions.folders,
+                string(args, "path"),
+                string(args, "url"),
+            )?;
+            approval.confirm(
+                &windows_target(),
+                &open::action(&opening),
+                false,
+                &cancelled,
+            )?;
+            check_cancel(&cancelled)?;
+            open::open(&opening)?;
+            Ok(json!({"opened": match &opening {
+                open::Opening::Path(path) => crate::fs_local::display_path(path),
+                open::Opening::Url(url) => url.clone(),
+            }}))
+        }
+        "transfer_file" => transfer::run(
+            shared,
+            &permissions,
+            &targets,
+            args,
+            &cancelled,
+            &mut approval,
+        ),
         "sync_status" => {
             let mut states = shared.host.sync_status(string(args, "task"))?;
             // 同步状态也遵守服务器授权，不能借状态查询枚举别的服务器。
@@ -301,6 +348,9 @@ fn list_terminals(shared: &Shared, targets: &[Target]) -> Result<Value, Failure>
         let mut value = json!(info);
         if let Some(target) = value["target"].as_object_mut() {
             target.remove("address");
+            if let Some(key) = &info.target.key {
+                target.insert("id".into(), json!(key));
+            }
         }
         value["cwd"] = json!(cwd);
         ai.push(value);
@@ -543,9 +593,11 @@ fn login_needed(host: &dyn super::McpHost, target: &Target, error: &AppError) {
         });
     }
 }
+#[allow(clippy::too_many_arguments)]
 fn terminal_call(
     shared: &Shared,
     targets: &[Target],
+    folders: &[std::path::PathBuf],
     name: &str,
     args: &JsonObject,
     cancelled: &AtomicBool,
@@ -569,6 +621,17 @@ fn terminal_call(
             Ok(json!({"closed":true}))
         }
         "terminal_send" => {
+            let paste = args.get("paste").and_then(Value::as_bool).unwrap_or(false);
+            let image = string(args, "image_path");
+            // 图片只发给服务器终端（传到那台服务器）：本机终端暂不支持，注定失败的不问用户
+            if image.is_some() && target.kind != TargetKind::Server {
+                return Err(AppError::new("mcp.image_unsupported")
+                    .with_reason(
+                        "mcp.images_only_go_to_server_terminals",
+                        "本机终端暂不支持发图片：image_path 只用于服务器终端",
+                    )
+                    .into());
+            }
             let normalized = string(args, "text").map(terminal::normalize_text);
             let text = normalized.as_deref();
             let keys: Vec<String> = args
@@ -579,7 +642,7 @@ fn terminal_call(
                 .filter_map(Value::as_str)
                 .map(terminal::normalized_key)
                 .collect();
-            if text.is_some_and(|text| !text.is_empty())
+            if (image.is_some() || text.is_some_and(|text| !text.is_empty()))
                 && safety::looks_like_password_prompt(&shared.terminals.screen_text(id)?)
             {
                 shared.host.notify(HostEvent::PasswordPrompt {
@@ -592,22 +655,46 @@ fn terminal_call(
                     )
                     .into());
             }
+            // 程序不接受粘贴、不在全屏程序里却发滚轮：注定发不出去，不问用户，直接告诉 AI（发送时还会再查一次）
+            if paste && !shared.terminals.bracketed_paste(id)? {
+                return Err(terminal::paste_unsupported().into());
+            }
+            if keys.iter().any(|key| key.starts_with("Wheel"))
+                && !shared.terminals.alternate_screen(id)?
+            {
+                return Err(terminal::wheel_unavailable().into());
+            }
             // 同一个终端的发送排队，待提交行的读、判断、发送、写回一次做完
             let _sending = lock(&registered.send);
             registered.check()?;
             // 文字和回车可能分几次发；用户输入后作废已记下的行，并保留“内容未知”直到提交。
             let generation = shared.terminals.control_generation(id)?;
+            // 图片先在本机读出来，确认之后才传到服务器：被拒绝时服务器上什么都不留
+            let picture = image.map(|path| read_image(folders, path)).transpose()?;
+            // 判断、确认时图片路径先用占位（真的文件名传上去时才定，是随机名），传上去以后换成真的
+            let placeholder = picture
+                .as_ref()
+                .map(|(_, extension)| format!("/tmp/pierlink-paste-….{extension}"));
             let (pending, unknown) = registered.pending_line(generation);
-            let (mut lines, rest) = terminal::submitted_lines(&pending, text, &keys);
-            let submits = text.is_some_and(|text| text.contains(['\r', '\n']))
-                || keys
-                    .iter()
-                    .any(|key| matches!(key.as_str(), "Enter" | "Ctrl+M" | "Ctrl+J"));
-            let unknown_submission = unknown && submits;
+            // 粘贴的图片路径和文字只插进输入行、不提交：之后按回车时，和前面没提交的部分一起算一次提交
+            let typed = text.filter(|_| !paste);
+            let mut pending = format!("{pending}{}", placeholder.as_deref().unwrap_or_default());
+            if let Some(pasted) = text.filter(|_| paste) {
+                pending.push_str(&terminal::pasted_line(pasted));
+            }
+            let newline_submits = terminal::newline_submits(&shared.terminals, id)?;
+            let mut simulated =
+                terminal::submitted_lines_with(&pending, unknown, typed, &keys, newline_submits);
+            let mut lines = std::mem::take(&mut simulated.lines);
+            let unknown_submission = simulated.unknown;
             // 等用户确认时终端被收回：确认框立即关掉，按取消处理（不用等用户点了“允许”才被拒）
             with_revocation(cancelled, &registered.revoked, |cancelled| {
                 if unknown_submission {
-                    let action = "（终端里可能有交给 AI 之前或你刚打的、还没回车的文字，AI 按回车，实际执行的内容未知）";
+                    let action = if unknown {
+                        "（终端里可能有交给 AI 之前或你刚打的、还没回车的文字，AI 按回车，实际执行的内容未知）"
+                    } else {
+                        "（AI 撤销了修改或粘回了删掉的文字，按回车实际执行的内容未知）"
+                    };
                     // 记录未知提交，不把用户输入或过期的自动化行写入审计。
                     lines.insert(0, action.into());
                     approval.confirm(target, &lines.join("\n"), true, cancelled)?;
@@ -616,9 +703,22 @@ fn terminal_call(
                 if !unknown_submission
                     && lines.is_empty()
                     && approval.mode == Approval::AskAll
-                    && terminal::submits_recalled_history(text, &keys)
+                    && terminal::submits_recalled_history(typed, &keys)
                 {
                     approval.confirm(target, "（翻历史后回车，内容未知）", true, cancelled)?;
+                }
+                // “每次都问”：只发图片、不回车也问一次（图片会传到服务器上）
+                if let Some(path) = image
+                    && approval.mode == Approval::AskAll
+                    && lines.is_empty()
+                    && !unknown_submission
+                {
+                    approval.confirm(
+                        target,
+                        &format!("把图片传到服务器的临时目录，并把路径粘贴进终端：{path}"),
+                        false,
+                        cancelled,
+                    )?;
                 }
                 if !lines.is_empty() && !unknown_submission {
                     if approval.mode == Approval::Dangerous {
@@ -645,20 +745,41 @@ fn terminal_call(
             })?;
             check_cancel(cancelled)?;
             registered.check()?;
-            let sent =
-                terminal::send_at_generation(&shared.terminals, id, text, &keys, Some(generation))
-                    .inspect_err(|error| {
-                        if error.code == "mcp.password_prompt" {
-                            shared.host.notify(HostEvent::PasswordPrompt {
-                                terminal_id: id.into(),
-                            });
-                        }
-                    })?;
-            registered.set_pending_line(generation, rest, unknown && !submits);
+            // 确认过了才传（最多等 30 秒）：传的时候用户在终端里打了字，下面按代数发送时会被拒绝，
+            // 不会把路径粘到用户正在打的字里
+            let uploaded = picture
+                .map(|(bytes, extension)| {
+                    upload_image(shared, target, &bytes, extension, cancelled)
+                })
+                .transpose()?;
+            if let (Some(placeholder), Some(real)) = (&placeholder, &uploaded) {
+                for line in &mut lines {
+                    *line = line.replace(placeholder.as_str(), real);
+                }
+                simulated.rest = simulated.rest.replace(placeholder.as_str(), real);
+            }
+            let input = terminal::Input {
+                image: uploaded.as_deref(),
+                text,
+                paste,
+                keys: &keys,
+            };
+            let sent = terminal::send_at_generation(&shared.terminals, id, input, Some(generation))
+                .inspect_err(|error| {
+                    if error.code == "mcp.password_prompt" {
+                        shared.host.notify(HostEvent::PasswordPrompt {
+                            terminal_id: id.into(),
+                        });
+                    }
+                })?;
+            registered.set_pending_line(generation, simulated.rest, simulated.rest_unknown);
             // 这次按回车提交的整行（文字和回车分开发时，回车那一次也能看到提交了什么）
             let mut value = json!(sent);
             if !lines.is_empty() {
                 value["submitted"] = json!(lines);
+            }
+            if let Some(path) = &uploaded {
+                value["image"] = json!(path);
             }
             Ok(value)
         }
@@ -697,6 +818,45 @@ fn terminal_call(
     }
     result
 }
+/// 把 image_path 的图片传到服务器终端所在的服务器，返回服务器上的路径
+/// 读授权文件夹里要发给终端的图片（只读本机，不传）：返回内容和扩展名
+fn read_image(
+    folders: &[std::path::PathBuf],
+    path: &str,
+) -> Result<(Vec<u8>, &'static str), AppError> {
+    if folders.is_empty() {
+        return Err(no_folders());
+    }
+    files::read_terminal_image(&files::Sandbox::new(folders), path)
+}
+/// 把图片传到服务器的临时目录，返回服务器上的路径
+fn upload_image(
+    shared: &Shared,
+    target: &Target,
+    bytes: &[u8],
+    extension: &str,
+    cancelled: &AtomicBool,
+) -> Result<String, AppError> {
+    check_cancel(cancelled)?;
+    shared
+        .host
+        .upload_image(&target.id, bytes, extension)
+        .inspect_err(|error| login_needed(shared.host.as_ref(), target, error))
+}
+/// read_files 一次读的文字太多：剩下的不读
+fn read_files_full() -> AppError {
+    AppError::new("mcp.file_too_large").with_reason(
+        "mcp.read_files_total_limit",
+        "这次读的文件加起来太多（文字最多 8 MiB）：这个和后面的请用 read_file 分段读",
+    )
+}
+/// 这个入口没有授权文件夹：文件工具都用不了
+fn no_folders() -> AppError {
+    AppError::new("mcp.path_denied").with_reason(
+        "mcp.this_entry_has_no_allowed_folders",
+        "这个入口没有允许访问的文件夹",
+    )
+}
 fn file_call(
     permissions: &Permissions,
     name: &str,
@@ -704,20 +864,14 @@ fn file_call(
     cancelled: &AtomicBool,
     approval: &mut ActionApproval<'_>,
 ) -> Result<Value, Failure> {
-    let path = if matches!(name, "read_file" | "write_file" | "edit_file") {
-        required(args, "file_path")
-    } else if name == "rename_path" {
-        required(args, "from")
-    } else {
-        required(args, "path")
+    let path = match name {
+        "read_file" | "write_file" | "edit_file" => required(args, "file_path"),
+        "rename_path" => required(args, "from"),
+        "copy_path" => required(args, "source"),
+        _ => required(args, "path"),
     };
     if permissions.folders.is_empty() {
-        return Err(AppError::new("mcp.path_denied")
-            .with_reason(
-                "mcp.this_entry_has_no_allowed_folders",
-                "这个入口没有允许访问的文件夹",
-            )
-            .into());
+        return Err(no_folders().into());
     }
     let sandbox = files::Sandbox::new(&permissions.folders);
     check_cancel(cancelled)?;
@@ -744,29 +898,74 @@ fn file_call(
                 )?)
             }
         }
+        "read_files" => {
+            let limit = number(args, "limit", 2000);
+            let mut budget = read::IMAGE_BUDGET;
+            // 文字部分一次最多这么多（图片另算）：超了的不再读，让 AI 改用 read_file 分段读
+            let mut text_left: usize = 8 * 1024 * 1024;
+            let mut results = Vec::new();
+            for file in args
+                .get("file_paths")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+            {
+                check_cancel(cancelled)?;
+                // 单个文件出错只记在这一项里，不影响别的；取消则整次调用停下
+                let mut result = if text_left == 0 {
+                    json!({ "error": read_files_full() })
+                } else {
+                    match read::listed(&sandbox, file, limit, &mut budget, cancelled) {
+                        Ok(value) => value,
+                        Err(error) if error.code == "mcp.cancelled" => return Err(error.into()),
+                        Err(error) => json!({ "error": error }),
+                    }
+                };
+                let size: usize = result
+                    .as_object()
+                    .into_iter()
+                    .flatten()
+                    .filter(|(key, _)| *key != "image")
+                    .map(|(_, value)| value.to_string().len())
+                    .sum();
+                if size > text_left {
+                    result = json!({ "error": read_files_full() });
+                    text_left = 0;
+                } else {
+                    text_left -= size;
+                }
+                result["file_path"] = json!(file);
+                results.push(result);
+            }
+            Ok(json!({ "files": results }))
+        }
         "search" => Ok(search::search(&sandbox, args, cancelled)?),
         "find_files" => Ok(search::find_files(&sandbox, args, cancelled)?),
         "write_file" | "edit_file" => {
+            // content_base64 先解出来：无效的不问用户，确认框里写字节数
+            let binary = string(args, "content_base64")
+                .map(decode_content)
+                .transpose()?;
             let resolved = sandbox.resolve_write(path)?;
             let reason = files::write_needs_confirmation(&resolved)
                 .or_else(|| files::write_needs_confirmation(std::path::Path::new(path)));
-            let windows = Target {
-                target: "windows".into(),
-                id: "windows".into(),
-                name: "Windows".into(),
-                kind: TargetKind::Windows,
-                online: None,
-                engine: None,
-                address: None,
-            };
             approval.confirm(
-                &windows,
-                &file_action(name, &resolved, reason.as_deref(), args),
+                &windows_target(),
+                &file_action(name, &resolved, reason.as_deref(), args, binary.as_deref()),
                 reason.is_some(),
                 cancelled,
             )?;
             check_cancel(cancelled)?;
-            if name == "edit_file" {
+            if let Some(edits) = edits(args) {
+                Ok(json!(files::edit_file_many(
+                    &sandbox,
+                    path,
+                    &edits,
+                    true,
+                    string(args, "expected_sha256")
+                )?))
+            } else if name == "edit_file" {
                 Ok(json!(files::edit_file(
                     &sandbox,
                     path,
@@ -775,6 +974,13 @@ fn file_call(
                     args.get("replace_all")
                         .and_then(Value::as_bool)
                         .unwrap_or(false),
+                    string(args, "expected_sha256")
+                )?))
+            } else if let Some(bytes) = &binary {
+                Ok(json!(files::write_bytes(
+                    &sandbox,
+                    path,
+                    bytes,
                     string(args, "expected_sha256")
                 )?))
             } else {
@@ -829,16 +1035,7 @@ fn file_call(
                     )
                 }
             };
-            let windows = Target {
-                target: "windows".into(),
-                id: "windows".into(),
-                name: "Windows".into(),
-                kind: TargetKind::Windows,
-                online: None,
-                engine: None,
-                address: None,
-            };
-            approval.confirm(&windows, &action, dangerous, cancelled)?;
+            approval.confirm(&windows_target(), &action, dangerous, cancelled)?;
             check_cancel(cancelled)?;
             let path = match name {
                 "make_dir" => files::make_dir(&sandbox, path)?,
@@ -847,8 +1044,44 @@ fn file_call(
             };
             Ok(json!({"path":path}))
         }
+        "copy_path" => {
+            let overwrite = args
+                .get("overwrite")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            // 先统计和检查（注定失败的不问用户），确认框里写明数量和要确认的目标
+            let plan = copy::plan(
+                &sandbox,
+                path,
+                required(args, "destination"),
+                overwrite,
+                cancelled,
+            )?;
+            approval.confirm(
+                &windows_target(),
+                &copy::action(&plan),
+                plan.dangerous(),
+                cancelled,
+            )?;
+            check_cancel(cancelled)?;
+            Ok(copy::copy(&sandbox, &plan, cancelled)?)
+        }
         "list_dir" => Ok(json!(files::list_dir(&sandbox, path)?)),
         _ => Err(schema::invalid("mcp.unknown_file_tool", "未知文件工具").into()),
+    }
+}
+
+/// 文件工具审批时的目标：本机 Windows
+fn windows_target() -> Target {
+    Target {
+        target: "windows".into(),
+        id: "windows".into(),
+        name: "Windows".into(),
+        kind: TargetKind::Windows,
+        online: None,
+        engine: None,
+        address: None,
+        key: None,
     }
 }
 
@@ -871,8 +1104,16 @@ pub(super) fn summary(name: &str, args: &JsonObject, password_denied: bool) -> S
                 .flatten()
                 .filter_map(Value::as_str)
                 .collect();
+            let paste = if args.get("paste").and_then(Value::as_bool) == Some(true) {
+                "粘贴："
+            } else {
+                ""
+            };
+            let image = string(args, "image_path")
+                .map(|path| format!("图片：{path} "))
+                .unwrap_or_default();
             let mut summary = format!(
-                "{} {}",
+                "{} {image}{paste}{}",
                 required(args, "terminal_id"),
                 string(args, "text").unwrap_or_default()
             );
@@ -882,10 +1123,34 @@ pub(super) fn summary(name: &str, args: &JsonObject, password_denied: bool) -> S
             summary
         }
         "read_file" | "write_file" | "edit_file" => required(args, "file_path").into(),
+        "read_files" => args
+            .get("file_paths")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>()
+            .join(", "),
         "search" | "find_files" | "list_dir" | "make_dir" | "delete_path" => {
             required(args, "path").into()
         }
         "rename_path" => format!("{} → {}", required(args, "from"), required(args, "to")),
+        "copy_path" => format!(
+            "{} → {}",
+            required(args, "source"),
+            required(args, "destination")
+        ),
+        "open_path" => string(args, "path")
+            .or_else(|| string(args, "url"))
+            .unwrap_or_default()
+            .into(),
+        "transfer_file" => format!(
+            "{}:{} → {}:{}",
+            required(args, "from_target"),
+            required(args, "from_path"),
+            required(args, "to_target"),
+            required(args, "to_path")
+        ),
         "job_output" | "job_stop" => required(args, "job_id").into(),
         "sync_status" | "sync_wait" => string(args, "task").unwrap_or_default().into(),
         _ => string(args, "terminal_id")
@@ -895,7 +1160,15 @@ pub(super) fn summary(name: &str, args: &JsonObject, password_denied: bool) -> S
     }
 }
 pub(super) fn audit_target(args: &JsonObject) -> Option<String> {
-    string(args, "target").map(str::to_owned)
+    string(args, "target")
+        // 传文件记服务器那一端
+        .or_else(|| {
+            ["to_target", "from_target"]
+                .into_iter()
+                .filter_map(|key| string(args, key))
+                .find(|target| *target != "windows")
+        })
+        .map(str::to_owned)
 }
 
 fn preview_text(text: &str, max: usize) -> String {
@@ -906,14 +1179,68 @@ fn preview_text(text: &str, max: usize) -> String {
     }
     preview
 }
+/// 解出 write_file 的 content_base64（标准 base64，可以带换行等空白），解出后最多 5 MiB
+fn decode_content(text: &str) -> Result<Vec<u8>, Failure> {
+    let compact: String = text.chars().filter(|c| !c.is_ascii_whitespace()).collect();
+    let bytes = Base64::decode_vec(&compact).map_err(|_| {
+        schema::invalid(
+            "mcp.content_base64_is_not_valid_base64",
+            "content_base64 不是有效的 base64（标准字母表，末尾用 = 补齐）",
+        )
+    })?;
+    if bytes.len() > 5 * 1024 * 1024 {
+        return Err(schema::invalid("mcp.file_content_exceeds_5_mib", "文件内容超过 5 MiB").into());
+    }
+    Ok(bytes)
+}
+/// edit_file 的 edits 参数（多处修改）；没给时为 None。类型已由 schema 校验过
+fn edits(args: &JsonObject) -> Option<Vec<files::Edit<'_>>> {
+    let items = args.get("edits")?.as_array()?;
+    Some(
+        items
+            .iter()
+            .filter_map(Value::as_object)
+            .map(|item| files::Edit {
+                old: required(item, "old_string"),
+                new: required(item, "new_string"),
+                all: item
+                    .get("replace_all")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+            })
+            .collect(),
+    )
+}
+/// 确认框里最多列出几处修改
+const EDITS_SHOWN: usize = 5;
 fn file_action(
     name: &str,
     path: &std::path::Path,
     reason: Option<&str>,
     args: &JsonObject,
+    binary: Option<&[u8]>,
 ) -> String {
     let heading = format!("{}：{}", reason.unwrap_or("写入文件"), path.display());
-    if name == "edit_file" {
+    if let Some(bytes) = binary {
+        format!(
+            "{heading}\n内容：{} 字节（content_base64，原样写入）",
+            bytes.len()
+        )
+    } else if let Some(edits) = edits(args) {
+        let mut text = format!("{heading}\n共 {} 处修改", edits.len());
+        for (index, edit) in edits.iter().take(EDITS_SHOWN).enumerate() {
+            text.push_str(&format!(
+                "\n第 {n} 处旧文字：\n{}\n第 {n} 处新文字：\n{}",
+                preview_text(edit.old, 300),
+                preview_text(edit.new, 300),
+                n = index + 1
+            ));
+        }
+        if edits.len() > EDITS_SHOWN {
+            text.push_str(&format!("\n…（还有 {} 处）", edits.len() - EDITS_SHOWN));
+        }
+        text
+    } else if name == "edit_file" {
         format!(
             "{heading}\n旧文字：\n{}\n新文字：\n{}",
             preview_text(required(args, "old_string"), 300),

@@ -185,6 +185,7 @@ impl McpHost for TauriHost {
                 online: Some(true),
                 engine: None,
                 address: None,
+                key: None,
             });
         }
         let all = self.servers()?;
@@ -216,6 +217,8 @@ impl McpHost for TauriHost {
                 address: matches!(entry, Entry::Windows)
                     .then(|| address(server))
                     .flatten(),
+                // 几台电脑上都一样的标识（只是地址的短哈希，看不出地址）
+                key: address(server).map(|a| pierlink_core::mcp::peers::server_key(&a)),
             });
         }
         Ok(targets)
@@ -363,6 +366,51 @@ impl McpHost for TauriHost {
         crate::sync::mcp_rescan(&self.app, folder_id, timeout)
     }
 
+    fn entry_port(&self, server_id: &str) -> Option<u16> {
+        self.app
+            .try_state::<super::McpState>()?
+            .entries
+            .actual_port(server_id)
+    }
+
+    fn entry_script(
+        &self,
+        server_id: &str,
+        script: &str,
+        timeout: Duration,
+    ) -> Result<serde_json::Value, AppError> {
+        super::entries::run_on_server_value(&self.app, server_id, script, timeout)
+    }
+
+    fn peer_tunnel(&self, server_id: &str, port: u16) -> Result<u16, AppError> {
+        let state = self
+            .app
+            .try_state::<super::McpState>()
+            .ok_or_else(|| AppError::new("mcp.peers_unsupported"))?;
+        state.entries.peer_tunnel(&self.app, server_id, port)
+    }
+
+    fn idle_ms(&self) -> Option<u64> {
+        idle_ms()
+    }
+
+    fn pin(&self) -> Option<pierlink_core::mcp::peers::PinRecord> {
+        super::settings::load_pin(&self.app)
+    }
+
+    fn open_sftp(&self, server_id: &str) -> Result<pierlink_core::sftp::SftpSession, AppError> {
+        super::open_sftp(&self.app, server_id)
+    }
+
+    fn upload_image(
+        &self,
+        server_id: &str,
+        bytes: &[u8],
+        extension: &str,
+    ) -> Result<String, AppError> {
+        crate::paste_image::store_remote_for_ai(&self.app, server_id, bytes, extension)
+    }
+
     fn notify(&self, event: HostEvent) {
         // 手机页面据此重新拉对应的数据
         crate::mobile::notify(
@@ -407,4 +455,28 @@ impl McpHost for TauriHost {
             eprintln!("推送 AI 接入事件失败: 错误={e}");
         }
     }
+}
+
+/// 这台电脑多久没有键盘鼠标输入（毫秒）
+#[cfg(windows)]
+fn idle_ms() -> Option<u64> {
+    use windows_sys::Win32::System::SystemInformation::GetTickCount;
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetLastInputInfo, LASTINPUTINFO};
+    let mut info = LASTINPUTINFO {
+        cbSize: std::mem::size_of::<LASTINPUTINFO>() as u32,
+        dwTime: 0,
+    };
+    // SAFETY: info 是按要求填好 cbSize 的结构体，只在调用期间借用
+    if unsafe { GetLastInputInfo(&mut info) } == 0 {
+        return None;
+    }
+    // SAFETY: 无参数，只读系统开机后的毫秒数（约 49.7 天回绕一次，用回绕减法）
+    let now = unsafe { GetTickCount() };
+    Some(u64::from(now.wrapping_sub(info.dwTime)))
+}
+
+/// 这台电脑多久没有键盘鼠标输入：只在 Windows 上知道
+#[cfg(not(windows))]
+fn idle_ms() -> Option<u64> {
+    None
 }

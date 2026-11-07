@@ -60,6 +60,8 @@ fn specta_builder() -> Builder<tauri::Wry> {
         mcp::mcp_status,
         mcp::mcp_connect_info,
         mcp::mcp_token_rotate,
+        mcp::mcp_computers,
+        mcp::mcp_set_pin,
         mcp::mcp_activity,
         mcp::mcp_stop_all,
         mcp::mcp_jobs,
@@ -423,7 +425,9 @@ pub fn run() {
             app.manage(passwords);
             // 内置 SSH 的连接管理器和界面回调（按需连接）
             app.manage(builtin::BuiltinState::start(app.handle()));
-            // AI 接入（MCP）：要在终端状态和内置连接之后；建不起来时只是不能用 AI 接入
+            // AI 接入（MCP）：要在终端状态和内置连接之后；建不起来时只是不能用 AI 接入。
+            // 先登记 Pierlink 自己的目录，文件工具从一开始就不碰它们
+            mcp::protect_own_folders(app.handle());
             match mcp::McpState::start(app.handle()) {
                 Ok(state) => {
                     app.manage(state);

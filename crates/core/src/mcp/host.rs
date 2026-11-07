@@ -75,6 +75,10 @@ pub struct Target {
     pub engine: Option<String>,
     /// 服务器地址（用户@主机:端口）；从服务器入口进来的会话看不到其他服务器的地址，为 None
     pub address: Option<String>,
+    /// 几台电脑上都一样的服务器标识（按地址算的短哈希，见 peers::server_key）；不知道地址时为 None。
+    /// list_targets 把它当 id 给 agent，工具参数 target 也认它：用户换了电脑，AI 手里的 id 照样能用
+    #[serde(skip)]
+    pub key: Option<String>,
 }
 
 /// 提供给宿主的后台任务快照；命令已脱敏并限制为前 200 个字符，完成记录保留 30 分钟。
@@ -216,6 +220,12 @@ pub struct AuditRecord {
     pub approval: String,
     pub exit_code: Option<i32>,
     pub duration_ms: u64,
+    /// 这次调用转给了哪台电脑执行（电脑名）；那台电脑自己的记录为准
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub forwarded_to: Option<String>,
+    /// 这次调用是哪台电脑转来的（电脑名）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub forwarded_from: Option<String>,
 }
 
 /// 推给宿主（界面）的事件
@@ -296,6 +306,43 @@ pub trait McpHost: Send + Sync + 'static {
     fn sync_status(&self, task: Option<&str>) -> Result<Vec<SyncTaskState>, AppError>;
     /// 让本机 Syncthing 立即扫描这个文件夹，扫完返回
     fn sync_rescan(&self, folder_id: &str, timeout: Duration) -> Result<(), AppError>;
+    /// 为 AI 在 Windows 和服务器之间传文件，新开一条到 server_id 的 SFTP 会话（和文件栏的传输一样单独开）。
+    /// 后台方式：不弹密码框，缺密码或验证码时返回 ssh.password_needed / ssh.two_factor_required；会话随返回值释放
+    fn open_sftp(&self, server_id: &str) -> Result<crate::sftp::SftpSession, AppError>;
+    /// 把要发给服务器 AI 终端的图片传到 server_id 的临时目录（只有自己能读，和界面在服务器终端里粘贴图片一样，
+    /// 最多等 30 秒），返回服务器上的绝对路径（只有字母、数字、横线和点，不用加引号）。
+    /// extension 是 png、jpg、gif 或 webp；后台方式连接，不弹密码框
+    fn upload_image(
+        &self,
+        server_id: &str,
+        bytes: &[u8],
+        extension: &str,
+    ) -> Result<String, AppError>;
     /// 通知界面（不阻塞）
     fn notify(&self, event: HostEvent);
+    /// 服务器入口在服务器上实际监听的端口（另一台电脑占着设置的端口时会换一个）；入口没在运行为 None
+    fn entry_port(&self, _server_id: &str) -> Option<u16> {
+        None
+    }
+    /// 在入口所在的服务器上运行只读脚本（后台方式，不弹密码框），返回脚本输出的 JSON；timeout 内没做完返回错误
+    fn entry_script(
+        &self,
+        _server_id: &str,
+        _script: &str,
+        _timeout: Duration,
+    ) -> Result<serde_json::Value, AppError> {
+        Err(AppError::new("mcp.peers_unsupported"))
+    }
+    /// 本机经这台服务器到服务器上 127.0.0.1:port 的本地转发端口（宿主按需建立并复用，入口停用时一起关）
+    fn peer_tunnel(&self, _server_id: &str, _port: u16) -> Result<u16, AppError> {
+        Err(AppError::new("mcp.peers_unsupported"))
+    }
+    /// 这台电脑多久没有键盘鼠标输入（毫秒）；不知道为 None
+    fn idle_ms(&self) -> Option<u64> {
+        None
+    }
+    /// 这台电脑上的用户做的指定（AI 操作哪台电脑）；没指定过为 None
+    fn pin(&self) -> Option<super::peers::PinRecord> {
+        None
+    }
 }

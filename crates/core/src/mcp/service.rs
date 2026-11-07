@@ -46,8 +46,19 @@ pub(super) struct Shared {
     /// 这个 Pierlink 的实例号（宿主设置，随机、长期不变）：服务器入口的探测地址回报它，
     /// 端口被占用时据此分清是自己还是另一台电脑上的 Pierlink
     pub(super) instance: Mutex<String>,
+    /// 几台电脑同时接入时，判断 AI 操作哪台电脑（按入口缓存）
+    pub(super) router: super::peers::Router,
 }
 impl Shared {
+    /// 登记一个要遮蔽的秘密（令牌等）：操作记录、返回给 AI 的结果里出现时换成 ***
+    pub(super) fn add_secret(&self, secret: Zeroizing<String>) {
+        if !secret.is_empty() {
+            let mut secrets = lock(&self.secrets);
+            if !secrets.iter().any(|value| **value == *secret) {
+                secrets.push(secret);
+            }
+        }
+    }
     pub(super) fn redact_command(&self, command: &str) -> String {
         let secrets = lock(&self.secrets);
         let refs: Vec<_> = secrets.iter().map(|s| s.as_str()).collect();
@@ -153,6 +164,7 @@ impl McpService {
             activity: Mutex::new(recent),
             secrets: Mutex::new(Vec::new()),
             instance: Mutex::new(String::new()),
+            router: Default::default(),
         });
         let weak = Arc::downgrade(&shared);
         // 每秒维护后台任务、AI 终端和界面可见的会话集合。
@@ -283,12 +295,11 @@ impl McpService {
     }
     /// 登记 secret 以遮蔽后续审计及工具结果中的值；空值忽略，秘密在释放时清零。
     pub fn add_secret(&self, secret: Zeroizing<String>) {
-        if !secret.is_empty() {
-            let mut secrets = lock(&self.shared.secrets);
-            if !secrets.iter().any(|value| **value == *secret) {
-                secrets.push(secret);
-            }
-        }
+        self.shared.add_secret(secret);
+    }
+    /// 用户改了“AI 操作哪台电脑”：忘掉缓存的判断，下一次调用重新判断
+    pub fn forget_routes(&self) {
+        self.shared.router.clear();
     }
     /// 无参数；返回本服务运行时句柄，供后续传输入口启动任务。
     pub fn runtime(&self) -> Handle {
@@ -483,6 +494,12 @@ impl ServerHandler for Handler {
         let session = self.session.clone();
         tokio::task::spawn_blocking(move || {
             let args = request.arguments.unwrap_or_default();
+            // 几台电脑同时接入：用户在另一台电脑前时整次转过去执行
+            if let Some(response) =
+                super::peers::route(&shared, &session, &request.name, &args, &cancelled, started)
+            {
+                return response;
+            }
             let mut approval = "";
             let result = tools::execute(
                 &shared,
@@ -517,9 +534,9 @@ const INSTRUCTIONS: &str = r#"Pierlink connects this agent to the user's Windows
 
 Start with list_targets to inspect the targets, commands permission, authorized folders, home, available shells and path_style. Permissions belong to the entry you connected through and may change. A Windows target can allow files without allowing commands. Use target names or stable IDs exactly as returned. Do not infer a project directory from the Pierlink process directory.
 
-To operate on Windows files from a server, use Pierlink read_file, edit_file, write_file, search, find_files and list_dir. These tools access Windows, while your built-in Read/Edit/Grep/Glob access the machine running the agent. Supply Windows absolute paths, for example C:/project/file.txt or JSON-escaped backslashes. UNC/network paths, devices, alternate data streams, reserved names, parent traversal and links escaping authorized folders are rejected. An outside-path error lists the authorized folders.
+To operate on Windows files from a server, use Pierlink read_file, read_files, edit_file, write_file, copy_path, search, find_files and list_dir; transfer_file copies a file between Windows and a server. These tools access Windows, while your built-in Read/Edit/Grep/Glob access the machine running the agent. Supply Windows absolute paths, for example C:/project/file.txt or JSON-escaped backslashes. UNC/network paths, devices, alternate data streams, reserved names, parent traversal and links escaping authorized folders are rejected. An outside-path error lists the authorized folders.
 
-read_file defaults to numbered lines: file_path, offset (1-based), limit (default 2000, maximum 5000). Lines longer than 2000 characters are marked and clipped. byte_offset/max_bytes explicitly select raw byte reads; binary content is base64. Text results report encoding, line_ending, mtime_ms and sha256 (null above 64 MiB, with sha256_skipped_reason). edit_file requires exact old_string/new_string, with unique matching unless replace_all is true. Pass expected_sha256 to edit_file or write_file when you need protection against changes since your read. Existing encoding, BOM and newline style are preserved; unrepresentable characters are rejected. Never include read_file's line numbers in replacement text. write_file accepts at most 5 MiB and cannot overwrite existing binary files or files larger than 5 MiB.
+read_file defaults to numbered lines: file_path, offset (1-based), limit (default 2000, maximum 5000). Lines longer than 2000 characters are marked and clipped. byte_offset/max_bytes explicitly select raw byte reads; binary content is base64. Text results report encoding, line_ending, mtime_ms and sha256 (null above 64 MiB, with sha256_skipped_reason). edit_file requires exact old_string/new_string, with unique matching unless replace_all is true. Pass expected_sha256 to edit_file or write_file when you need protection against changes since your read. Existing encoding, BOM and newline style are preserved; unrepresentable characters are rejected. Never include read_file's line numbers in replacement text. write_file accepts at most 5 MiB (content_base64 writes raw bytes) and cannot overwrite files larger than 5 MiB.
 
 search uses Rust regex and supports path, glob, type, output_mode, -i, -n, -A/-B/-C, multiline, head_limit and offset. It defaults to files_with_matches. find_files uses glob patterns and sorts newest files first. Both respect .gitignore and do not follow links. Inspect truncated and narrow the search when a resource limit is reached.
 
@@ -558,6 +575,8 @@ impl Shared {
             approval: approval.into(),
             exit_code: value["exit_code"].as_i64().and_then(|v| v.try_into().ok()),
             duration_ms: 0,
+            forwarded_to: None,
+            forwarded_from: None,
         };
         sanitize_record(&mut record, &refs);
         drop(secrets);
@@ -576,7 +595,7 @@ impl Shared {
         }
         self.host.notify(HostEvent::Activity(record));
     }
-    fn complete(
+    pub(super) fn complete(
         &self,
         session: &Session,
         name: &str,
@@ -639,6 +658,8 @@ impl Shared {
                 .and_then(|v| v["exit_code"].as_i64())
                 .and_then(|v| i32::try_from(v).ok()),
             duration_ms: started.elapsed().as_millis().min(u64::MAX as u128) as u64,
+            forwarded_to: None,
+            forwarded_from: session.forwarded_from.get().cloned(),
         };
         let secrets = lock(&self.secrets);
         let secret_refs: Vec<&str> = secrets.iter().map(|secret| secret.as_str()).collect();
@@ -667,14 +688,10 @@ impl Shared {
         }
         let response = match result {
             Ok(mut value) => {
-                let image = if name == "read_file" {
-                    value.as_object_mut().and_then(|v| v.remove("image"))
-                } else {
-                    None
-                };
+                let images = take_images(name, &mut value);
                 hide_value(&mut value, &secret_refs);
                 let mut result = CallToolResult::structured(value);
-                if let Some(image) = image {
+                for image in images {
                     result.content.push(ContentBlock::image(
                         image["data"].as_str().unwrap_or_default(),
                         image["mimeType"].as_str().unwrap_or_default(),
@@ -683,44 +700,151 @@ impl Shared {
                 Ok(result)
             }
             Err(Failure::Params(error)) => Err(error),
-            Err(Failure::Tool(mut error)) => {
-                if matches!(
-                    error.code.as_str(),
-                    "ssh.password_needed" | "ssh.two_factor_required"
-                ) {
-                    error =
-                        error.with_reason("mcp.login_required", "需要在 Pierlink 里登录这台服务器");
-                } else if error.code == "ssh.host_key_rejected" {
-                    error = error.with_reason(
-                        "mcp.host_key_rejected",
-                        "用户拒绝了这台服务器的指纹，不要立即重试",
-                    );
-                } else if error.code == "terminal.shell_not_found" {
-                    error = error.with_reason("mcp.terminal_shell_not_found", "找不到终端 shell：请让用户在 Pierlink 里检查本机 shell 或服务器登录 shell 配置后重试");
-                } else if !error.params.contains_key("reason") {
-                    let code = error.code.clone();
-                    error = error
-                        .with_reason("mcp.operation_failed", format!("操作失败（{code}）"))
-                        .with("error_code", code);
-                }
-                let reason = error.params.get("reason").cloned().unwrap_or_default();
-                let mut params = error.params;
-                params.remove("action");
-                for text in params.values_mut() {
-                    *text = crate::security::redact(text, &secret_refs);
-                }
-                let mut value = serde_json::json!({"code":error.code,"params":params});
-                hide_value(&mut value, &secret_refs);
-                let mut result = CallToolResult::error(vec![ContentBlock::text(
-                    crate::security::redact(&reason, &secret_refs),
-                )]);
-                result.structured_content = Some(value);
-                Ok(result)
-            }
+            Err(Failure::Tool(error)) => Ok(error_result(error, &secret_refs)),
         };
         drop(secrets);
         self.record_activity(record);
         response
+    }
+
+    /// 工具错误换成给 AI 的结果（和本机执行出错时一样的格式，已遮蔽秘密）
+    pub(super) fn error_text(&self, error: AppError) -> CallToolResult {
+        let secrets = lock(&self.secrets);
+        let refs: Vec<&str> = secrets.iter().map(|secret| secret.as_str()).collect();
+        error_result(error, &refs)
+    }
+
+    /// 记下一次转给别的电脑执行的调用（以那台电脑自己的记录为准，这里只记转给了谁、结果怎样）
+    ///
+    /// :param session: 这次调用的会话
+    /// :param name: 工具名
+    /// :param args: AI 给的参数
+    /// :param response: 返回给 AI 的结果
+    /// :param computer: 执行的那台电脑的名字
+    /// :param started: 调用开始的时间
+    pub(super) fn record_forwarded(
+        &self,
+        session: &Session,
+        name: &str,
+        args: &rmcp::model::JsonObject,
+        response: &Result<CallToolResult, ErrorData>,
+        computer: &str,
+        started: Instant,
+    ) {
+        let info = session.snapshot();
+        let (outcome, exit_code) = match response {
+            Err(_) => ("mcp.invalid_params".to_owned(), None),
+            Ok(result) => {
+                let value = result.structured_content.clone().unwrap_or(Value::Null);
+                let outcome = if result.is_error == Some(true) {
+                    match value["code"].as_str().unwrap_or("mcp.operation_failed") {
+                        "mcp.connection_denied" | "mcp.action_denied" | "mcp.password_prompt" => {
+                            "denied".to_owned()
+                        }
+                        "mcp.cancelled" => "cancelled".to_owned(),
+                        code => code.to_owned(),
+                    }
+                } else if value["cancelled"] == true {
+                    "cancelled".to_owned()
+                } else {
+                    "ok".to_owned()
+                };
+                let exit_code = value["exit_code"]
+                    .as_i64()
+                    .and_then(|v| i32::try_from(v).ok());
+                (outcome, exit_code)
+            }
+        };
+        let mut record = AuditRecord {
+            output_preview: None,
+            time_ms: now_ms(),
+            session: info.id,
+            entry: info.entry,
+            client: info.client,
+            tool: name.into(),
+            target: tools::audit_target(args),
+            summary: tools::summary(name, args, false),
+            outcome,
+            approval: String::new(),
+            exit_code,
+            duration_ms: started.elapsed().as_millis().min(u64::MAX as u128) as u64,
+            forwarded_to: Some(computer.chars().take(128).collect()),
+            forwarded_from: None,
+        };
+        let secrets = lock(&self.secrets);
+        let refs: Vec<&str> = secrets.iter().map(|secret| secret.as_str()).collect();
+        sanitize_record(&mut record, &refs);
+        drop(secrets);
+        if name == "terminal_send" {
+            record.summary = record.summary.chars().take(200).collect();
+        } else {
+            bound(&mut record.summary, 2048);
+        }
+        bound(&mut record.client.name, 256);
+        bound(&mut record.client.version, 128);
+        bound(&mut record.tool, 128);
+        self.record_activity(record);
+    }
+}
+
+/// 工具错误换成给 AI 的结果：补上原因说明，去掉只给本机看的 action，遮蔽秘密
+fn error_result(mut error: AppError, secret_refs: &[&str]) -> CallToolResult {
+    if matches!(
+        error.code.as_str(),
+        "ssh.password_needed" | "ssh.two_factor_required"
+    ) {
+        error = error.with_reason("mcp.login_required", "需要在 Pierlink 里登录这台服务器");
+    } else if error.code == "ssh.host_key_rejected" {
+        error = error.with_reason(
+            "mcp.host_key_rejected",
+            "用户拒绝了这台服务器的指纹，不要立即重试",
+        );
+    } else if error.code == "terminal.shell_not_found" {
+        error = error.with_reason(
+            "mcp.terminal_shell_not_found",
+            "找不到终端 shell：请让用户在 Pierlink 里检查本机 shell 或服务器登录 shell 配置后重试",
+        );
+    } else if !error.params.contains_key("reason") {
+        let code = error.code.clone();
+        error = error
+            .with_reason("mcp.operation_failed", format!("操作失败（{code}）"))
+            .with("error_code", code);
+    }
+    let reason = error.params.get("reason").cloned().unwrap_or_default();
+    let mut params = error.params;
+    params.remove("action");
+    for text in params.values_mut() {
+        *text = crate::security::redact(text, secret_refs);
+    }
+    let mut value = serde_json::json!({"code":error.code,"params":params});
+    hide_value(&mut value, secret_refs);
+    let mut result = CallToolResult::error(vec![ContentBlock::text(crate::security::redact(
+        &reason,
+        secret_refs,
+    ))]);
+    result.structured_content = Some(value);
+    result
+}
+/// read_file、read_files 读到的图片：从结构化结果里拿出来，作为 MCP 图片内容按顺序返回；
+/// read_files 的那一项改成记图片是第几张（从 0 开始）
+fn take_images(name: &str, value: &mut Value) -> Vec<Value> {
+    match name {
+        "read_file" => value
+            .as_object_mut()
+            .and_then(|v| v.remove("image"))
+            .into_iter()
+            .collect(),
+        "read_files" => {
+            let mut images = Vec::new();
+            for item in value["files"].as_array_mut().into_iter().flatten() {
+                if let Some(image) = item.as_object_mut().and_then(|v| v.remove("image")) {
+                    item["image"] = serde_json::json!(images.len());
+                    images.push(image);
+                }
+            }
+            images
+        }
+        _ => Vec::new(),
     }
 }
 fn preview(value: &Value, secrets: &[&str]) -> Option<super::OutputPreview> {

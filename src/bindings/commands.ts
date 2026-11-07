@@ -45,6 +45,15 @@ export const commands = {
 	mcpConnectInfo: () => typedError<McpConnectInfoDto, AppError>(__TAURI_INVOKE("mcp_connect_info")),
 	/**  换一个服务器入口的令牌（旧令牌立即失效，服务器上的文件随后重写） */
 	mcpTokenRotate: (serverId: string) => typedError<null, AppError>(__TAURI_INVOKE("mcp_token_rotate", { serverId })),
+	/**  连着同一批服务器的电脑和生效的指定：到每个连着的入口的服务器上读伙伴文件 */
+	mcpComputers: () => typedError<McpComputersDto_Serialize, AppError>(__TAURI_INVOKE("mcp_computers")),
+	/**
+	 *  指定 AI 操作哪台电脑（instance 为 null 是取消指定、自动判断）：存进设置，重写服务器上这台的伙伴文件
+	 * 
+	 *  :param instance: 指定的电脑的实例号
+	 *  :param computer: 指定的电脑名（显示用）
+	 */
+	mcpSetPin: (instance: string | null, computer: string) => typedError<null, AppError>(__TAURI_INVOKE("mcp_set_pin", { instance, computer })),
 	/**  最近的操作记录（新的在前） */
 	mcpActivity: (limit: number) => typedError<McpActivityDto_Serialize[], AppError>(__TAURI_INVOKE("mcp_activity", { limit })),
 	/**  全部停止：取消正在进行的操作、断开所有 agent、关闭这次打开的 AI 终端 */
@@ -1901,6 +1910,10 @@ export type McpActivityDto_Deserialize = {
 	approval: string,
 	/**  命令输出的结尾（已脱敏，只在内存里）；没有输出的操作为 null */
 	output?: McpOutputPreviewDto | null,
+	/**  转给了哪台电脑执行（几台电脑同时接入时）；在这台执行的为 null */
+	forwardedTo?: string | null,
+	/**  哪台电脑转来的；AI 直接连这台的为 null */
+	forwardedFrom?: string | null,
 };
 
 /**  一次工具调用（已脱敏） */
@@ -1920,6 +1933,10 @@ export type McpActivityDto_Serialize = {
 	approval: string,
 	/**  命令输出的结尾（已脱敏，只在内存里）；没有输出的操作为 null */
 	output: McpOutputPreviewDto | null,
+	/**  转给了哪台电脑执行（几台电脑同时接入时）；在这台执行的为 null */
+	forwardedTo: string | null,
+	/**  哪台电脑转来的；AI 直接连这台的为 null */
+	forwardedFrom: string | null,
 };
 
 /**  用户对确认框的回答 */
@@ -1943,6 +1960,37 @@ export type McpCommandDto = {
 	/**  给谁用：claude / codex / json */
 	client: string,
 	text: string,
+};
+
+/**  连着同一批服务器的电脑（几台电脑同时接入时） */
+export type McpComputerDto = {
+	/**  实例号 */
+	instance: string,
+	/**  电脑名 */
+	name: string,
+};
+
+/**  几台电脑同时接入时的电脑列表和生效的指定 */
+export type McpComputersDto = McpComputersDto_Serialize | McpComputersDto_Deserialize;
+
+/**  几台电脑同时接入时的电脑列表和生效的指定 */
+export type McpComputersDto_Deserialize = {
+	/**  这台电脑的实例号 */
+	thisInstance: string,
+	/**  连着同一批服务器的电脑（含这台，这台在最前） */
+	computers: McpComputerDto[],
+	/**  用户指定 AI 操作的那台；没指定（自动判断）为 null */
+	pinned?: McpComputerDto | null,
+};
+
+/**  几台电脑同时接入时的电脑列表和生效的指定 */
+export type McpComputersDto_Serialize = {
+	/**  这台电脑的实例号 */
+	thisInstance: string,
+	/**  连着同一批服务器的电脑（含这台，这台在最前） */
+	computers: McpComputerDto[],
+	/**  用户指定 AI 操作的那台；没指定（自动判断）为 null */
+	pinned: McpComputerDto | null,
 };
 
 /**  请用户确认的内容 */
@@ -2007,6 +2055,8 @@ export type McpEntryStateDto_Deserialize = {
 	conflict?: McpPortConflictDto_Deserialize | null,
 	/**  最近一次自动重新添加的结果 */
 	readded?: McpReaddDto | null,
+	/**  另一台电脑占着设置的端口，这台换了一个端口接入（从属入口）；主入口为 null */
+	secondary?: McpSecondaryDto_Deserialize | null,
 };
 
 /**  一个服务器入口的运行状态 */
@@ -2023,6 +2073,8 @@ export type McpEntryStateDto_Serialize = {
 	conflict: McpPortConflictDto_Serialize | null,
 	/**  最近一次自动重新添加的结果 */
 	readded: McpReaddDto | null,
+	/**  另一台电脑占着设置的端口，这台换了一个端口接入（从属入口）；主入口为 null */
+	secondary: McpSecondaryDto_Serialize | null,
 };
 
 /**  界面回报的打开失败原因（后端错误原样带回来） */
@@ -2135,6 +2187,25 @@ export type McpRemoveDto = {
 	client: string,
 	/**  false 表示本来就没有添加过 */
 	removed: boolean,
+};
+
+/**  从属入口：经另一台电脑的主入口接入 */
+export type McpSecondaryDto = McpSecondaryDto_Serialize | McpSecondaryDto_Deserialize;
+
+/**  从属入口：经另一台电脑的主入口接入 */
+export type McpSecondaryDto_Deserialize = {
+	/**  占着设置端口的那台电脑（知道的话） */
+	via?: string | null,
+	/**  这台在服务器上实际监听的端口 */
+	port: number,
+};
+
+/**  从属入口：经另一台电脑的主入口接入 */
+export type McpSecondaryDto_Serialize = {
+	/**  占着设置端口的那台电脑（知道的话） */
+	via: string | null,
+	/**  这台在服务器上实际监听的端口 */
+	port: number,
 };
 
 export type McpServerConnectDto = {

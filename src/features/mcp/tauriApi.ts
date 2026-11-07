@@ -1,7 +1,7 @@
 import { listen } from "@tauri-apps/api/event";
 import { commands } from "../../bindings/commands";
 import { isAppError, type AppError } from "../../errors";
-import type { McpActivity, McpApi, McpClients, McpConfirm, McpConnectInfo, McpEntryState, McpNotice, McpOpenTerminal, McpSettings, McpStatus } from "./api";
+import type { McpActivity, McpApi, McpClients, McpComputers, McpConfirm, McpConnectInfo, McpEntryState, McpNotice, McpOpenTerminal, McpSettings, McpStatus } from "./api";
 
 /** 与 Rust 端 mcp/mod.rs 的事件名一致 */
 const SESSIONS_EVENT = "pierlink://mcp-sessions";
@@ -13,6 +13,7 @@ const NOTICE_EVENT = "pierlink://mcp-notice";
 const ENTRIES_EVENT = "pierlink://mcp-entries";
 const JOBS_EVENT = "pierlink://mcp-jobs";
 const SETTINGS_EVENT = "pierlink://mcp-settings";
+const PIN_EVENT = "pierlink://mcp-pin";
 
 /** tauri-specta 对可能失败的命令返回 {status, data|error}；这里统一转成“成功返回数据、失败抛出错误” */
 function unwrap<T>(r: { status: "ok"; data: T } | { status: "error"; error: unknown }): T {
@@ -65,4 +66,7 @@ export const tauriMcpApi: McpApi = {
   onOpenTerminal: (cb) => listen<McpOpenTerminal>(OPEN_TERMINAL_EVENT, (e) => cb(e.payload)),
   onNotice: (cb) => listen<McpNotice>(NOTICE_EVENT, (e) => cb(e.payload)),
   onEntries: (cb) => listen<McpEntryState[]>(ENTRIES_EVENT, (e) => cb(e.payload)),
+  computers: async () => unwrap(await commands.mcpComputers()) as McpComputers,
+  setPin: async (instance, computer) => { unwrap(await commands.mcpSetPin(instance, computer)); },
+  onPin: (cb) => listen(PIN_EVENT, () => cb()),
 };

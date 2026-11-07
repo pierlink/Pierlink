@@ -78,7 +78,7 @@ fn queued(conpty: bool, source: InputSource, entries: &[&[u8]]) -> Input {
     for data in entries {
         match source {
             InputSource::User => input.user.push_back(data.to_vec()),
-            InputSource::Automation => input.automation.push_back((data.to_vec(), None)),
+            InputSource::Automation => input.automation.push_back((data.to_vec(), None, true)),
         }
         input.bytes += data.len();
     }
@@ -90,7 +90,7 @@ fn record(
     max_write: usize,
     mut on_write: impl FnMut(&[u8], &Mutex<Input>),
 ) -> Vec<Vec<u8>> {
-    input.automation.push_back((STOP.to_vec(), None));
+    input.automation.push_back((STOP.to_vec(), None, true));
     input.bytes += STOP.len();
     let input = Mutex::new(input);
     let flow = Mutex::new(Flow::default());
@@ -330,4 +330,19 @@ fn 等回车期间终端应答先写出() {
     assert_eq!(writes, [b"ab".to_vec(), b"\x1b[I".to_vec(), b"\r".to_vec()]);
     assert!(times[1] - times[0] < SUBMIT_GAP / 2);
     assert!(times[2] - times[0] >= SUBMIT_GAP);
+}
+
+#[test]
+fn alt_enter_那段的_esc_和回车连着写_后面的回车照样隔开() {
+    let mut input = Input::new(false);
+    for (data, delay_enter) in [(b"ab\x1b\r".as_slice(), false), (b"\r", true)] {
+        input
+            .automation
+            .push_back((data.to_vec(), None, delay_enter));
+        input.bytes += data.len();
+    }
+    let mut times = Vec::new();
+    let writes = record(input, usize::MAX, |_, _| times.push(Instant::now()));
+    assert_eq!(writes, [b"ab\x1b\r".to_vec(), b"\r".to_vec()]);
+    assert!(times[1] - times[0] >= SUBMIT_GAP);
 }

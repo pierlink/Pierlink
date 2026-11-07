@@ -20,6 +20,8 @@
 .mcp-btn__pulse::after { inset: 1px; opacity: 0.5; animation: mcp-pulse 1.4s ease-out infinite; }
 @keyframes mcp-pulse { from { transform: scale(0.5); opacity: 0.6; } to { transform: scale(1.2); opacity: 0; } }
 @media (prefers-reduced-motion: reduce) { .mcp-btn__pulse::after { animation: none; opacity: 0.35; } }
+.mcp-pop__pinned { display: flex; align-items: center; gap: 6px; padding: 4px 8px; border-radius: var(--r-md); background: var(--chip); font-size: var(--fs-xs); }
+.mcp-pop__pinned > .pl-ellipsis { flex: 1; min-width: 0; }
 .mcp-pop__attention { display: flex; align-items: center; gap: 6px; padding: 6px 8px; border-radius: var(--r-md); background: color-mix(in srgb, var(--danger) 12%, transparent); color: var(--danger); font-size: var(--fs-xs); }
 .mcp-pop__act { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: var(--fs-xs); color: var(--text-muted); }
 .mcp-pop__act--bad { color: var(--danger); }
@@ -64,6 +66,8 @@
 .mcp-page__spacer { flex: 1; }
 /* 固定宽度：数量变化不挤动右边的按钮 */
 .mcp-page__sessions { min-width: 9em; text-align: right; font-size: var(--fs-sm); color: var(--text-muted); font-variant-numeric: tabular-nums; }
+/* 几台电脑同时接入时：AI 操作哪台电脑 */
+.mcp-page__pin { display: inline-flex; align-items: center; gap: 6px; font-size: var(--fs-sm); }
 .mcp-page__off { flex: 1; display: flex; flex-direction: column; align-items: flex-start; gap: 10px; padding: 24px; }
 .mcp-page__off p { margin: 0; max-width: 640px; }
 .mcp-page__ask { font-weight: 600; }
@@ -151,3 +155,6 @@
 /* 客户端配置里加好没有：加好了绿色，旧的黄色 */
 .mcp-oneclick .mcp-added--current { color: var(--ok); }
 .mcp-oneclick .mcp-added--stale { color: var(--warn); }
+
+/* 操作记录里“转给 X”“由 X 转来” */
+.mcp-table__via { margin-right: 6px; padding: 0 4px; border-radius: var(--r-sm); background: var(--accent-soft); color: var(--accent); font-family: inherit; }

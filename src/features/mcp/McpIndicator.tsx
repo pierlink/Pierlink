@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
-import { Bot, CircleAlert } from "lucide-react";
+import { Bot, CircleAlert, Pin } from "lucide-react";
 import { Button } from "../../components";
 import { getServersApi } from "../servers/api";
-import { getMcpApi, type McpActivity, type McpNotice, type McpSession } from "./api";
+import { getMcpApi, type McpActivity, type McpComputer, type McpNotice, type McpSession } from "./api";
 import "./mcp.css";
 
 /** 需要用户处理的提示（要登录、AI 终端在等密码） */
@@ -42,6 +42,31 @@ export function McpIndicator() {
   const pop = useRef<HTMLDivElement>(null);
   const namesRef = useRef(names);
   namesRef.current = names;
+  // 用户固定了 AI 操作的电脑（几台电脑同时接入时）：按钮一直显示，写明是哪台
+  const [running, setRunning] = useState(0);
+  const [pinned, setPinned] = useState<McpComputer | null>(null);
+  useEffect(() => {
+    if (!running) { setPinned(null); return; }
+    let alive = true;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    // 要到服务器上读：只有这一台电脑时十分钟查一次，有几台或固定了一台时每分钟查一次
+    const load = () => {
+      if (timer) clearTimeout(timer);
+      void getMcpApi().then((api) => api.computers()).then((c) => {
+        if (!alive) return;
+        setPinned(c.pinned);
+        timer = setTimeout(load, c.computers.length > 1 || c.pinned ? 60000 : 600000);
+      }, () => { if (alive) timer = setTimeout(load, 600000); });
+    };
+    load();
+    let off: (() => void) | null = null;
+    void getMcpApi().then((api) => api.onPin(load)).then((u) => { if (alive) off = u; else u(); });
+    return () => { alive = false; if (timer) clearTimeout(timer); off?.(); };
+  }, [running]);
+  const unpin = async () => {
+    setPinned(null);
+    try { await (await getMcpApi()).setPin(null, ""); } catch (e) { console.error(e); }
+  };
 
   const serverName = (id: string) => (id === "windows" ? t("mcp.targetWindows") : namesRef.current[id] ?? id);
   /** 连接从哪个入口来：本机入口写“这台电脑”，服务器入口写服务器名 */
@@ -55,7 +80,7 @@ export function McpIndicator() {
       const api = await getMcpApi();
       try {
         const s = await api.status();
-        if (alive) setSessions(s.sessions);
+        if (alive) { setSessions(s.sessions); setRunning(s.entries.filter((e) => e.state === "running").length); }
       } catch { /* 后端还没准备好：下次事件再取 */ }
     };
     // 一连串调用会连着发事件：合并成一次读取
@@ -123,7 +148,7 @@ export function McpIndicator() {
     return () => clearInterval(t);
   }, [anyBusy]);
 
-  if (!sessions.length && !attention.length && !recent && !open) return null;
+  if (!sessions.length && !attention.length && !recent && !open && !pinned) return null;
 
   const stopAll = async () => {
     setStopping(true);
@@ -139,9 +164,13 @@ export function McpIndicator() {
   const time = (ms: number) => new Date(ms).toLocaleTimeString();
   const busy = sessions.some((s) => s.busy);
   // 状态直接写在按钮上：正在操作 / 已连接（最近有操作也算）/ 只有要处理的提示
+  // 固定了电脑时状态文字不变（标题栏不挪），只加一个图钉；没有别的状态可说时才写“AI 固定操作 · X”
   const label = busy ? t("mcp.indicatorBusy")
     : sessions.length || recent ? t("mcp.indicatorConnected")
-      : t("mcp.indicatorAttention");
+      : attention.length ? t("mcp.indicatorAttention")
+        : pinned ? t("mcp.indicatorPinned", { computer: pinned.name })
+          : t("mcp.indicatorAttention");
+  const pinText = pinned ? t("mcp.indicatorPinned", { computer: pinned.name }) : null;
 
   return (
     <>
@@ -152,11 +181,12 @@ export function McpIndicator() {
         aria-expanded={open}
         aria-haspopup="dialog"
         aria-label={label}
-        title={t("mcp.indicatorHint")}
+        title={pinText ? `${pinText}\n${t("mcp.indicatorHint")}` : t("mcp.indicatorHint")}
         onClick={() => { setOpen(!open); if (!open) setAttention([]); }}
       >
         {busy ? <span className="mcp-btn__pulse" aria-hidden="true" /> : <Bot size={14} />}
         <span className="xfer-btn__text">{label}</span>
+        {pinned && (sessions.length > 0 || recent || attention.length > 0) && <Pin size={12} aria-hidden="true" />}
         {attention.length > 0 && <span className="xfer-btn__dot" aria-hidden="true" />}
       </button>
       {open && r && createPortal(
@@ -168,6 +198,12 @@ export function McpIndicator() {
           </div>
           <div className="mcp-pop__body" data-pl-tip-hold="">
             <div className="mcp-pop__hint">{t("mcp.popHint")}</div>
+            {pinned && (
+              <div className="mcp-pop__pinned">
+                <span className="pl-ellipsis">{t("mcp.indicatorPinned", { computer: pinned.name })}</span>
+                <Button size="sm" variant="ghost" onClick={() => void unpin()}>{t("mcp.pinCancel")}</Button>
+              </div>
+            )}
             {attention.map((a) => <div key={a.key} className="mcp-pop__attention"><CircleAlert size={13} />{a.text}</div>)}
             <div className="mcp-pop__section">{t("mcp.sessions")}</div>
             {sessions.length === 0
@@ -192,7 +228,7 @@ export function McpIndicator() {
                   onKeyDown={out ? (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setOpenAct(openAct === key ? null : key); } } : undefined}>
                   <span className="mcp-pop__time">{time(a.timeMs)}</span>
                   <span className="mcp-pop__tool mono">{a.tool}</span>
-                  <span className="pl-ellipsis">{a.target ? `${serverName(a.target)}: ` : ""}{a.summary}</span>
+                  <span className="pl-ellipsis">{a.forwardedTo ? `${t("mcp.forwardedTo", { computer: a.forwardedTo })} ` : ""}{a.target ? `${serverName(a.target)}: ` : ""}{a.summary}</span>
                   {a.outcome === "ok" && (a.approval === "session" || a.approval === "auto") && <span className="mcp-pop__outcome mcp-pop__outcome--auto" title={t(`mcp.approvedBy.${a.approval}`)}>{t(`mcp.approvedBy.${a.approval}`)}</span>}
                   {a.outcome !== "ok" && <span className="mcp-pop__outcome" title={a.outcome}>{a.outcome === "denied" || a.outcome === "cancelled" ? t(`mcp.outcome.${a.outcome}`) : t("mcp.outcome.failed")}</span>}
                 </div>

@@ -132,7 +132,7 @@ export interface DesktopApi {
   savedPassword(serverId: string, key: string): Promise<string | null>;
   savePassword(serverId: string, key: string, password: string): Promise<void>;
   forgetPassword(serverId: string, key: string): Promise<void>;
-  /** 远程画面有焦点时打开：Ctrl+空格（Windows 的切换输入法键）交给远程；onSpace 收到截住的空格（true 按下） */
+  /** 远程画面有焦点时打开：Ctrl+空格（Windows 的切换输入法键）交给远程；onCtrlSpace 收到截住的空格（true 按下） */
   captureCtrlSpace(enabled: boolean): Promise<void>;
   onCtrlSpace(cb: (down: boolean) => void): Promise<() => void>;
   /** 新建 Pierlink 桌面；onProgress 报获取和启动的进度 */

@@ -51,6 +51,43 @@ pub(super) fn lines(
     result["mtime_ms"] = json!(files::mtime(&metadata));
     Ok(result)
 }
+/// read_files 这次读到的图片加起来最多多少字节（超过的那张请用 read_file 单独读）
+pub(super) const IMAGE_BUDGET: usize = 8 * 1024 * 1024;
+
+/// read_files 里的一个文件：和 read_file 默认的读法一样（小图片返回图片内容，其他按行读，二进制按字节读）。
+/// budget 是这次还能返回的图片字节数，读到图片时扣掉。
+///
+/// :param sb: 授权文件夹
+/// :param path: 文件路径（Windows 绝对路径）
+/// :param limit: 最多读多少行
+/// :param budget: 剩下的图片额度
+/// :param cancelled: 取消标志
+/// :return: 和 read_file 一样的结果；图片超过剩下的额度时返回 mcp.file_too_large
+pub(super) fn listed(
+    sb: &Sandbox,
+    path: &str,
+    limit: u64,
+    budget: &mut usize,
+    cancelled: &AtomicBool,
+) -> Result<Value, AppError> {
+    if let Some(image) = files::read_image(sb, path, cancelled)? {
+        let size = image["size"]
+            .as_u64()
+            .and_then(|size| usize::try_from(size).ok())
+            .unwrap_or(usize::MAX);
+        if size > *budget {
+            return Err(AppError::new("mcp.file_too_large")
+                .with("max_bytes", IMAGE_BUDGET)
+                .with_reason(
+                    "mcp.images_exceed_the_read_files_budget",
+                    "这次读的图片加起来超过 8 MiB，这张请用 read_file 单独读",
+                ));
+        }
+        *budget -= size;
+        return Ok(image);
+    }
+    lines(sb, path, 1, limit, cancelled)
+}
 fn scan(
     reader: &mut impl Read,
     path: &Path,
@@ -250,6 +287,32 @@ impl Lines {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn 多文件读取每项和_read_file_一样_图片扣额度() {
+        let root = crate::test_support::tempdir();
+        let sb = Sandbox::new(&[root.path().into()]);
+        let text = root.path().join("a.txt");
+        std::fs::write(&text, "一\n二\n三\n").unwrap();
+        let image = root.path().join("b.png");
+        std::fs::write(&image, b"\x89PNG\r\n\x1a\n0123456789").unwrap();
+        let cancelled = AtomicBool::new(false);
+        let mut budget = 30;
+        let read = listed(&sb, text.to_str().unwrap(), 2, &mut budget, &cancelled).unwrap();
+        assert_eq!(read["content"], "     1\t一\n     2\t二\n");
+        assert_eq!(read["truncated"], true);
+        let first = listed(&sb, image.to_str().unwrap(), 2000, &mut budget, &cancelled).unwrap();
+        assert_eq!(first["size"], 18);
+        assert_eq!(budget, 12);
+        // 额度不够：这张不返回
+        let error =
+            listed(&sb, image.to_str().unwrap(), 2000, &mut budget, &cancelled).unwrap_err();
+        assert_eq!(error.code, "mcp.file_too_large");
+        assert_eq!(
+            error.params["reason_key"],
+            "mcp.images_exceed_the_read_files_budget"
+        );
+        assert_eq!(budget, 12);
+    }
     #[test]
     fn 单次扫描支持末尾编码回退与读取中取消() {
         struct OnceReader<'a> {

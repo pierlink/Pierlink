@@ -120,9 +120,26 @@ impl FilesState {
     }
 }
 
-/// 生成终端目录标记：32 个十六进制字符
+/// 终端名牌的前缀：这台电脑的编号（MCP 实例号的前 8 个字母数字，AI 接入启动时设；没设时不带前缀）。
+/// 几台电脑同时接入同一台服务器时，服务器上看到名牌就知道终端是哪台电脑开的。
+static MARKER_PREFIX: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// 设置终端名牌的前缀（只在启动时设一次）
+///
+/// :param instance: 这台电脑的 MCP 实例号
+pub fn set_marker_prefix(instance: &str) {
+    if let Some(prefix) = pierlink_core::mcp::peers::short_id(instance) {
+        let _ = MARKER_PREFIX.set(prefix);
+    }
+}
+
+/// 新的终端名牌（目录标记）：`<电脑编号 8 位>-<随机 32 位十六进制>`（编号没设时只有随机部分）
 pub fn new_marker() -> String {
-    uuid::Uuid::new_v4().simple().to_string()
+    let random = uuid::Uuid::new_v4().simple().to_string();
+    match MARKER_PREFIX.get() {
+        Some(prefix) => format!("{prefix}-{random}"),
+        None => random,
+    }
 }
 
 /// 远程机器 → ssh 目标和公共选项（已保存服务器用它的密钥、保存的密码）

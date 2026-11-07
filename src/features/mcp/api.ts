@@ -57,6 +57,32 @@ export interface McpEntryState {
   conflict: McpPortConflict | null;
   /** 换令牌或端口后自动重新添加的结果（最近一次） */
   readded: McpReadd | null;
+  /** 另一台电脑占着设置的端口，这台换了一个端口接入（从属入口）；主入口为 null */
+  secondary?: McpSecondary | null;
+}
+
+/** 从属入口：经另一台电脑的主入口接入 */
+export interface McpSecondary {
+  /** 占着设置端口的那台电脑（知道的话） */
+  via: string | null;
+  /** 这台在服务器上实际监听的端口 */
+  port: number;
+}
+
+/** 连着同一批服务器的一台电脑 */
+export interface McpComputer {
+  instance: string;
+  name: string;
+}
+
+/** 几台电脑同时接入时的电脑列表和生效的指定 */
+export interface McpComputers {
+  /** 这台电脑的实例号 */
+  thisInstance: string;
+  /** 连着同一批服务器的电脑（含这台，这台在最前） */
+  computers: McpComputer[];
+  /** 用户指定 AI 操作的那台；没指定（自动判断）为 null */
+  pinned: McpComputer | null;
 }
 
 /** 服务器上的端口被谁占着 */
@@ -117,6 +143,10 @@ export interface McpActivity {
   approval: string;
   /** 命令输出的结尾（已脱敏，只在内存里）；没有输出的操作为 null */
   output?: { stdout: string; stderr: string } | null;
+  /** 转给了哪台电脑执行（几台电脑同时接入时） */
+  forwardedTo?: string | null;
+  /** 哪台电脑转来的 */
+  forwardedFrom?: string | null;
 }
 
 /** 请用户确认的内容 */
@@ -220,6 +250,12 @@ export interface McpApi {
   onEntries(cb: (entries: McpEntryState[]) => void): Promise<() => void>;
   /** 后台任务有变化（开始、结束、被停掉） */
   onJobs(cb: () => void): Promise<() => void>;
+  /** 连着同一批服务器的电脑和生效的指定（要到各服务器上读，稍慢） */
+  computers(): Promise<McpComputers>;
+  /** 指定 AI 操作哪台电脑；instance 为 null 是取消指定（自动判断） */
+  setPin(instance: string | null, computer: string): Promise<void>;
+  /** 这台电脑上改了指定 */
+  onPin(cb: () => void): Promise<() => void>;
 }
 
 /** 默认设置（和 Rust 端一致）：全部关闭，本机入口默认允许执行命令 */
@@ -274,6 +310,9 @@ function previewApi(): McpApi {
     }, 500);
   }
   const noop = async () => () => {};
+  // 预览：两台电脑，可以指定
+  let pinned: McpComputer | null = null;
+  const pins = new Set<() => void>();
   return {
     getSettings: async () => settings,
     setSettings: async (s) => { settings = s; return s; },
@@ -283,7 +322,7 @@ function previewApi(): McpApi {
         { id: "a", entry: "windows", client: "Claude Code 2.1", busy: false, lastActiveMs: Date.now() - 180_000 },
         { id: "c", entry: "s1", client: "Claude Code 2.1", busy: true, lastActiveMs: Date.now() },
       ] : [],
-      entries: sample ? [{ serverId: "s1", state: "running", port: 47821, error: null, fileWritten: true, conflict: null, readded: null }] : [],
+      entries: sample ? [{ serverId: "s1", state: "running", port: 47821, error: null, fileWritten: true, conflict: null, readded: null, secondary: null }] : [],
     }),
     connectInfo: async () => ({
       windows: [
@@ -326,6 +365,13 @@ function previewApi(): McpApi {
     onNotice: noop,
     onEntries: noop,
     onJobs: noop,
+    computers: async () => ({
+      thisInstance: "a",
+      computers: sample ? [{ instance: "a", name: "OFFICE-PC" }, { instance: "b", name: "HOME-PC" }] : [{ instance: "a", name: "OFFICE-PC" }],
+      pinned,
+    }),
+    setPin: async (instance, computer) => { pinned = instance ? { instance, name: computer } : null; for (const cb of pins) cb(); },
+    onPin: async (cb) => { pins.add(cb); return () => { pins.delete(cb); }; },
   };
 }
 

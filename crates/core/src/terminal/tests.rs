@@ -925,19 +925,19 @@ fn 用户每次非空输入改变代数且审批过期时不入队() {
     assert_eq!(manager.control_generation(&id).unwrap(), 2);
     assert_eq!(
         manager
-            .write_automation_at_generation(&id, b"\r", 1)
+            .write_automation_parts(&id, &[(b"\r".to_vec(), true)], Some(1))
             .unwrap_err()
             .code,
         "terminal.input_changed"
     );
     manager
-        .write_automation_at_generation(&id, b"queued", 2)
+        .write_automation_parts(&id, &[(b"queued".to_vec(), true)], Some(2))
         .unwrap();
     manager.set_user_control(&id, true).unwrap();
     assert_eq!(manager.control_generation(&id).unwrap(), 3);
     assert_eq!(
         manager
-            .write_automation_at_generation(&id, b"queued", 3)
+            .write_automation_parts(&id, &[(b"queued".to_vec(), true)], Some(3))
             .unwrap_err()
             .code,
         "terminal.automation_rejected"

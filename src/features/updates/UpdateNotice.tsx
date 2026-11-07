@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Download } from "lucide-react";
-import { Button, Dialog, Notice } from "../../components";
+import { Button, Dialog, Notice, useAnyDialogOpen } from "../../components";
 import { formatError, isAppError } from "../../errors";
 import { useSettings } from "../settings/store";
 import { getUpdatesApi, type UpdateInfo, type UpdateProgress } from "./api";
@@ -36,6 +36,8 @@ export function UpdateNotice() {
   const [askInstall, setAskInstall] = useState(false);
   /** 点了“安装更新”：Pierlink 马上关闭 */
   const [installing, setInstalling] = useState(false);
+  // 有对话框开着（包括这里的更新说明）时提示条先不显示：它浮在最上层，会压住对话框
+  const dialogOpen = useAnyDialogOpen();
 
   useEffect(() => {
     showUpdate = (u) => { setUpdate(u); setDismissed(false); };
@@ -92,8 +94,12 @@ export function UpdateNotice() {
   // 下载好的就是提示条上的这个版本（这次下的，或者检查时后端说之前已经下好了）
   const downloaded = ready === update.version || (update.downloaded && ready === null);
   const pct = progress?.total ? Math.min(100, Math.round((progress.downloaded / progress.total) * 100)) : null;
+  const action = downloaded
+    ? <Button size="sm" variant="primary" disabled={installing} onClick={() => { setNotesOpen(false); install(); }}>{t("updates.installNow")}</Button>
+    : <Button size="sm" variant="primary" disabled={progress !== null} onClick={() => { setNotesOpen(false); download(); }}>{t("updates.download")}</Button>;
   return (
     <>
+      {!dialogOpen && (
       <Notice order={2}>
       <div className="upd-banner" role="status">
         <Download size={16} aria-hidden />
@@ -102,15 +108,16 @@ export function UpdateNotice() {
           <span>{t("updates.availableHint", { current: update.currentVersion })}</span>
         </span>
         {update.notes && <Button size="sm" variant="ghost" onClick={() => setNotesOpen(true)}>{t("updates.notes")}</Button>}
-        {downloaded
-          ? <Button size="sm" variant="primary" disabled={installing} onClick={install}>{t("updates.installNow")}</Button>
-          : <Button size="sm" variant="primary" disabled={progress !== null} onClick={download}>{t("updates.download")}</Button>}
+        {action}
         <Button size="sm" variant="ghost" onClick={() => setDismissed(true)}>{t("updates.later")}</Button>
       </div>
       </Notice>
+      )}
       {notesOpen && (
-        <Dialog title={t("updates.notesTitle", { version: update.version })} onDismiss={() => setNotesOpen(false)} actions={<Button onClick={() => setNotesOpen(false)}>{t("common.close")}</Button>}>
-          <pre className="upd-notes">{pickNotes(update.notes ?? "", i18n.language)}</pre>
+        <Dialog size="lg" title={t("updates.notesTitle", { version: update.version })} onDismiss={() => setNotesOpen(false)}
+          actions={<><Button onClick={() => setNotesOpen(false)}>{t("common.close")}</Button>{action}</>}>
+          {/* 能选中、复制；打开时焦点在这里，方向键、PageDown 可以翻 */}
+          <pre className="upd-notes" tabIndex={0}>{pickNotes(update.notes ?? "", i18n.language)}</pre>
         </Dialog>
       )}
       {(progress || error || installing || (askInstall && downloaded)) && (

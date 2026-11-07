@@ -42,7 +42,11 @@ fn invalid_url(text_key: &'static str, reason: &str) -> AppError {
     AppError::new("link.invalid_url").with_reason(text_key, reason)
 }
 
-fn validate_url(url: &str) -> Result<&str, AppError> {
+/// 检查 url 能不能交给浏览器：最多 8192 字节、带主机名的 http 或 https 网址，没有空白、控制字符和双引号。
+///
+/// :param url: 网址
+/// :return: 原样返回网址；不合格时返回 link.invalid_url
+pub(crate) fn validate_url(url: &str) -> Result<&str, AppError> {
     if url.len() > URL_LIMIT {
         return Err(invalid_url(
             "links.url_exceeds_8192_bytes",

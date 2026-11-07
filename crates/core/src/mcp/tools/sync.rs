@@ -285,6 +285,12 @@ mod tests {
         ) -> Result<String, AppError> {
             unreachable!()
         }
+        fn open_sftp(&self, _: &str) -> Result<crate::sftp::SftpSession, AppError> {
+            unreachable!()
+        }
+        fn upload_image(&self, _: &str, _: &[u8], _: &str) -> Result<String, AppError> {
+            unreachable!()
+        }
         fn notify(&self, _: HostEvent) {}
     }
     #[test]

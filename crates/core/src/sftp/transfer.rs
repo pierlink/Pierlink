@@ -886,6 +886,121 @@ fn with_report(error: AppError, report: &TransferReport) -> AppError {
         Err(_) => error,
     }
 }
+/// 把本机普通文件 local 传到服务器上的 remote（完整路径，不是目录）：先写同目录的 .pierlink-part 再改名，
+/// 保留修改时间（本机是 Unix 时也保留权限）；失败或取消时删掉临时文件。不跟随链接。
+///
+/// :param session: SFTP 会话
+/// :param local: 本机文件
+/// :param remote: 服务器上的完整路径，父目录要已经存在
+/// :param overwrite: 为假时目标已存在返回 transfer.exists；为真时只覆盖普通文件
+/// :param progress: 收到累计字节数
+/// :param cancel: 取消标志
+/// :return: 传了多少字节
+pub fn upload_file(
+    session: &mut SftpSession,
+    local: &Path,
+    remote: &str,
+    overwrite: bool,
+    progress: &mut dyn FnMut(u64),
+    cancel: &AtomicBool,
+) -> Result<u64, AppError> {
+    cancelled(cancel)?;
+    component(remote.rsplit('/').next().unwrap_or(""))?;
+    let meta = fs::symlink_metadata(local)
+        .map_err(|e| fs_local::error(e, "sftp.scan_upload_source", "扫描上传来源", local))?;
+    if !meta.is_file() {
+        return Err(failure(
+            "sftp.upload_source_became_a_symbolic_link_or_special_file",
+            "上传来源已变成符号链接或特殊文件",
+        )
+        .with("path", local.display()));
+    }
+    check_existing(session.stat(remote)?.map(|e| e.kind), remote, overwrite)?;
+    #[cfg(unix)]
+    let mode = {
+        use std::os::unix::fs::PermissionsExt;
+        meta.permissions().mode() & 0o777
+    };
+    #[cfg(not(unix))]
+    let mode = 0o644;
+    let mtime = fs_local::unix_seconds(meta.modified().map_err(|e| {
+        fs_local::error(
+            e,
+            "sftp.read_upload_modification_time",
+            "读取上传修改时间",
+            local,
+        )
+    })?);
+    let item = PlannedEntry {
+        local: local.into(),
+        remote: remote.into(),
+        kind: EntryKind::File,
+        size: meta.len(),
+        mtime,
+        mode,
+    };
+    remote_part(session, &item, overwrite, progress, cancel).map(|(bytes, _)| bytes)
+}
+
+/// 把服务器上的普通文件 remote 下载到本机 local（完整路径）：先写同目录的 .pierlink-part 再改名，保留修改时间；
+/// 失败或取消时删掉临时文件。服务器上的链接不跟随。
+///
+/// :param session: SFTP 会话
+/// :param remote: 服务器上的文件
+/// :param local: 本机完整路径，父目录要已经存在
+/// :param overwrite: 为假时目标已存在返回 transfer.exists；为真时只覆盖普通文件
+/// :param progress: 收到累计字节数
+/// :param cancel: 取消标志
+/// :return: 传了多少字节
+pub fn download_file(
+    session: &mut SftpSession,
+    remote: &str,
+    local: &Path,
+    overwrite: bool,
+    progress: &mut dyn FnMut(u64),
+    cancel: &AtomicBool,
+) -> Result<u64, AppError> {
+    cancelled(cancel)?;
+    let entry = session
+        .stat(remote)?
+        .ok_or_else(|| AppError::new("sftp.not_found").with("path", remote))?;
+    if entry.kind != EntryKind::File {
+        return Err(failure(
+            "sftp.only_regular_files_can_be_transferred",
+            "只能传普通文件，不跟随链接",
+        )
+        .with("path", remote));
+    }
+    check_existing(
+        local_metadata(local)?.map(|m| fs_local::kind(&m)),
+        &local.display().to_string(),
+        overwrite,
+    )?;
+    let item = PlannedEntry {
+        local: local.into(),
+        remote: remote.into(),
+        kind: EntryKind::File,
+        size: entry.size,
+        mtime: entry.mtime,
+        mode: entry.mode,
+    };
+    local_part(session, &item, overwrite, progress, cancel)
+}
+
+/// 单个文件的目标现在的样子：不存在可以；存在时要 overwrite，而且是普通文件
+fn check_existing(kind: Option<EntryKind>, path: &str, overwrite: bool) -> Result<(), AppError> {
+    match kind {
+        None => Ok(()),
+        Some(_) if !overwrite => Err(AppError::new("transfer.exists").with("path", path)),
+        Some(EntryKind::File) => Ok(()),
+        Some(_) => Err(failure(
+            "sftp.source_and_destination_types_conflict_destination_was_preserved",
+            "来源与目标类型冲突，保留目标不作替换",
+        )
+        .with("path", path)),
+    }
+}
+
 /// 按 conflict 上传 sources 到 remote_dir；先列顶层冲突，progress 回调累计量，cancel 可取消；文件级失败写入报告。
 pub fn upload(
     session: &mut SftpSession,

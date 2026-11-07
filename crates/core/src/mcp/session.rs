@@ -25,6 +25,8 @@ pub(super) struct Session {
     /// 操作审批的“这次连接不再问”；HTTP 同一代令牌共用，本机连接各自独立
     pub actions_allowed: Arc<AtomicBool>,
     opened: Mutex<bool>,
+    /// 别的电脑转来的调用所在的会话：发起那台电脑的名字（操作记录里显示“由 X 转来”）
+    pub forwarded_from: std::sync::OnceLock<String>,
 }
 impl Session {
     pub(super) fn new(entry: Entry, accepted: bool) -> Self {
@@ -53,6 +55,7 @@ impl Session {
             confirmation,
             actions_allowed,
             opened: Mutex::new(false),
+            forwarded_from: std::sync::OnceLock::new(),
         }
     }
     pub(super) fn snapshot(&self) -> SessionInfo {
@@ -169,6 +172,14 @@ impl Session {
                 .with_reason("mcp.the_user_denied_this_connection", "用户拒绝了这个连接"));
         }
         Ok(())
+    }
+    /// 这个连接（这一代令牌）已经确认过（允许或拒绝）；还在等确认、没问过时为 false
+    pub(super) fn connection_decided(&self) -> bool {
+        match self.confirmation.try_lock() {
+            Ok(decision) => decision.is_some(),
+            Err(TryLockError::Poisoned(error)) => error.into_inner().is_some(),
+            Err(TryLockError::WouldBlock) => false,
+        }
     }
     pub(super) fn call_flag(&self) -> Arc<AtomicBool> {
         let mut calls = lock(&self.calls);

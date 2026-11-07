@@ -298,6 +298,8 @@ mod tests {
             approval: "user".into(),
             exit_code: Some(0),
             duration_ms: 1,
+            forwarded_to: None,
+            forwarded_from: None,
         };
         audit.record(&record);
         let path = audit

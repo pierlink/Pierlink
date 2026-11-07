@@ -107,6 +107,8 @@ impl Default for Flow {
 }
 struct Session {
     hooked: bool,
+    /// 本机终端启动的程序（PowerShell、cmd、wsl.exe 等）；服务器终端为 None
+    local_program: Option<PathBuf>,
     flow: Mutex<Flow>,
     wake: Condvar,
     master: Mutex<(Option<MasterHandle>, u16, u16)>,
@@ -168,6 +170,7 @@ impl TerminalManager {
             drop(stderr);
             let session = Arc::new(Session {
                 hooked,
+                local_program: None,
                 flow: Mutex::new(Flow::default()),
                 wake: Condvar::new(),
                 master: Mutex::new((None, spec.cols, spec.rows)),
@@ -220,6 +223,10 @@ impl TerminalManager {
             .take_writer()
             .map_err(|_| error("spawn_failed", "terminal.open_input", "打开输入"))?;
         let hooked = matches!(&spec.kind, TerminalKind::Remote { command, .. } if command.hooked);
+        let local_program = match &spec.kind {
+            TerminalKind::Local { program, .. } => Some(program.clone()),
+            _ => None,
+        };
         let mut process = child::spawn(spec.kind, &pair)?;
         let registration = process.askpass.clone();
         let log = process.log.take();
@@ -227,6 +234,7 @@ impl TerminalManager {
         drop(pair.slave);
         let session = Arc::new(Session {
             hooked,
+            local_program,
             flow: Mutex::new(Flow::default()),
             wake: Condvar::new(),
             master: Mutex::new((Some(pair.master), spec.cols, spec.rows)),
@@ -358,6 +366,11 @@ impl TerminalManager {
             master.2 = rows;
         }
         Ok(())
+    }
+    /// 返回 id 是本机终端时启动的程序（PowerShell、cmd、wsl.exe 等的路径），服务器终端返回 None；
+    /// 不存在的 id 返回 terminal.not_found。
+    pub fn local_program(&self, id: &str) -> Result<Option<PathBuf>, AppError> {
+        Ok(self.get(id)?.local_program.clone())
     }
     /// 查询 id 的本机 shell 是否有直接子进程；远程终端、进程已结束或系统查询失败返回 None。
     /// 不存在的 id 返回 terminal.not_found；Windows 忽略控制台宿主并校验子进程创建时间。

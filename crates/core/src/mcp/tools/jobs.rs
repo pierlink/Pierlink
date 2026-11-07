@@ -463,6 +463,7 @@ mod tests {
                 online: None,
                 engine: None,
                 address: None,
+                key: None,
             },
             cwd: None,
             shell: "sh".into(),

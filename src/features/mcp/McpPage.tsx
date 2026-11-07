@@ -4,7 +4,7 @@ import { Check, Monitor, Plus, Server, Trash2 } from "lucide-react";
 import { Banner, Button, Checkbox, Dialog, Notice, Segmented, Select, Switch } from "../../components";
 import { formatError } from "../../errors";
 import { getServersApi, type ServerRecord } from "../servers/api";
-import { defaultServerEntry, getMcpApi, type EntrySettings, type McpActivity, type McpAdded, type McpClients, type McpConnectInfo, type McpEntryState, type McpJob, type McpReadd, type McpSession, type McpSettings, type McpStatus } from "./api";
+import { defaultServerEntry, getMcpApi, type EntrySettings, type McpActivity, type McpAdded, type McpClients, type McpComputers, type McpConnectInfo, type McpEntryState, type McpJob, type McpReadd, type McpSession, type McpSettings, type McpStatus } from "./api";
 import { agoText } from "./McpIndicator";
 import { CommandLine, EntryPermissions, PortInput } from "./McpParts";
 import "./mcp.css";
@@ -51,6 +51,30 @@ export function McpPage() {
   const [adding, setAdding] = useState<string[] | null>(null);
   const [stopping, setStopping] = useState(false);
   const saving = useRef(Promise.resolve());
+  // 几台电脑同时接入时的电脑列表和指定（要到服务器上读：连着的入口变了、改了指定、每分钟各读一次）
+  const [computers, setComputers] = useState<McpComputers | null>(null);
+  const running = (status?.entries ?? []).filter((e) => e.state === "running").length;
+  useEffect(() => {
+    if (!running) { setComputers(null); return; }
+    let alive = true;
+    const load = () => void getMcpApi().then((api) => api.computers()).then((c) => { if (alive) setComputers(c); }, () => {});
+    load();
+    const timer = setInterval(load, 60000);
+    let off: (() => void) | null = null;
+    void getMcpApi().then((api) => api.onPin(load)).then((u) => { if (alive) off = u; else u(); });
+    return () => { alive = false; clearInterval(timer); off?.(); };
+  }, [running]);
+  const setPin = async (instance: string) => {
+    const target = computers?.computers.find((c) => c.instance === instance) ?? null;
+    setComputers((c) => (c ? { ...c, pinned: target } : c));
+    try {
+      await (await getMcpApi()).setPin(target?.instance ?? null, target?.name ?? "");
+    } catch (e) {
+      setError(formatError(e));
+      // 没改成：按后端的重新显示
+      void getMcpApi().then((api) => api.computers()).then(setComputers, () => {});
+    }
+  };
 
   useEffect(() => {
     let alive = true;
@@ -131,6 +155,17 @@ export function McpPage() {
           { value: "activity", label: t("mcp.tabActivity") },
         ]} />
         <span className="mcp-page__spacer" />
+        {/* 几台电脑连着同一批服务器时才出现：AI 的操作默认去你正在用的那台，也可以固定一台 */}
+        {computers && (computers.computers.length > 1 || computers.pinned) && (
+          <span className="mcp-page__pin">
+            <span className="sync-muted">{t("mcp.pinLabel")}</span>
+            <Select label={t("mcp.pinLabel")} value={computers.pinned?.instance ?? ""} onChange={(v) => void setPin(v)} options={[
+              { value: "", label: t("mcp.pinAuto") },
+              ...computers.computers.map((c) => ({ value: c.instance, label: c.instance === computers.thisInstance ? t("mcp.pinThis", { name: c.name }) : c.name })),
+              ...(computers.pinned && !computers.computers.some((c) => c.instance === computers.pinned?.instance) ? [{ value: computers.pinned.instance, label: computers.pinned.name }] : []),
+            ]} />
+          </span>
+        )}
         {/* 状态文字和“全部停止”占固定位置：状态变化、按钮出现消失都不挤动别的内容 */}
         <span className="mcp-page__sessions">{sessions.some((s) => s.busy) ? t("mcp.indicatorBusy") : sessions.length ? t("mcp.indicatorConnected") : ""}</span>
         {/* 没有连着的 AI 也能点：后台任务、记住的拒绝都靠它清掉 */}
@@ -167,7 +202,8 @@ export function McpPage() {
                 key={s.serverId}
                 icon={<Server size={15} />}
                 name={serverName(s.serverId)}
-                sub={`127.0.0.1:${s.port}`}
+                sub={`127.0.0.1:${entryState(s.serverId)?.secondary?.port ?? s.port}`}
+                note={s.entry.enabled && entryState(s.serverId)?.state === "running" ? secondaryText(t, entryState(s.serverId)) : null}
                 on={s.entry.enabled}
                 state={s.entry.enabled ? entryState(s.serverId)?.state ?? "connecting" : "stopped"}
                 sessions={sessionsOf(s.serverId)}
@@ -225,9 +261,9 @@ export function McpPage() {
   );
 }
 
-/** 左边列表里的一个入口 */
-function EntryRow({ icon, name, sub, on, state, sessions, selected, onSelect }: {
-  icon: React.ReactNode; name: string; sub: string; on: boolean; state: string; sessions: McpSession[]; selected: boolean; onSelect: () => void;
+/** 左边列表里的一个入口；note 替换状态文字（从属入口写“经 X 接入”） */
+function EntryRow({ icon, name, sub, note = null, on, state, sessions, selected, onSelect }: {
+  icon: React.ReactNode; name: string; sub: string; note?: string | null; on: boolean; state: string; sessions: McpSession[]; selected: boolean; onSelect: () => void;
 }) {
   const { t } = useTranslation();
   const last = Math.max(0, ...sessions.map((s) => s.lastActiveMs));
@@ -243,7 +279,7 @@ function EntryRow({ icon, name, sub, on, state, sessions, selected, onSelect }: 
         {/* 没有连着的 AI 时也占位，状态出现不改变行宽 */}
         <span className={`mcp-row__count${doing ? "" : " mcp-row__count--none"}`}>{doing || "·"}</span>
       </span>
-      <span className="task-row__detail mono">{on ? t(`mcp.entryState.${state}`, { defaultValue: state }) : t("mcp.entryOff")}{sub ? ` · ${sub}` : ""}</span>
+      <span className="task-row__detail mono">{on ? note ?? t(`mcp.entryState.${state}`, { defaultValue: state }) : t("mcp.entryOff")}{sub ? ` · ${sub}` : ""}</span>
     </button>
   );
 }
@@ -362,14 +398,17 @@ function EntryDetail({ id, settings, servers, status, info, serverName, sessions
           <h3>{t("mcp.clientsTitle")}</h3>
           {/* 服务器上的手动命令从 ~/.pierlink/mcp.json 取令牌：入口连上之前这个文件还没写 */}
           {/* 换了入口就重建：上一个入口还在添加、移除时，结果不会显示到新入口上 */}
-          <ClientSetup key={id} serverId={windows ? null : id} serverName={serverName(id)} commands={commands}
-            fileHint={server && st ? (st.fileWritten ? t("mcp.fileWritten") : t("mcp.fileNotWritten")) : undefined}
-            onAdded={() => { markAdded(id); setAdded(true); }}
-            onCurrent={setClientCurrent} />
+          {/* 从属入口：AI 客户端连的是另一台电脑的入口，添加、换令牌都在那台做 */}
+          {st?.secondary
+            ? <p className="set-row__hint">{st.secondary.via ? t("mcp.secondaryClientsHint", { via: st.secondary.via }) : t("mcp.secondaryClientsHintUnknown")}</p>
+            : <ClientSetup key={id} serverId={windows ? null : id} serverName={serverName(id)} commands={commands}
+              fileHint={server && st ? (st.fileWritten ? t("mcp.fileWritten") : t("mcp.fileNotWritten")) : undefined}
+              onAdded={() => { markAdded(id); setAdded(true); }}
+              onCurrent={setClientCurrent} />}
           {server && (
             <div className="mcp-detail__row">
               <PortInput label={t("mcp.port")} value={server.port} onCommit={changePort} />
-              <Button size="sm" title={t("mcp.rotateTokenHint")} onClick={() => void rotate()}>{t("mcp.rotateToken")}</Button>
+              {!st?.secondary && <Button size="sm" title={t("mcp.rotateTokenHint")} onClick={() => void rotate()}>{t("mcp.rotateToken")}</Button>}
             </div>
           )}
           {/* 入口状态固定占一行（没有要说的也占着）：端口被占用、出错、换端口和令牌的进度都写在这里，不从页面顶上插提示 */}
@@ -377,7 +416,8 @@ function EntryDetail({ id, settings, servers, status, info, serverName, sessions
             const line = rotated && !rotated.ok ? { tone: "error", text: rotated.text }
               : st?.state === "port_busy" ? { tone: "warn", text: conflictText(t, st) }
                 : st?.error ? { tone: "error", text: formatError(st.error) }
-                  : progress ? { tone: "ok", text: progress } : null;
+                  : progress ? { tone: "ok", text: progress }
+                    : st?.state === "running" && st.secondary ? { tone: "ok", text: secondaryText(t, st) ?? "" } : null;
             const free = st?.state === "port_busy" ? st.conflict?.freePort : null;
             return (
               <div className={`mcp-detail__status${line ? ` mcp-detail__status--${line.tone}` : ""}`} role="status">
@@ -433,6 +473,13 @@ function readdText(t: T, r: McpReadd): string {
 }
 
 /** 端口被占着时的说明 */
+/** 从属入口的状态：经哪台电脑接入、这台实际用的端口；主入口返回 null */
+function secondaryText(t: T, st: McpEntryState | undefined): string | null {
+  const s = st?.secondary;
+  if (!s) return null;
+  return s.via ? t("mcp.entrySecondary", { via: s.via, port: s.port }) : t("mcp.entrySecondaryUnknown", { port: s.port });
+}
+
 function conflictText(t: T, st: McpEntryState): string {
   const c = st.conflict;
   if (!c) return t("mcp.conflictChecking", { port: st.port });
@@ -749,7 +796,11 @@ function ActivityView({ activity, settings, serverName, onError }: {
                   <td title={serverName(a.entry)}>{serverName(a.entry)}</td>
                   <td className="mono" title={a.tool}>{a.tool}</td>
                   <td title={a.target ? serverName(a.target) : undefined}>{a.target ? serverName(a.target) : "—"}</td>
-                  <td className="mono mcp-table__summary" title={a.summary}>{a.summary}</td>
+                  <td className="mono mcp-table__summary" title={a.summary}>
+                    {a.forwardedTo && <span className="mcp-table__via">{t("mcp.forwardedTo", { computer: a.forwardedTo })}</span>}
+                    {a.forwardedFrom && <span className="mcp-table__via">{t("mcp.forwardedFrom", { computer: a.forwardedFrom })}</span>}
+                    {a.summary}
+                  </td>
                   <td title={[outcome(a), a.approval === "user" || a.approval === "session" || a.approval === "auto" ? t(`mcp.approvedByLong.${a.approval}`) : ""].filter(Boolean).join(" · ")}>
                     <span className={`mcp-table__result mcp-table__result--${a.outcome === "ok" ? "ok" : "bad"}`}>{outcome(a)}</span>
                     {(a.approval === "user" || a.approval === "session" || a.approval === "auto") && <span className="mcp-table__approval">{t(`mcp.approvedByLong.${a.approval}`)}</span>}

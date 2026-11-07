@@ -292,6 +292,7 @@ fn finished_session(pending: usize) -> Arc<Session> {
     process.finish();
     Arc::new(Session {
         hooked: false,
+        local_program: None,
         flow: Mutex::new(Flow {
             pending,
             ..Default::default()

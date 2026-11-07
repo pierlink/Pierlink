@@ -4,6 +4,7 @@
 pub mod audit;
 mod host;
 pub mod http;
+pub mod peers;
 pub mod pipe;
 pub mod port_check;
 pub mod safety;

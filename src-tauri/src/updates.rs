@@ -120,6 +120,57 @@ fn load_pending(app: &AppHandle, version: &str) -> Option<Vec<u8>> {
     std::fs::read(pending_paths(app).ok()?.0).ok()
 }
 
+/// 安装前重新核对下载好的安装包：包在数据目录里放过一阵，可能被换掉。和下载时一样，用应用内置的公钥
+/// （tauri.conf.json 的 plugins.updater.pubkey）核对服务器公布的签名，再核对签名里记的版本号。
+///
+/// :param bytes: 安装包内容
+/// :param signature: 服务器上 latest.json 里这个版本的签名（base64）
+/// :param version: 服务器公布的版本号
+/// :return: 不对时返回 update.bad_signature
+fn verify_pending(
+    app: &AppHandle,
+    bytes: &[u8],
+    signature: &str,
+    version: &str,
+) -> Result<(), AppError> {
+    use base64::Engine;
+    let bad = |why: &str| {
+        eprintln!("下载好的安装包没通过签名核对: 版本={version}, 原因={why}");
+        AppError::new("update.bad_signature")
+    };
+    let text = |b64: &str| {
+        base64::engine::general_purpose::STANDARD
+            .decode(b64.trim())
+            .ok()
+            .and_then(|raw| String::from_utf8(raw).ok())
+    };
+    let pubkey = app
+        .config()
+        .plugins
+        .0
+        .get("updater")
+        .and_then(|v| v.get("pubkey"))
+        .and_then(|v| v.as_str())
+        .and_then(text)
+        .ok_or_else(|| bad("没有可用的公钥"))?;
+    let key = minisign_verify::PublicKey::decode(&pubkey).map_err(|_| bad("公钥格式不对"))?;
+    let sig = text(signature)
+        .and_then(|s| minisign_verify::Signature::decode(&s).ok())
+        .ok_or_else(|| bad("签名格式不对"))?;
+    key.verify(bytes, &sig, true)
+        .map_err(|_| bad("签名和安装包对不上"))?;
+    // 签名验过以后，签名里的附注才可信：Tauri 打包时在里面记了版本号
+    let signed = sig
+        .trusted_comment()
+        .split('\t')
+        .find_map(|field| field.strip_prefix("version:"))
+        .map(|v| v.trim_start_matches('v').to_owned());
+    if signed.as_deref() != Some(version.trim_start_matches('v')) {
+        return Err(bad("签名里的版本号对不上"));
+    }
+    Ok(())
+}
+
 /// 记下出错原因（日志），给界面只返回错误码和原因
 fn fail(code: &str, e: impl std::fmt::Display) -> AppError {
     let reason = e.to_string();
@@ -295,6 +346,11 @@ pub async fn update_install(app: AppHandle) -> Result<(), AppError> {
         }
         return Err(AppError::new("update.not_downloaded"));
     };
+    // 包在磁盘上放过一阵：装之前再核对一次签名，不对就删掉，让用户重新下载
+    if let Err(e) = verify_pending(&app, &bytes, &update.signature, &update.version) {
+        clear_pending(&app);
+        return Err(e);
+    }
     eprintln!("开始安装更新: 版本={}", update.version);
     tokio::task::spawn_blocking(move || update.install(bytes))
         .await

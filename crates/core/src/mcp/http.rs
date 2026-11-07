@@ -144,6 +144,7 @@ impl McpService {
     /// 停止 server_id 的监听，取消该入口所有 HTTP 会话与调用；无返回值，可重复调用。
     pub fn stop_http_entry(&self, server_id: &str) {
         lock(&self.http_entries).remove(server_id);
+        self.shared.router.forget(server_id);
     }
 
     /// 将 server_id 的活动入口换成 token，断开旧连接和会话；入口未启动时无操作。
@@ -254,6 +255,7 @@ impl Generation {
             stop: watch::channel(false).0,
             confirmation: Arc::default(),
             actions_allowed: Arc::default(),
+            forwarded: Mutex::new(Some(HashMap::new())),
         });
         let factory = group.clone();
         let config = StreamableHttpServerConfig::default()
@@ -296,6 +298,17 @@ impl Generation {
                 }
             });
         }
+        let forwarded = lock(&self.group.forwarded).take();
+        if let Some(forwarded) = forwarded {
+            let mut shared_sessions = lock(&self.group.shared.sessions);
+            for session in forwarded.into_values() {
+                session.cancel();
+                shared_sessions.remove(&session.snapshot().id);
+                let shared = self.group.shared.clone();
+                self.runtime
+                    .spawn_blocking(move || session.finish(shared.host.as_ref()));
+            }
+        }
         self.group.shared.jobs.cancel_entry(Some(&self.group.entry));
         self.group.stop.send_replace(true);
         self.http.config.cancellation_token.cancel();
@@ -332,6 +345,13 @@ impl Generation {
         }
         // 协议层不需要认证头，移除后不会进入请求扩展和第三方库的调试输出。
         request.headers_mut().remove(header::AUTHORIZATION);
+        match (request.method(), request.uri().path()) {
+            (&http::Method::GET, super::peers::PEER_PATH) => return self.peer_info().await,
+            (&http::Method::POST, super::peers::FORWARD_PATH) => {
+                return self.forwarded(request).await;
+            }
+            _ => {}
+        }
         if request.uri().path() != "/mcp" {
             return response(StatusCode::NOT_FOUND);
         }
@@ -392,6 +412,168 @@ impl Generation {
         }
     }
 }
+impl Generation {
+    /// 伙伴接口：回报实例号、电脑名和这台电脑多久没有键盘鼠标输入
+    async fn peer_info(&self) -> HttpResponse {
+        let shared = self.group.shared.clone();
+        let idle = tokio::task::spawn_blocking(move || shared.host.idle_ms())
+            .await
+            .unwrap_or(None);
+        let instance = lock(&self.group.shared.instance).clone();
+        let body = serde_json::json!({
+            "instance": instance,
+            "computer": super::tools::local::computer_name().unwrap_or_default(),
+            "idle_ms": idle,
+        });
+        json_response(StatusCode::OK, body.to_string())
+    }
+
+    /// 转发接口：别的电脑把整次工具调用转来，按这个入口的权限在本机执行（绝不再转），
+    /// 确认框弹在这台电脑上。做完之前每 10 秒发一个空格当心跳；对方断开时取消这次调用
+    async fn forwarded(&self, request: Request<Incoming>) -> HttpResponse {
+        let own = lock(&self.group.shared.instance).clone();
+        let origin = request
+            .headers()
+            .get(super::peers::FORWARDED_HEADER)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned)
+            .unwrap_or_default();
+        let plain = !origin.is_empty()
+            && origin.len() <= 64
+            && origin
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
+        // 转给自己就是回环（伙伴文件被改写过）：不执行
+        if !plain || origin == own {
+            return response(StatusCode::BAD_REQUEST);
+        }
+        let body = match http_body_util::Limited::new(request.into_body(), MAX_BODY)
+            .collect()
+            .await
+        {
+            Ok(body) => body.to_bytes(),
+            Err(_) => return response(StatusCode::PAYLOAD_TOO_LARGE),
+        };
+        let Ok(call) = serde_json::from_slice::<super::peers::ForwardCall>(&body) else {
+            return response(StatusCode::BAD_REQUEST);
+        };
+        let Some(session) = self.group.forwarded_session(&origin, &call) else {
+            return response(StatusCode::SERVICE_UNAVAILABLE);
+        };
+        let shared = self.group.shared.clone();
+        let cancelled = session.call_flag();
+        shared.host.notify(super::HostEvent::SessionsChanged);
+        let flag = cancelled.clone();
+        let task = tokio::task::spawn_blocking(move || {
+            let started = std::time::Instant::now();
+            // 只是顺带列这台的终端、任务：这台还没确认过这个连接时不弹确认框（用户多半不在这台前），直接跳过
+            if call.merge
+                && shared.host.confirm_connections(&session.snapshot().entry)
+                && !session.connection_decided()
+            {
+                let skipped =
+                    super::peers::ForwardReply::Result(rmcp::model::CallToolResult::error(vec![
+                        rmcp::model::ContentBlock::text("这台电脑还没确认过这个连接，先不列"),
+                    ]));
+                return serde_json::to_vec(&skipped).unwrap_or_default();
+            }
+            let mut arguments = call.arguments;
+            super::peers::translate_target(
+                &shared,
+                &session,
+                &mut arguments,
+                call.target_key.as_deref(),
+            );
+            let mut approval = "";
+            let result = super::tools::execute(
+                &shared,
+                &session,
+                &call.tool,
+                &arguments,
+                flag,
+                &mut approval,
+            );
+            let reply = match shared.complete(
+                &session,
+                &call.tool,
+                &arguments,
+                (result, approval),
+                started,
+            ) {
+                Ok(result) => super::peers::ForwardReply::Result(result),
+                Err(error) => super::peers::ForwardReply::Error(error),
+            };
+            serde_json::to_vec(&reply).unwrap_or_default()
+        });
+        Response::builder()
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(header::CACHE_CONTROL, "no-cache")
+            .body(
+                ForwardBody {
+                    task: Some(task),
+                    cancelled,
+                    heartbeat: tokio::time::interval_at(
+                        Instant::now() + Duration::from_secs(10),
+                        Duration::from_secs(10),
+                    ),
+                }
+                .boxed(),
+            )
+            .unwrap_or_else(|_| response(StatusCode::INTERNAL_SERVER_ERROR))
+    }
+}
+
+/// 转来的调用的回应正文：做完前每 10 秒一个空格（JSON 允许前导空白），做完发结果；被丢掉时取消调用
+struct ForwardBody {
+    task: Option<JoinHandle<Vec<u8>>>,
+    cancelled: Arc<AtomicBool>,
+    heartbeat: tokio::time::Interval,
+}
+impl hyper::body::Body for ForwardBody {
+    type Data = Bytes;
+    type Error = Infallible;
+    fn poll_frame(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<hyper::body::Frame<Bytes>, Infallible>>> {
+        let Some(task) = self.task.as_mut() else {
+            return Poll::Ready(None);
+        };
+        match Pin::new(task).poll(cx) {
+            Poll::Ready(result) => {
+                self.task = None;
+                let bytes = result.unwrap_or_default();
+                Poll::Ready(Some(Ok(hyper::body::Frame::data(Bytes::from(bytes)))))
+            }
+            Poll::Pending => {
+                if self.heartbeat.poll_tick(cx).is_ready() {
+                    Poll::Ready(Some(Ok(hyper::body::Frame::data(Bytes::from_static(b" ")))))
+                } else {
+                    Poll::Pending
+                }
+            }
+        }
+    }
+}
+impl Drop for ForwardBody {
+    fn drop(&mut self) {
+        if self.task.is_some() {
+            self.cancelled
+                .store(true, std::sync::atomic::Ordering::Release);
+        }
+    }
+}
+
+fn json_response(status: StatusCode, body: String) -> HttpResponse {
+    let mut response = Response::new(Full::new(Bytes::from(body)).boxed());
+    *response.status_mut() = status;
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        http::HeaderValue::from_static("application/json"),
+    );
+    response
+}
+
 // 每个 HTTP 调用单独取消；旧式会话也不能在响应连接断开后继续执行命令。
 #[derive(Clone)]
 pub(super) struct HttpCall {
@@ -479,6 +661,8 @@ struct SessionGroup {
     confirmation: Arc<Mutex<Option<bool>>>,
     /// 这一代令牌的操作审批标记；换令牌、重启入口或全部停止后随新一代清零
     actions_allowed: Arc<AtomicBool>,
+    /// 别的电脑转来的调用用的会话：按（发起的电脑, AI 客户端）各一个，入口停了一起关
+    forwarded: Mutex<Option<HashMap<String, Arc<Session>>>>,
 }
 
 struct HttpSession {
@@ -486,6 +670,64 @@ struct HttpSession {
     protocol_id: Option<String>,
 }
 impl SessionGroup {
+    /// 别的电脑转来的调用用的会话：同一台电脑、同一个 AI 客户端共用一个（和直接连上来的会话一样
+    /// 共用这一代令牌的连接确认和“这次连接不再问”）；最多 8 个，超了关掉最久没用的。入口已停返回 None
+    fn forwarded_session(
+        &self,
+        origin: &str,
+        call: &super::peers::ForwardCall,
+    ) -> Option<Arc<Session>> {
+        let key = format!("{origin}\n{}\n{}", call.client.name, call.client.version);
+        let mut forwarded = lock(&self.forwarded);
+        let forwarded = forwarded.as_mut()?;
+        if let Some(session) = forwarded.get(&key)
+            && !session.stopped.load(std::sync::atomic::Ordering::Acquire)
+        {
+            session.touch();
+            return Some(session.clone());
+        }
+        if forwarded.len() >= 8
+            && let Some(oldest) = forwarded
+                .iter()
+                .filter_map(|(k, s)| s.idle_since().map(|last| (k.clone(), last)))
+                .min_by_key(|(_, last)| *last)
+                .map(|(k, _)| k)
+            && let Some(old) = forwarded.remove(&oldest)
+        {
+            old.cancel();
+            lock(&self.shared.sessions).remove(&old.snapshot().id);
+            let shared = self.shared.clone();
+            tokio::task::spawn_blocking(move || old.finish(shared.host.as_ref()));
+        }
+        if forwarded.len() >= 8 {
+            return None;
+        }
+        let session = Arc::new(Session::with_confirmation(
+            self.entry.clone(),
+            true,
+            self.confirmation.clone(),
+            self.actions_allowed.clone(),
+        ));
+        session.observe(Some(Implementation::new(
+            call.client.name.chars().take(256).collect::<String>(),
+            call.client.version.chars().take(128).collect::<String>(),
+        )));
+        let computer: String = call
+            .computer
+            .chars()
+            .filter(|c| !c.is_control())
+            .take(128)
+            .collect();
+        let _ = session.forwarded_from.set(if computer.is_empty() {
+            origin.chars().take(8).collect()
+        } else {
+            computer
+        });
+        lock(&self.shared.sessions).insert(session.snapshot().id, session.clone());
+        forwarded.insert(key, session.clone());
+        Some(session)
+    }
+
     async fn make_room(&self) -> Result<(), ErrorData> {
         let evicted = {
             let mut sessions = lock(&self.sessions);

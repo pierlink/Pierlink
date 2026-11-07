@@ -1,5 +1,26 @@
-import { useEffect, useId, useRef, type ReactNode } from "react";
+import { useEffect, useId, useRef, useSyncExternalStore, type ReactNode } from "react";
 import { createPortal } from "react-dom";
+
+/** 开着的对话框个数：长期浮在底部的提示（有新版本）在对话框开着时先藏起来，免得压住对话框 */
+let openCount = 0;
+const openListeners = new Set<() => void>();
+function setOpenCount(delta: number) {
+  openCount += delta;
+  openListeners.forEach((listener) => listener());
+}
+
+function subscribeOpen(listener: () => void) {
+  openListeners.add(listener);
+  return () => { openListeners.delete(listener); };
+}
+function anyOpen() {
+  return openCount > 0;
+}
+
+/** 有没有对话框开着 */
+export function useAnyDialogOpen(): boolean {
+  return useSyncExternalStore(subscribeOpen, anyOpen);
+}
 
 interface DialogProps {
   title: string;
@@ -23,6 +44,11 @@ export function Dialog({ title, children, actions, danger, onDismiss, size = "md
   const ref = useRef<HTMLDivElement>(null);
   const dismissRef = useRef(onDismiss);
   dismissRef.current = onDismiss;
+
+  useEffect(() => {
+    setOpenCount(1);
+    return () => setOpenCount(-1);
+  }, []);
 
   useEffect(() => {
     const prev = document.activeElement as HTMLElement | null;

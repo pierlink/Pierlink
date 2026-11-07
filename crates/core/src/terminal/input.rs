@@ -61,7 +61,8 @@ pub enum InputSource {
 pub(super) struct Input {
     conpty: bool,
     user: VecDeque<Vec<u8>>,
-    automation: VecDeque<(Vec<u8>, Option<u64>)>,
+    /// 自动化输入：(字节, 要求的用户输入代数, 末尾的回车是否隔 SUBMIT_GAP 再写)
+    automation: VecDeque<(Vec<u8>, Option<u64>, bool)>,
     bytes: usize,
     failed: bool,
     user_at: Option<Instant>,
@@ -94,17 +95,18 @@ impl Input {
         self.user_at
             .is_some_and(|at| now.saturating_duration_since(at) < USER_IDLE)
     }
-    fn next(&mut self, now: Instant) -> Option<(InputSource, Vec<u8>, u64)> {
+    /// 下一段要写的输入：(来源, 字节, 用户输入代数, 末尾的回车是否隔 SUBMIT_GAP 再写)
+    fn next(&mut self, now: Instant) -> Option<(InputSource, Vec<u8>, u64, bool)> {
         if let Some(data) = self.user.pop_front() {
-            return Some((InputSource::User, data, self.generation));
+            return Some((InputSource::User, data, self.generation, false));
         }
         if !self.taken_over && !self.paused(now) {
-            while let Some((data, expected)) = self.automation.pop_front() {
+            while let Some((data, expected, delay_enter)) = self.automation.pop_front() {
                 if expected.is_some_and(|generation| generation != self.generation) {
                     self.bytes -= data.len();
                     continue;
                 }
-                return Some((InputSource::Automation, data, self.generation));
+                return Some((InputSource::Automation, data, self.generation, delay_enter));
             }
         }
         None
@@ -123,21 +125,32 @@ impl TerminalManager {
         self.enqueue(id, data, source, None)
     }
 
-    /// 将 data 作为自动化输入放入 id 的队列；generation 必须与用户当前输入代数一致。
-    /// 用户在审批期间或排队期间按键时拒绝或丢弃这次输入，避免执行未经审批的新内容。
-    pub(crate) fn write_automation_at_generation(
+    /// 将几段自动化输入一起放入 id 的队列（要么都放进去，要么都不放）。每段是 (字节, 末尾的回车是否隔 SUBMIT_GAP 再写)：
+    /// Alt+Enter 的 Esc 和回车要连着写（隔开了程序会当成 Esc 再按回车），这一段给 false。
+    /// generation 给出时必须与用户当前输入代数一致：用户在审批期间或排队期间按键时拒绝或丢弃这次输入，避免执行未经审批的新内容。
+    pub(crate) fn write_automation_parts(
         &self,
         id: &str,
-        data: &[u8],
-        generation: u64,
+        parts: &[(Vec<u8>, bool)],
+        generation: Option<u64>,
     ) -> Result<(), AppError> {
-        self.enqueue(id, data, InputSource::Automation, Some(generation))
+        self.enqueue_parts(id, parts, InputSource::Automation, generation)
     }
 
     fn enqueue(
         &self,
         id: &str,
         data: &[u8],
+        source: InputSource,
+        expected: Option<u64>,
+    ) -> Result<(), AppError> {
+        self.enqueue_parts(id, &[(data.to_vec(), true)], source, expected)
+    }
+
+    fn enqueue_parts(
+        &self,
+        id: &str,
+        parts: &[(Vec<u8>, bool)],
         source: InputSource,
         expected: Option<u64>,
     ) -> Result<(), AppError> {
@@ -172,20 +185,25 @@ impl TerminalManager {
                 "用户输入已改变，请重新读取终端并重试",
             ));
         }
-        if data.len() > WINDOW - input.bytes {
+        let total: usize = parts.iter().map(|(data, _)| data.len()).sum();
+        if total > WINDOW - input.bytes {
             return Err(error(
                 "input_overflow",
                 "terminal.input_queue_exceeds_1_mib",
                 "输入队列超过 1 MiB",
             ));
         }
-        if !data.is_empty() {
+        for (data, delay_enter) in parts.iter().filter(|(data, _)| !data.is_empty()) {
             input.bytes += data.len();
             match source {
                 InputSource::User => {
                     input.push_user(data);
                 }
-                InputSource::Automation => input.automation.push_back((data.to_vec(), expected)),
+                InputSource::Automation => {
+                    input
+                        .automation
+                        .push_back((data.clone(), expected, *delay_enter))
+                }
             }
         }
         session.wake.notify_all();
@@ -211,7 +229,11 @@ impl TerminalManager {
         input.taken_over = taken_over;
         if taken_over {
             input.generation = input.generation.wrapping_add(1);
-            let discarded: usize = input.automation.drain(..).map(|(data, _)| data.len()).sum();
+            let discarded: usize = input
+                .automation
+                .drain(..)
+                .map(|(data, _, _)| data.len())
+                .sum();
             input.bytes -= discarded;
         }
         session.wake.notify_all();
@@ -240,7 +262,7 @@ fn write_queued_input(
             break;
         }
         let data = lock(input).next(Instant::now());
-        let Some((source, data, generation)) = data else {
+        let Some((source, data, generation, delay_enter)) = data else {
             let flow = lock(flow);
             if !flow.stopped && !lock(input).ready(Instant::now()) {
                 let _ = wake.wait_timeout(flow, Duration::from_millis(200));
@@ -262,16 +284,21 @@ fn write_queued_input(
                     break;
                 }
                 if input.paused(Instant::now()) {
-                    input
-                        .automation
-                        .push_front((remaining.to_vec(), Some(generation)));
+                    input.automation.push_front((
+                        remaining.to_vec(),
+                        Some(generation),
+                        delay_enter,
+                    ));
                     requeued = remaining.len();
                     break;
                 }
             }
-            // 自动化输入末尾的回车单独写，离上次写出文字不到 SUBMIT_GAP 就先等
-            let text_len =
-                remaining.len() - remaining.iter().rev().take_while(|&&b| b == b'\r').count();
+            // 自动化输入末尾的回车单独写，离上次写出文字不到 SUBMIT_GAP 就先等（Alt+Enter 那段的回车是按键的一部分，不等）
+            let text_len = if delay_enter {
+                remaining.len() - remaining.iter().rev().take_while(|&&b| b == b'\r').count()
+            } else {
+                remaining.len()
+            };
             if source == InputSource::Automation
                 && !escaped
                 && text_len == 0
@@ -282,9 +309,11 @@ fn write_queued_input(
                 {
                     let mut input = lock(input);
                     if !input.user.is_empty() {
-                        input
-                            .automation
-                            .push_front((remaining.to_vec(), Some(generation)));
+                        input.automation.push_front((
+                            remaining.to_vec(),
+                            Some(generation),
+                            delay_enter,
+                        ));
                         requeued = remaining.len();
                         break;
                     }
@@ -366,12 +395,12 @@ mod tests {
             user_at: Some(now),
             ..Default::default()
         };
-        input.automation.push_back((b"auto".to_vec(), None));
+        input.automation.push_back((b"auto".to_vec(), None, true));
         input.user.push_back(b"user".to_vec());
         assert_eq!(input.next(now).unwrap().0, InputSource::User);
         assert!(input.next(now + Duration::from_millis(1999)).is_none());
         assert_eq!(input.next(now + USER_IDLE).unwrap().1, b"auto");
-        input.automation.push_back((b"next".to_vec(), None));
+        input.automation.push_back((b"next".to_vec(), None, true));
         input.taken_over = true;
         assert!(input.next(now + USER_IDLE).is_none());
     }
@@ -385,8 +414,8 @@ mod tests {
             bytes: 6,
             ..Default::default()
         };
-        input.automation.push_back((b"old".to_vec(), Some(1)));
-        input.automation.push_back((b"new".to_vec(), Some(2)));
+        input.automation.push_back((b"old".to_vec(), Some(1), true));
+        input.automation.push_back((b"new".to_vec(), Some(2), true));
         assert!(input.next(now).is_none());
         assert_eq!(input.next(now + USER_IDLE).unwrap().1, b"new");
         assert_eq!(input.bytes, 3);
@@ -562,7 +591,9 @@ mod report_tests {
 
     fn preserves_automation(conpty: bool) {
         let mut input = Input::new(conpty);
-        input.automation.push_back((b"echo ok\r".to_vec(), Some(0)));
+        input
+            .automation
+            .push_back((b"echo ok\r".to_vec(), Some(0), true));
         let data = reports().concat();
         input.bytes = data.len() + 8;
         input.push_user(&data);

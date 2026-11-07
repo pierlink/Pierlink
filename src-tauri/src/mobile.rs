@@ -1010,20 +1010,13 @@ impl MobileHost for TauriMobileHost {
                 }
             }
             for key in &keys {
-                // 往上翻、往下翻：全屏程序里和电脑上滚一格滚轮一样，其他时候不发（手机自己翻历史行）
-                let wheel = match key.as_str() {
-                    "WheelUp" => Some(true),
-                    "WheelDown" => Some(false),
-                    _ => None,
-                };
-                if let Some(up) = wheel {
-                    if let Some(bytes) = manager.wheel_bytes(&id, up)? {
-                        manager.write(&id, &bytes)?;
-                    }
-                    continue;
+                // 和 AI 发按键共用一套规则；往上翻、往下翻（WheelUp、WheelDown）只在全屏程序里发，
+                // 其他时候不发（手机自己翻历史行）
+                let bytes =
+                    pierlink_core::mcp::tools::terminal::key_sequence(manager, &id, key_name(key))?;
+                if let Some(bytes) = bytes {
+                    manager.write(&id, &bytes)?;
                 }
-                let bytes = pierlink_core::mcp::tools::terminal::key_bytes(key_name(key))?;
-                manager.write(&id, &bytes)?;
             }
             Ok(json!({ "ok": true }))
         }))

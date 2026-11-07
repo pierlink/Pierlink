@@ -24,6 +24,51 @@ pub struct Sandbox {
     pub(super) folders: Vec<PathBuf>,
     pub(super) unavailable_folders: Vec<AppError>,
 }
+
+/// Pierlink 自己的目录（数据目录、安装目录）：就算在授权文件夹里，文件工具也不读不写，
+/// 免得 AI 改 Pierlink 的设置和数据库、换掉待安装的更新包或程序文件、读到别的服务器的草稿。
+/// 宿主启动时设置一次，保存规范化后的路径。
+static PROTECTED: std::sync::RwLock<Vec<PathBuf>> = std::sync::RwLock::new(Vec::new());
+
+/// 测试里改受保护目录（全局）时先拿这把锁，免得并行的测试互相覆盖
+#[cfg(test)]
+pub(super) static PROTECTED_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// 设置文件工具不碰的目录（宿主启动时调用）；不存在或无法规范化的跳过。
+///
+/// :param dirs: Pierlink 的数据目录、安装目录
+pub fn set_protected_dirs(dirs: &[PathBuf]) {
+    let list: Vec<PathBuf> = dirs.iter().filter_map(|d| canonical(d).ok()).collect();
+    *PROTECTED.write().unwrap_or_else(|p| p.into_inner()) = list;
+}
+
+/// path 是否落在 Pierlink 自己的目录里（含目录本身）。path 能规范化时按规范化后的路径判断，
+/// 给设置页检查用户新加的授权文件夹用；沙箱内部拿到的已是规范化的路径，用 within_protected。
+///
+/// :param path: 绝对路径
+/// :return: 是否受保护
+pub fn is_protected(path: &Path) -> bool {
+    let resolved = canonical(path).unwrap_or_else(|_| path.to_path_buf());
+    within_protected(&resolved) || within_protected(path)
+}
+
+/// 已规范化的 path 是否落在受保护的目录里（不碰文件系统）
+pub(super) fn within_protected(path: &Path) -> bool {
+    PROTECTED
+        .read()
+        .unwrap_or_else(|p| p.into_inner())
+        .iter()
+        .any(|dir| path_within(path, dir))
+}
+
+pub(super) fn protected_error(path: &Path) -> AppError {
+    path_error(
+        "mcp.path_protected",
+        path,
+        "mcp.pierlink_s_own_folders_are_off_limits",
+        "Pierlink 自己的文件夹（数据、安装目录）不让 AI 读写",
+    )
+}
 impl Sandbox {
     /// 规范化 folders 中已存在的绝对目录，返回只允许这些目录的沙箱。
     pub fn new(folders: &[PathBuf]) -> Self {
@@ -33,6 +78,9 @@ impl Sandbox {
         };
         for folder in folders {
             match validate_folder(folder) {
+                Ok(folder) if within_protected(&folder) => {
+                    sandbox.unavailable_folders.push(protected_error(&folder))
+                }
                 Ok(folder) => sandbox.folders.push(folder),
                 Err(error) => sandbox
                     .unavailable_folders
@@ -43,6 +91,9 @@ impl Sandbox {
     }
 
     fn contains(&self, path: &Path) -> Result<(), AppError> {
+        if within_protected(path) {
+            return Err(protected_error(path));
+        }
         if self.folders.iter().any(|folder| path_within(path, folder)) {
             Ok(())
         } else {
@@ -200,7 +251,7 @@ pub(super) fn check_move(sb: &Sandbox, target: &Path) -> Result<(), AppError> {
     }
     Ok(())
 }
-fn metadata_if_exists(path: &Path) -> Result<Option<fs::Metadata>, AppError> {
+pub(super) fn metadata_if_exists(path: &Path) -> Result<Option<fs::Metadata>, AppError> {
     match fs::symlink_metadata(path) {
         Ok(metadata) => Ok(Some(metadata)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -345,12 +396,17 @@ fn mapped_drive(path: &Path, drive_type: impl FnOnce(&[u16]) -> u32) -> bool {
         drive_type(&root) == 4 // DRIVE_REMOTE：映射网络盘。
     })
 }
-fn path_error(code: &str, path: &Path, text_key: &'static str, reason: &str) -> AppError {
+pub(super) fn path_error(
+    code: &str,
+    path: &Path,
+    text_key: &'static str,
+    reason: &str,
+) -> AppError {
     AppError::new(code)
         .with("path", fs_local::display_path(path))
         .with_reason(text_key, reason)
 }
-fn io_error(error: std::io::Error, path: &Path) -> AppError {
+pub(super) fn io_error(error: std::io::Error, path: &Path) -> AppError {
     #[cfg(windows)]
     if let Some(code @ (32 | 33)) = error.raw_os_error() {
         return path_error(
@@ -411,7 +467,7 @@ fn check_links(path: &Path, depth: usize) -> Result<(), AppError> {
     }
     Ok(())
 }
-fn path_within(path: &Path, folder: &Path) -> bool {
+pub(super) fn path_within(path: &Path, folder: &Path) -> bool {
     if cfg!(windows) {
         Path::new(&path.to_string_lossy().to_lowercase())
             .starts_with(folder.to_string_lossy().to_lowercase())
@@ -419,7 +475,7 @@ fn path_within(path: &Path, folder: &Path) -> bool {
         path.starts_with(folder)
     }
 }
-fn valid_path(path: &Path) -> Result<(), AppError> {
+pub(super) fn valid_path(path: &Path) -> Result<(), AppError> {
     let invalid = || {
         path_error(
             "mcp.path_invalid",
@@ -666,6 +722,36 @@ pub(super) fn write_checked(
         }
         None => content.as_bytes().to_vec(),
     };
+    make_parent(sb, &target)?;
+    atomic_write(sb, path, &target, &bytes, original.as_deref())
+}
+
+/// 把 bytes 原样（不转编码、不改换行）原子写入 sb 内的 path，最多 5 MiB：可以新建文件，也可以覆盖已有的普通文件
+/// （含二进制文件），已有文件超过 5 MiB 时不覆盖。expected 给出时已有内容的 sha256 要相符；缺少的父目录自动创建。
+///
+/// :param sb: 授权文件夹
+/// :param path: 文件路径（Windows 绝对路径）
+/// :param bytes: 要写的内容
+/// :param expected: 已有内容应有的 sha256
+/// :return: 路径、字节数和 sha256
+pub(super) fn write_bytes(
+    sb: &Sandbox,
+    path: &str,
+    bytes: &[u8],
+    expected: Option<&str>,
+) -> Result<FileWritten, AppError> {
+    if bytes.len() > WRITE_LIMIT {
+        return Err(too_large(WRITE_LIMIT));
+    }
+    let target = sb.resolve_write(path)?;
+    let original = existing(&target)?;
+    check_hash(original.as_deref(), expected)?;
+    make_parent(sb, &target)?;
+    atomic_write(sb, path, &target, bytes, original.as_deref())
+}
+
+/// 建 target 缺少的父目录（在授权范围内）
+fn make_parent(sb: &Sandbox, target: &Path) -> Result<(), AppError> {
     if let Some(parent) = target.parent() {
         make_dir(
             sb,
@@ -674,7 +760,7 @@ pub(super) fn write_checked(
                 .ok_or_else(|| io_error(std::io::ErrorKind::InvalidInput.into(), parent))?,
         )?;
     }
-    atomic_write(sb, path, &target, &bytes, original.as_deref())
+    Ok(())
 }
 fn too_large(max: usize) -> AppError {
     AppError::new("mcp.file_too_large")
@@ -826,6 +912,14 @@ pub(super) struct FileEdited {
     pub replacements: usize,
     pub sha256: String,
 }
+/// 一处修改：old 换成 new，all 为真时换掉所有匹配
+#[derive(Debug, Clone, Copy)]
+pub(super) struct Edit<'a> {
+    pub old: &'a str,
+    pub new: &'a str,
+    pub all: bool,
+}
+
 pub(super) fn edit_file(
     sb: &Sandbox,
     path: &str,
@@ -834,35 +928,98 @@ pub(super) fn edit_file(
     all: bool,
     expected: Option<&str>,
 ) -> Result<FileEdited, AppError> {
+    edit_file_many(sb, path, &[Edit { old, new, all }], false, expected)
+}
+
+/// 按顺序做 edits 里的每处修改（后一处在前一处改完的内容上找），全部成功才写入；任何一处找不到或不唯一，
+/// 文件都不改。保持原编码、BOM 和换行。
+///
+/// :param sb: 授权文件夹
+/// :param path: 文件路径（Windows 绝对路径）
+/// :param edits: 要做的修改
+/// :param numbered: 为真时（edits 参数）错误原因里写明是第几处
+/// :param expected: 修改前内容应有的 sha256
+/// :return: 路径、总共替换的次数和写入后的 sha256
+pub(super) fn edit_file_many(
+    sb: &Sandbox,
+    path: &str,
+    edits: &[Edit<'_>],
+    numbered: bool,
+    expected: Option<&str>,
+) -> Result<FileEdited, AppError> {
     let target = sb.resolve_write(path)?;
     let bytes = read_bounded(&target, WRITE_LIMIT)?;
     check_hash(Some(&bytes), expected)?;
-    let doc = Document::decode(&bytes)?;
-    let old = doc.normalize(old);
+    let mut doc = Document::decode(&bytes)?;
+    let mut total = 0;
+    for (index, edit) in edits.iter().enumerate() {
+        let number = numbered.then_some(index + 1);
+        let (updated, count) = apply_edit(&doc, edit, number)?;
+        doc.text = updated;
+        total += count;
+    }
+    let encoded = doc.encode(&doc.text)?;
+    let written = atomic_write(sb, path, &target, &encoded, Some(&bytes))?;
+    Ok(FileEdited {
+        path: written.path,
+        replacements: total,
+        sha256: written.sha256,
+    })
+}
+
+/// 在 doc 上做一处修改，返回改好的全文和替换次数；number 是第几处（多处修改时写进错误原因）
+fn apply_edit(
+    doc: &Document,
+    edit: &Edit<'_>,
+    number: Option<usize>,
+) -> Result<(String, usize), AppError> {
+    let old = doc.normalize(edit.old);
     if old.is_empty() {
-        return Err(AppError::new("mcp.edit_not_found")
-            .with_reason("mcp.matching_text_cannot_be_empty", "匹配文字不能为空"));
+        let error = AppError::new("mcp.edit_not_found");
+        return Err(match number {
+            Some(n) => error.with("edit", n).with_reason(
+                "mcp.edit_n_matching_text_cannot_be_empty",
+                format!("第 {n} 处修改：匹配文字不能为空，文件没有改动"),
+            ),
+            None => error.with_reason("mcp.matching_text_cannot_be_empty", "匹配文字不能为空"),
+        });
     }
     let matches = doc.match_ranges(&old);
     let count = matches.len();
     if count == 0 {
-        return Err(AppError::new("mcp.edit_not_found").with_reason(
-            "mcp.matching_text_was_not_found_in_the_file",
-            "文件中没有找到匹配文字",
-        ));
+        let error = AppError::new("mcp.edit_not_found");
+        return Err(match number {
+            Some(n) => error.with("edit", n).with_reason(
+                "mcp.edit_n_matching_text_was_not_found",
+                format!(
+                    "第 {n} 处修改：没有找到匹配文字（前面几处改完之后的内容里），文件没有改动"
+                ),
+            ),
+            None => error.with_reason(
+                "mcp.matching_text_was_not_found_in_the_file",
+                "文件中没有找到匹配文字",
+            ),
+        });
     }
-    if count > 1 && !all {
-        return Err(AppError::new("mcp.edit_not_unique")
-            .with("count", count)
-            .with_reason(
+    if count > 1 && !edit.all {
+        let error = AppError::new("mcp.edit_not_unique").with("count", count);
+        return Err(match number {
+            Some(n) => error.with("edit", n).with_reason(
+                "mcp.edit_n_multiple_matches_found",
+                format!(
+                    "第 {n} 处修改：匹配文字出现了 {count} 次，请提供更多上下文或给这一处设 replace_all，文件没有改动"
+                ),
+            ),
+            None => error.with_reason(
                 "mcp.multiple_matches_found_provide_more_context_or_use_replace_all",
                 "匹配文字不唯一，请提供更多上下文或使用 replace_all",
-            ));
+            ),
+        });
     }
     let mut updated = String::new();
     let mut previous = 0;
     for range in matches {
-        let replacement = doc.fragment_replacement(&doc.text[range.clone()], new);
+        let replacement = doc.fragment_replacement(&doc.text[range.clone()], edit.new);
         // 单字节编码转成 UTF-8 最多膨胀三倍，写入前仍检查最终编码大小。
         let expanded = updated
             .len()
@@ -879,13 +1036,7 @@ pub(super) fn edit_file(
         return Err(too_large(WRITE_LIMIT));
     }
     updated.push_str(&doc.text[previous..]);
-    let encoded = doc.encode(&updated)?;
-    let written = atomic_write(sb, path, &target, &encoded, Some(&bytes))?;
-    Ok(FileEdited {
-        path: written.path,
-        replacements: count,
-        sha256: written.sha256,
-    })
+    Ok((updated, count))
 }
 #[cfg(test)]
 fn read_lines(
@@ -938,22 +1089,119 @@ pub fn list_dir(sb: &Sandbox, path: &str) -> Result<Vec<DirEntryInfo>, AppError>
     Ok(result)
 }
 
-/// 根据 path 的扩展名或启动目录返回需要用户确认的中文原因；普通数据文件返回 None。
+/// 根据 path 的扩展名、所在目录或文件名返回需要用户确认的中文原因；普通数据文件返回 None。
+/// 除了脚本和程序，还有会被 SSH、Git、shell 当作命令执行的配置（.ssh 下的文件、Git 的配置和钩子、shell 的启动文件）。
 pub fn write_needs_confirmation(path: &Path) -> Option<String> {
     let path = path.to_string_lossy().replace('\\', "/").to_lowercase();
-    if path
+    let parts: Vec<&str> = path
         .split('/')
-        .any(|part| matches!(part, "startup" | "启动" | "启动项目"))
+        .map(|part| part.trim_end_matches([' ', '.']))
+        .collect();
+    if parts
+        .iter()
+        .any(|part| matches!(*part, "startup" | "启动" | "启动项目"))
     {
         return Some("写入启动文件夹会在登录时运行程序".into());
     }
-    [
-        ".ps1", ".psm1", ".bat", ".cmd", ".vbs", ".vbe", ".jse", ".wsf", ".lnk", ".hta", ".exe",
-        ".com", ".scr", ".url", ".reg", ".msi",
-    ]
-    .iter()
-    .any(|suffix| path.trim_end_matches([' ', '.']).ends_with(suffix))
-    .then(|| "写入脚本、程序或快捷方式可能执行命令".into())
+    let name = parts.last().copied().unwrap_or("");
+    let in_git = parts.len() >= 2 && parts[parts.len() - 2] == ".git";
+    if parts.contains(&".ssh")
+        || parts.windows(2).any(|pair| pair == [".git", "hooks"])
+        || (in_git && name == "config")
+        || matches!(
+            name,
+            ".gitconfig"
+                | ".bashrc"
+                | ".bash_profile"
+                | ".bash_login"
+                | ".profile"
+                | ".zshrc"
+                | ".zprofile"
+                | ".zshenv"
+                | ".zlogin"
+        )
+    {
+        return Some("写入 SSH、Git 或 shell 的配置可能让它们执行命令".into());
+    }
+    ends_with_any(&path, &RUNNABLE).then(|| "写入脚本、程序或快捷方式可能执行命令".into())
+}
+
+/// Windows 上双击或打开就会运行的脚本、程序和快捷方式：写入要确认，open_path 不打开
+const RUNNABLE: [&str; 17] = [
+    ".ps1", ".psm1", ".bat", ".cmd", ".vbs", ".vbe", ".jse", ".wsf", ".lnk", ".hta", ".exe",
+    ".com", ".scr", ".url", ".reg", ".msi", ".dll",
+];
+/// 另外这些用默认程序打开时也会运行（或安装）程序；写它们是正常的开发工作（.js、.py 等），只在打开时拒绝
+const RUNS_WHEN_OPENED: [&str; 22] = [
+    ".js",
+    ".jar",
+    ".py",
+    ".pyw",
+    ".pif",
+    ".cpl",
+    ".msc",
+    ".msp",
+    ".scf",
+    ".ws",
+    ".wsh",
+    ".wsc",
+    ".sct",
+    ".chm",
+    ".application",
+    ".appref-ms",
+    ".settingcontent-ms",
+    ".appx",
+    ".appxbundle",
+    ".msix",
+    ".msixbundle",
+    ".diagcab",
+];
+
+/// 小写、去掉末尾点和空格（Windows 会忽略它们）后的 path 是不是以 suffixes 里的某一个结尾
+fn ends_with_any(path: &str, suffixes: &[&str]) -> bool {
+    let path = path.trim_end_matches([' ', '.']);
+    suffixes.iter().any(|suffix| path.ends_with(suffix))
+}
+
+/// 用默认程序打开 path 会不会直接运行程序（脚本、程序、快捷方式、安装包等）
+///
+/// :param path: 文件路径
+/// :return: 会运行为 true
+pub fn runs_when_opened(path: &Path) -> bool {
+    let path = path.to_string_lossy().replace('\\', "/").to_lowercase();
+    ends_with_any(&path, &RUNNABLE) || ends_with_any(&path, &RUNS_WHEN_OPENED)
+}
+
+/// open_path 只打开这些类型：文档、图片、音视频、文本、网页、压缩包（打开只是看，不会运行程序）。
+/// 列不全“会运行”的类型（装了什么程序就多出什么），所以反过来只放行这些
+const OPENABLE: [&str; 72] = [
+    // 文档（不含带宏的 .docm、.xlsm 等）
+    "pdf", "txt", "md", "markdown", "rtf", "doc", "docx", "odt", "xls", "xlsx", "ods", "csv", "tsv",
+    "ppt", "pptx", "odp", "epub", "xps", "oxps", // 图片
+    "png", "jpg", "jpeg", "gif", "webp", "bmp", "svg", "ico", "tif", "tiff", "heic", "avif",
+    // 音频、视频
+    "mp3", "wav", "flac", "aac", "ogg", "oga", "m4a", "wma", "opus", "mp4", "m4v", "mkv", "mov",
+    "avi", "wmv", "webm", "flv", "mpg", "mpeg", // 文本、数据、网页
+    "log", "json", "xml", "yaml", "yml", "toml", "ini", "cfg", "conf", "html", "htm",
+    // 压缩包
+    "zip", "7z", "rar", "tar", "gz", "tgz", "bz2", "xz", "zst", "lz4", "cab",
+];
+
+/// open_path 能不能用默认程序打开 path：文件夹、或 OPENABLE 里的类型；其他都不打开
+///
+/// :param path: 路径（规范化后的）
+/// :param is_dir: 是不是文件夹
+/// :return: 能打开为 true
+pub fn openable(path: &Path, is_dir: bool) -> bool {
+    if is_dir {
+        return true;
+    }
+    let name = path.to_string_lossy().to_lowercase();
+    let name = name.trim_end_matches([' ', '.']);
+    let Some((_, extension)) = name.rsplit_once('.') else {
+        return false;
+    };
+    !extension.contains(['/', '\\']) && OPENABLE.contains(&extension) && !runs_when_opened(path)
 }
 /// 判断 path 是否需要写入确认；只用于分类，访问前仍须沙箱校验。
 pub fn is_dangerous_path(path: &str) -> bool {
@@ -1374,7 +1622,8 @@ mod editing_tests {
             .description
             .as_deref()
             .unwrap();
-        assert!(description.contains("不能覆盖已有二进制文件或超过 5 MiB 的已有文件"));
+        assert!(description.contains("不能覆盖二进制文件"));
+        assert!(description.contains("不能覆盖超过 5 MiB 的已有文件"));
     }
     #[cfg(windows)]
     #[test]
@@ -1648,6 +1897,133 @@ mod confirmation_tests {
             )));
         }
     }
+    #[test]
+    fn 会被_ssh_git_shell_执行的配置和动态库要确认() {
+        for path in [
+            "C:/Users/a/.ssh/config",
+            "C:/Users/a/.SSH/authorized_keys",
+            "C:/work/repo/.git/hooks/pre-commit",
+            "C:/work/repo/.git/hooks",
+            "C:/work/repo/.git/config",
+            "C:/Users/a/.gitconfig",
+            "C:/Users/a/.bashrc",
+            "C:/Users/a/.profile .",
+            "C:/work/lib/plugin.DLL",
+        ] {
+            assert!(is_dangerous_path(path), "{path}");
+        }
+        assert_eq!(
+            write_needs_confirmation(Path::new("C:/work/repo/.git/hooks/pre-push")).as_deref(),
+            Some("写入 SSH、Git 或 shell 的配置可能让它们执行命令")
+        );
+        for path in [
+            "C:/work/repo/.gitignore",
+            "C:/work/repo/.github/workflows/ci.yml",
+            "C:/work/notes/config",
+            "C:/work/repo/src/hooks/use_state.ts",
+            "C:/work/repo/.git/HEAD",
+        ] {
+            assert!(!is_dangerous_path(path), "{path}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod protected_tests {
+    use super::*;
+    #[test]
+    fn pierlink_自己的目录在授权文件夹里也不让读写() {
+        let _protected = PROTECTED_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let root = crate::test_support::tempdir();
+        let data = root.path().join("pierlink-data");
+        fs::create_dir_all(data.join("updates")).unwrap();
+        fs::write(data.join("updates/pending.bin"), "x").unwrap();
+        fs::write(root.path().join("ok.txt"), "x").unwrap();
+        set_protected_dirs(std::slice::from_ref(&data));
+        let sb = Sandbox::new(&[root.path().into()]);
+        let pending = data.join("updates/pending.bin");
+        assert_eq!(
+            sb.resolve_read(pending.to_str().unwrap()).unwrap_err().code,
+            "mcp.path_protected"
+        );
+        assert_eq!(
+            sb.resolve_write(pending.to_str().unwrap())
+                .unwrap_err()
+                .code,
+            "mcp.path_protected"
+        );
+        assert_eq!(
+            sb.resolve_entry(data.join("new.txt").to_str().unwrap())
+                .unwrap_err()
+                .code,
+            "mcp.path_protected"
+        );
+        assert!(
+            sb.resolve_read(root.path().join("ok.txt").to_str().unwrap())
+                .is_ok()
+        );
+        // 直接把受保护的目录授权给 AI：列为不可用，不当授权目录
+        let only = Sandbox::new(std::slice::from_ref(&data));
+        assert!(only.folders.is_empty());
+        assert_eq!(only.unavailable_folders[0].code, "mcp.path_protected");
+        assert!(is_protected(&data.join("不存在的/文件.txt")));
+        assert!(!is_protected(&root.path().join("ok.txt")));
+    }
+}
+
+/// 往终端里发的图片最大多少字节（和手机发图片一样）
+const TERMINAL_IMAGE_LIMIT: usize = 8 * 1024 * 1024;
+
+/// 图片文件头对应的扩展名（PNG、JPEG、GIF、WebP）；不是这几种返回 None
+fn image_extension(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        Some("png")
+    } else if bytes.starts_with(b"\xff\xd8\xff") {
+        Some("jpg")
+    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        Some("gif")
+    } else if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP") {
+        Some("webp")
+    } else {
+        None
+    }
+}
+
+/// 读出 sb 里要发给终端的图片：扩展名是 png/jpg/jpeg/gif/webp，文件头也是这几种之一，最大 8 MiB。
+///
+/// :param sb: 授权文件夹
+/// :param path: 图片路径（Windows 绝对路径）
+/// :return: (图片内容, 按文件头定的扩展名 png/jpg/gif/webp)
+pub(super) fn read_terminal_image(
+    sb: &Sandbox,
+    path: &str,
+) -> Result<(Vec<u8>, &'static str), AppError> {
+    let resolved = sb.resolve_read(path)?;
+    let named = resolved
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| {
+            matches!(
+                e.to_ascii_lowercase().as_str(),
+                "png" | "jpg" | "jpeg" | "gif" | "webp"
+            )
+        });
+    let not_image = || {
+        path_error(
+            "mcp.path_invalid",
+            &resolved,
+            "mcp.image_must_be_png_jpeg_gif_or_webp",
+            "image_path 要是 PNG、JPEG、GIF 或 WebP 图片（按扩展名和文件头判断）",
+        )
+    };
+    if !named {
+        return Err(not_image());
+    }
+    let bytes = read_bounded(&resolved, TERMINAL_IMAGE_LIMIT)?;
+    let extension = image_extension(&bytes).ok_or_else(not_image)?;
+    Ok((bytes, extension))
 }
 
 // 小图片走 MCP 图片内容，不占用按行或按字节文本响应。
@@ -1692,6 +2068,169 @@ pub(super) fn read_image(
     Ok(Some(
         serde_json::json!({"path":path,"size":bytes.len(),"image":{"data":Base64::encode_string(&bytes),"mimeType":mime}}),
     ))
+}
+
+#[cfg(test)]
+mod multi_edit_tests {
+    use super::*;
+    #[test]
+    fn 多处修改按顺序做_全部成功才写入_失败时写明第几处() {
+        let root = crate::test_support::tempdir();
+        let sb = Sandbox::new(&[root.path().into()]);
+        let path = root.path().join("a.txt");
+        let text = path.to_str().unwrap();
+        fs::write(&path, "alpha\r\nbeta\r\nbeta\r\ngamma\r\n").unwrap();
+        let original = fs::read(&path).unwrap();
+        let edit = |old, new, all| Edit { old, new, all };
+        // 第二处在第一处改完的内容上找；换行按原文件的 CRLF 写
+        let edited = edit_file_many(
+            &sb,
+            text,
+            &[
+                edit("alpha", "first\nline", false),
+                edit("first\nline\nbeta", "one", false),
+                edit("beta", "two", true),
+            ],
+            true,
+            Some(&hash(&original)),
+        )
+        .unwrap();
+        assert_eq!(edited.replacements, 3);
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "one\r\ntwo\r\ngamma\r\n"
+        );
+        let before = fs::read(&path).unwrap();
+        for (edits, code, key) in [
+            (
+                vec![edit("one", "1", false), edit("missing", "x", false)],
+                "mcp.edit_not_found",
+                "mcp.edit_n_matching_text_was_not_found",
+            ),
+            (
+                vec![edit("gamma", "two", false), edit("two", "x", false)],
+                "mcp.edit_not_unique",
+                "mcp.edit_n_multiple_matches_found",
+            ),
+            (
+                vec![edit("one", "1", false), edit("", "x", false)],
+                "mcp.edit_not_found",
+                "mcp.edit_n_matching_text_cannot_be_empty",
+            ),
+        ] {
+            let error = edit_file_many(&sb, text, &edits, true, None).unwrap_err();
+            assert_eq!(error.code, code);
+            assert_eq!(error.params["reason_key"], key);
+            assert_eq!(error.params["edit"], "2");
+            assert!(error.params["reason"].starts_with("第 2 处修改："));
+            // 任何一处不成，文件都不改
+            assert_eq!(fs::read(&path).unwrap(), before);
+        }
+        // 一处修改照旧，原因里不写第几处
+        let error = edit_file(&sb, text, "missing", "x", false, None).unwrap_err();
+        assert_eq!(
+            error.params["reason_key"],
+            "mcp.matching_text_was_not_found_in_the_file"
+        );
+        assert!(!error.params.contains_key("edit"));
+    }
+}
+
+#[cfg(test)]
+mod terminal_image_tests {
+    use super::*;
+    #[test]
+    fn 发给终端的图片按扩展名和文件头认_最大八兆() {
+        let root = crate::test_support::tempdir();
+        let sb = Sandbox::new(&[root.path().into()]);
+        let write = |name: &str, bytes: &[u8]| {
+            let path = root.path().join(name);
+            fs::write(&path, bytes).unwrap();
+            path.to_str().unwrap().to_owned()
+        };
+        for (name, bytes, extension) in [
+            ("a.png", b"\x89PNG\r\n\x1a\n...".as_slice(), "png"),
+            ("b.JPEG", b"\xff\xd8\xff\xe0", "jpg"),
+            ("c.gif", b"GIF89a..", "gif"),
+            ("d.webp", b"RIFF\0\0\0\0WEBPVP8 ", "webp"),
+            // 扩展名和文件头不一致时按文件头定
+            ("e.png", b"\xff\xd8\xff\xe0", "jpg"),
+        ] {
+            let path = write(name, bytes);
+            let (read, ext) = read_terminal_image(&sb, &path).unwrap();
+            assert_eq!((read.as_slice(), ext), (bytes, extension), "{name}");
+        }
+        for (name, bytes) in [
+            ("f.txt", b"\x89PNG\r\n\x1a\n".as_slice()),
+            ("g.png", b"not png"),
+        ] {
+            let path = write(name, bytes);
+            let error = read_terminal_image(&sb, &path).unwrap_err();
+            assert_eq!(
+                error.params["reason_key"], "mcp.image_must_be_png_jpeg_gif_or_webp",
+                "{name}"
+            );
+        }
+        let big = write("big.png", &vec![0; TERMINAL_IMAGE_LIMIT + 1]);
+        assert_eq!(
+            read_terminal_image(&sb, &big).unwrap_err().code,
+            "mcp.file_too_large"
+        );
+    }
+}
+
+#[cfg(test)]
+mod binary_write_tests {
+    use super::*;
+    #[test]
+    fn 原样写入字节_新建和覆盖二进制文件_超过上限和散列不符时不写() {
+        let root = crate::test_support::tempdir();
+        let sb = Sandbox::new(&[root.path().into()]);
+        let path = root.path().join("新/图片.png");
+        let text = path.to_str().unwrap();
+        let bytes = [0x89, b'P', b'N', b'G', 0, 0xff, b'\r', b'\n'];
+        let written = write_bytes(&sb, text, &bytes, None).unwrap();
+        assert_eq!(written.bytes, bytes.len());
+        assert_eq!(written.sha256, hash(&bytes));
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        // 文字方式不能覆盖二进制文件，原样写入可以
+        assert!(write_checked(&sb, text, "文字", None).is_err());
+        let changed = [1u8, 2, 3, 0];
+        assert_eq!(
+            write_bytes(&sb, text, &changed, Some("0".repeat(64).as_str()))
+                .unwrap_err()
+                .code,
+            "mcp.file_changed"
+        );
+        write_bytes(&sb, text, &changed, Some(&written.sha256)).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), changed);
+        // 换行不转换：CRLF 原样保留
+        let crlf = root.path().join("a.txt");
+        fs::write(&crlf, "x\n").unwrap();
+        write_bytes(&sb, crlf.to_str().unwrap(), b"a\r\nb", None).unwrap();
+        assert_eq!(fs::read(&crlf).unwrap(), b"a\r\nb");
+        assert_eq!(
+            write_bytes(&sb, text, &vec![0; WRITE_LIMIT + 1], None)
+                .unwrap_err()
+                .code,
+            "mcp.file_too_large"
+        );
+        // 已有文件超过 5 MiB：不覆盖
+        let big = root.path().join("big.bin");
+        fs::write(&big, vec![0u8; WRITE_LIMIT + 1]).unwrap();
+        assert_eq!(
+            write_bytes(&sb, big.to_str().unwrap(), b"x", None)
+                .unwrap_err()
+                .code,
+            "mcp.file_too_large"
+        );
+        assert_eq!(
+            write_bytes(&sb, root.path().to_str().unwrap(), b"x", None)
+                .unwrap_err()
+                .code,
+            "mcp.path_invalid"
+        );
+    }
 }
 
 #[cfg(test)]

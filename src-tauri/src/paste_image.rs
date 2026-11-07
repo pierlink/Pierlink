@@ -182,19 +182,8 @@ pub(crate) fn store_remote(
     ext: &str,
 ) -> Result<String, AppError> {
     let now = SystemTime::now();
-    let path = crate::files::with_session(app, loc, |session| {
-        // 文件名带随机字符，几乎不会重名；万一已经有同名的文件或链接（别人放的），换个名字再试一次
-        let mut exists = None;
-        for _ in 0..2 {
-            let path = format!("{REMOTE_DIR}/{}", file_name(now, ext));
-            match upload(session, &path, bytes) {
-                Ok(()) => return Ok(path),
-                Err(e) if e.code == "sftp.exists" => exists = Some(e),
-                Err(e) => return Err(e),
-            }
-        }
-        Err(exists.unwrap_or_else(|| AppError::new("sftp.exists")))
-    })?;
+    let path =
+        crate::files::with_session(app, loc, |session| store_with(session, bytes, ext, now))?;
     eprintln!("图片已传到服务器: 路径={path}, 字节={}", bytes.len());
     // 清理放到后台：/tmp 里东西多时列目录要一会儿，不耽误这次粘贴
     if clean_due(&loc.key(), Instant::now()) {
@@ -205,6 +194,52 @@ pub(crate) fn store_remote(
                 Ok(())
             });
         });
+    }
+    Ok(path)
+}
+
+/// 用 session 把图片写到服务器的 /tmp，返回路径。文件名带随机字符，几乎不会重名；
+/// 万一已经有同名的文件或链接（别人放的），换个名字再试一次
+fn store_with(
+    session: &mut pierlink_core::sftp::SftpSession,
+    bytes: &[u8],
+    ext: &str,
+    now: SystemTime,
+) -> Result<String, AppError> {
+    let mut exists = None;
+    for _ in 0..2 {
+        let path = format!("{REMOTE_DIR}/{}", file_name(now, ext));
+        match upload(session, &path, bytes) {
+            Ok(()) => return Ok(path),
+            Err(e) if e.code == "sftp.exists" => exists = Some(e),
+            Err(e) => return Err(e),
+        }
+    }
+    Err(exists.unwrap_or_else(|| AppError::new("sftp.exists")))
+}
+
+/// AI 往服务器终端里发图片：和界面粘贴图片一样存到那台服务器的 /tmp（只有自己能读），返回路径。
+/// 连接按后台方式，不弹密码框（见 mcp::open_sftp）；顺便在后台清理旧图片（和界面共用每小时一次的限制）。阻塞。
+///
+/// :param server_id: 服务器 ID
+/// :param bytes: 图片内容
+/// :param ext: 扩展名（png、jpg、webp、gif）
+/// :return: 服务器上的绝对路径；上传超过 30 秒返回 paste.upload_timeout
+pub(crate) fn store_remote_for_ai(
+    app: &AppHandle,
+    server_id: &str,
+    bytes: &[u8],
+    ext: &str,
+) -> Result<String, AppError> {
+    let mut session = crate::mcp::open_sftp(app, server_id)?;
+    let path = store_with(&mut session, bytes, ext, SystemTime::now())?;
+    eprintln!("AI 发的图片已传到服务器: 路径={path}, 字节={}", bytes.len());
+    let key = LocDto::Server {
+        server_id: server_id.to_owned(),
+    }
+    .key();
+    if clean_due(&key, Instant::now()) {
+        std::thread::spawn(move || clean_remote(&mut session, SystemTime::now()));
     }
     Ok(path)
 }

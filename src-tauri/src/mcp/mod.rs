@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
 /// 会话变化（界面收到后重新取状态）
 pub const SESSIONS_EVENT: &str = "pierlink://mcp-sessions";
@@ -41,6 +41,8 @@ pub const NOTICE_EVENT: &str = "pierlink://mcp-notice";
 pub const ENTRIES_EVENT: &str = "pierlink://mcp-entries";
 /// AI 开的后台任务有变化（开始、结束、被停掉）：界面重新拉列表
 pub const JOBS_EVENT: &str = "pierlink://mcp-jobs";
+/// 用户改了“AI 操作哪台电脑”（界面重新读电脑列表）
+pub const PIN_EVENT: &str = "pierlink://mcp-pin";
 
 pub(crate) use entries::TUNNEL_PREFIX;
 
@@ -93,6 +95,32 @@ pub struct McpActivityDto {
     pub approval: String,
     /// 命令输出的结尾（已脱敏，只在内存里）；没有输出的操作为 null
     pub output: Option<McpOutputPreviewDto>,
+    /// 转给了哪台电脑执行（几台电脑同时接入时）；在这台执行的为 null
+    pub forwarded_to: Option<String>,
+    /// 哪台电脑转来的；AI 直接连这台的为 null
+    pub forwarded_from: Option<String>,
+}
+
+/// 连着同一批服务器的电脑（几台电脑同时接入时）
+#[derive(Serialize, Type, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct McpComputerDto {
+    /// 实例号
+    pub instance: String,
+    /// 电脑名
+    pub name: String,
+}
+
+/// 几台电脑同时接入时的电脑列表和生效的指定
+#[derive(Serialize, Type, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct McpComputersDto {
+    /// 这台电脑的实例号
+    pub this_instance: String,
+    /// 连着同一批服务器的电脑（含这台，这台在最前）
+    pub computers: Vec<McpComputerDto>,
+    /// 用户指定 AI 操作的那台；没指定（自动判断）为 null
+    pub pinned: Option<McpComputerDto>,
 }
 
 #[derive(Serialize, Type, Clone, Debug)]
@@ -211,6 +239,8 @@ impl From<AuditRecord> for McpActivityDto {
                 stdout: o.stdout,
                 stderr: o.stderr,
             }),
+            forwarded_to: r.forwarded_to,
+            forwarded_from: r.forwarded_from,
         }
     }
 }
@@ -230,8 +260,21 @@ impl McpState {
         // 服务器上的地址文件也记着它，端口被占用时据此分清是不是自己
         let instance = load_instance(app);
         service.set_instance(&instance);
+        // 终端名牌带上这台电脑的编号（服务器上据此判断用户在哪台电脑前）
+        crate::files::set_marker_prefix(&instance);
         let pipe = Arc::new(Mutex::new(PipeStatus::default()));
         start_pipe(&service, &pipe);
+        // 伙伴文件每半小时重写一次：别的电脑据此知道这台还在（两小时没重写的不再算）
+        let refresher = app.clone();
+        std::thread::spawn(move || {
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(30 * 60));
+                match refresher.try_state::<McpState>() {
+                    Some(state) => state.entries.rewrite_peer_files(&refresher),
+                    None => return,
+                }
+            }
+        });
         Ok(Self {
             service,
             host,
@@ -338,6 +381,25 @@ fn wanted_entries(settings: &McpSettingsDto) -> HashMap<String, u16> {
 }
 
 /// 按设置开关服务器入口（启动时、改设置后调用；会建 SSH 连接，在后台线程里做）
+/// 告诉 AI 的文件工具哪些是 Pierlink 自己的目录：数据目录，以及装好的程序所在的目录（里面有卸载程序才算，
+/// 免得直接从“下载”之类的文件夹运行时把整个文件夹锁住）。授权文件夹包含它们时，AI 也读写不了。
+pub fn protect_own_folders(app: &AppHandle) {
+    let mut dirs = Vec::new();
+    match crate::data::data_dir(app) {
+        Ok(dir) => dirs.push(dir),
+        Err(e) => eprintln!("取数据目录失败，AI 文件工具没法避开它: 错误={}", e.code),
+    }
+    if let Some(dir) = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(std::path::Path::to_path_buf))
+        .filter(|dir| dir.join("uninstall.exe").is_file())
+    {
+        dirs.push(dir);
+    }
+    eprintln!("AI 文件工具不碰的目录: 个数={}", dirs.len());
+    pierlink_core::mcp::tools::files::set_protected_dirs(&dirs);
+}
+
 pub fn apply_entries(app: &AppHandle) {
     let app = app.clone();
     std::thread::spawn(move || {
@@ -367,6 +429,8 @@ pub fn shutdown(app: &AppHandle) {
     }
     state.host.terminals.cancel_all();
     state.service.stop_all();
+    // 伙伴文件不像 mcp.json 那样还有客户端要用：退出时删掉，别的电脑就不会再当这台还在
+    state.entries.remove_peer_files(app);
 }
 
 /// AI 开的一个后台任务（MCP 页列出来，可以停掉）
@@ -460,6 +524,49 @@ pub(crate) fn run_server_command(
         cancelled,
     )
 }
+
+/// 为 AI 传文件新开一条 SFTP 会话：和文件栏的传输一样单独开（内置 SSH 走批量连接），
+/// 但按后台方式连接，不弹密码框，缺密码或验证码时返回 ssh.password_needed / ssh.two_factor_required。
+///
+/// :param server_id: 服务器 ID
+/// :return: SFTP 会话；要临时配置文件的手动跳板返回 files.jump_unsupported
+pub(crate) fn open_sftp(
+    app: &AppHandle,
+    server_id: &str,
+) -> Result<pierlink_core::sftp::SftpSession, AppError> {
+    let server = crate::servers::load(app, server_id)?;
+    let access = crate::keys::Access::Background("AI 接入");
+    let program = pierlink_core::process::SshProgram {
+        path: crate::terminal::find_ssh(app)?,
+    };
+    let openssh = || {
+        let target = crate::servers::target(&server)?;
+        pierlink_core::ssh::args::build_args(
+            &target,
+            &pierlink_core::ssh::args::Purpose::Sftp,
+            &crate::keys::ssh_opts(app, &server, access)?,
+        )
+    };
+    let builtin = app.state::<crate::builtin::BuiltinState>();
+    let passwords = app.state::<crate::passwords::PasswordState>();
+    let request = pierlink_core::builtin::ConnectionRequest {
+        server: &server,
+        class: pierlink_core::builtin::ConnectionClass::Bulk,
+        vault: passwords.vault.clone(),
+        callbacks: builtin.callbacks.clone(),
+        interactive: false,
+        cancelled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        progress: None,
+    };
+    let command = pierlink_core::sftp::command(&builtin.manager, request, openssh)?;
+    if command.config_text.is_some() {
+        return Err(AppError::new("files.jump_unsupported"));
+    }
+    pierlink_core::sftp::SftpSession::open(&program, &command, SFTP_OPEN_TIMEOUT)
+}
+
+/// 建立 SFTP 会话的超时（和文件栏一样）
+const SFTP_OPEN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 
 /// AI 要打开终端的目录能不能用：给终端的输入等于打字，路径里的换行会提前回车，把后半截当命令执行。
 /// 在请界面开终端之前检查，免得开出一个用不了的终端。
@@ -648,6 +755,153 @@ pub async fn mcp_token_rotate(app: AppHandle, server_id: String) -> Result<(), A
     tauri::async_runtime::spawn_blocking(move || {
         let state = state(&app)?;
         state.entries.rotate(&app, &state.service, &server_id)
+    })
+    .await
+    .map_err(|e| AppError::new("mcp.task_failed").with("reason", e.to_string()))?
+}
+
+/// 连着同一批服务器的电脑和生效的指定：到每个连着的入口的服务器上读伙伴文件
+#[tauri::command]
+#[specta::specta]
+pub async fn mcp_computers(app: AppHandle) -> Result<McpComputersDto, AppError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = state(&app)?;
+        Ok(computers(&app, &state).0)
+    })
+    .await
+    .map_err(|e| AppError::new("mcp.task_failed").with("reason", e.to_string()))?
+}
+
+/// 读各服务器上的伙伴文件，合成电脑列表；生效的指定取这台的设置和各台伙伴文件里最新的那条（一起返回）
+fn computers(
+    app: &AppHandle,
+    state: &McpState,
+) -> (
+    McpComputersDto,
+    Option<pierlink_core::mcp::peers::PinRecord>,
+) {
+    use pierlink_core::mcp::peers;
+    let own = state.entries.instance().to_owned();
+    let mut list = vec![McpComputerDto {
+        instance: own.clone(),
+        name: crate::sync::computer_name(),
+    }];
+    let mut pin = settings::load_pin(app);
+    for server_id in state.entries.running_ids() {
+        let output = match entries::run_on_server_value(
+            app,
+            &server_id,
+            &peers::discover_script(None),
+            std::time::Duration::from_secs(15),
+        ) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!(
+                    "读服务器上的伙伴文件失败: 服务器={server_id}, 错误={}",
+                    e.code
+                );
+                continue;
+            }
+        };
+        for text in output["peers"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(serde_json::Value::as_str)
+        {
+            let Some(record) = peers::parse_record(text) else {
+                continue;
+            };
+            if record.instance == own {
+                continue;
+            }
+            if let Some(theirs) = &record.pin
+                && pin.as_ref().is_none_or(|p| theirs.set_at > p.set_at)
+            {
+                pin = Some(theirs.clone());
+            }
+            if !list.iter().any(|c| c.instance == record.instance) {
+                list.push(McpComputerDto {
+                    instance: record.instance,
+                    name: record.computer,
+                });
+            }
+        }
+    }
+    let latest = pin.clone();
+    let pinned = pin.and_then(|p| {
+        let target = p.target?;
+        let name = list
+            .iter()
+            .find(|c| c.instance == target)
+            .map(|c| c.name.clone())
+            .unwrap_or(p.computer);
+        Some(McpComputerDto {
+            instance: target,
+            name,
+        })
+    });
+    (
+        McpComputersDto {
+            this_instance: own,
+            computers: list,
+            pinned,
+        },
+        latest,
+    )
+}
+
+/// 指定 AI 操作哪台电脑（instance 为 null 是取消指定、自动判断）：存进设置，重写服务器上这台的伙伴文件
+///
+/// :param instance: 指定的电脑的实例号
+/// :param computer: 指定的电脑名（显示用）
+#[tauri::command]
+#[specta::specta]
+pub async fn mcp_set_pin(
+    app: AppHandle,
+    instance: Option<String>,
+    computer: String,
+) -> Result<(), AppError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if let Some(target) = &instance
+            && (target.is_empty()
+                || target.len() > 64
+                || !target
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'))
+        {
+            return Err(AppError::new("mcp.invalid_setting").with("field", "pin"));
+        }
+        let state = state(&app)?;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or_default();
+        // 几台电脑的时钟不一定一致：比见过的最新指定还晚一点，保证这次的改动生效
+        let seen = computers(&app, &state).1.map_or(0, |p| p.set_at);
+        let set_at = now.max(seen.saturating_add(1));
+        let pin = pierlink_core::mcp::peers::PinRecord {
+            target: instance,
+            computer: computer
+                .chars()
+                .filter(|c| !c.is_control())
+                .take(128)
+                .collect(),
+            set_at,
+        };
+        settings::save_pin(&app, &pin)?;
+        state.service.forget_routes();
+        state.entries.rewrite_peer_files(&app);
+        eprintln!(
+            "AI 操作哪台电脑: 指定={}",
+            pin.target
+                .as_deref()
+                .map_or("自动", |_| pin.computer.as_str())
+        );
+        if let Err(e) = app.emit(PIN_EVENT, ()) {
+            eprintln!("推送指定电脑的变化失败: 错误={e}");
+        }
+        Ok(())
     })
     .await
     .map_err(|e| AppError::new("mcp.task_failed").with("reason", e.to_string()))?

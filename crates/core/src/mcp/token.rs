@@ -99,6 +99,16 @@ printf '%s\n' '{{"ok":true}}'
     )
 }
 
+/// 读服务器上的 ~/.pierlink/mcp.json（主入口那台关了、这台接过端口时，接过 AI 客户端在用的令牌）。
+/// 文件不在、是链接或目录是链接时输出 {}；输出交给 run_script 按 JSON 读。
+pub fn read_token_file_script() -> String {
+    r#"dir="$HOME/.pierlink"
+f="$dir/mcp.json"
+if [ -f "$f" ] && [ ! -L "$f" ] && [ ! -L "$dir" ]; then head -c 65536 -- "$f"; else printf '%s\n' '{}'; fi
+"#
+    .into()
+}
+
 /// 令牌的短哈希（SHA-256 的前 8 字节，十六进制）：写进 mcp.json，删除时认出是不是自己写的；不能反推出令牌
 pub fn token_id(token: &str) -> String {
     use sha2::{Digest, Sha256};
@@ -172,6 +182,24 @@ mod tests {
             instance: "inst-a",
             computer: "电脑 A",
         };
+
+        #[test]
+        fn 读回地址文件里的令牌_没有文件时是空对象() {
+            let home = crate::test_support::tempdir();
+            let read = || {
+                let output = run(home.path(), &read_token_file_script());
+                assert!(output.status.success());
+                serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap()
+            };
+            assert_eq!(read(), serde_json::json!({}));
+            framed(
+                home.path(),
+                &token_file_script("http://127.0.0.1:47821/mcp", "tok-123", OWNER),
+            );
+            let value = read();
+            assert_eq!(value["token"], "tok-123");
+            assert_eq!(value["instance"], "inst-a");
+        }
 
         fn run(home: &Path, script: &str) -> std::process::Output {
             let mut command = Command::new("/bin/sh");

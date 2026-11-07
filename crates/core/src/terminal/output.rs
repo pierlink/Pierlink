@@ -110,15 +110,92 @@ pub struct OutputRead {
     pub quiet_for: Duration,
 }
 
+/// kitty 键盘协议每个屏的栈最多存多少层（按协议，满了丢最旧的）
+const KITTY_STACK: usize = 16;
+
+/// 一个屏上程序开着的 kitty 键盘协议标志和压栈的旧标志
+#[derive(Default, Clone, Debug, PartialEq, Eq)]
+struct KittyScreen {
+    flags: u16,
+    stack: Vec<u16>,
+}
+
+/// kitty 键盘协议的状态，和界面（kittyKeys.ts）一样只认“消除歧义”这一级（标志 1）：
+/// 程序开了它，Shift+Enter 等带修饰键的回车要按协议发。主屏和备用屏各一套，全屏程序异常退出也不影响回到主屏后的 shell
+#[derive(Default, Clone, Debug, PartialEq, Eq)]
+struct Kitty {
+    screens: [KittyScreen; 2],
+}
+impl Kitty {
+    /// CSI > flags u：压栈并设置新标志
+    fn push(&mut self, alternate: bool, flags: u16) {
+        let screen = &mut self.screens[usize::from(alternate)];
+        if screen.stack.len() >= KITTY_STACK {
+            screen.stack.remove(0);
+        }
+        screen.stack.push(screen.flags);
+        screen.flags = flags & 1;
+    }
+    /// CSI < n u：弹出 n 层（弹空就回到 0）
+    fn pop(&mut self, alternate: bool, count: u16) {
+        let screen = &mut self.screens[usize::from(alternate)];
+        for _ in 0..count.max(1) {
+            screen.flags = screen.stack.pop().unwrap_or(0);
+        }
+    }
+    /// CSI = flags ; mode u：1 设置、2 加上、3 去掉
+    fn set(&mut self, alternate: bool, flags: u16, mode: u16) {
+        let screen = &mut self.screens[usize::from(alternate)];
+        let flags = flags & 1;
+        match mode {
+            2 => screen.flags |= flags,
+            3 => screen.flags &= !flags,
+            _ => screen.flags = flags,
+        }
+    }
+    fn flags(&self, alternate: bool) -> u16 {
+        self.screens[usize::from(alternate)].flags
+    }
+}
+
 /// 程序响铃或发通知（OSC 9、OSC 777 notify）：Codex、Claude Code 等你回答、做完一轮时会发。
-/// 解析器里记下来，Output 再按输出位置存起来给 terminal_wait 用
+/// 解析器里记下来，Output 再按输出位置存起来给 terminal_wait 用。也记程序开着的 kitty 键盘协议
 #[derive(Default)]
 struct Watch {
     notices: Vec<String>,
+    kitty: Kitty,
 }
 impl vt100::Callbacks for Watch {
     fn audible_bell(&mut self, _: &mut vt100::Screen) {
         self.notices.push("bell".into());
+    }
+    fn unhandled_csi(
+        &mut self,
+        screen: &mut vt100::Screen,
+        i1: Option<u8>,
+        i2: Option<u8>,
+        params: &[&[u16]],
+        c: char,
+    ) {
+        if c != 'u' || i2.is_some() {
+            return;
+        }
+        // 参数省略或为 0 时用默认值（和界面一样）
+        let param = |index: usize, default: u16| {
+            params
+                .get(index)
+                .and_then(|p| p.first())
+                .copied()
+                .filter(|v| *v > 0)
+                .unwrap_or(default)
+        };
+        let alternate = screen.alternate_screen();
+        match i1 {
+            Some(b'>') => self.kitty.push(alternate, param(0, 0)),
+            Some(b'<') => self.kitty.pop(alternate, param(0, 1)),
+            Some(b'=') => self.kitty.set(alternate, param(0, 0), param(1, 1)),
+            _ => {}
+        }
     }
     fn unhandled_osc(&mut self, _: &mut vt100::Screen, params: &[&[u8]]) {
         let text = |parts: &[&[u8]]| {
@@ -243,8 +320,11 @@ impl Output {
             vt100::MouseProtocolEncoding::Utf8 => b"\x1b[?1005h",
             vt100::MouseProtocolEncoding::Sgr => b"\x1b[?1006h",
         });
+        // kitty 键盘协议也是程序开的，同样带过去
+        let kitty = std::mem::take(&mut self.parser.callbacks_mut().kitty);
         eprintln!("终端屏幕副本出错，已重建: 动作={action}, 尺寸={cols}x{rows}");
         self.parser = new_parser(rows, cols);
+        self.parser.callbacks_mut().kitty = kitty;
         self.parser.process(&modes);
     }
     fn feed(&mut self, event: &TerminalEvent) {
@@ -556,6 +636,15 @@ impl TerminalManager {
             .parser
             .screen()
             .alternate_screen())
+    }
+
+    /// 返回 id 当前屏（主屏或备用屏）上程序开着的 kitty 键盘协议标志：只记“消除歧义”这一级，为 1 或 0。
+    /// 不存在的终端返回错误。
+    pub fn kitty_flags(&self, id: &str) -> Result<u16, AppError> {
+        let session = self.get(id)?;
+        let output = lock(&session.output);
+        let alternate = output.parser.screen().alternate_screen();
+        Ok(output.parser.callbacks().kitty.flags(alternate))
     }
 
     /// 手机上往上翻（up）或往下翻一次要写给 id 的字节，见 wheel_sequence；
@@ -933,6 +1022,50 @@ mod parser_mode_tests {
         assert!(screen.bracketed_paste());
         assert!(screen.application_cursor());
         assert_eq!(wheel_sequence(screen, true).unwrap(), b"\x1b[<64;40;8M");
+    }
+}
+
+#[cfg(test)]
+mod kitty_tests {
+    use super::*;
+
+    /// 喂进 bytes 后当前屏的 kitty 标志
+    fn flags_after(output: &mut Output, bytes: &[u8]) -> u16 {
+        output.feed(&TerminalEvent::Output(bytes.to_vec()));
+        let alternate = output.parser.screen().alternate_screen();
+        output.parser.callbacks().kitty.flags(alternate)
+    }
+
+    #[test]
+    fn kitty_键盘协议压栈出栈设置按屏分开且只记消除歧义() {
+        let mut output = Output::new(80, 24);
+        assert_eq!(flags_after(&mut output, b"\x1b[>1u"), 1);
+        // 只认标志 1：程序要的其他标志不记
+        assert_eq!(flags_after(&mut output, b"\x1b[>30u"), 0);
+        assert_eq!(flags_after(&mut output, b"\x1b[<u"), 1);
+        // 弹空回到 0；多弹不出错
+        assert_eq!(flags_after(&mut output, b"\x1b[<5u"), 0);
+        for (sequence, expected) in [
+            (b"\x1b[=1u".as_slice(), 1),
+            (b"\x1b[=1;3u", 0),
+            (b"\x1b[=3;2u", 1),
+            (b"\x1b[=0;1u", 0),
+        ] {
+            assert_eq!(flags_after(&mut output, sequence), expected, "{sequence:?}");
+        }
+        // 全屏程序在备用屏开了协议、没关就退出：回到主屏后 shell 不受影响
+        assert_eq!(flags_after(&mut output, b"\x1b[?1049h\x1b[>1u"), 1);
+        assert_eq!(flags_after(&mut output, b"\x1b[?1049l"), 0);
+        // 查询和不带前缀的 CSI u 不改状态；副本出错重建后照样保留
+        assert_eq!(flags_after(&mut output, b"\x1b[>1u\x1b[?u\x1b[u"), 1);
+        output.fail_next = true;
+        assert_eq!(flags_after(&mut output, b"x"), 1);
+        // 栈最多 16 层，满了丢最旧的
+        let mut kitty = Kitty::default();
+        for _ in 0..20 {
+            kitty.push(false, 1);
+        }
+        assert_eq!(kitty.screens[0].stack.len(), KITTY_STACK);
     }
 }
 

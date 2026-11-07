@@ -37,6 +37,10 @@ struct Host {
     cwd_requests: Mutex<Vec<String>>,
     action_input: Mutex<Option<(String, Vec<u8>)>>,
     action_blocked: AtomicBool,
+    sftp_opens: Mutex<Vec<String>>,
+    sftp_error: Mutex<Option<AppError>>,
+    /// 传给宿主的图片：(服务器 ID, 内容, 扩展名)
+    images: Mutex<Vec<(String, Vec<u8>, String)>>,
 }
 impl Host {
     fn new(terminals: Arc<TerminalManager>) -> Self {
@@ -75,6 +79,9 @@ impl Host {
             cwd_requests: Mutex::new(Vec::new()),
             action_input: Mutex::new(None),
             action_blocked: AtomicBool::new(false),
+            sftp_opens: Mutex::new(Vec::new()),
+            sftp_error: Mutex::new(None),
+            images: Mutex::new(Vec::new()),
         }
     }
     fn user_terminal(&self) -> String {
@@ -122,6 +129,7 @@ impl McpHost for Host {
                 online: None,
                 engine: None,
                 address: None,
+                key: None,
             });
         }
         for id in &permissions.servers {
@@ -133,6 +141,7 @@ impl McpHost for Host {
                 online: Some(true),
                 engine: Some("builtin".into()),
                 address: matches!(entry, Entry::Windows).then(|| "user@private:22".into()),
+                key: None,
             });
         }
         Ok(targets)
@@ -269,6 +278,32 @@ impl McpHost for Host {
     fn sync_rescan(&self, _folder_id: &str, _timeout: Duration) -> Result<(), AppError> {
         Ok(())
     }
+    fn open_sftp(&self, server_id: &str) -> Result<crate::sftp::SftpSession, AppError> {
+        assert_eq!(server_id, "server-id");
+        lock(&self.sftp_opens).push(server_id.into());
+        if let Some(error) = lock(&self.sftp_error).clone() {
+            return Err(error);
+        }
+        // 本机的 sftp-server 代替经 SSH 的会话：服务器上的路径就是本机路径
+        #[cfg(unix)]
+        return crate::sftp::SftpSession::spawn_server(std::path::Path::new(
+            "/usr/lib/openssh/sftp-server",
+        ));
+        #[cfg(not(unix))]
+        Err(AppError::new("sftp.connection_lost"))
+    }
+    fn upload_image(
+        &self,
+        server_id: &str,
+        bytes: &[u8],
+        extension: &str,
+    ) -> Result<String, AppError> {
+        lock(&self.images).push((server_id.into(), bytes.to_vec(), extension.into()));
+        if let Some(error) = lock(&self.sftp_error).clone() {
+            return Err(error);
+        }
+        Ok(format!("/tmp/pierlink-paste-test.{extension}"))
+    }
     fn notify(&self, event: HostEvent) {
         lock(&self.events).push(event);
     }
@@ -392,6 +427,15 @@ async fn until(mut check: impl FnMut() -> bool) {
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
 }
+/// 开一个 AI 终端，返回终端 ID
+async fn open_terminal(client: &mut Client, target: &str) -> String {
+    client
+        .call("open_terminal", json!({ "target": target }))
+        .await["result"]["structuredContent"]["terminal_id"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
 fn error_text(value: &Value) -> &str {
     value["result"]["content"][0]["text"].as_str().unwrap()
 }
@@ -432,7 +476,7 @@ async fn 旧式版本和工具列表不等待入口授权() {
             .permission_blocked
             .store(false, Ordering::Release);
         let tools = list["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 23);
+        assert_eq!(tools.len(), 27);
         assert!(
             tools
                 .iter()
@@ -1134,6 +1178,198 @@ async fn 全部停止取消所有正在运行的调用() {
 }
 
 #[cfg(unix)]
+#[cfg(unix)]
+#[tokio::test]
+async fn 粘贴的多行不算提交_回车时整段确认_程序不接受粘贴时不问就报错() {
+    let fixture = Fixture::new();
+    *lock(&fixture.host.action_decision) = Confirmation::Deny;
+    let mut client = fixture.legacy().await;
+    let opened = client
+        .call("open_terminal", json!({"target":"server-id"}))
+        .await;
+    let id = opened["result"]["structuredContent"]["terminal_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let paste = json!({"terminal_id":id,"text":"rm -rf /tmp/x\nls","paste":true});
+    // 终端里的程序没开括号粘贴：不问用户，直接报错
+    let refused = client.call("terminal_send", paste.clone()).await;
+    assert_eq!(
+        refused["result"]["structuredContent"]["code"],
+        "mcp.paste_unsupported"
+    );
+    assert!(lock(&fixture.host.dangers).is_empty());
+    fixture
+        .host
+        .terminals
+        .feed_output_at(&id, b"\x1b[?2004h", Instant::now())
+        .unwrap();
+    // 粘贴里的换行不提交：不用确认
+    let sent = client.call("terminal_send", paste).await;
+    assert_eq!(sent["result"]["isError"], false, "{sent}");
+    assert!(lock(&fixture.host.dangers).is_empty());
+    assert!(
+        fixture.service.activity(1)[0]
+            .summary
+            .contains("粘贴：rm -rf /tmp/x")
+    );
+    // 回车时粘贴的整段一起确认
+    let enter = client
+        .call("terminal_send", json!({"terminal_id":id,"keys":["Enter"]}))
+        .await;
+    assert!(error_text(&enter).contains("用户拒绝执行"));
+    assert_eq!(
+        lock(&fixture.host.dangers).as_slice(),
+        ["rm -rf /tmp/x\nls"]
+    );
+    client.close().await;
+}
+#[cfg(unix)]
+#[tokio::test]
+async fn 换行键按提交确认_撤销后回车按内容未知确认_滚轮不在全屏时不问就报错() {
+    let fixture = Fixture::new();
+    *lock(&fixture.host.action_decision) = Confirmation::Deny;
+    let mut client = fixture.legacy().await;
+    let opened = client
+        .call("open_terminal", json!({"target":"server-id"}))
+        .await;
+    let id = opened["result"]["structuredContent"]["terminal_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let result = client
+        .call(
+            "terminal_send",
+            json!({"terminal_id":id,"text":"rm -rf /tmp/x","keys":["Shift+Enter"]}),
+        )
+        .await;
+    assert!(error_text(&result).contains("用户拒绝执行"));
+    assert_eq!(lock(&fixture.host.dangers).as_slice(), ["rm -rf /tmp/x"]);
+    // 清掉后又撤销：这一行看不到了，回车时按“内容未知”问
+    let result = client
+        .call(
+            "terminal_send",
+            json!({"terminal_id":id,"text":"rm -rf /tmp/x","keys":["Ctrl+U","Ctrl+_","Enter"]}),
+        )
+        .await;
+    assert!(error_text(&result).contains("用户拒绝执行"));
+    assert!(lock(&fixture.host.dangers)[1].starts_with("（AI 撤销了修改或粘回了删掉的文字"));
+    assert_eq!(*lock(&fixture.host.danger_flags), [true, true]);
+    let wheel = client
+        .call(
+            "terminal_send",
+            json!({"terminal_id":id,"keys":["WheelUp","Enter"]}),
+        )
+        .await;
+    assert_eq!(
+        wheel["result"]["structuredContent"]["code"],
+        "mcp.wheel_unavailable"
+    );
+    assert_eq!(lock(&fixture.host.dangers).len(), 2);
+    client.close().await;
+}
+#[cfg(unix)]
+#[tokio::test]
+async fn 图片传到服务器后把路径粘贴进终端_本机终端和不是图片时不传() {
+    let fixture = Fixture::new();
+    lock(&fixture.host.permissions).folders = vec![fixture._dir.path().into()];
+    let image = fixture._dir.path().join("截图.png");
+    std::fs::write(&image, b"\x89PNG\r\n\x1a\n-image").unwrap();
+    let text = fixture._dir.path().join("a.txt");
+    std::fs::write(&text, "x").unwrap();
+    let mut client = fixture.legacy().await;
+    let server = open_terminal(&mut client, "server-id").await;
+    let sent = client
+        .call(
+            "terminal_send",
+            json!({"terminal_id":server,"image_path":image,"text":" 这张图里是什么"}),
+        )
+        .await;
+    let value = &sent["result"]["structuredContent"];
+    assert_eq!(value["image"], "/tmp/pierlink-paste-test.png", "{sent}");
+    {
+        let images = lock(&fixture.host.images);
+        assert_eq!(images.len(), 1);
+        assert_eq!(images[0].0, "server-id");
+        assert_eq!(images[0].1, b"\x89PNG\r\n\x1a\n-image");
+        assert_eq!(images[0].2, "png");
+    }
+    let echoed = client
+        .call(
+            "terminal_wait",
+            json!({"terminal_id":server,"pattern":"pierlink-paste-test\\.png 这张图","since":value["cursor"],"timeout_secs":5}),
+        )
+        .await;
+    assert_eq!(
+        echoed["result"]["structuredContent"]["matched"], true,
+        "{echoed}"
+    );
+    assert!(
+        fixture
+            .service
+            .activity(5)
+            .iter()
+            .any(|record| record.tool == "terminal_send"
+                && record.summary.contains("图片：")
+                && record.summary.contains("截图.png"))
+    );
+    // 本机终端、不是图片：不传
+    let local = open_terminal(&mut client, "windows").await;
+    let refused = client
+        .call(
+            "terminal_send",
+            json!({"terminal_id":local,"image_path":image}),
+        )
+        .await;
+    assert_eq!(
+        refused["result"]["structuredContent"]["code"],
+        "mcp.image_unsupported"
+    );
+    let not_image = client
+        .call(
+            "terminal_send",
+            json!({"terminal_id":server,"image_path":text}),
+        )
+        .await;
+    assert_eq!(
+        not_image["result"]["structuredContent"]["params"]["reason_key"],
+        "mcp.image_must_be_png_jpeg_gif_or_webp"
+    );
+    assert_eq!(lock(&fixture.host.images).len(), 1);
+    // “每次都问”：只发图片也问；被拒绝时不传到服务器
+    lock(&fixture.host.permissions).approval = Approval::AskAll;
+    *lock(&fixture.host.action_decision) = Confirmation::Deny;
+    let denied = client
+        .call(
+            "terminal_send",
+            json!({"terminal_id":server,"image_path":image}),
+        )
+        .await;
+    assert!(error_text(&denied).contains("用户拒绝执行"), "{denied}");
+    assert!(
+        lock(&fixture.host.dangers)
+            .last()
+            .unwrap()
+            .starts_with("把图片传到服务器的临时目录")
+    );
+    assert_eq!(lock(&fixture.host.images).len(), 1);
+    // 带回车被拒：确认框里是占位路径，也不传
+    let denied = client
+        .call(
+            "terminal_send",
+            json!({"terminal_id":server,"image_path":image,"keys":["Enter"]}),
+        )
+        .await;
+    assert!(error_text(&denied).contains("用户拒绝执行"), "{denied}");
+    assert!(
+        lock(&fixture.host.dangers)
+            .last()
+            .unwrap()
+            .contains("/tmp/pierlink-paste-…")
+    );
+    assert_eq!(lock(&fixture.host.images).len(), 1);
+    client.close().await;
+}
 #[tokio::test]
 async fn 跨入口终端列表按当前权限隐藏地址并判断发送危险() {
     let fixture = Fixture::new();
@@ -1837,6 +2073,51 @@ async fn 文件审批显示修改预览且拒绝时不创建目录和不记录�
 }
 
 #[tokio::test]
+async fn 多处修改一次确认_列出每处新旧文字_审计记总替换次数() {
+    let fixture = Fixture::new();
+    {
+        let mut permissions = lock(&fixture.host.permissions);
+        permissions.approval = Approval::AskAll;
+        permissions.folders = vec![fixture._dir.path().into()];
+    }
+    let path = fixture._dir.path().join("main.rs");
+    std::fs::write(&path, "fn a() {}\nfn b() {}\nlet x = 1;\nlet x = 1;\n").unwrap();
+    let mut client = fixture.legacy().await;
+    let edits: Vec<Value> = (0..7)
+        .map(|i| {
+            if i == 0 {
+                json!({"old_string":"fn a()","new_string":"fn alpha()"})
+            } else if i == 1 {
+                json!({"old_string":"let x = 1;","new_string":"let x = 2;","replace_all":true})
+            } else {
+                json!({"old_string":"fn b() {}","new_string":"fn b() {}"})
+            }
+        })
+        .collect();
+    let result = client
+        .call("edit_file", json!({"file_path":path,"edits":edits}))
+        .await;
+    assert_eq!(
+        result["result"]["structuredContent"]["replacements"], 8,
+        "{result}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        "fn alpha() {}\nfn b() {}\nlet x = 2;\nlet x = 2;\n"
+    );
+    let action = lock(&fixture.host.dangers)[0].clone();
+    assert!(action.contains("\n共 7 处修改\n第 1 处旧文字：\nfn a()\n第 1 处新文字：\nfn alpha()"));
+    assert!(action.contains("第 5 处新文字：") && !action.contains("第 6 处"));
+    assert!(action.ends_with("\n…（还有 2 处）"));
+    assert!(
+        fixture.service.activity(1)[0]
+            .summary
+            .ends_with("（替换 8 次）")
+    );
+    client.close().await;
+}
+
+#[tokio::test]
 async fn 新目录工具按写入审批且删除空目录也确认() {
     for mode in [Approval::AskAll, Approval::Dangerous, Approval::Auto] {
         let fixture = Fixture::new();
@@ -1878,6 +2159,265 @@ async fn 新目录工具按写入审批且删除空目录也确认() {
 }
 
 #[tokio::test]
+async fn 复制按写入规则审批_要确认的目标算危险_拒绝时什么都不复制() {
+    let fixture = Fixture::new();
+    {
+        let mut permissions = lock(&fixture.host.permissions);
+        permissions.windows_commands = false;
+        permissions.folders = vec![fixture._dir.path().into()];
+    }
+    let source = fixture._dir.path().join("src");
+    std::fs::create_dir_all(source.join("tools")).unwrap();
+    std::fs::write(source.join("readme.md"), "说明").unwrap();
+    std::fs::write(source.join("tools/run.ps1"), "Write-Output 1").unwrap();
+    let mut client = fixture.legacy().await;
+    let target = fixture._dir.path().join("dst");
+    // 只问危险操作：目标里有脚本，按危险确认；拒绝时什么都不复制
+    *lock(&fixture.host.action_decision) = Confirmation::Deny;
+    let result = client
+        .call("copy_path", json!({"source":source,"destination":target}))
+        .await;
+    assert!(error_text(&result).contains("用户拒绝执行"));
+    assert!(!target.exists());
+    assert_eq!(*lock(&fixture.host.danger_flags), [true]);
+    assert!(lock(&fixture.host.dangers)[0].contains("run.ps1"));
+    *lock(&fixture.host.action_decision) = Confirmation::Allow;
+    let result = client
+        .call("copy_path", json!({"source":source,"destination":target}))
+        .await;
+    assert_eq!(
+        result["result"]["structuredContent"]["files"], 2,
+        "{result}"
+    );
+    assert!(target.join("tools/run.ps1").is_file());
+    // 普通文件：只问危险操作时不问；已存在又没给 overwrite 时不问就报错
+    let plain = fixture._dir.path().join("readme-copy.md");
+    for _ in 0..2 {
+        client
+            .call(
+                "copy_path",
+                json!({"source":source.join("readme.md"),"destination":plain}),
+            )
+            .await;
+    }
+    assert_eq!(lock(&fixture.host.danger_flags).len(), 2);
+    assert_eq!(fixture.service.activity(1)[0].outcome, "mcp.path_exists");
+    assert!(
+        fixture.service.activity(1)[0]
+            .summary
+            .ends_with("readme-copy.md")
+    );
+    client.close().await;
+}
+
+#[tokio::test]
+async fn 写二进制按原样写入_程序类文件要确认_无效的_base64_不问就报错() {
+    let fixture = Fixture::new();
+    {
+        let mut permissions = lock(&fixture.host.permissions);
+        permissions.windows_commands = false;
+        permissions.folders = vec![fixture._dir.path().into()];
+    }
+    let mut client = fixture.legacy().await;
+    let path = fixture._dir.path().join("bin/tool.exe");
+    let result = client
+        .call(
+            "write_file",
+            json!({"file_path":path,"content_base64":"TVqQ\nAAMA"}),
+        )
+        .await;
+    let written = &result["result"]["structuredContent"];
+    assert_eq!(written["bytes"], 6, "{result}");
+    assert_eq!(std::fs::read(&path).unwrap(), b"MZ\x90\x00\x03\x00");
+    assert_eq!(*lock(&fixture.host.danger_flags), [true]);
+    assert!(lock(&fixture.host.dangers)[0].ends_with("内容：6 字节（content_base64，原样写入）"));
+    let invalid = client
+        .call(
+            "write_file",
+            json!({"file_path":path,"content_base64":"不是base64"}),
+        )
+        .await;
+    assert_eq!(invalid["error"]["code"], -32602);
+    assert_eq!(
+        invalid["error"]["data"]["params"]["reason_key"],
+        "mcp.content_base64_is_not_valid_base64"
+    );
+    assert_eq!(lock(&fixture.host.danger_flags).len(), 1);
+    client.close().await;
+}
+
+/// 只授权 Windows 一侧的 win 文件夹；“服务器”是本机的 sftp-server，路径就是本机路径
+#[cfg(unix)]
+fn transfer_fixture() -> (Fixture, std::path::PathBuf, std::path::PathBuf) {
+    let fixture = Fixture::new();
+    let win = fixture._dir.path().join("win");
+    let server = fixture._dir.path().join("server");
+    std::fs::create_dir_all(&win).unwrap();
+    std::fs::create_dir_all(&server).unwrap();
+    {
+        let mut permissions = lock(&fixture.host.permissions);
+        permissions.windows_commands = false;
+        permissions.folders = vec![win.clone()];
+    }
+    (fixture, win, server)
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn 在_windows_和服务器之间传文件_自动建父目录_已存在要_overwrite() {
+    let (fixture, win, server) = transfer_fixture();
+    let mut client = fixture.legacy().await;
+    std::fs::write(win.join("a.bin"), [0u8, 1, 2, 255]).unwrap();
+    let up = json!({"from_target":"windows","from_path":win.join("a.bin"),"to_target":"server-id","to_path":server.join("新/层/a.bin")});
+    let result = client.call("transfer_file", up.clone()).await;
+    assert_eq!(
+        result["result"]["structuredContent"]["bytes"], 4,
+        "{result}"
+    );
+    assert_eq!(
+        std::fs::read(server.join("新/层/a.bin")).unwrap(),
+        [0, 1, 2, 255]
+    );
+    let record = fixture.service.activity(1)[0].clone();
+    assert_eq!(record.target.as_deref(), Some("server-id"));
+    assert!(record.summary.starts_with("windows:"));
+    // 已存在又没给 overwrite：不问用户就报错
+    let again = client.call("transfer_file", up).await;
+    assert_eq!(
+        again["result"]["structuredContent"]["code"],
+        "mcp.path_exists"
+    );
+    // 下载回 Windows，覆盖已有文件
+    std::fs::write(server.join("新/层/a.bin"), "服务器上改过").unwrap();
+    let down = json!({"from_target":"计算服务器","from_path":server.join("新/层/a.bin"),"to_target":"windows","to_path":win.join("a.bin"),"overwrite":true});
+    let result = client.call("transfer_file", down).await;
+    assert_eq!(result["result"]["isError"], false, "{result}");
+    assert_eq!(
+        std::fs::read_to_string(win.join("a.bin")).unwrap(),
+        "服务器上改过"
+    );
+    assert!(lock(&fixture.host.dangers).is_empty());
+    assert_eq!(lock(&fixture.host.sftp_opens).len(), 3);
+    client.close().await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn 传文件的路径和权限边界_写到配置要确认_要登录时提醒用户() {
+    let (fixture, win, server) = transfer_fixture();
+    let mut client = fixture.legacy().await;
+    std::fs::write(win.join("key.pub"), "ssh-ed25519 AAAA").unwrap();
+    std::fs::write(fixture._dir.path().join("outside.txt"), "x").unwrap();
+    let code = |value: &Value| value["result"]["structuredContent"]["code"].clone();
+    let reason_key = |value: &Value| value["error"]["data"]["params"]["reason_key"].clone();
+    // 两端都是 Windows、服务器路径不是绝对路径：参数错误
+    let both = client
+        .call("transfer_file", json!({"from_target":"windows","from_path":win.join("key.pub"),"to_target":"windows","to_path":win.join("b")}))
+        .await;
+    assert_eq!(reason_key(&both), "mcp.transfer_needs_windows_and_a_server");
+    let relative = client
+        .call("transfer_file", json!({"from_target":"windows","from_path":win.join("key.pub"),"to_target":"server-id","to_path":"key.pub"}))
+        .await;
+    assert_eq!(reason_key(&relative), "mcp.server_path_must_be_absolute");
+    // Windows 一侧在授权文件夹外
+    let outside = client
+        .call("transfer_file", json!({"from_target":"windows","from_path":fixture._dir.path().join("outside.txt"),"to_target":"server-id","to_path":server.join("x")}))
+        .await;
+    assert_eq!(code(&outside), "mcp.path_outside");
+    let outside = client
+        .call("transfer_file", json!({"from_target":"server-id","from_path":server.join("x"),"to_target":"windows","to_path":fixture._dir.path().join("new.txt")}))
+        .await;
+    assert_eq!(code(&outside), "mcp.path_outside");
+    assert!(lock(&fixture.host.sftp_opens).is_empty());
+    // 写到服务器的 .ssh 下：按危险确认，拒绝时什么都不写
+    *lock(&fixture.host.action_decision) = Confirmation::Deny;
+    let keys = server.join(".ssh/authorized_keys");
+    let denied = client
+        .call("transfer_file", json!({"from_target":"windows","from_path":win.join("key.pub"),"to_target":"server-id","to_path":keys}))
+        .await;
+    assert!(error_text(&denied).contains("用户拒绝执行"));
+    assert_eq!(*lock(&fixture.host.danger_flags), [true]);
+    let action = lock(&fixture.host.dangers)[0].clone();
+    assert!(
+        action.starts_with("写入 SSH、Git 或 shell 的配置可能让它们执行命令："),
+        "{action}"
+    );
+    assert!(
+        action.contains("\n传输文件：Windows ")
+            && action.contains("大小：16 字节；覆盖已有目标：false")
+    );
+    assert!(!server.join(".ssh").exists());
+    // 服务器要密码：报错并提醒用户登录
+    *lock(&fixture.host.sftp_error) = Some(AppError::new("ssh.password_needed"));
+    let login = client
+        .call("transfer_file", json!({"from_target":"windows","from_path":win.join("key.pub"),"to_target":"server-id","to_path":server.join("k")}))
+        .await;
+    assert_eq!(code(&login), "ssh.password_needed");
+    assert!(error_text(&login).contains("登录"));
+    assert!(lock(&fixture.host.events).iter().any(
+        |event| matches!(event, HostEvent::LoginNeeded { server_id } if server_id == "server-id")
+    ));
+    client.close().await;
+}
+
+#[tokio::test]
+async fn 打开文件要执行命令权限_每次都问时确认_拒绝时不打开() {
+    let fixture = Fixture::new();
+    let doc = fixture._dir.path().join("说明.pdf");
+    std::fs::write(&doc, "x").unwrap();
+    {
+        let mut permissions = lock(&fixture.host.permissions);
+        permissions.windows_commands = false;
+        permissions.folders = vec![fixture._dir.path().into()];
+    }
+    let mut client = fixture.legacy().await;
+    let opened = |path: &std::path::Path| {
+        tools::open::OPENED
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|o| matches!(o, tools::open::Opening::Path(p) if p == path))
+    };
+    // 只允许了文件夹：不能打开（打开会启动程序）
+    let denied = client.call("open_path", json!({"path":doc})).await;
+    assert_eq!(
+        denied["result"]["structuredContent"]["code"],
+        "mcp.commands_denied"
+    );
+    {
+        let mut permissions = lock(&fixture.host.permissions);
+        permissions.windows_commands = true;
+        permissions.approval = Approval::AskAll;
+    }
+    *lock(&fixture.host.action_decision) = Confirmation::Deny;
+    let result = client.call("open_path", json!({"path":doc})).await;
+    assert!(error_text(&result).contains("用户拒绝执行"));
+    assert!(!opened(&doc));
+    assert!(lock(&fixture.host.dangers)[0].starts_with("用默认程序打开："));
+    *lock(&fixture.host.action_decision) = Confirmation::Allow;
+    let result = client.call("open_path", json!({"path":doc})).await;
+    assert_eq!(result["result"]["isError"], false, "{result}");
+    assert!(opened(&doc));
+    // 程序类文件、两个参数都给：不问就报错
+    let script = fixture._dir.path().join("a.ps1");
+    std::fs::write(&script, "x").unwrap();
+    let refused = client.call("open_path", json!({"path":script})).await;
+    assert_eq!(
+        refused["result"]["structuredContent"]["code"],
+        "mcp.open_refused"
+    );
+    let both = client
+        .call("open_path", json!({"path":doc,"url":"https://example.com"}))
+        .await;
+    assert_eq!(
+        both["error"]["data"]["params"]["reason_key"],
+        "mcp.give_either_path_or_url"
+    );
+    assert_eq!(lock(&fixture.host.dangers).len(), 2);
+    client.close().await;
+}
+
+#[tokio::test]
 async fn 图片以原生内容返回且文本元数据不含编码正文() {
     let fixture = Fixture::new();
     lock(&fixture.host.permissions).folders = vec![fixture._dir.path().into()];
@@ -1896,6 +2436,82 @@ async fn 图片以原生内容返回且文本元数据不含编码正文() {
             .filter(|c| c["type"] == "text")
             .all(|c| !c.to_string().contains("iVBORw0KGgo="))
     );
+    client.close().await;
+}
+
+#[tokio::test]
+async fn 一次读多个文件_单个失败不影响别的_图片作为图片内容附在后面() {
+    let fixture = Fixture::new();
+    lock(&fixture.host.permissions).folders = vec![fixture._dir.path().into()];
+    let text = fixture._dir.path().join("a.txt");
+    std::fs::write(&text, "第一行\n第二行\n").unwrap();
+    let image = fixture._dir.path().join("b.png");
+    std::fs::write(&image, b"\x89PNG\r\n\x1a\n").unwrap();
+    let missing = fixture._dir.path().join("missing.txt");
+    let mut client = fixture.legacy().await;
+    let result = client
+        .call(
+            "read_files",
+            json!({"file_paths":[text, missing, image],"limit":1}),
+        )
+        .await;
+    let files = result["result"]["structuredContent"]["files"]
+        .as_array()
+        .unwrap()
+        .clone();
+    assert_eq!(files.len(), 3, "{result}");
+    assert_eq!(files[0]["file_path"], json!(text));
+    assert_eq!(files[0]["content"], "     1\t第一行\n");
+    assert_eq!(files[1]["error"]["code"], "mcp.not_found");
+    assert_eq!(files[2]["image"], 0);
+    let content = result["result"]["content"].as_array().unwrap();
+    let images: Vec<_> = content.iter().filter(|c| c["type"] == "image").collect();
+    assert_eq!(images.len(), 1);
+    assert_eq!(images[0]["data"], "iVBORw0KGgo=");
+    assert!(
+        !result["result"]["structuredContent"]
+            .to_string()
+            .contains("iVBORw0KGgo=")
+    );
+    assert!(
+        fixture.service.activity(1)[0]
+            .summary
+            .contains("missing.txt")
+    );
+    let empty = client.call("read_files", json!({"file_paths":[]})).await;
+    assert_eq!(
+        empty["error"]["data"]["params"]["reason_key"],
+        "mcp.file_paths_must_have_1_to_20_items"
+    );
+    client.close().await;
+}
+
+#[tokio::test]
+async fn 一次读多个文件的文字超过总量时这个和后面的不读() {
+    let fixture = Fixture::new();
+    lock(&fixture.host.permissions).folders = vec![fixture._dir.path().into()];
+    let small = fixture._dir.path().join("small.txt");
+    std::fs::write(&small, "一行\n").unwrap();
+    let big = fixture._dir.path().join("big.txt");
+    std::fs::write(&big, format!("{}\n", "x".repeat(1800)).repeat(5000)).unwrap();
+    let mut client = fixture.legacy().await;
+    let result = client
+        .call(
+            "read_files",
+            json!({"file_paths":[small, big, small],"limit":5000}),
+        )
+        .await;
+    let files = result["result"]["structuredContent"]["files"]
+        .as_array()
+        .unwrap()
+        .clone();
+    assert_eq!(files[0]["content"], "     1\t一行\n");
+    for file in &files[1..] {
+        assert_eq!(
+            file["error"]["params"]["reason_key"],
+            "mcp.read_files_total_limit"
+        );
+    }
     client.close().await;
 }
 

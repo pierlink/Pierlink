@@ -8,6 +8,8 @@ use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Manager};
 
 const SETTINGS_KEY: &str = "mcp";
+/// 用户指定 AI 操作哪台电脑（几台电脑同时接入时）；存在设置表的这个键里
+const PIN_KEY: &str = "mcp_pin";
 
 /// 审批方式（界面用的写法，和 core 的 Approval 一一对应）
 #[derive(Serialize, Deserialize, Type, Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -138,6 +140,25 @@ pub fn load(app: &AppHandle) -> McpSettingsDto {
         .unwrap_or_default()
 }
 
+/// 这台电脑上的用户做的指定（AI 操作哪台电脑）；没指定过、读不出来为 None
+pub fn load_pin(app: &AppHandle) -> Option<pierlink_core::mcp::peers::PinRecord> {
+    app.state::<DbState>()
+        .with(|db| db.get_setting::<pierlink_core::mcp::peers::PinRecord>(PIN_KEY))
+        .unwrap_or_else(|e| {
+            eprintln!("读取 AI 操作哪台电脑的设置失败: 错误={}", e.code);
+            None
+        })
+}
+
+/// 保存这台电脑上的用户做的指定（取消指定也存：时间更新，盖过别的电脑上更早的指定）
+pub fn save_pin(
+    app: &AppHandle,
+    pin: &pierlink_core::mcp::peers::PinRecord,
+) -> Result<(), AppError> {
+    app.state::<DbState>()
+        .with(|db| db.set_setting(PIN_KEY, pin))
+}
+
 /// 检查并保存设置
 ///
 /// :param app: 应用句柄
@@ -202,6 +223,12 @@ fn normalize_entry(
             && e.code == "mcp.network_folder"
         {
             return Err(e);
+        }
+        // Pierlink 自己的目录（数据、安装目录）不能授权给 AI：AI 改了它们就能绕过确认
+        if !known.contains(&folder)
+            && pierlink_core::mcp::tools::files::is_protected(Path::new(&folder))
+        {
+            return Err(AppError::new("mcp.path_protected").with("path", &folder));
         }
         if !folders.contains(&folder) {
             folders.push(folder);
