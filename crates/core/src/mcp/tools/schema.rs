@@ -50,7 +50,7 @@ pub(super) static TOOLS: LazyLock<Vec<Tool>> = LazyLock::new(|| {
     let wait_timeout = json!({"type":"integer","minimum":1,"maximum":1800,"default":60});
     let sync_timeout = json!({"type":"integer","minimum":1,"maximum":1800,"default":300});
     [
-        ("list_targets", "列出入口允许的目标及在线状态；folders 为可用授权目录，unavailable_folders 列出不可用目录的错误码和原因。", json!({}), json!([])),
+        ("list_targets", "列出入口允许的目标及在线状态；folders 为可用授权目录，unavailable_folders 列出不可用目录的错误码和原因。Windows 目标的 computer 是电脑名：需要用户确认时，确认框弹在这台电脑的 Pierlink 里。", json!({}), json!([])),
         ("run_command", "在目标执行非交互命令，检查 exit_code；退出码取最后一条语句。要拿原生程序的退出码，不要在后面接管道（例如 cargo build 2>&1 | Select-Object -Last 50，构建失败时仍可能返回 0）。返回 stdout、stderr、cwd、shell、truncated、timed_out、duration_ms。Windows 默认 powershell 和用户目录，cwd 必须是 Windows 绝对路径；shell 只能选 list_targets 列出的项。background:true 立即返回 job_id（不受 timeout_secs 限制），用 job_output 读取输出，用 job_stop 结束进程树。入口重启（换令牌、全部停止）会结束后台任务。每入口最多 8 个后台任务，用 list_jobs 查看、job_stop 结束不用的；后台任务目前只支持 Windows，服务器长任务请用 AI 终端。前台输出各保留 256 KiB 头尾，最长 1800 秒。", json!({"target":target,"command":{"type":"string","minLength":1},"cwd":string,"timeout_secs":timeout,"shell":{"type":"string","enum":["powershell","pwsh","cmd","git-bash"]},"background":boolean}), json!(["target","command"])),
         ("open_terminal", "请用户界面打开可见的 AI 终端，返回 terminal_id。cwd 会以一行 cd 的形式回显。", json!({"target":target,"cwd":string,"title":string}), json!(["target"])),
         ("list_terminals", "返回 ai_terminals：AI 打开的、目标获准的终端，含 terminal_id、target（不含地址）和 cwd（未知为 null）。", json!({}), json!([])),

@@ -47,7 +47,7 @@
   .set-row__control { max-width: 100%; }
 }
 /* 检查更新的结果：固定宽度、单行，出现和消失都不挤动布局 */
-.upd-status { display: inline-flex; align-items: center; justify-content: flex-end; width: 16em; min-height: 26px; margin-right: 8px; font-size: var(--fs-sm); color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.upd-status { display: inline-flex; align-items: center; justify-content: flex-end; width: 18em; min-height: 26px; margin-right: 8px; font-size: var(--fs-sm); color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .upd-status--ok { color: var(--ok); font-weight: 500; }
 .upd-status--accent { color: var(--accent); font-weight: 500; }
 .upd-status--danger { color: var(--danger); }

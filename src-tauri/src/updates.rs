@@ -18,6 +18,8 @@ static CURRENT: Mutex<Option<(u64, tokio::task::AbortHandle)>> = Mutex::new(None
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 /// 多久没收到数据算下载卡住：网络断了但连接没断开时，下载会一直等下去
 const STALL: Duration = Duration::from_secs(30);
+/// 查新版本最多等多久：连上了但不回数据时（代理通了、GitHub 那头卡住），不设上限会一直停在“正在检查”
+const CHECK_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// 换成编号 id 的这个下载，停掉上一个还在进行的
 fn take_over(id: u64, handle: tokio::task::AbortHandle) {
@@ -131,7 +133,20 @@ fn update_proxy() -> Option<tauri::Url> {
     tauri::Url::parse(&pierlink_core::proxy::url(&proxy)).ok()
 }
 
-/// 检查是否有新版本；没有返回 null
+/// 向服务器查最新版本，最多等 CHECK_TIMEOUT；超时或出错都返回 update.check_failed
+async fn check_latest(
+    updater: &tauri_plugin_updater::Updater,
+) -> Result<Option<tauri_plugin_updater::Update>, AppError> {
+    match tokio::time::timeout(CHECK_TIMEOUT, updater.check()).await {
+        Ok(checked) => checked.map_err(|e| fail("update.check_failed", e)),
+        Err(_) => Err(fail(
+            "update.check_failed",
+            format!("{} 秒没有回应", CHECK_TIMEOUT.as_secs()),
+        )),
+    }
+}
+
+/// 检查是否有新版本（最多等 15 秒）；没有返回 null
 #[tauri::command]
 #[specta::specta]
 pub async fn update_check(app: AppHandle) -> Result<Option<UpdateInfoDto>, AppError> {
@@ -142,10 +157,7 @@ pub async fn update_check(app: AppHandle) -> Result<Option<UpdateInfoDto>, AppEr
     let updater = builder
         .build()
         .map_err(|e| fail("update.check_failed", e))?;
-    let update = updater
-        .check()
-        .await
-        .map_err(|e| fail("update.check_failed", e))?;
+    let update = check_latest(&updater).await?;
     if let Some(u) = &update {
         eprintln!("发现新版本: 当前={}, 新={}", u.current_version, u.version);
     }
@@ -189,11 +201,7 @@ pub async fn update_download(
         })
         .build()
         .map_err(|e| fail("update.install_failed", e))?;
-    let Some(update) = updater
-        .check()
-        .await
-        .map_err(|e| fail("update.check_failed", e))?
-    else {
+    let Some(update) = check_latest(&updater).await? else {
         return Err(AppError::new("update.none"));
     };
     let version = update.version.clone();
@@ -276,11 +284,7 @@ pub async fn update_install(app: AppHandle) -> Result<(), AppError> {
         })
         .build()
         .map_err(|e| fail("update.install_failed", e))?;
-    let Some(update) = updater
-        .check()
-        .await
-        .map_err(|e| fail("update.check_failed", e))?
-    else {
+    let Some(update) = check_latest(&updater).await? else {
         clear_pending(&app);
         return Err(AppError::new("update.none"));
     };

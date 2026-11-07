@@ -1401,6 +1401,8 @@ async fn 目标信息同步路径与输出预览不写入审计() {
     let windows = targets.iter().find(|t| t["id"] == "windows").unwrap();
     assert_eq!(windows["commands"], true);
     assert_eq!(windows["path_style"], "windows");
+    // 电脑名告诉 agent 确认框弹在哪台电脑（取不到时为 null，但字段一直在）
+    assert!(windows.as_object().unwrap().contains_key("computer"));
     assert_eq!(windows["folders"].as_array().unwrap().len(), 1);
     assert_eq!(
         windows["unavailable_folders"][0]["code"],

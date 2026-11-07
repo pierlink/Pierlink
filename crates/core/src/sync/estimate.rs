@@ -454,11 +454,14 @@ fn exclusion_reason(rule: &str) -> &'static str {
         .trim_start_matches("(?i)")
         .trim_start_matches('/');
     match rule {
-        "node_modules" | ".venv" => "依赖目录",
+        "node_modules" | ".venv" | "venv" | ".tox" => "依赖目录",
         ".git" => "版本库",
         ".env" | "*.pem" | "*.key" => "敏感文件",
-        "__pycache__" | "target" | "dist" | "build" | ".cache" | ".pytest_cache"
-        | ".mypy_cache" | ".ruff_cache" | "*.tmp" | "Thumbs.db" | "desktop.ini" | "~$*" => "缓存",
+        "__pycache__" | "*.pyc" | "*.egg-info" | "target" | "dist" | "build" | ".cache"
+        | ".pytest_cache" | ".mypy_cache" | ".ruff_cache" | ".ipynb_checkpoints" | ".next"
+        | ".nuxt" | ".svelte-kit" | ".turbo" | ".parcel-cache" | ".eslintcache" | ".gradle"
+        | ".idea" | ".vs" | "*.swp" | "*.swo" | "*.tmp" | "Thumbs.db" | "desktop.ini"
+        | ".DS_Store" | "~$*" => "缓存",
         _ => "自定义规则",
     }
 }

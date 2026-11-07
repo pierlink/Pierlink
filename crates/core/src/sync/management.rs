@@ -36,6 +36,35 @@ pub fn capture_hardening_policy(
     validate_policy(&policy)?;
     Ok(policy)
 }
+/// 服务器上同步程序的加固基线，在刚用 Pierlink 的口令登录管理页成功后取得：
+/// 地址（Unix 套接字）和同步端口来自部署记录；用户名、口令摘要和 API 密钥读自服务器当前配置——
+/// 登录成功说明配置里的用户名和口令摘要对应 Pierlink 的口令，API 密钥就是正在用的这个。
+///
+/// :param client: 服务器上同步程序的管理接口（经同步隧道）
+/// :param gui_user: 登录用的用户名
+/// :param socket_path: 部署时记下的管理接口套接字路径
+/// :param listen_port: 部署时记下的同步端口
+/// :return: 加固基线；配置里的用户名对不上或字段缺失时返回错误
+pub fn capture_server_hardening_policy(
+    client: &Client,
+    gui_user: &str,
+    socket_path: &str,
+    listen_port: u16,
+) -> Result<HardeningPolicy, AppError> {
+    let gui = call(client, "GET", "/rest/config/gui", None)?;
+    if gui["user"].as_str() != Some(gui_user) {
+        return Err(invalid());
+    }
+    let policy = HardeningPolicy {
+        gui_address: socket_path.into(),
+        gui_user: gui_user.into(),
+        password_hash: gui["password"].as_str().ok_or_else(invalid)?.into(),
+        api_key: gui["apiKey"].as_str().ok_or_else(invalid)?.into(),
+        listen_port,
+    };
+    validate_policy(&policy)?;
+    Ok(policy)
+}
 /// config 使用 FolderSpec::to_config() 或已保存的任务配置，忽略规则按原有顺序保存。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ManagedFolder {
@@ -278,7 +307,14 @@ fn task_report(
     Ok(report)
 }
 fn validate_policy(policy: &HardeningPolicy) -> Result<(), AppError> {
-    crate::syncthing::client::loopback_port(&policy.gui_address, "127.0.0.1:")?;
+    // 本机的管理接口在回环端口上，服务器的在 Unix 套接字上（绝对路径）
+    if policy.gui_address.starts_with('/') {
+        if policy.gui_address.len() >= 100 || policy.gui_address.contains('\0') {
+            return Err(invalid());
+        }
+    } else {
+        crate::syncthing::client::loopback_port(&policy.gui_address, "127.0.0.1:")?;
+    }
     if policy.listen_port == 0
         || policy.gui_user.is_empty()
         || policy.password_hash.len() != 60
@@ -664,6 +700,37 @@ mod tests {
             listen_port: 1235,
         };
         (client, state, expected, policy)
+    }
+    #[test]
+    fn 服务器的加固基线用套接字地址且用户名要对得上() {
+        let (client, state, expected, _) = fixture();
+        state.lock().unwrap().config["gui"] = json!({"user":"pierlink","password":format!("$2b$12${}", "y".repeat(53)),"apiKey":"服务器密钥","address":"0.0.0.0:8384"});
+        let policy = capture_server_hardening_policy(
+            &client,
+            "pierlink",
+            "/home/u/.pierlink/gui.sock",
+            22001,
+        )
+        .unwrap();
+        assert_eq!(policy.gui_address, "/home/u/.pierlink/gui.sock");
+        assert_eq!(policy.listen_port, 22001);
+        assert!(capture_server_hardening_policy(&client, "别人", "/a.sock", 22001).is_err());
+        assert!(
+            capture_server_hardening_policy(
+                &client,
+                "pierlink",
+                &format!("/{}", "a".repeat(120)),
+                1
+            )
+            .is_err()
+        );
+        // 管理页里把地址改成了所有网卡：核对时改回套接字
+        let report = reconcile_configuration(&client, &policy, &expected).unwrap();
+        assert!(report.hardened.contains(&"/gui/address".into()));
+        assert_eq!(
+            state.lock().unwrap().config["gui"]["address"],
+            "/home/u/.pierlink/gui.sock"
+        );
     }
     #[test]
     fn 三类配置加固恢复与逐项采用不覆盖外来项() {

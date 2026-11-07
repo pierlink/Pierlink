@@ -194,12 +194,16 @@ impl EventPump {
                                 .any(|v| v["id"] == device && v["fromTemporary"] == false)
                         })
                     {
+                        finished.push((f.clone(), path.clone()));
+                        // 这台设备自己改的、本机从它那里下载来的：它本来就有这个版本，不算本机上传给它
+                        if item.by.as_deref() == Some(device) {
+                            continue;
+                        }
                         let mut uploaded = item.clone();
                         uploaded.kind = SyncEventKind::Uploaded;
                         uploaded.device = Some(device.into());
                         uploaded.time_ms = parse_ms(&e.time)?;
                         result.push(uploaded);
-                        finished.push((f.clone(), path.clone()));
                     }
                 }
                 for key in finished {

@@ -65,6 +65,10 @@ fn encode(value: &str) -> String {
     result
 }
 impl Client {
+    /// 管理接口的地址（http://127.0.0.1:端口；Unix 套接字的客户端为占位地址）
+    pub fn base(&self) -> &str {
+        &self.base
+    }
     pub(crate) fn redact_text(&self, text: &str) -> String {
         redact(text, &[&self.api_key])
     }

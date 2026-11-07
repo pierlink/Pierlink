@@ -125,6 +125,8 @@
 .sync-conflict__text { flex: 1 1 260px; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .sync-conflict__other { font-size: var(--fs-xs); color: var(--text-dim); overflow-wrap: anywhere; }
 .sync-errors__list { list-style: none; margin: 0; padding: 4px 0; max-height: 264px; overflow-y: auto; background: var(--panel-solid); border-top: 1px solid var(--border); user-select: text; }
+/* 失败列表标题行右边的修复按钮 */
+.sync-errors__actions { margin-left: auto; display: inline-flex; gap: 8px; flex-wrap: wrap; }
 .sync-error { display: flex; align-items: baseline; gap: 12px; padding: 3px 14px; font-size: var(--fs-sm); }
 .sync-error__path { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
 .sync-error__reason { flex: none; max-width: 40%; color: var(--text-dim); font-size: var(--fs-xs); overflow-wrap: anywhere; text-align: right; }
@@ -255,6 +257,7 @@
 
 .sync-link { padding: 0; border: 0; background: transparent; color: var(--accent); font-size: inherit; cursor: pointer; }
 .sync-link:hover { text-decoration: underline; }
+.sync-link:disabled { color: var(--text-disabled); cursor: default; text-decoration: none; }
 .versions { display: flex; flex-direction: column; gap: 10px; }
 .versions__list { max-height: 360px; overflow: auto; }
 .versions__row { cursor: pointer; }

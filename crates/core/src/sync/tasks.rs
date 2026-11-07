@@ -732,7 +732,7 @@ pub(super) fn wait_index_clear(
     }
     Ok(())
 }
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FolderError {
     pub path: String,
     pub reason: String,
@@ -838,6 +838,100 @@ pub fn task_status(
         });
     }
     Ok(result)
+}
+
+/// 查一台设备上这个文件夹同步失败的文件（扫描和拉取失败都在内），每次查询最多等 timeout。
+/// 服务器上的经同步隧道查询。列表最多 100 个；满 100 个时再查文件夹状态里的总数（这个查询较重，平时不查）。
+///
+/// :param client: 同步程序的管理接口（服务器的用 ServerLink::client，本机的用 LocalSync::client）
+/// :param folder_id: 文件夹 ID（本机和服务器上一样）
+/// :param timeout: 每次查询最多等多久
+/// :return: 失败的文件（路径相对于那台设备上的同步目录）和总数
+pub fn folder_errors(
+    client: &Client,
+    folder_id: &str,
+    timeout: Duration,
+) -> Result<(Vec<FolderError>, u64), AppError> {
+    let errors = client.request(
+        "GET",
+        "/rest/folder/errors",
+        &[("folder", folder_id), ("page", "1"), ("perpage", "100")],
+        None,
+        timeout,
+    )?;
+    let list: Vec<FolderError> = errors["errors"]
+        .as_array()
+        .map(|list| {
+            list.iter()
+                .take(100)
+                .map(|e| FolderError {
+                    path: client.redact_text(e["path"].as_str().unwrap_or("")),
+                    reason: client.redact_text(e["error"].as_str().unwrap_or("")),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut count = list.len() as u64;
+    if list.len() >= 100
+        && let Ok(status) = client.request(
+            "GET",
+            "/rest/db/status",
+            &[("folder", folder_id)],
+            None,
+            timeout,
+        )
+    {
+        count = count.max(status["errors"].as_u64().unwrap_or(0));
+    }
+    Ok((list, count))
+}
+
+#[cfg(test)]
+mod server_error_tests {
+    use super::*;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    fn server(errors: usize, statuses: Arc<AtomicUsize>) -> Client {
+        let mut client = Client::new("http://127.0.0.1:1", "服务器密钥").unwrap();
+        client.test_handler = Some(Arc::new(move |method, path, query, _| {
+            assert_eq!(method, "GET");
+            Ok(match path {
+                "/rest/folder/errors" => {
+                    assert!(query.contains(&("folder", "pl-1234567890123456")));
+                    let list: Vec<Value> = (0..errors)
+                        .map(|i| json!({"path":format!("工具/{i}.pdf"),"error":"open 工具: permission denied (服务器密钥)"}))
+                        .collect();
+                    json!({"folder":"pl-1234567890123456","errors":list})
+                }
+                "/rest/db/status" => {
+                    statuses.fetch_add(1, Ordering::Relaxed);
+                    json!({"errors":150})
+                }
+                _ => panic!("未预期接口：{path}"),
+            })
+        }));
+        client
+    }
+    #[test]
+    fn 服务器上失败的文件带原因且隐去密钥_满一百个时再查总数() {
+        let statuses = Arc::new(AtomicUsize::new(0));
+        let client = server(2, statuses.clone());
+        let (list, count) =
+            folder_errors(&client, "pl-1234567890123456", Duration::from_secs(3)).unwrap();
+        assert_eq!(count, 2);
+        assert_eq!(list[1].path, "工具/1.pdf");
+        assert!(list[0].reason.contains("permission denied"));
+        assert!(!list[0].reason.contains("服务器密钥"));
+        assert_eq!(statuses.load(Ordering::Relaxed), 0);
+
+        let client = server(100, statuses.clone());
+        let (list, count) =
+            folder_errors(&client, "pl-1234567890123456", Duration::from_secs(3)).unwrap();
+        assert_eq!((list.len(), count), (100, 150));
+        assert_eq!(statuses.load(Ordering::Relaxed), 1);
+    }
 }
 
 #[cfg(test)]

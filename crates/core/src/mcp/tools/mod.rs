@@ -182,6 +182,7 @@ pub(super) fn execute(
                     value["home"] = json!(local::home()?);
                     value["shells"] = json!(available);
                     value["path_style"] = json!("windows");
+                    value["computer"] = json!(local::computer_name());
                 }
                 values.push(value);
             }

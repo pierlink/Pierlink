@@ -6,6 +6,7 @@
 
 pub mod endpoints;
 pub mod extras;
+pub mod permissions;
 pub mod syncthing_ui;
 
 use crate::data::{DbState, data_dir};
@@ -448,9 +449,85 @@ pub struct SyncStatusDto {
 }
 
 #[derive(Serialize, Type)]
+#[serde(rename_all = "camelCase")]
 pub struct SyncErrorDto {
     pub path: String,
     pub reason: String,
+    /// 出错的一侧：null 为本机，否则为服务器 ID
+    pub server_id: Option<String>,
+}
+
+/// 每台服务器上查失败文件最多等多久：经同步隧道查询，慢的时候不能拖住状态刷新
+const SERVER_ERRORS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+/// 查到的结果（包括没查成的）留多久：任务页每 4 秒、托盘每 8 秒都要，不用每次都经隧道去问
+const SERVER_ERRORS_TTL: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// （服务器 ID，文件夹 ID）→（查的时间，失败的文件，总数）
+type ServerErrorsCache =
+    HashMap<(String, String), (std::time::Instant, Vec<sync::FolderError>, u64)>;
+
+fn server_errors_cache() -> &'static Mutex<ServerErrorsCache> {
+    static CACHE: std::sync::OnceLock<Mutex<ServerErrorsCache>> = std::sync::OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// 在线服务器的管理接口：在同步的锁里取出，放开锁以后再查失败的文件
+fn online_server_clients(
+    inner: &Inner,
+    servers: &[sync::ServerStatus],
+) -> Vec<(String, pierlink_core::syncthing::client::Client)> {
+    servers
+        .iter()
+        .filter(|x| x.connected)
+        .filter_map(|x| {
+            inner
+                .links
+                .get(&x.server_id)
+                .map(|l| (x.server_id.clone(), l.client().clone()))
+        })
+        .collect()
+}
+
+/// 查各台服务器上这个文件夹同步失败的文件；SERVER_ERRORS_TTL 内查过的直接用上次的结果。
+/// 查不到的服务器当作没有失败的文件（记日志），同样留一会儿，隧道半断时不会每次都等
+///
+/// :return: （服务器 ID，失败的文件）列表和总数
+fn server_errors(
+    folder_id: &str,
+    clients: &[(String, pierlink_core::syncthing::client::Client)],
+) -> (Vec<(String, sync::FolderError)>, u64) {
+    let mut list = Vec::new();
+    let mut count = 0u64;
+    for (server_id, client) in clients {
+        let key = (server_id.clone(), folder_id.to_owned());
+        let cached = lock_of(server_errors_cache())
+            .get(&key)
+            .filter(|(at, _, _)| at.elapsed() < SERVER_ERRORS_TTL)
+            .map(|(_, errors, n)| (errors.clone(), *n));
+        let (errors, n) = match cached {
+            Some(hit) => hit,
+            None => {
+                let fresh = match sync::folder_errors(client, folder_id, SERVER_ERRORS_TIMEOUT) {
+                    Ok(found) => found,
+                    Err(e) => {
+                        eprintln!(
+                            "查服务器上同步失败的文件失败: 服务器={server_id}, 文件夹={folder_id}, 错误={}",
+                            e.code
+                        );
+                        (Vec::new(), 0)
+                    }
+                };
+                let mut cache = lock_of(server_errors_cache());
+                // 顺手清掉很久没用的（任务删了、服务器换了）
+                cache.retain(|_, (at, _, _)| at.elapsed() < SERVER_ERRORS_TTL * 20);
+                cache.insert(key, (std::time::Instant::now(), fresh.0.clone(), fresh.1));
+                fresh
+            }
+        };
+        count = count.saturating_add(n);
+        list.extend(errors.into_iter().map(|e| (server_id.clone(), e)));
+    }
+    (list, count)
 }
 
 #[derive(Serialize, Type)]
@@ -682,6 +759,8 @@ pub(crate) fn mcp_task_states(
     let state = app.state::<SyncState>();
     let inner = lock_within(&state, std::time::Duration::from_secs(5))?;
     let mut out = Vec::new();
+    // 每个任务在线服务器的管理接口：放开锁以后再查服务器上失败的文件
+    let mut remotes = Vec::new();
     for (t, eps) in tasks {
         let servers: Vec<(String, String)> = eps
             .iter()
@@ -699,6 +778,7 @@ pub(crate) fn mcp_task_states(
         let (state, need_bytes, server_states, errors) = match inner.local.as_ref() {
             Some(local) => {
                 let s = sync::task_status(local, &t.folder_id, &servers)?;
+                remotes.push((out.len(), online_server_clients(&inner, &s.servers)));
                 // 同步出错的文件：让 AI 的 sync_wait 立即知道，不用等到超时
                 let errors = s
                     .errors
@@ -731,6 +811,16 @@ pub(crate) fn mcp_task_states(
             paused: t.paused,
             need_bytes,
         });
+    }
+    drop(inner);
+    for (index, clients) in remotes {
+        let task = &mut out[index];
+        let (failed, _) = server_errors(&task.folder_id, &clients);
+        // 服务器上的写成“[服务器名] 路径: 原因”，和本机的区分开
+        task.errors.extend(failed.into_iter().map(|(id, e)| {
+            let name = names.get(&id).map(String::as_str).unwrap_or(id.as_str());
+            format!("[{name}] {}: {}", e.path, e.reason)
+        }));
     }
     Ok(out)
 }
@@ -788,6 +878,7 @@ pub async fn sync_task_status(app: AppHandle, task_id: String) -> Result<SyncSta
             })
             .collect();
         let s = sync::task_status(local, &task.folder_id, &servers)?;
+        let remotes = online_server_clients(&inner, &s.servers);
         let state = app.state::<SyncState>();
         state
             .totals
@@ -799,6 +890,51 @@ pub async fn sync_task_status(app: AppHandle, task_id: String) -> Result<SyncSta
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .contains(&task.folder_id);
+        let server_states: Vec<ServerStatusDto> = s
+            .servers
+            .into_iter()
+            .map(|mut x| {
+                if !x.connected && x.error.is_none() {
+                    x.error = inner.link_errors.get(&x.server_id).cloned();
+                }
+                x
+            })
+            .map(|x| ServerStatusDto {
+                // 链接报“需要密码”（含 ssh-agent 方式退回要密码、保存的密码已失效），或选了密码登录又没有密码
+                needs_password: !x.connected
+                    && (x
+                        .error
+                        .as_ref()
+                        .is_some_and(|e| e.code == "ssh.password_needed")
+                        || crate::passwords::needs_password(&app, &x.server_id)),
+                needs_login: !x.connected
+                    && x.error
+                        .as_ref()
+                        .is_some_and(|e| e.code == "ssh.two_factor_required")
+                    && builtin_sync(&app, &x.server_id),
+                server_id: x.server_id,
+                connected: x.connected,
+                completion: x.completion,
+                error: x.error,
+            })
+            .collect();
+        // 服务器上失败的文件经隧道查询：先放开同步的锁，慢的时候不挡住别的操作
+        drop(inner);
+        let (server_failed, server_count) = server_errors(&task.folder_id, &remotes);
+        let mut errors: Vec<SyncErrorDto> = s
+            .errors
+            .into_iter()
+            .map(|e| SyncErrorDto {
+                path: e.path,
+                reason: e.reason,
+                server_id: None,
+            })
+            .collect();
+        errors.extend(server_failed.into_iter().map(|(id, e)| SyncErrorDto {
+            path: e.path,
+            reason: e.reason,
+            server_id: Some(id),
+        }));
         Ok(SyncStatusDto {
             deletion_guard_paused: guard_paused,
             local_changes: s.local_changed_items as f64,
@@ -806,43 +942,10 @@ pub async fn sync_task_status(app: AppHandle, task_id: String) -> Result<SyncSta
             files: s.global_files as f64,
             bytes: s.global_bytes as f64,
             need_bytes: s.need_bytes as f64,
-            error_count: u32::try_from(s.error_count).unwrap_or(u32::MAX),
-            errors: s
-                .errors
-                .into_iter()
-                .map(|e| SyncErrorDto {
-                    path: e.path,
-                    reason: e.reason,
-                })
-                .collect(),
-            servers: s
-                .servers
-                .into_iter()
-                .map(|mut x| {
-                    if !x.connected && x.error.is_none() {
-                        x.error = inner.link_errors.get(&x.server_id).cloned();
-                    }
-                    x
-                })
-                .map(|x| ServerStatusDto {
-                    // 链接报“需要密码”（含 ssh-agent 方式退回要密码、保存的密码已失效），或选了密码登录又没有密码
-                    needs_password: !x.connected
-                        && (x
-                            .error
-                            .as_ref()
-                            .is_some_and(|e| e.code == "ssh.password_needed")
-                            || crate::passwords::needs_password(&app, &x.server_id)),
-                    needs_login: !x.connected
-                        && x.error
-                            .as_ref()
-                            .is_some_and(|e| e.code == "ssh.two_factor_required")
-                        && builtin_sync(&app, &x.server_id),
-                    server_id: x.server_id,
-                    connected: x.connected,
-                    completion: x.completion,
-                    error: x.error,
-                })
-                .collect(),
+            error_count: u32::try_from(s.error_count.saturating_add(server_count))
+                .unwrap_or(u32::MAX),
+            errors,
+            servers: server_states,
         })
     })
     .await
@@ -909,6 +1012,7 @@ pub fn tray_summary(app: &AppHandle) -> Option<TraySummary> {
         return Some(sum);
     };
     let guard_paused = lock_of(&state.guard_paused).clone();
+    let mut checked = Vec::new();
     for (task, eps) in tasks.iter().filter(|(t, _)| !t.paused) {
         let servers: Vec<(String, String)> = eps
             .iter()
@@ -922,20 +1026,27 @@ pub fn tray_summary(app: &AppHandle) -> Option<TraySummary> {
             .collect();
         match sync::task_status(local, &task.folder_id, &servers) {
             Ok(s) => {
-                // 个别文件过不去不算出问题（其他文件照常同步，和同步页的“部分未同步”一样）
-                let pulling = s.state.starts_with("sync");
-                if guard_paused.contains(&task.folder_id)
-                    || s.state == "error"
-                    || s.servers.iter().any(|x| !x.connected)
-                {
-                    sum.problems += 1;
-                } else if s.error_count > 0 && !pulling {
-                    sum.partial += 1;
-                } else if s.need_bytes > 0 || pulling {
-                    sum.syncing += 1;
-                }
+                let remotes = online_server_clients(&inner, &s.servers);
+                checked.push((task.folder_id.as_str(), s, remotes));
             }
             Err(_) => sum.problems += 1,
+        }
+    }
+    // 服务器上失败的文件经隧道查询：先放开同步的锁
+    drop(inner);
+    for (folder_id, s, remotes) in checked {
+        // 个别文件过不去不算出问题（其他文件照常同步，和同步页的“部分未同步”一样）；
+        // 服务器上过不去的也算，本机已经有失败的就不用再查服务器
+        let pulling = s.state.starts_with("sync");
+        if guard_paused.contains(folder_id)
+            || s.state == "error"
+            || s.servers.iter().any(|x| !x.connected)
+        {
+            sum.problems += 1;
+        } else if !pulling && (s.error_count > 0 || server_errors(folder_id, &remotes).1 > 0) {
+            sum.partial += 1;
+        } else if s.need_bytes > 0 || pulling {
+            sum.syncing += 1;
         }
     }
     Some(sum)
@@ -2220,6 +2331,7 @@ pub async fn sync_restore_versions(
             .map(|e| SyncErrorDto {
                 path: e.path,
                 reason: e.reason,
+                server_id: None,
             })
             .collect())
     })

@@ -507,7 +507,8 @@
         "parameter_integer_range": "{{parameter}} 必须是 {{minimum}}–{{maximum}} 的整数",
         "parameter_enum": "{{parameter}} 必须是以下值之一：{{allowed}}",
         "parameter_array": "{{parameter}} 必须是数组，每项要求：{{constraint}}",
-        "confirmation_no_answer": "60 秒内没人回应：请让用户在 Pierlink 里确认后重试",
+        "confirmation_no_answer": "60 秒内没人回应：请让用户到电脑 {{computer}} 的 Pierlink 里确认后重试",
+        "confirmation_no_answer_here": "60 秒内没人回应：请让用户在 Pierlink 里确认后重试",
         "couldn_t_clean_up_audit_logs": "无法清理审计日志",
         "entry_token_cannot_be_empty": "入口令牌不能为空",
         "couldn_t_start_the_local_mcp_http_listener": "无法启动本机 MCP HTTP 监听",
@@ -1033,7 +1034,11 @@
         "multiple_versions_of_the_same_file_cannot_be_restored_together": "同一文件不能同时恢复多个版本",
         "cleanup_failed": "清理失败",
         "service_busy_check_later": "同步服务正忙，请稍后再查",
-        "cleanup_workers_failed": "{{failed_workers}} 个清理线程异常，未完成的文件夹：{{failed_folders}}"
+        "cleanup_workers_failed": "{{failed_workers}} 个清理线程异常，未完成的文件夹：{{failed_folders}}",
+        "account_sid_is_malformed": "账户 SID 格式不对",
+        "paths_to_fix_are_too_long": "要修复的路径太长",
+        "fix_process_handle_missing": "没有拿到修复程序的进程",
+        "fix_program_failed": "修复程序出错"
       },
       "syncthing": {
         "only_local_ipv4_loopback_addresses_are_allowed": "只允许本机 IPv4 回环地址",
@@ -1429,7 +1434,12 @@
       "diff_outside_root": "冲突文件不在同步目录里，没有读取",
       "diff_not_file": "冲突的不是普通文件，没法对比",
       "server_already_in_task": "这台服务器已经在这个任务里了",
-      "last_server": "任务至少要留一台服务器；不需要了可以删除整个任务"
+      "last_server": "任务至少要留一台服务器；不需要了可以删除整个任务",
+      "fix_cancelled": "没有确认管理员权限，权限没有改",
+      "fix_failed": "修复权限失败：{{reason}}",
+      "fix_unsupported": "只有 Windows 上能修复权限",
+      "fix_unreachable": "失败的文件在目录链接里，没法在这里修复",
+      "server_ui_login": "登录不了 {{server}} 的管理页：它的同步程序是在别的电脑上部署的"
     },
     "syncthing": {
       "unreachable": "连不上同步服务",
@@ -1623,7 +1633,7 @@
       "task_failed": "处理密码时出错（{{reason}}）"
     },
     "update": {
-      "check_failed": "检查更新失败（网络或 GitHub 暂时访问不了）",
+      "check_failed": "连不上 GitHub",
       "install_failed": "下载或安装更新失败",
       "none": "没有可安装的新版本",
       "stalled": "网络中断，下载停住了，网络恢复后点“重试”",
@@ -2016,6 +2026,8 @@
     "versionsOn": "开 · 回收站 30 天",
     "browseVersions": "浏览已删除和旧版本",
     "openSyncthingUi": "打开本机的 Syncthing 管理页",
+    "openServerSyncthingUi": "打开 {{name}} 的 Syncthing 管理页",
+    "serverUiOffline": "服务器连上以后才能打开",
     "events": "最近事件",
     "noEvents": "还没有同步事件。",
     "event": {
@@ -2057,6 +2069,16 @@
     "errorsCount": "{{count}} 个文件同步失败",
     "errorsHint": "其他文件照常同步，修正原因后会自动重试。",
     "errorsMore": "只列出前 {{count}} 个",
+    "errorAt": "{{side}} · {{reason}}",
+    "fixPermissions": "修复权限",
+    "fixPermissionsHint": "用管理员权限让你的账户能读写这些文件夹，Windows 会请你确认",
+    "fixDone": "权限已修复，正在重新同步",
+    "fixNone": "现在没有要修复的权限问题",
+    "fixPartial": "有 {{count}} 个文件夹没修好",
+    "copyServerFix": "复制修复命令",
+    "copyServerFixNamed": "复制 {{name}} 的修复命令",
+    "copyServerFixHint": "到这台服务器的终端里粘贴运行，需要 sudo 密码",
+    "fixCopied": "修复命令已复制：到服务器的终端里粘贴运行",
     "removeTask": "移除任务",
     "removeTitle": "移除同步任务 {{name}}？",
     "removeBody": "只取消这个同步，两端的文件都不会删除：本机 {{local}}；服务器 {{remote}}。",
@@ -2146,7 +2168,10 @@
         "device": "设备",
         "ignores": "排除规则"
       },
-      "paused": "恢复后“{{name}}”已暂停：确认目录没问题后，在同步页点“继续”。"
+      "paused": "恢复后“{{name}}”已暂停：确认目录没问题后，在同步页点“继续”。",
+      "serverTitle": "{{name}} 的 Syncthing 管理页里改过的设置",
+      "serverRestored": "改过的 {{count}} 项设置已改回：服务器上的同步设置请在 Pierlink 里改。",
+      "serverUnrestored": "有 {{count}} 项没能改回（可能是连接断了）。"
     },
     "removeServer": "从这个任务移除 {{name}}",
     "removeServerTitle": "从“{{task}}”移除 {{name}}？",

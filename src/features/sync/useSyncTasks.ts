@@ -45,12 +45,13 @@ function toConflicts(list: ConflictRecord[] | undefined): SyncConflictView[] {
 
 const POLL_MS = 4000;
 
-/** 按路径去重，保留第一次出现的 */
-function uniqueByPath<T extends { path: string }>(list: T[]): T[] {
+/** 同一侧（本机或同一台服务器）按路径去重，保留第一次出现的；不同侧的同一路径各留一条 */
+function uniqueByPath<T extends { path: string; serverId: string | null }>(list: T[]): T[] {
   const seen = new Set<string>();
   return list.filter((e) => {
-    if (seen.has(e.path)) return false;
-    seen.add(e.path);
+    const key = `${e.serverId ?? ""}\u0000${e.path}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
     return true;
   });
 }

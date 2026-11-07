@@ -94,11 +94,7 @@ fn 下载删除冲突作者与传输设备分离且不重复完成事件() {
 }
 #[test]
 fn 上传跨批保留作者且版本改变不能套用旧作者() {
-    for (author, expected) in [
-        ("AAAAAAA", Some("local")),
-        ("BBBBBBB", Some(REMOTE)),
-        ("CCCCCCC", None),
-    ] {
+    for (author, expected) in [("AAAAAAA", Some("local")), ("CCCCCCC", None)] {
         let batch = Arc::new(Mutex::new(json!([event(
             1,
             "LocalIndexUpdated",
@@ -140,6 +136,31 @@ fn 上传跨批保留作者且版本改变不能套用旧作者() {
                 .all(|v| v.kind != SyncEventKind::Uploaded)
         );
     }
+}
+#[test]
+fn 从服务器下载来的文件不算上传回这台服务器() {
+    let batch = Arc::new(Mutex::new(json!([event(
+        1,
+        "LocalIndexUpdated",
+        json!({"folder":"f","filenames":["file"]})
+    )])));
+    let info = Arc::new(Mutex::new(
+        json!({"local":{"modifiedBy":"BBBBBBB","version":["b:1"]},"global":{"version":["b:1"]},"availability":[{"id":REMOTE,"fromTemporary":false}]}),
+    ));
+    let mut pump = pump(batch.clone(), info);
+    pump.poll().unwrap();
+    *batch.lock().unwrap() = json!([event(
+        2,
+        "RemoteIndexUpdated",
+        json!({"folder":"f","device":REMOTE})
+    )]);
+    assert!(
+        pump.poll()
+            .unwrap()
+            .iter()
+            .all(|v| v.kind != SyncEventKind::Uploaded)
+    );
+    assert!(pump.pending.is_empty());
 }
 #[test]
 fn 短设备编号碰撞与查不到设备不猜作者且兼容旧事件() {

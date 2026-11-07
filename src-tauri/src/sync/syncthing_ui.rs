@@ -2,9 +2,13 @@
 //! 先设好 cookie 再打开页面（用户不用输口令）；关窗时注销。
 //! 打开前记下 Pierlink 管的配置，关窗后核对：加固项被改了就静默恢复，
 //! 任务的设置被改了列给用户逐项“采用新值”或“恢复”，管理页里新加的东西只列出来。
+//!
+//! 服务器的管理页同样在应用内窗口打开（经同步隧道），每台服务器一个窗口。服务器一侧的任务设置由 Pierlink 管理，
+//! 关窗后被改的加固项和任务设置都直接改回，只告诉用户改回了几项（结果留着，不在同步页时下次进来再看）。
+//! 窗口开着期间 Pierlink 自己或别的电脑改的（设备地址、被编辑过的任务、别的电脑加入文件夹）不算，不改回。
 use super::{DbState, LocalGuiInfo, SyncState, now_ms};
 use pierlink_core::error::AppError;
-use pierlink_core::storage::EndpointMode;
+use pierlink_core::storage::{EndpointMode, SyncTask};
 use pierlink_core::sync::{
     self, ConfigTarget, ConfigurationChange, ConfigurationReport, ManagedConfiguration,
     ManagedFolder,
@@ -14,12 +18,15 @@ use pierlink_core::syncthing::gui_session::{self, GuiCookie};
 use serde::Serialize;
 use serde_json::Value;
 use specta::Type;
+use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 use tauri::webview::cookie::Cookie;
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 
 /// 管理页窗口的标签（不在权限配置里，页面拿不到应用的命令）
 const WINDOW: &str = "syncthing-ui";
+/// 服务器管理页窗口标签的前缀，后面接服务器 ID（同样不在权限配置里）
+const SERVER_WINDOW_PREFIX: &str = "syncthing-ui-server-";
 /// 关窗后有需要用户处理的核对结果时推给界面
 pub const CONFIG_REPORT_EVENT: &str = "pierlink://sync-config-report";
 
@@ -63,6 +70,12 @@ pub struct ConfigReportDto {
     pub foreign: Vec<ForeignDto>,
     /// 刚恢复的设置让这个任务暂停了（恢复了目录或整个文件夹）：任务名，界面提示确认后点“继续”
     pub paused_task: Option<String>,
+    /// 服务器管理页的核对结果：服务器名称；本机的为 null
+    pub server: Option<String>,
+    /// 服务器管理页：关窗后已经改回的任务设置项数（本机的为 0，本机的任务设置改动逐项让用户选）
+    pub restored: u32,
+    /// 服务器管理页：没能改回的项数（例如连接断了）
+    pub unrestored: u32,
 }
 
 /// 打开中的管理页会话
@@ -72,11 +85,28 @@ struct Session {
     expected: ManagedConfiguration,
 }
 
+/// 打开中的服务器管理页会话
+struct ServerSession {
+    name: String,
+    base: String,
+    cookie: GuiCookie,
+    /// 打开时的管理接口：关窗时隧道断着就用它试
+    client: Client,
+    expected: ManagedConfiguration,
+    policy: sync::HardeningPolicy,
+    /// 开始打开的时间（毫秒）：之后在 Pierlink 里改过的任务，关窗时不改回
+    opened_ms: i64,
+}
+
 /// 管理页状态：当前会话，以及还没处理完的核对结果
 #[derive(Default)]
 pub struct SyncthingUiState {
     session: Mutex<Option<Session>>,
     pending: Mutex<Option<(ManagedConfiguration, ConfigurationReport)>>,
+    /// 打开中的服务器管理页（按服务器 ID）
+    servers: Mutex<HashMap<String, ServerSession>>,
+    /// 服务器管理页关掉后的结果，用户还没看过的（早的在前；只弹最近的一条，看过全部清掉）
+    server_pending: Mutex<Vec<ConfigReportDto>>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -201,6 +231,9 @@ fn report_dto(app: &AppHandle, report: &ConfigurationReport) -> ConfigReportDto 
             })
             .collect(),
         paused_task: None,
+        server: None,
+        restored: 0,
+        unrestored: 0,
     }
 }
 
@@ -374,13 +407,301 @@ pub async fn sync_open_syncthing_ui(app: AppHandle) -> Result<(), AppError> {
     }
 }
 
-/// 还没处理完的核对结果（界面重新加载后取回）
+/// 服务器管理页窗口的标签：服务器 ID 里窗口标签不允许的字符换成下划线
+fn server_window(server_id: &str) -> String {
+    let id: String = server_id
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    format!("{SERVER_WINDOW_PREFIX}{id}")
+}
+
+/// 准备服务器管理页：经同步隧道用 Pierlink 的口令登录；登录后、窗口打开前记下服务器上的设置，作为关窗后核对的基准
+///
+/// :return: 服务器名称、管理接口地址、会话 cookie
+fn open_server_session(
+    app: &AppHandle,
+    server_id: &str,
+) -> Result<(String, String, GuiCookie), AppError> {
+    let opened_ms = now_ms();
+    let server = crate::servers::load(app, server_id)?;
+    let instance = app
+        .state::<DbState>()
+        .with(|db| db.get_instance(server_id))?
+        .ok_or_else(|| AppError::new("sync.not_deployed").with("server", &server.name))?;
+    let client = {
+        let state = app.state::<SyncState>();
+        let inner = state.lock();
+        inner.links.get(server_id).map(|l| l.client().clone())
+    }
+    .ok_or_else(|| AppError::new("sync.not_connected"))?;
+    // 同步程序是别的电脑部署的：这台电脑没有它的口令，或口令对不上
+    let no_login = || AppError::new("sync.server_ui_login").with("server", &server.name);
+    let password = super::credential_store()?
+        .get(&instance.gui_password_cred)?
+        .ok_or_else(no_login)?;
+    let base = client.base().to_owned();
+    let cookie = gui_session::login(&base, "pierlink", &password).map_err(|e| {
+        if e.code == "syncthing.unauthorized" {
+            no_login()
+        } else {
+            e
+        }
+    })?;
+    let prepared = (|| {
+        let expected = snapshot(app, &client)?;
+        let policy = sync::capture_server_hardening_policy(
+            &client,
+            "pierlink",
+            &instance.socket_path,
+            instance.sync_port,
+        )?;
+        Ok::<_, AppError>((expected, policy))
+    })();
+    let (expected, policy) = match prepared {
+        Ok(v) => v,
+        Err(e) => {
+            let _ = gui_session::logout(&base, &cookie);
+            return Err(e);
+        }
+    };
+    lock(&app.state::<SyncthingUiState>().servers).insert(
+        server_id.to_owned(),
+        ServerSession {
+            name: server.name.clone(),
+            base: base.clone(),
+            cookie: cookie.clone(),
+            client,
+            expected,
+            policy,
+            opened_ms,
+        },
+    );
+    Ok((server.name, base, cookie))
+}
+
+/// 恢复目录或整个文件夹后，那边的文件夹是暂停的：任务也记成暂停，让用户确认后再点“继续”
+///
+/// :return: 任务名；找不到任务或写数据库失败时为 None
+fn pause_task_of(app: &AppHandle, folder_id: &str) -> Option<String> {
+    let tasks = app
+        .state::<DbState>()
+        .with(|db| db.list_sync_tasks())
+        .ok()?;
+    let mut task = tasks.into_iter().find(|t| t.folder_id == folder_id)?;
+    task.paused = true;
+    task.updated_at = now_ms();
+    if let Err(e) = app.state::<DbState>().with(|db| db.update_sync_task(&task)) {
+        eprintln!("把任务记成暂停失败: 任务={}, 错误={}", task.name, e.code);
+        return None;
+    }
+    Some(task.name)
+}
+
+/// 服务器管理页关窗后要不要改回这一项。窗口开着期间 Pierlink 自己或别的电脑也会改服务器上的设置，这些不算管理页里的改动：
+/// 设备地址（隧道重连时更新）、这期间在 Pierlink 里编辑、暂停或删除过的任务的文件夹、文件夹只是多了设备（别的电脑加入）。
+fn should_restore(change: &ConfigurationChange, tasks: &[SyncTask], opened_ms: i64) -> bool {
+    match change.target {
+        ConfigTarget::Device => change.field != "addresses",
+        ConfigTarget::Folder | ConfigTarget::Ignores => {
+            let Some(task) = tasks.iter().find(|t| t.folder_id == change.id) else {
+                return false;
+            };
+            if task.updated_at >= opened_ms {
+                return false;
+            }
+            if change.field == "devices" {
+                let ids = |v: &Value| -> HashSet<String> {
+                    v.as_array()
+                        .map(|list| {
+                            list.iter()
+                                .filter_map(|d| d["deviceID"].as_str().map(str::to_owned))
+                                .collect()
+                        })
+                        .unwrap_or_default()
+                };
+                return !ids(&change.expected).is_subset(&ids(&change.actual));
+            }
+            true
+        }
+    }
+}
+
+/// 服务器管理页关了：注销、删 cookie，按打开时的基准核对服务器上的设置，被改的直接改回；有改回的告诉界面
+fn on_server_closed(app: AppHandle, server_id: String) {
+    let Some(session) = lock(&app.state::<SyncthingUiState>().servers).remove(&server_id) else {
+        return;
+    };
+    if let Err(e) = gui_session::logout(&session.base, &session.cookie) {
+        eprintln!(
+            "注销服务器 Syncthing 管理页会话失败: 服务器={}, 错误={}",
+            session.name, e.code
+        );
+    }
+    if let Some(main) = app.get_webview_window("main")
+        && let Err(e) = main.delete_cookie(to_cookie(&session.cookie))
+    {
+        eprintln!("删除服务器管理页 cookie 失败: 错误={e}");
+    }
+    // 隧道重连过时本机端口会变：优先用现在的管理接口
+    let client = {
+        let state = app.state::<SyncState>();
+        let inner = state.lock();
+        inner.links.get(&server_id).map(|l| l.client().clone())
+    }
+    .unwrap_or_else(|| session.client.clone());
+    let report = match sync::reconcile_configuration(&client, &session.policy, &session.expected) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!(
+                "核对服务器 Syncthing 配置失败: 服务器={}, 错误={}",
+                session.name, e.code
+            );
+            return;
+        }
+    };
+    let tasks = app
+        .state::<DbState>()
+        .with(|db| db.list_sync_tasks())
+        .unwrap_or_default();
+    let mut restored = 0u32;
+    let mut unrestored = 0u32;
+    let mut skipped = 0usize;
+    let mut paused_folder = None;
+    for change in &report.task_changes {
+        if !should_restore(change, &tasks, session.opened_ms) {
+            skipped += 1;
+            continue;
+        }
+        match sync::restore_configuration_change(&client, &session.expected, change) {
+            Ok(r) => {
+                restored += 1;
+                if r.paused_for_rejoin {
+                    paused_folder = Some(change.id.clone());
+                }
+            }
+            Err(e) => {
+                unrestored += 1;
+                eprintln!(
+                    "改回服务器上被改的设置失败: 服务器={}, 对象={}, 字段={}, 错误={}",
+                    session.name, change.id, change.field, e.code
+                );
+            }
+        }
+    }
+    let paused_task = paused_folder.and_then(|id| pause_task_of(&app, &id));
+    // 服务器上新加的文件夹、设备不列：几台电脑共用一个服务器时分不清是谁加的，Pierlink 也不会动它们
+    eprintln!(
+        "核对服务器 Syncthing 配置: 服务器={}, 恢复加固项={}, 改回任务设置={restored}, 没能改回={unrestored}, 不算管理页改动的={skipped}",
+        session.name,
+        report.hardened.len()
+    );
+    if report.hardened.is_empty() && restored == 0 && unrestored == 0 && paused_task.is_none() {
+        return;
+    }
+    let dto = ConfigReportDto {
+        hardened: report.hardened,
+        changes: Vec::new(),
+        foreign: Vec::new(),
+        paused_task,
+        server: Some(session.name),
+        restored,
+        unrestored,
+    };
+    // 留一份：用户不在同步页时，下次进同步页再看（任务被暂停了也要让用户知道）
+    lock(&app.state::<SyncthingUiState>().server_pending).push(dto.clone());
+    if let Err(e) = app.emit(CONFIG_REPORT_EVENT, dto) {
+        eprintln!("推送服务器配置核对结果失败: 错误={e}");
+    }
+}
+
+/// 在应用内窗口打开一台服务器的 Syncthing 管理页（经同步隧道，自动登录）。这台的已经开着就切到前面。
+/// 关窗后核对服务器上的设置：被改的安全设置和同步任务设置都改回 Pierlink 的，改回了几项告诉界面。
+///
+/// :param server_id: 服务器 ID
+/// :return: 服务器没连上返回 sync.not_connected；这台电脑没有它的登录口令（同步程序是别的电脑部署的）返回 sync.server_ui_login
+#[tauri::command]
+#[specta::specta]
+pub async fn sync_open_server_syncthing_ui(
+    app: AppHandle,
+    server_id: String,
+) -> Result<(), AppError> {
+    let label = server_window(&server_id);
+    if let Some(w) = app.get_webview_window(&label) {
+        let _ = w.unminimize();
+        let _ = w.show();
+        let _ = w.set_focus();
+        return Ok(());
+    }
+    let handle = app.clone();
+    let id = server_id.clone();
+    let (name, base, cookie) =
+        tauri::async_runtime::spawn_blocking(move || open_server_session(&handle, &id))
+            .await
+            .map_err(failed)??;
+    let result = (|| -> Result<(), AppError> {
+        let window = WebviewWindowBuilder::new(
+            &app,
+            &label,
+            WebviewUrl::External("about:blank".parse().map_err(failed)?),
+        )
+        .title(format!("Syncthing · {name} · Pierlink"))
+        .inner_size(1180.0, 820.0)
+        .min_inner_size(720.0, 480.0)
+        .visible(false)
+        .build()
+        .map_err(failed)?;
+        let app2 = app.clone();
+        let id = server_id.clone();
+        window.on_window_event(move |e| {
+            if let WindowEvent::Destroyed = e {
+                let app = app2.clone();
+                let id = id.clone();
+                std::thread::spawn(move || on_server_closed(app, id));
+            }
+        });
+        window.set_cookie(to_cookie(&cookie)).map_err(failed)?;
+        window
+            .navigate(format!("{base}/").parse().map_err(failed)?)
+            .map_err(failed)?;
+        window.show().map_err(failed)?;
+        window.set_focus().map_err(failed)?;
+        Ok(())
+    })();
+    match result {
+        Ok(()) => {
+            eprintln!("打开服务器的 Syncthing 管理页: 服务器={name}");
+            Ok(())
+        }
+        Err(e) => {
+            // 窗口没开起来：关窗处理会注销；窗口都没建成时在这里注销
+            if let Some(w) = app.get_webview_window(&label) {
+                let _ = w.destroy();
+            } else if let Some(s) =
+                lock(&app.state::<SyncthingUiState>().servers).remove(&server_id)
+            {
+                let _ = gui_session::logout(&s.base, &s.cookie);
+            }
+            Err(e)
+        }
+    }
+}
+
+/// 还没处理完的核对结果（界面重新加载、进同步页时取回）：本机的优先，其次是服务器管理页最近的一条
 #[tauri::command]
 #[specta::specta]
 pub async fn sync_config_report(app: AppHandle) -> Result<Option<ConfigReportDto>, AppError> {
     let ui = app.state::<SyncthingUiState>();
-    let pending = lock(&ui.pending);
-    Ok(pending.as_ref().map(|(_, r)| report_dto(&app, r)))
+    if let Some((_, r)) = lock(&ui.pending).as_ref() {
+        return Ok(Some(report_dto(&app, r)));
+    }
+    Ok(lock(&ui.server_pending).last().cloned())
 }
 
 /// 把采用的新值写进任务设置（Pierlink 没存的字段不用写）
@@ -505,11 +826,18 @@ pub async fn sync_config_resolve(
     .map_err(failed)?
 }
 
-/// 用户看过了核对结果：只剩加固项、外来项时清掉；还有没处理的任务改动时保留（下次进同步页再提示）
+/// 用户看过了核对结果。本机的：只剩加固项、外来项时清掉，还有没处理的任务改动时保留（下次进同步页再提示）；
+/// 服务器管理页的：只弹最近的一条，看过就全部清掉
+///
+/// :param server: 看过的是不是服务器管理页的结果
 #[tauri::command]
 #[specta::specta]
-pub async fn sync_config_dismiss(app: AppHandle) -> Result<(), AppError> {
+pub async fn sync_config_dismiss(app: AppHandle, server: bool) -> Result<(), AppError> {
     let ui = app.state::<SyncthingUiState>();
+    if server {
+        lock(&ui.server_pending).clear();
+        return Ok(());
+    }
     let mut pending = lock(&ui.pending);
     if pending
         .as_ref()

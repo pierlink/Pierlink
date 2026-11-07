@@ -7,8 +7,10 @@ import { formatBytes, formatCount } from "./format";
 import { directionOf } from "./direction";
 import type { SyncConflictView, SyncEndpointView, SyncEventView, SyncTaskState, SyncTaskView } from "./types";
 import "./sync.css";
-import { formatError } from "../../errors";
+import { formatError, isAppError } from "../../errors";
 import { getSyncApi } from "./syncApi";
+import { isDenied, serverFixCommand } from "./permissions";
+import { writeClipboardText } from "../shell/clipboard";
 import { getFilesApi } from "../files/api";
 import { ConflictDiffDialog } from "./ConflictDiffDialog";
 import { passwordBus } from "../passwords/bus";
@@ -28,7 +30,7 @@ function matches(task: SyncTaskView, f: Filter): boolean {
 
 /** Syncthing 的英文失败原因 → 一句短话；认不出来的取原文最后一段（完整原文在悬停提示里） */
 function shortReason(reason: string, t: (k: string) => string): string {
-  if (/access is denied|permission denied|operation not permitted/i.test(reason)) return t("sync.reason.denied");
+  if (isDenied(reason)) return t("sync.reason.denied");
   if (/used by another process|sharing violation|resource busy/i.test(reason)) return t("sync.reason.busy");
   if (/name too long|path too long|extension is too long/i.test(reason)) return t("sync.reason.tooLong");
   if (/no space left|not enough space|disk full/i.test(reason)) return t("sync.reason.noSpace");
@@ -124,7 +126,8 @@ function TaskDetail({ task, actions }: { task: SyncTaskView; actions?: SyncActio
   // 这台电脑上的编辑器和这个任务默认用哪个（换任务时重新取，因为每个任务记住自己用的）
   const [editors, setEditors] = useState<{ editors: { id: string; name: string }[]; preferred: string | null } | null>(null);
   const [comparing, setComparing] = useState<SyncTaskView["conflicts"][number] | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
+  const [notice, setNotice] = useState<{ text: string; tone: "danger" | "ok" } | null>(null);
+  const [fixing, setFixing] = useState(false);
   useEffect(() => {
     setEditors(null);
     void getSyncApi().then((api) => api.editors(task.id)).then(setEditors, () => setEditors({ editors: [], preferred: null }));
@@ -132,7 +135,37 @@ function TaskDetail({ task, actions }: { task: SyncTaskView; actions?: SyncActio
   const preferredEditor = editors?.editors.find((e) => e.id === editors.preferred) ?? null;
   const failedFiles = task.errors ?? [];
   const failedCount = Math.max(task.errorCount ?? 0, failedFiles.length);
-  const showNotice = (text: string) => { setNotice(text); setTimeout(() => setNotice((n) => (n === text ? null : n)), 8000); };
+  const showNotice = (text: string, tone: "danger" | "ok" = "danger") => {
+    setNotice({ text, tone });
+    setTimeout(() => setNotice((n) => (n?.text === text ? null : n)), 8000);
+  };
+  // 失败的文件在哪一侧：本机，或哪台服务器
+  const sideName = (serverId: string | null) => (serverId === null ? t("sync.byLocal") : task.endpoints.find((e) => e.serverId === serverId)?.serverName ?? serverId);
+  // 本机没有权限的：用管理员权限修复；服务器上没有权限的：给出在那台服务器上运行的命令（要 sudo 密码）
+  const localDenied = failedFiles.some((e) => e.serverId === null && isDenied(e.reason));
+  const serverFixes = task.endpoints
+    .map((ep) => ({ ep, command: serverFixCommand(ep.remotePath, failedFiles.filter((e) => e.serverId === ep.serverId && isDenied(e.reason)).map((e) => e.path)) }))
+    .filter((x) => x.command !== "");
+  const fixPermissions = () => {
+    setFixing(true);
+    void getSyncApi()
+      .then((api) => api.fixPermissions(task.id))
+      .then(
+        (r) => {
+          if (r.failed > 0) showNotice(t("sync.fixPartial", { count: r.failed }));
+          else showNotice(r.fixed > 0 ? t("sync.fixDone") : t("sync.fixNone"), "ok");
+        },
+        // 在 Windows 的确认框里点了“否”：什么都不说
+        (e: unknown) => { if (!isAppError(e) || e.code !== "sync.fix_cancelled") showNotice(formatError(e)); },
+      )
+      .finally(() => setFixing(false));
+  };
+  const copyFix = (command: string) => {
+    void writeClipboardText(command).then(() => showNotice(t("sync.fixCopied"), "ok"), (e: unknown) => showNotice(formatError(e)));
+  };
+  const openServerSyncthingUi = (serverId: string) => {
+    void getSyncApi().then((api) => api.openServerSyncthingUi(serverId)).catch((e: unknown) => showNotice(formatError(e)));
+  };
   const openEditor = (id: string | null) => {
     void getSyncApi().then((api) => api.openInEditor(task.id, id)).then(
       () => { if (id) setEditors((x) => (x ? { ...x, preferred: id } : x)); },
@@ -140,6 +173,13 @@ function TaskDetail({ task, actions }: { task: SyncTaskView; actions?: SyncActio
     );
   };
   const revealFolder = () => { void getFilesApi().then((api) => api.openDefault(task.localPath)).catch((e: unknown) => showNotice(formatError(e))); };
+  // 下拉里选“文件夹”：打开文件夹，并且以后默认就打开文件夹（忘掉选过的编辑器）
+  const chooseFolder = () => {
+    revealFolder();
+    if (!preferredEditor) return;
+    setEditors((x) => (x ? { ...x, preferred: null } : x));
+    void getSyncApi().then((api) => api.forgetEditor(task.id)).catch((e: unknown) => showNotice(formatError(e)));
+  };
   const openSyncthingUi = () => { void getSyncApi().then((api) => api.openSyncthingUi()).catch((e: unknown) => showNotice(formatError(e))); };
 
   return (
@@ -151,10 +191,10 @@ function TaskDetail({ task, actions }: { task: SyncTaskView; actions?: SyncActio
         <Button size="sm" disabled={actions?.busyId === task.id} icon={paused ? <Play size={14} /> : <Pause size={14} />} onClick={() => actions?.onSetPaused(task.id, !paused)}>{paused ? t("sync.resume") : t("sync.pause")}</Button>
         <Button size="sm" disabled={actions?.busyId === task.id || paused} icon={<RefreshCw size={14} />} onClick={() => actions?.onRescan(task.id)}>{t("sync.rescan")}</Button>
         <Button size="sm" disabled={actions?.busyId === task.id} icon={<Pencil size={14} />} onClick={() => actions?.onEdit(task.id)}>{t("sync.editTask")}</Button>
-        {/* 用编辑器打开：默认上次用的（没有就 VS Code）；下拉里换别的编辑器或在资源管理器里打开 */}
+        {/* 默认在资源管理器里打开文件夹；在下拉里选过编辑器后默认用它，再选“文件夹”就改回来 */}
         <SplitButton
           disabled={editors === null}
-          title={editors && !preferredEditor ? t("sync.noEditor") : undefined}
+          title={editors && editors.editors.length === 0 ? t("sync.noEditor") : undefined}
           label={preferredEditor ? t("sync.openIn", { editor: preferredEditor.name }) : t("sync.openFolder")}
           icon={<FolderOpen size={14} />}
           onClick={() => (preferredEditor ? openEditor(null) : revealFolder())}
@@ -163,7 +203,7 @@ function TaskDetail({ task, actions }: { task: SyncTaskView; actions?: SyncActio
           entries={[
             ...(editors?.editors ?? []).map((e) => ({ id: `ed-${e.id}`, label: e.name, onSelect: () => openEditor(e.id) })),
             ...((editors?.editors.length ?? 0) > 0 ? [{ kind: "separator" as const, id: "sep" }] : []),
-            { id: "folder", label: t("workspace.openFolder"), onSelect: revealFolder },
+            { id: "folder", label: t("workspace.openFolder"), onSelect: chooseFolder },
           ]}
         />
         <IconButton
@@ -252,13 +292,23 @@ function TaskDetail({ task, actions }: { task: SyncTaskView; actions?: SyncActio
             <CircleAlert size={15} aria-hidden />
             <b>{t("sync.errorsCount", { count: failedCount })}</b>
             <span>{t("sync.errorsHint")}</span>
+            {(localDenied || serverFixes.length > 0) && (
+              <div className="sync-errors__actions">
+                {localDenied && <Button size="sm" disabled={fixing} title={t("sync.fixPermissionsHint")} onClick={fixPermissions}>{t("sync.fixPermissions")}</Button>}
+                {serverFixes.map(({ ep, command }) => (
+                  <Button key={ep.serverId} size="sm" title={t("sync.copyServerFixHint")} onClick={() => copyFix(command)}>
+                    {task.endpoints.length > 1 ? t("sync.copyServerFixNamed", { name: ep.serverName }) : t("sync.copyServerFix")}
+                  </Button>
+                ))}
+              </div>
+            )}
           </div>
-          {/* 文件和一句话原因，英文原文在悬停提示里；列表长了在框里滚动 */}
+          {/* 文件和一句话原因（前面写在哪一侧：本机或服务器名），英文原文在悬停提示里；列表长了在框里滚动 */}
           <ul className="sync-errors__list">
             {failedFiles.map((e) => (
-              <li key={e.path} className="sync-error" title={e.reason}>
+              <li key={`${e.serverId ?? ""}:${e.path}`} className="sync-error" title={e.reason}>
                 <span className="sync-error__path mono">{e.path}</span>
-                <span className="sync-error__reason">{shortReason(e.reason, t)}</span>
+                <span className="sync-error__reason">{t("sync.errorAt", { side: sideName(e.serverId), reason: shortReason(e.reason, t) })}</span>
               </li>
             ))}
           </ul>
@@ -313,6 +363,11 @@ function TaskDetail({ task, actions }: { task: SyncTaskView; actions?: SyncActio
               ? <button type="button" className="sync-link" onClick={() => actions?.onBrowseVersions(task.id)}>{t("sync.browseVersions")}</button>
               : <span className="sync-later" title={t("sync.versionsOffHint")}>{t("sync.browseVersions")}</span>}
             <button type="button" className="sync-link" onClick={openSyncthingUi}>{t("sync.openSyncthingUi")}</button>
+            {task.endpoints.map((ep) => (
+              <button key={ep.serverId} type="button" className="sync-link" disabled={ep.link !== "online"} title={ep.link !== "online" ? t("sync.serverUiOffline") : undefined} onClick={() => openServerSyncthingUi(ep.serverId)}>
+                {t("sync.openServerSyncthingUi", { name: ep.serverName })}
+              </button>
+            ))}
           </div>
         </div>
       </div>
@@ -348,7 +403,7 @@ function TaskDetail({ task, actions }: { task: SyncTaskView; actions?: SyncActio
         />
       )}
       {/* 打开编辑器或管理页失败：浮在底部提示区，不挤动页面 */}
-      {notice && <Notice order={0}><div className="ws-load-error"><Banner tone="danger" title={notice} actions={<Button size="sm" variant="ghost" onClick={() => setNotice(null)}>{t("mcp.gotIt")}</Button>} /></div></Notice>}
+      {notice && <Notice order={0}><div className="ws-load-error"><Banner tone={notice.tone} title={notice.text} actions={<Button size="sm" variant="ghost" onClick={() => setNotice(null)}>{t("mcp.gotIt")}</Button>} /></div></Notice>}
     </section>
   );
 }

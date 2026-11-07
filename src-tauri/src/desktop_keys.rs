@@ -3,7 +3,8 @@
 //! 交给界面转发给远程（Ctrl 照常经过界面）。只截这一个组合，其他快捷键照常归 Windows。
 use tauri::AppHandle;
 
-/// 截住的空格交给界面：true 为按下，false 为松开
+/// 截住的空格交给界面：true 为按下，false 为松开（只有 Windows 上的键盘钩子发这个事件）
+#[cfg_attr(not(windows), allow(dead_code))]
 pub const CTRL_SPACE_EVENT: &str = "pierlink://desktop-ctrl-space";
 
 /// 远程桌面画面拿到焦点时打开、失去焦点时关掉：打开期间 Ctrl+空格不让 Windows 拿去切输入法，交给远程桌面。只在 Windows 上起作用。

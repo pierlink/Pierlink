@@ -65,10 +65,37 @@ export interface AppSettings {
 
 /** 设计 3.3 的默认排除规则 */
 export const DEFAULT_IGNORE_RULES = [
-  "(?d)node_modules", "(?d).venv", "(?d)__pycache__", "(?d)target", "(?d)dist", "(?d)build", "(?d).cache",
-  "(?d).pytest_cache", "(?d).mypy_cache", "(?d).ruff_cache",
-  "(?d)*.tmp", ".env", "*.pem", "*.key", "(?d).git", "(?d)Thumbs.db", "(?d)desktop.ini", "(?d)~$*", "(?d)*.pierlink-part",
+  "(?d)node_modules", "(?d).venv", "(?d)venv", "(?d).tox", "(?d)__pycache__", "(?d)*.pyc", "(?d)*.egg-info",
+  "(?d)target", "(?d)dist", "(?d)build", "(?d).cache",
+  "(?d).pytest_cache", "(?d).mypy_cache", "(?d).ruff_cache", "(?d).ipynb_checkpoints",
+  "(?d).next", "(?d).nuxt", "(?d).svelte-kit", "(?d).turbo", "(?d).parcel-cache", "(?d).eslintcache", "(?d).gradle",
+  "(?d).idea", "(?d).vs", "(?d)*.swp", "(?d)*.swo",
+  "(?d)*.tmp", ".env", "*.pem", "*.key", "(?d).git", "(?d)Thumbs.db", "(?d)desktop.ini", "(?d).DS_Store", "(?d)~$*", "(?d)*.pierlink-part",
 ];
+
+/** 以前版本的默认规则：存下的规则和其中一份完全一样（用户没改过），读取时换成现在的默认规则 */
+const OLD_DEFAULT_IGNORE_RULES: readonly string[][] = [
+  // 1.2.4 – 1.2.5
+  ["(?d)node_modules", "(?d).venv", "(?d)__pycache__", "(?d)target", "(?d)dist", "(?d)build", "(?d).cache",
+    "(?d).pytest_cache", "(?d).mypy_cache", "(?d).ruff_cache",
+    "(?d)*.tmp", ".env", "*.pem", "*.key", "(?d).git", "(?d)Thumbs.db", "(?d)desktop.ini", "(?d)~$*", "(?d)*.pierlink-part"],
+  // 1.2.4 以前
+  ["(?d)node_modules", "(?d).venv", "(?d)__pycache__", "(?d)target", "(?d)dist", "(?d)build", "(?d).cache",
+    "(?d)*.tmp", ".env", "*.pem", "*.key", "(?d).git", "(?d)Thumbs.db", "(?d)desktop.ini", "(?d)~$*", "(?d)*.pierlink-part"],
+  // 加 *.pierlink-part 以前
+  ["(?d)node_modules", "(?d).venv", "(?d)__pycache__", "(?d)target", "(?d)dist", "(?d)build", "(?d).cache",
+    "(?d)*.tmp", ".env", "*.pem", "*.key", "(?d).git", "(?d)Thumbs.db", "(?d)desktop.ini", "(?d)~$*"],
+];
+
+/**
+ * 存下的默认排除规则：和以前某版的默认规则完全一样时换成现在的，用户改过的原样保留。
+ * @param rules 整理过的规则
+ * @returns 要用的规则
+ */
+function upgradeDefaultRules(rules: string[]): string[] {
+  const same = (old: readonly string[]) => old.length === rules.length && old.every((x, i) => x === rules[i]);
+  return OLD_DEFAULT_IGNORE_RULES.some(same) ? [...DEFAULT_IGNORE_RULES] : rules;
+}
 
 export const DEFAULT_SETTINGS: AppSettings = {
   theme: "dark",
@@ -103,7 +130,7 @@ export function normalizeSettings(raw: unknown): AppSettings {
   const n = (r.notices ?? {}) as Record<string, unknown>;
   const d = DEFAULT_SETTINGS;
   const rules = Array.isArray(s.ignoreRules) && s.ignoreRules.every((x) => typeof x === "string") && s.ignoreRules.length <= 10000
-    ? (s.ignoreRules as string[]).map((x) => x.trim()).filter((x) => x && !x.includes("\0"))
+    ? upgradeDefaultRules((s.ignoreRules as string[]).map((x) => x.trim()).filter((x) => x && !x.includes("\0")))
     : d.syncDefaults.ignoreRules;
   return {
     theme: oneOf(r.theme, ["dark", "light", "system"] as const, d.theme),

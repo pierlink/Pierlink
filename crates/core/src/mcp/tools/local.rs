@@ -30,6 +30,14 @@ pub(super) struct Prepared {
     pub shell: String,
 }
 pub(super) type OutputSink = std::sync::Arc<dyn Fn(bool, &[u8]) + Send + Sync>;
+/// 这台 Windows 的电脑名：确认框弹在这台电脑的 Pierlink 里。用户可能有几台电脑都开着 Pierlink，
+/// 告诉 agent 是哪台，它转告用户时才说得清。取不到时为 None
+pub fn computer_name() -> Option<String> {
+    std::env::var("COMPUTERNAME")
+        .ok()
+        .map(|name| name.trim().chars().take(64).collect::<String>())
+        .filter(|name| !name.is_empty())
+}
 pub(super) fn home() -> Result<std::path::PathBuf, AppError> {
     let key = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
     std::env::var_os(key)

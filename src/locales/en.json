@@ -508,7 +508,8 @@
         "parameter_integer_range": "{{parameter}} must be an integer from {{minimum}} to {{maximum}}",
         "parameter_enum": "{{parameter}} must be one of: {{allowed}}",
         "parameter_array": "{{parameter}} must be an array. Each item must satisfy: {{constraint}}",
-        "confirmation_no_answer": "No response within 60 seconds: ask the user to confirm in Pierlink, then retry",
+        "confirmation_no_answer": "No response within 60 seconds: ask the user to confirm in Pierlink on {{computer}}, then retry",
+        "confirmation_no_answer_here": "No response within 60 seconds: ask the user to confirm in Pierlink, then retry",
         "couldn_t_clean_up_audit_logs": "couldn't clean up audit logs",
         "entry_token_cannot_be_empty": "entry token cannot be empty",
         "couldn_t_start_the_local_mcp_http_listener": "couldn't start the local MCP HTTP listener",
@@ -1034,7 +1035,11 @@
         "multiple_versions_of_the_same_file_cannot_be_restored_together": "multiple versions of the same file cannot be restored together",
         "cleanup_failed": "cleanup failed",
         "service_busy_check_later": "the sync service is busy; check again later",
-        "cleanup_workers_failed": "{{failed_workers}} cleanup threads failed; unfinished folders: {{failed_folders}}"
+        "cleanup_workers_failed": "{{failed_workers}} cleanup threads failed; unfinished folders: {{failed_folders}}",
+        "account_sid_is_malformed": "The account SID is malformed",
+        "paths_to_fix_are_too_long": "The paths to fix are too long",
+        "fix_process_handle_missing": "Couldn't get the fix program's process",
+        "fix_program_failed": "The fix program failed"
       },
       "syncthing": {
         "only_local_ipv4_loopback_addresses_are_allowed": "only local IPv4 loopback addresses are allowed",
@@ -1430,7 +1435,12 @@
       "diff_outside_root": "The conflict file isn't inside the synced folder, so it wasn't read",
       "diff_not_file": "The conflict isn't a regular file and can't be compared",
       "server_already_in_task": "This server is already part of this task",
-      "last_server": "A task needs at least one server; remove the whole task if you no longer need it"
+      "last_server": "A task needs at least one server; remove the whole task if you no longer need it",
+      "fix_cancelled": "Administrator rights weren't confirmed; nothing was changed",
+      "fix_failed": "Couldn't fix permissions: {{reason}}",
+      "fix_unsupported": "Permissions can only be fixed on Windows",
+      "fix_unreachable": "The failed files are inside a folder link, so they can't be fixed here",
+      "server_ui_login": "Can't sign in to {{server}}'s admin page: its sync service was set up from another computer"
     },
     "syncthing": {
       "unreachable": "Couldn't reach the sync service",
@@ -1624,7 +1634,7 @@
       "task_failed": "Something went wrong while handling the password ({{reason}})"
     },
     "update": {
-      "check_failed": "Couldn't check for updates (network or GitHub unavailable)",
+      "check_failed": "GitHub unreachable",
       "install_failed": "Couldn't download or install the update",
       "none": "There's no new version to install",
       "stalled": "The download stalled because the network dropped. Click Retry when you're back online.",
@@ -2020,6 +2030,8 @@
     "versionsOn": "On · trash can, 30 days",
     "browseVersions": "Browse deleted files and old versions",
     "openSyncthingUi": "Open this PC's Syncthing admin page",
+    "openServerSyncthingUi": "Open {{name}}'s Syncthing admin page",
+    "serverUiOffline": "Available once the server is connected",
     "events": "Recent events",
     "noEvents": "No sync events yet.",
     "event": {
@@ -2066,6 +2078,17 @@
     "errorsCount_other": "{{count}} files failed to sync",
     "errorsHint": "Other files keep syncing; these are retried once the cause is fixed.",
     "errorsMore": "Showing the first {{count}}",
+    "errorAt": "{{side}} · {{reason}}",
+    "fixPermissions": "Fix permissions",
+    "fixPermissionsHint": "Uses administrator rights so your account can read and write these folders; Windows will ask you to confirm",
+    "fixDone": "Permissions fixed; syncing again",
+    "fixNone": "No permission problems to fix right now",
+    "fixPartial_one": "1 folder couldn't be fixed",
+    "fixPartial_other": "{{count}} folders couldn't be fixed",
+    "copyServerFix": "Copy fix command",
+    "copyServerFixNamed": "Copy fix command for {{name}}",
+    "copyServerFixHint": "Paste and run it in a terminal on this server; it needs your sudo password",
+    "fixCopied": "Fix command copied: paste and run it in the server's terminal",
     "removeTask": "Remove task",
     "removeTitle": "Remove sync task {{name}}?",
     "removeBody": "Only this sync is cancelled; files on both sides stay: this computer {{local}}; server {{remote}}.",
@@ -2158,7 +2181,12 @@
         "device": "Device",
         "ignores": "Exclusion rules"
       },
-      "paused": "After restoring, “{{name}}” is paused: check the folder, then click Resume on the sync page."
+      "paused": "After restoring, “{{name}}” is paused: check the folder, then click Resume on the sync page.",
+      "serverTitle": "Settings changed in {{name}}'s Syncthing admin page",
+      "serverRestored_one": "1 changed setting was put back. Change the server's sync settings in Pierlink.",
+      "serverRestored_other": "{{count}} changed settings were put back. Change the server's sync settings in Pierlink.",
+      "serverUnrestored_one": "1 setting couldn't be put back (the connection may have dropped).",
+      "serverUnrestored_other": "{{count}} settings couldn't be put back (the connection may have dropped)."
     },
     "removeServer": "Remove {{name}} from this task",
     "removeServerTitle": "Remove {{name}} from “{{task}}”?",
@@ -2858,7 +2886,7 @@
     "check": "Check for updates",
     "checking": "Checking…",
     "upToDate": "You're on the latest version",
-    "checkFailed": "Couldn't check: {{text}}",
+    "checkFailed": "Check failed: {{text}}",
     "autoCheck": "Check for updates automatically",
     "autoCheckHint": "Checks once at startup; nothing is downloaded or installed automatically.",
     "available": "Pierlink {{version}} is available",

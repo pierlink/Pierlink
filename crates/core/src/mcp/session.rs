@@ -186,10 +186,19 @@ impl Session {
     }
 }
 pub(super) fn no_answer_error() -> AppError {
-    AppError::new("mcp.no_answer").with_reason(
-        "mcp.confirmation_no_answer",
-        "60 秒内没人回应：请让用户在 Pierlink 里确认后重试",
-    )
+    // 用户可能有几台电脑都开着 Pierlink：写明确认框弹在哪台
+    match super::tools::local::computer_name() {
+        Some(computer) => AppError::new("mcp.no_answer")
+            .with("computer", &computer)
+            .with_reason(
+                "mcp.confirmation_no_answer",
+                format!("60 秒内没人回应：请让用户到电脑 {computer} 的 Pierlink 里确认后重试"),
+            ),
+        None => AppError::new("mcp.no_answer").with_reason(
+            "mcp.confirmation_no_answer_here",
+            "60 秒内没人回应：请让用户在 Pierlink 里确认后重试",
+        ),
+    }
 }
 
 pub(super) fn cancelled_error() -> AppError {

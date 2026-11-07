@@ -21,7 +21,7 @@ pub struct EditorDto {
 #[serde(rename_all = "camelCase")]
 pub struct EditorsDto {
     pub editors: Vec<EditorDto>,
-    /// 默认用哪个：任务上次用过且还在的，否则 VS Code，否则第一个；一个都没有时为 null
+    /// 默认用哪个：任务在下拉里选过、还装着的；没选过时为 null（默认在资源管理器里打开文件夹）
     pub preferred: Option<String>,
 }
 
@@ -116,18 +116,15 @@ fn task_failed(e: impl ToString) -> AppError {
     AppError::new("sync.task_failed").with("reason", e.to_string())
 }
 
-/// 默认的编辑器：任务记住的 → VS Code → 第一个
+/// 默认的编辑器：只用任务记住的（用户在下拉里选过的、还装着的）；没选过时为 None，默认在资源管理器里打开文件夹
 fn preferred<'a>(list: &'a [Editor], remembered: Option<&str>) -> Option<&'a Editor> {
-    remembered
-        .and_then(|id| list.iter().find(|e| e.id == id))
-        .or_else(|| list.iter().find(|e| e.id == "vscode"))
-        .or_else(|| list.first())
+    remembered.and_then(|id| list.iter().find(|e| e.id == id))
 }
 
 /// 列出这台电脑上的编辑器（VS Code、Cursor 等），以及这个任务默认用哪个
 ///
 /// :param task_id: 任务 ID
-/// :return: 编辑器列表和默认项
+/// :return: 编辑器列表和默认项（没选过编辑器时为 null，默认打开文件夹）
 #[tauri::command]
 #[specta::specta]
 pub async fn sync_editors(app: AppHandle, task_id: String) -> Result<EditorsDto, AppError> {
@@ -180,6 +177,26 @@ pub async fn sync_open_in_editor(
             task.updated_at = now_ms();
             app.state::<DbState>()
                 .with(|db| db.update_sync_task(&task))?;
+        }
+        Ok(())
+    })
+    .await
+    .map_err(task_failed)?
+}
+
+/// 不再记住这个任务用的编辑器：之后默认在资源管理器里打开文件夹
+///
+/// :param task_id: 任务 ID
+#[tauri::command]
+#[specta::specta]
+pub async fn sync_forget_editor(app: AppHandle, task_id: String) -> Result<(), AppError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let (mut task, _) = load_task(&app, &task_id)?;
+        if task.editor_id.take().is_some() {
+            task.updated_at = now_ms();
+            app.state::<DbState>()
+                .with(|db| db.update_sync_task(&task))?;
+            eprintln!("同步目录改回默认打开文件夹: 任务={}", task.name);
         }
         Ok(())
     })

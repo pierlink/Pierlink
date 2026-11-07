@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_SETTINGS, normalizeSettings } from "./model";
+import { DEFAULT_IGNORE_RULES, DEFAULT_SETTINGS, normalizeSettings } from "./model";
 
 describe("normalizeSettings", () => {
   it("以前开过“右键直接复制”或“右键直接粘贴”，升级后当作打开了“右键复制粘贴”", () => {
@@ -30,5 +30,13 @@ describe("normalizeSettings", () => {
     expect(s.theme).toBe("light");
     expect(s.language).toBe("en");
     expect(s.syncDefaults.ignoreRules).toEqual(["a", "b"]);
+  });
+  it("没改过的旧默认排除规则换成现在的，改过的原样保留", () => {
+    const old = ["(?d)node_modules", "(?d).venv", "(?d)__pycache__", "(?d)target", "(?d)dist", "(?d)build", "(?d).cache",
+      "(?d)*.tmp", ".env", "*.pem", "*.key", "(?d).git", "(?d)Thumbs.db", "(?d)desktop.ini", "(?d)~$*", "(?d)*.pierlink-part"];
+    expect(normalizeSettings({ syncDefaults: { ignoreRules: old } }).syncDefaults.ignoreRules).toEqual(DEFAULT_IGNORE_RULES);
+    expect(DEFAULT_IGNORE_RULES).toContain("(?d).idea");
+    const edited = [...old, "(?d).idea"];
+    expect(normalizeSettings({ syncDefaults: { ignoreRules: edited } }).syncDefaults.ignoreRules).toEqual(edited);
   });
 });

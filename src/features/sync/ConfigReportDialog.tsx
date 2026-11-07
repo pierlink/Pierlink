@@ -8,7 +8,8 @@ import "./sync.css";
 /**
  * 关掉本机 Syncthing 管理页后，核对出的改动：
  * 加固项已经自动恢复（只说明一句）；任务设置的改动逐项“采用新值”或“恢复”；管理页里新加的只列出来。
- * 自己监听核对结果，有结果时弹出；页面重新加载后也会取回没处理完的。
+ * 服务器的管理页（report.server）关掉后，改过的设置后端已经都改回了，这里只说改回了几项。
+ * 自己监听核对结果，有结果时弹出；页面重新加载、再进同步页时也会取回还没看过的。
  */
 export function ConfigReportHost() {
   const { t } = useTranslation();
@@ -29,8 +30,13 @@ export function ConfigReportHost() {
   }, []);
 
   if (!report) return null;
-  // 还有没处理的改动时只关掉对话框，后端保留着，下次进同步页再提示；否则清掉
-  const close = () => { setReport(null); void getSyncApi().then((api) => api.configDismiss()).catch(() => {}); };
+  // 还有没处理的改动时只关掉对话框，后端保留着，下次进同步页再提示；否则清掉。服务器的结果看过就清掉
+  const close = () => {
+    const server = !!report.server;
+    setReport(null);
+    void getSyncApi().then((api) => api.configDismiss(server)).catch(() => {});
+  };
+  const restoredCount = report.hardened.length + report.restored;
   const resolve = async (index: number, adopt: boolean) => {
     setBusy(index);
     setError(null);
@@ -47,14 +53,16 @@ export function ConfigReportHost() {
 
   return (
     <Dialog
-      title={t("sync.config.title")}
+      title={report.server ? t("sync.config.serverTitle", { name: report.server }) : t("sync.config.title")}
       size="lg"
       onDismiss={busy === null ? close : undefined}
       actions={<Button variant="primary" disabled={busy !== null} onClick={close}>{report.changes.length ? t("sync.config.later") : t("mcp.gotIt")}</Button>}
     >
       <div className="cfg-report">
         {report.pausedTask && <p className="trash__status--danger">{t("sync.config.paused", { name: report.pausedTask })}</p>}
-        {report.hardened.length > 0 && <p className="sync-muted">{t("sync.config.hardened", { count: report.hardened.length })}</p>}
+        {!report.server && report.hardened.length > 0 && <p className="sync-muted">{t("sync.config.hardened", { count: report.hardened.length })}</p>}
+        {report.server && restoredCount > 0 && <p className="sync-muted">{t("sync.config.serverRestored", { count: restoredCount })}</p>}
+        {report.server && report.unrestored > 0 && <p className="trash__status--danger">{t("sync.config.serverUnrestored", { count: report.unrestored })}</p>}
         {report.changes.length > 0 && (
           <>
             <p className="wiz-hint">{t("sync.config.changesHint")}</p>

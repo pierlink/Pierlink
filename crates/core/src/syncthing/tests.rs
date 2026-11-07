@@ -36,8 +36,9 @@ fn 文件夹设备编号和排除边界() {
         assert!(validate_device_id(&value).is_err());
     }
     let rules = default_ignores();
-    assert_eq!(rules.len(), 19);
+    assert_eq!(rules.len(), 36);
     assert!(rules.contains(&"(?d).pytest_cache".into()));
+    assert!(rules.contains(&"(?d).idea".into()));
     assert_eq!(rules.last().unwrap(), "(?d)*.pierlink-part");
     assert!(rules.contains(&"(?d).git".into()));
     assert!(rules.contains(&"(?d)node_modules".into()));

@@ -367,7 +367,7 @@ export const commands = {
 	 *  :param visible: 是否显示
 	 */
 	monitorVisible: (id: number | null, visible: boolean) => typedError<null, AppError>(__TAURI_INVOKE("monitor_visible", { id, visible })),
-	/**  检查是否有新版本；没有返回 null */
+	/**  检查是否有新版本（最多等 15 秒）；没有返回 null */
 	updateCheck: () => typedError<UpdateInfoDto_Serialize | null, AppError>(__TAURI_INVOKE("update_check")),
 	/**
 	 *  下载新版本并核对签名，留着等用户点“安装更新”（不自动安装）；返回下载好的版本号。
@@ -678,7 +678,7 @@ export const commands = {
 	 *  列出这台电脑上的编辑器（VS Code、Cursor 等），以及这个任务默认用哪个
 	 * 
 	 *  :param task_id: 任务 ID
-	 *  :return: 编辑器列表和默认项
+	 *  :return: 编辑器列表和默认项（没选过编辑器时为 null，默认打开文件夹）
 	 */
 	syncEditors: (taskId: string) => typedError<EditorsDto_Serialize, AppError>(__TAURI_INVOKE("sync_editors", { taskId })),
 	/**
@@ -690,6 +690,12 @@ export const commands = {
 	 */
 	syncOpenInEditor: (taskId: string, editorId: string | null) => typedError<null, AppError>(__TAURI_INVOKE("sync_open_in_editor", { taskId, editorId })),
 	/**
+	 *  不再记住这个任务用的编辑器：之后默认在资源管理器里打开文件夹
+	 * 
+	 *  :param task_id: 任务 ID
+	 */
+	syncForgetEditor: (taskId: string) => typedError<null, AppError>(__TAURI_INVOKE("sync_forget_editor", { taskId })),
+	/**
 	 *  对比一个冲突的两个版本（原文件和冲突副本）；只读本机这一侧
 	 * 
 	 *  :param task_id: 任务 ID
@@ -698,9 +704,26 @@ export const commands = {
 	 *  :return: 文本并排对比、二进制只给大小和时间、太大时给大小
 	 */
 	syncConflictDiff: (taskId: string, path: string, conflictFile: string) => typedError<ConflictDiffDto_Serialize, AppError>(__TAURI_INVOKE("sync_conflict_diff", { taskId, path, conflictFile })),
+	/**
+	 *  用管理员权限修复本机同步失败里“没有权限”的文件夹，让当前账户能读写；修好后让同步程序重新扫描，
+	 *  失败的文件会自动重试。没有要修的直接返回 0 个。
+	 * 
+	 *  :param task_id: 任务 ID
+	 *  :return: 修好和没修好的文件夹个数（现在没有“没有权限”的失败时都是 0）；失败的都在目录链接里时返回 sync.fix_unreachable；
+	 *  用户在确认框里点了“否”返回 sync.fix_cancelled，非 Windows 返回 sync.fix_unsupported
+	 */
+	syncFixPermissions: (taskId: string) => typedError<FixPermissionsDto, AppError>(__TAURI_INVOKE("sync_fix_permissions", { taskId })),
 	/**  在应用内窗口打开本机 Syncthing 管理页（自动登录）。已经开着就切到前面 */
 	syncOpenSyncthingUi: () => typedError<null, AppError>(__TAURI_INVOKE("sync_open_syncthing_ui")),
-	/**  还没处理完的核对结果（界面重新加载后取回） */
+	/**
+	 *  在应用内窗口打开一台服务器的 Syncthing 管理页（经同步隧道，自动登录）。这台的已经开着就切到前面。
+	 *  关窗后核对服务器上的设置：被改的安全设置和同步任务设置都改回 Pierlink 的，改回了几项告诉界面。
+	 * 
+	 *  :param server_id: 服务器 ID
+	 *  :return: 服务器没连上返回 sync.not_connected；这台电脑没有它的登录口令（同步程序是别的电脑部署的）返回 sync.server_ui_login
+	 */
+	syncOpenServerSyncthingUi: (serverId: string) => typedError<null, AppError>(__TAURI_INVOKE("sync_open_server_syncthing_ui", { serverId })),
+	/**  还没处理完的核对结果（界面重新加载、进同步页时取回）：本机的优先，其次是服务器管理页最近的一条 */
 	syncConfigReport: () => typedError<ConfigReportDto_Serialize | null, AppError>(__TAURI_INVOKE("sync_config_report")),
 	/**
 	 *  处理一项被改过的任务设置：采用新值（写进 Pierlink 的任务设置）或恢复成 Pierlink 的值
@@ -710,10 +733,15 @@ export const commands = {
 	 *  :return: 剩下没处理的结果；全部处理完为 null
 	 */
 	syncConfigResolve: (index: number, adopt: boolean) => typedError<ConfigReportDto_Serialize | null, AppError>(__TAURI_INVOKE("sync_config_resolve", { index, adopt })),
-	/**  用户看过了核对结果：只剩加固项、外来项时清掉；还有没处理的任务改动时保留（下次进同步页再提示） */
-	syncConfigDismiss: () => typedError<null, AppError>(__TAURI_INVOKE("sync_config_dismiss")),
+	/**
+	 *  用户看过了核对结果。本机的：只剩加固项、外来项时清掉，还有没处理的任务改动时保留（下次进同步页再提示）；
+	 *  服务器管理页的：只弹最近的一条，看过就全部清掉
+	 * 
+	 *  :param server: 看过的是不是服务器管理页的结果
+	 */
+	syncConfigDismiss: (server: boolean) => typedError<null, AppError>(__TAURI_INVOKE("sync_config_dismiss", { server })),
 	/**  恢复选中的旧版本；当前文件存在时会先被保存为新的旧版本。返回逐个文件的失败原因。 */
-	syncRestoreVersions: (taskId: string, picks: VersionPick[]) => typedError<SyncErrorDto[], AppError>(__TAURI_INVOKE("sync_restore_versions", { taskId, picks })),
+	syncRestoreVersions: (taskId: string, picks: VersionPick[]) => typedError<SyncErrorDto_Serialize[], AppError>(__TAURI_INVOKE("sync_restore_versions", { taskId, picks })),
 };
 
 /* Types */
@@ -834,6 +862,12 @@ export type ConfigReportDto_Deserialize = {
 	foreign: ForeignDto_Deserialize[],
 	/**  刚恢复的设置让这个任务暂停了（恢复了目录或整个文件夹）：任务名，界面提示确认后点“继续” */
 	pausedTask?: string | null,
+	/**  服务器管理页的核对结果：服务器名称；本机的为 null */
+	server?: string | null,
+	/**  服务器管理页：关窗后已经改回的任务设置项数（本机的为 0，本机的任务设置改动逐项让用户选） */
+	restored: number,
+	/**  服务器管理页：没能改回的项数（例如连接断了） */
+	unrestored: number,
 };
 
 /**  关掉管理页后的核对结果 */
@@ -844,6 +878,12 @@ export type ConfigReportDto_Serialize = {
 	foreign: ForeignDto_Serialize[],
 	/**  刚恢复的设置让这个任务暂停了（恢复了目录或整个文件夹）：任务名，界面提示确认后点“继续” */
 	pausedTask: string | null,
+	/**  服务器管理页的核对结果：服务器名称；本机的为 null */
+	server: string | null,
+	/**  服务器管理页：关窗后已经改回的任务设置项数（本机的为 0，本机的任务设置改动逐项让用户选） */
+	restored: number,
+	/**  服务器管理页：没能改回的项数（例如连接断了） */
+	unrestored: number,
 };
 
 /**  冲突对比结果：left 是原文件（当前版本），right 是冲突副本 */
@@ -1330,14 +1370,14 @@ export type EditorsDto = EditorsDto_Serialize | EditorsDto_Deserialize;
 /**  这台电脑上的编辑器和这个任务上次用的 */
 export type EditorsDto_Deserialize = {
 	editors: EditorDto[],
-	/**  默认用哪个：任务上次用过且还在的，否则 VS Code，否则第一个；一个都没有时为 null */
+	/**  默认用哪个：任务在下拉里选过、还装着的；没选过时为 null（默认在资源管理器里打开文件夹） */
 	preferred?: string | null,
 };
 
 /**  这台电脑上的编辑器和这个任务上次用的 */
 export type EditorsDto_Serialize = {
 	editors: EditorDto[],
-	/**  默认用哪个：任务上次用过且还在的，否则 VS Code，否则第一个；一个都没有时为 null */
+	/**  默认用哪个：任务在下拉里选过、还装着的；没选过时为 null（默认在资源管理器里打开文件夹） */
 	preferred: string | null,
 };
 
@@ -1502,6 +1542,14 @@ export type FileVersionDto_Serialize = {
 	mtime: number | null,
 	/**  内容的 SHA-256（十六进制）；不知道时为 null */
 	hash: string | null,
+};
+
+/**  修复权限的结果 */
+export type FixPermissionsDto = {
+	/**  修好了几个文件夹（连同里面的文件和子文件夹） */
+	fixed: number,
+	/**  有几个文件夹没修好（里面有改不了的） */
+	failed: number,
 };
 
 /**  管理页里新加的、不是 Pierlink 建的 */
@@ -2651,9 +2699,20 @@ export type SyncEndpointDto = {
 	mode: string,
 };
 
-export type SyncErrorDto = {
+export type SyncErrorDto = SyncErrorDto_Serialize | SyncErrorDto_Deserialize;
+
+export type SyncErrorDto_Deserialize = {
 	path: string,
 	reason: string,
+	/**  出错的一侧：null 为本机，否则为服务器 ID */
+	serverId?: string | null,
+};
+
+export type SyncErrorDto_Serialize = {
+	path: string,
+	reason: string,
+	/**  出错的一侧：null 为本机，否则为服务器 ID */
+	serverId: string | null,
 };
 
 /**  “加载更多”的位置：上一页最后一条的时间和编号 */
@@ -2701,7 +2760,7 @@ export type SyncStatusDto_Deserialize = {
 	bytes: number | null,
 	needBytes: number | null,
 	/**  同步失败的文件（最多 100 个） */
-	errors: SyncErrorDto[],
+	errors: SyncErrorDto_Deserialize[],
 	/**  同步失败的文件总数（可能比 errors 多） */
 	errorCount: number,
 	servers: ServerStatusDto_Deserialize[],
@@ -2718,7 +2777,7 @@ export type SyncStatusDto_Serialize = {
 	bytes: number | null,
 	needBytes: number | null,
 	/**  同步失败的文件（最多 100 个） */
-	errors: SyncErrorDto[],
+	errors: SyncErrorDto_Serialize[],
 	/**  同步失败的文件总数（可能比 errors 多） */
 	errorCount: number,
 	servers: ServerStatusDto_Serialize[],

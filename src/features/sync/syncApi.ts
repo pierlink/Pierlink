@@ -39,8 +39,8 @@ export interface SyncStatusRecord {
   files: number;
   bytes: number;
   needBytes: number;
-  /** 同步失败的文件（最多 100 个） */
-  errors: { path: string; reason: string }[];
+  /** 同步失败的文件（本机最多 100 个，每台服务器最多 100 个）；serverId 为 null 是本机的，否则是那台服务器上的 */
+  errors: { path: string; reason: string; serverId: string | null }[];
   /** 同步失败的文件总数（可能比 errors 多） */
   errorCount: number;
   /** needsPassword：没连上是因为缺密码（这次运行还没输），界面给出“输入密码”；needsLogin：要验证码、后台登不上，界面给出“登录” */
@@ -104,6 +104,12 @@ export interface ConfigReport {
   foreign: { target: string; id: string; name: string; path: string | null }[];
   /** 刚恢复的设置让这个任务暂停了：任务名 */
   pausedTask: string | null;
+  /** 服务器管理页的核对结果：服务器名称；本机的为 null */
+  server: string | null;
+  /** 服务器管理页：关窗后已经改回的任务设置项数 */
+  restored: number;
+  /** 服务器管理页：没能改回的项数 */
+  unrestored: number;
 }
 
 export interface SyncApi {
@@ -130,15 +136,22 @@ export interface SyncApi {
   editors(taskId: string): Promise<{ editors: { id: string; name: string }[]; preferred: string | null }>;
   /** 用编辑器打开任务的本机目录；editorId 为 null 用默认的（指定时会记住） */
   openInEditor(taskId: string, editorId: string | null): Promise<void>;
+  /** 不再记住这个任务用的编辑器（之后默认打开文件夹） */
+  forgetEditor(taskId: string): Promise<void>;
   /** 对比冲突的两个版本 */
   conflictDiff(taskId: string, path: string, conflictFile: string): Promise<ConflictDiff>;
   /** 在应用内窗口打开本机 Syncthing 管理页（自动登录） */
   openSyncthingUi(): Promise<void>;
+  /** 在应用内窗口打开一台服务器的 Syncthing 管理页（经同步隧道，自动登录；关窗后改过的设置会改回） */
+  openServerSyncthingUi(serverId: string): Promise<void>;
+  /** 用管理员权限修复本机同步失败里“没有权限”的文件夹（Windows 会请用户确认）；返回修好和没修好的个数 */
+  fixPermissions(taskId: string): Promise<{ fixed: number; failed: number }>;
   /** 还没处理完的核对结果 */
   configReport(): Promise<ConfigReport | null>;
   /** 处理一项被改过的设置：采用新值或恢复；返回剩下的 */
   configResolve(index: number, adopt: boolean): Promise<ConfigReport | null>;
-  configDismiss(): Promise<void>;
+  /** 用户看过了核对结果；server 为 true 表示看过的是服务器管理页的 */
+  configDismiss(server: boolean): Promise<void>;
   /** 关掉管理页后有要处理的核对结果时通知 */
   onConfigReport(cb: (r: ConfigReport) => void): Promise<() => void>;
   /** 立即清空一端的回收站；serverId 为 null 表示本机。返回删掉的量 */
@@ -216,11 +229,14 @@ async function createTauriSyncApi(): Promise<SyncApi> {
     async removeEndpoint(id, serverId) { unwrap(await commands.syncRemoveEndpoint(id, serverId)); },
     async editors(id) { return unwrap(await commands.syncEditors(id)); },
     async openInEditor(id, editorId) { unwrap(await commands.syncOpenInEditor(id, editorId)); },
+    async forgetEditor(id) { unwrap(await commands.syncForgetEditor(id)); },
     async conflictDiff(id, path, conflictFile) { return unwrap(await commands.syncConflictDiff(id, path, conflictFile)) as ConflictDiff; },
     async openSyncthingUi() { unwrap(await commands.syncOpenSyncthingUi()); },
+    async openServerSyncthingUi(serverId) { unwrap(await commands.syncOpenServerSyncthingUi(serverId)); },
+    async fixPermissions(id) { return unwrap(await commands.syncFixPermissions(id)); },
     async configReport() { return unwrap(await commands.syncConfigReport()); },
     async configResolve(index, adopt) { return unwrap(await commands.syncConfigResolve(index, adopt)); },
-    async configDismiss() { unwrap(await commands.syncConfigDismiss()); },
+    async configDismiss(server) { unwrap(await commands.syncConfigDismiss(server)); },
     async onConfigReport(cb) {
       const { listen } = await import("@tauri-apps/api/event");
       return listen<ConfigReport>("pierlink://sync-config-report", (e) => cb(e.payload));
@@ -280,8 +296,9 @@ function createPreviewSyncApi(): SyncApi {
     async restoreVersions() { return []; },
     async addEndpoint() { await new Promise((r) => setTimeout(r, 600)); },
     async removeEndpoint() {},
-    async editors() { return { editors: [{ id: "vscode", name: "VS Code" }, { id: "cursor", name: "Cursor" }], preferred: "vscode" }; },
+    async editors() { return { editors: [{ id: "vscode", name: "VS Code" }, { id: "cursor", name: "Cursor" }], preferred: null }; },
     async openInEditor() {},
+    async forgetEditor() {},
     async conflictDiff() {
       const f = (ms: number, size: number) => ({ size, modifiedMs: Date.now() - ms, encoding: "UTF-8" });
       return { kind: "text", left: f(7200000, 2310), right: f(3600000, 2388), lines: [
@@ -294,6 +311,8 @@ function createPreviewSyncApi(): SyncApi {
       ] };
     },
     async openSyncthingUi() {},
+    async openServerSyncthingUi() {},
+    async fixPermissions() { return { fixed: 0, failed: 0 }; },
     async configReport() { return null; },
     async configResolve() { return null; },
     async configDismiss() {},

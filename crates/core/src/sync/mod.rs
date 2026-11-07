@@ -39,3 +39,6 @@ mod markers;
 
 mod trash;
 pub use trash::*;
+
+mod permissions;
+pub use permissions::*;

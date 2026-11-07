@@ -123,8 +123,8 @@ export interface SyncTaskView {
   events: SyncEventView[];
   /** 还有更早的事件可以加载 */
   eventsHasMore: boolean;
-  /** 同步失败的文件（路径 + 原因，按路径去重，最多 100 个） */
-  errors?: { path: string; reason: string }[];
+  /** 同步失败的文件（路径 + 原因 + 哪一侧，同一侧按路径去重）；serverId 为 null 是本机的 */
+  errors?: { path: string; reason: string; serverId: string | null }[];
   /** 同步失败的文件总数（可能比 errors 多） */
   errorCount?: number;
   /** 因一次删除大量文件被自动暂停 */

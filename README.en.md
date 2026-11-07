@@ -48,6 +48,7 @@ English · [简体中文](README.md)
 - Built on Syncthing, over SSH tunnels — no open ports, no root needed on the server
 - Preview before the first sync; compare both versions of a conflict before choosing; deleted and overwritten files go to old versions and can be restored
 - Sync one local folder to several servers at once; open it in VS Code with one click
+- Failed files say which side failed (this PC or which server) and why; fix permission problems on this PC in one click (Windows asks you to confirm), or copy a fix command for a server; open a server's Syncthing admin page for details
 
 ![Sync page: tasks, both ends of a task, conflict handling](assets/readme/sync-en.png)
 
@@ -56,7 +57,7 @@ English · [简体中文](README.md)
 - The AI can see which folders it may use, which shells exist, and where a synced server path lives on Windows; how to use that is up to the AI
 - The AI can open a visible terminal to work in, and you can take it over at any time
 - Risky actions (like `rm -rf` or a force push) need your confirmation; choose the approval mode; every step is logged
-- One-click setup for Claude Code / Codex / Cursor, and for Claude Code / Codex / Gemini CLI on a server; the title bar always shows whether an AI is working, what it just did and its command output, with a one-click stop
+- One-click setup for Claude Code / Codex / Cursor, and for Claude Code / Codex on a server; the title bar always shows whether an AI is working, what it just did and its command output, with a one-click stop
 
 ![MCP page: entries, one-click setup, approval mode and permissions](assets/readme/mcp-en.png)
 
