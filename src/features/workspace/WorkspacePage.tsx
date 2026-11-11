@@ -39,7 +39,8 @@ type Modal =
 
 function toView(r: ServerRecord): ServerView {
   // 连接状态与同步状态在后续阶段接入；目前只区分有无打开的终端由终端区负责
-  return { id: r.id, name: r.name, address: serverAddress(r), host: r.host, group: r.groupName, favorite: r.favorite, status: "offline", openTabs: 0, linked: r.source === "ssh_config", noPrediction: !r.commandPrediction, syncState: "none" };
+  return { id: r.id, name: r.name, address: serverAddress(r), host: r.host, group: r.groupName, favorite: r.favorite, status: "offline", openTabs: 0, linked: r.source === "ssh_config", noPrediction: !r.commandPrediction,
+    builtinSsh: r.connectionEngine === "builtin" && r.source !== "ssh_config" && !r.sshAlias && !!r.host?.trim() && !!r.username?.trim(), syncState: "none" };
 }
 
 /** 删除失败的原因：仍被同步任务使用时列出任务名 */
@@ -53,6 +54,16 @@ function deleteError(t: (k: string, o?: Record<string, unknown>) => string, e: u
 }
 
 const PANEL_KEY = "pierlink.toolPanel";
+/** 左边的服务器列表开着没有（记在本机，默认开着） */
+const SIDEBAR_KEY = "pierlink.serverSidebar";
+
+function loadSidebar(): boolean {
+  try {
+    return localStorage.getItem(SIDEBAR_KEY) !== "closed";
+  } catch {
+    return true;
+  }
+}
 
 /** 读出上次右侧面板的开关和页面（默认收起）；存储不可用时用默认值 */
 function loadPanel(): { open: boolean; page: ToolPage } {
@@ -84,6 +95,11 @@ export function WorkspacePage({ active = true }: { active?: boolean }) {
   useEffect(() => {
     try { localStorage.setItem(PANEL_KEY, JSON.stringify(panel)); } catch { /* 存不了就算了 */ }
   }, [panel]);
+  // 左边的服务器列表：用不到时可以收起，给终端腾地方（标签栏最左边的按钮）
+  const [sidebarOpen, setSidebarOpen] = useState(loadSidebar);
+  useEffect(() => {
+    try { localStorage.setItem(SIDEBAR_KEY, sidebarOpen ? "open" : "closed"); } catch { /* 存不了就算了 */ }
+  }, [sidebarOpen]);
   // 当前窗格所在的服务器（面板优先跟随它）
   const [paneServer, setPaneServer] = useState<string | null>(null);
   // 命令片段：发送请求交给终端区；终端区报告现在会发到几个窗格
@@ -104,7 +120,12 @@ export function WorkspacePage({ active = true }: { active?: boolean }) {
     if (panel.open && panel.page === "snippets") focusBackIfInPanel();
     setPanel((x) => (x.open && x.page === "snippets" ? { ...x, open: false } : { open: true, page: "snippets" }));
   }, active);
-  useShortcut("searchServers", () => { searchRef.current?.focus(); searchRef.current?.select(); }, active);
+  // 搜索服务器：列表收起着就先展开，显示出来再给搜索框焦点
+  useShortcut("searchServers", () => {
+    setSidebarOpen(true);
+    requestAnimationFrame(() => { searchRef.current?.focus(); searchRef.current?.select(); });
+  }, active);
+  useShortcut("toggleSidebar", () => setSidebarOpen((x) => !x), active);
 
   // 开发预览：#workspace-link 打开第一台导入服务器的设置
   const linkDemo = useRef(false);
@@ -150,6 +171,7 @@ export function WorkspacePage({ active = true }: { active?: boolean }) {
     <div className="ws">
       <div className="ws__body">
         <ServerSidebar
+          hidden={!sidebarOpen}
           servers={views}
           selectedId={server?.id ?? null}
           onSelect={setSelected}
@@ -188,6 +210,8 @@ export function WorkspacePage({ active = true }: { active?: boolean }) {
           onActiveServer={setPaneServer}
           panelOpen={panel.open}
           onTogglePanel={() => setPanel((x) => ({ ...x, open: !x.open }))}
+          sidebarOpen={sidebarOpen}
+          onToggleSidebar={() => setSidebarOpen((x) => !x)}
           snippetRequest={snippetRequest}
           onSnippetTargets={setSnippetTargets}
           active={active}

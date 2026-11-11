@@ -60,6 +60,11 @@ export function onDirChanged(fn: (loc: string, dir: string) => void): () => void
   return () => changed.delete(fn);
 }
 
+/** 通知某台机器某个目录的内容变了（删除完成后用；传输完成时这里自己通知） */
+export function notifyDirChanged(loc: string, dir: string): void {
+  changed.forEach((fn) => fn(loc, dir));
+}
+
 /** 开始一个传输任务 */
 export async function startTransfer(req: TransferRequest, conflict: ConflictChoice, label: string): Promise<void> {
   const key = ++seq;

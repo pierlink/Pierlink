@@ -226,3 +226,42 @@ pub fn install_command(distro: &Distro, pm: PackageManager, root: bool) -> Optio
         PackageManager::None => None,
     }
 }
+
+/// Google Chrome 的官方安装包（只有 x86_64 版）：.deb 给 apt 系统，.rpm 给 dnf 系统
+const CHROME_DEB: &str =
+    "https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb";
+const CHROME_RPM: &str =
+    "https://dl.google.com/linux/direct/google-chrome-stable_current_x86_64.rpm";
+
+/// 生成下载并安装 Google Chrome 的命令（交给终端运行或给用户复制，需要管理员权限）。
+/// apt：更新软件源，下载官方 .deb（有 wget 用 wget，没有用 curl，都没有先装 wget），装好后删掉下载的文件；
+/// dnf：直接装官方 .rpm。
+///
+/// :param arch: 服务器的 CPU 架构（uname -m）
+/// :param pm: 包管理器
+/// :param root: 登录的就是 root，命令不带 sudo
+/// :param tools: 服务器上有哪些工具（看有没有 wget、curl）
+/// :return: 安装命令；不是 x86_64（Chrome 没有这种架构的 Linux 版）或不认识包管理器时为 None
+pub fn chrome_command(arch: &str, pm: PackageManager, root: bool, tools: &Tools) -> Option<String> {
+    if arch.trim() != "x86_64" {
+        return None;
+    }
+    let sudo = if root { "" } else { "sudo " };
+    match pm {
+        PackageManager::Apt => {
+            let file = "/tmp/google-chrome.deb";
+            let fetch = if tools.wget {
+                format!("wget -O {file} {CHROME_DEB}")
+            } else if tools.curl {
+                format!("curl -fL -o {file} {CHROME_DEB}")
+            } else {
+                format!("{sudo}apt-get install -y wget && wget -O {file} {CHROME_DEB}")
+            };
+            Some(format!(
+                "{sudo}apt-get update && {fetch} && {sudo}apt-get install -y {file} && rm -f {file}"
+            ))
+        }
+        PackageManager::Dnf => Some(format!("{sudo}dnf install -y {CHROME_RPM}")),
+        PackageManager::None => None,
+    }
+}

@@ -12,7 +12,7 @@ mod transport;
 
 pub use acquire::{acquire_light_desktop, acquire_xvnc};
 pub use desktop::{cleanup_stale, create_desktop, stop_desktop};
-pub use detection::{apt_packages, detect, install_command};
+pub use detection::{apt_packages, chrome_command, detect, install_command};
 pub use install_check::install_check;
 pub use model::*;
 pub use rfb::probe_rfb;

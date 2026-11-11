@@ -39,7 +39,9 @@ export interface ServerActions {
  * 左侧服务器列表：搜索、筛选、分组、右键菜单。双击或回车打开终端。
  * 每行地址右边有复制按钮（复制 IP）；顶部的小眼睛把所有 IP 显示成圆点（防止截图泄露，复制照样是真实地址）。
  */
-export function ServerSidebar({ servers, selectedId, onSelect, actions, searchRef }: {
+export function ServerSidebar({ hidden = false, servers, selectedId, onSelect, actions, searchRef }: {
+  /** 收起了：不显示，但搜索词、筛选照旧留着 */
+  hidden?: boolean;
   servers: ServerView[];
   selectedId: string | null;
   onSelect: (id: string) => void;
@@ -107,7 +109,7 @@ export function ServerSidebar({ servers, selectedId, onSelect, actions, searchRe
   ];
 
   return (
-    <nav aria-label={t("workspace.servers")} className="pl-panel ws__side">
+    <nav aria-label={t("workspace.servers")} className={`pl-panel ws__side${hidden ? " ws__side--hidden" : ""}`}>
       <div style={{ display: "flex", alignItems: "center", padding: "0 4px" }}>
         <span className="ws__label" style={{ flex: 1 }}>{t("workspace.servers")}</span>
         <IconButton

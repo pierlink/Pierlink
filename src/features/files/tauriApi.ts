@@ -1,5 +1,5 @@
 import { Channel } from "@tauri-apps/api/core";
-import { commands, type LocDto, type TransferProgressDto, type TransferReportDto } from "../../bindings/commands";
+import { commands, type DeleteProgressDto, type LocDto, type TransferProgressDto, type TransferReportDto } from "../../bindings/commands";
 import { formatError } from "../../errors";
 import type { FilesApi } from "./api";
 import type { DragOutResult, EntryKind, FileVersion, Loc, TransferReportView, TransferRequest } from "./types";
@@ -70,7 +70,14 @@ export function createTauriFilesApi(): FilesApi {
     async rename(loc, from, to) { unwrap(await commands.filesRename(locDto(loc), from, to)); },
     async createDir(loc, path) { unwrap(await commands.filesCreateDir(locDto(loc), path)); },
     async createFile(loc, path) { unwrap(await commands.filesCreateFile(locDto(loc), path)); },
-    async remove(loc, paths) { return unwrap(await commands.filesDelete(locDto(loc), paths)) ?? 0; },
+    remove(loc, paths, fast, onProgress) {
+      // 任务 ID 由前端生成：命令要等删完才返回，停下需要提前知道 ID（和传输共用 files_cancel）
+      const id = `r${Date.now().toString(36)}-${++seq}`;
+      const channel = new Channel<DeleteProgressDto>();
+      channel.onmessage = (p) => onProgress(p);
+      const done = commands.filesDelete(id, locDto(loc), paths, fast, channel).then(unwrap).then((n) => n ?? 0);
+      return { id, done };
+    },
     async readText(loc, path) {
       const r = unwrap(await commands.filesReadText(locDto(loc), path));
       return { text: r.text, bom: r.bom, version: version(r.version) };

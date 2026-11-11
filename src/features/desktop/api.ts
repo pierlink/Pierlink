@@ -46,6 +46,10 @@ export interface DesktopDetection {
   officialOk: boolean;
   /** 安装完整桌面的命令（root 登录时不带 sudo）；不认识包管理器为 null */
   installCommand: string | null;
+  /** 下载并安装 Google Chrome 的命令（只有 x86_64 的 apt、dnf 系统；root 登录时不带 sudo）；装不了为 null */
+  chromeCommand: string | null;
+  /** 登录的就是 root（打开 Chrome 要加 --no-sandbox） */
+  root: boolean;
   /** 没有桌面环境时能改用精简桌面（只有终端，不用管理员权限） */
   lightAvailable: boolean;
   /** 服务器上正在装软件（apt、dpkg、dnf 等在运行） */
@@ -165,6 +169,7 @@ export function getDesktopApi(): Promise<DesktopApi> {
 }
 
 /** 预览里的安装命令 */
+const PREVIEW_CHROME = "sudo apt-get update && wget -O /tmp/google-chrome.deb https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb && sudo apt-get install -y /tmp/google-chrome.deb && rm -f /tmp/google-chrome.deb";
 const PREVIEW_INSTALL = "sudo apt-get update && sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y -o Dpkg::Progress-Fancy=1 --no-install-recommends xfce4 xfce4-terminal xfce4-notifyd elementary-xfce-icon-theme greybird-gtk-theme librsvg2-common xdg-user-dirs dbus-x11 fonts-noto-cjk tigervnc-standalone-server";
 
 /**
@@ -190,6 +195,8 @@ function previewApi(): DesktopApi {
         missingTools: [],
         officialOk: true,
         installCommand: query().has("nocreate") ? null : PREVIEW_INSTALL,
+        chromeCommand: PREVIEW_CHROME,
+        root: false,
         lightAvailable: true,
         packageBusy: false,
       };

@@ -22,6 +22,8 @@ export const SHORTCUT_ACTIONS = [
   { id: "togglePanel", group: "panels", combo: "Ctrl+Shift+KeyP" },
   { id: "snippets", group: "panels", combo: "Ctrl+Shift+KeyS" },
   { id: "searchServers", group: "panels", combo: "Ctrl+Shift+KeyL" },
+  // 收起、展开左边的服务器列表：默认不设键（标签栏最左边有按钮），想用的自己设
+  { id: "toggleSidebar", group: "panels", combo: null },
   { id: "goWorkspace", group: "pages", combo: null },
   { id: "goSync", group: "pages", combo: null },
   { id: "goMcp", group: "pages", combo: null },

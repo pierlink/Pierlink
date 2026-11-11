@@ -7,11 +7,11 @@ import i18n from "../../i18n";
 import type { OpenSpec } from "../terminal/types";
 import { getFilesApi } from "./api";
 import { beginDrag, registerDropTarget, useDragState, type DragOut, type DragPayload } from "./dnd";
-import { baseName, crumbs, formatSize, joinPath, locKey, parentPath } from "./path";
+import { baseName, crumbs, formatSize, isWindowsPath, joinPath, locKey, parentPath } from "./path";
 import { requestDrop } from "./TransferCenter";
 import { TextEditor } from "./TextEditor";
 import { isBinaryName } from "./fileTypes";
-import { ChmodDialog, DeleteDialog } from "./FileDialogs";
+import { ChmodDialog, DeleteDialog, DeleteJobs } from "./FileDialogs";
 import { onDirChanged, startDragOut, useTransfers } from "./transfers";
 import type { FileEntry, Listing, Loc } from "./types";
 import "./files.css";
@@ -90,7 +90,8 @@ export function FilePanel({ paneId, spec, title, cwd, commands, sessionId, onClo
   const [creating, setCreating] = useState<"dir" | "file" | null>(null);
   /** 正在软件内编辑的文件（完整路径） */
   const [editing, setEditing] = useState<string | null>(null);
-  const [deleting, setDeleting] = useState<string[] | null>(null);
+  /** 删除确认框：要删的路径；fast 为快速删除（服务器上 rm -rf） */
+  const [deleting, setDeleting] = useState<{ paths: string[]; fast: boolean } | null>(null);
   const [chmodPath, setChmodPath] = useState<string | null>(null);
   /** 操作失败的提示（几秒后消失） */
   const [opError, setOpError] = useState<string | null>(null);
@@ -356,8 +357,12 @@ export function FilePanel({ paneId, spec, title, cwd, commands, sessionId, onClo
       { id: "new-dir", label: t("files.newFolder"), onSelect: () => setCreating("dir") },
       { id: "new-file", label: t("files.newFile"), onSelect: () => setCreating("file") },
       { kind: "separator", id: "s2" },
-      { id: "delete", label: items.length > 1 ? t("files.deleteMany", { count: items.length }) : t("files.delete"), shortcut: "Del", danger: true, onSelect: () => setDeleting(items.map((e) => full(e.name))) },
+      { id: "delete", label: items.length > 1 ? t("files.deleteMany", { count: items.length }) : t("files.delete"), shortcut: "Del", danger: true, onSelect: () => setDeleting({ paths: items.map((e) => full(e.name)), fast: false }) },
     );
+    // 快速删除：服务器上用 rm -rf 一次删完（Windows 服务器没有 rm，不给）
+    if (!local && !isWindowsPath(dir) && !/^\/[A-Za-z]:/.test(dir)) {
+      entriesOut.push({ id: "fast-delete", label: items.length > 1 ? t("files.fastDeleteMany", { count: items.length }) : t("files.fastDeleteMenu"), danger: true, onSelect: () => setDeleting({ paths: items.map((e) => full(e.name)), fast: true }) });
+    }
     return entriesOut;
   };
 
@@ -383,7 +388,7 @@ export function FilePanel({ paneId, spec, title, cwd, commands, sessionId, onClo
     if (ev.key === "Enter" && selected.size === 1) { const e = entries.find((x) => selected.has(x.name)); if (e) open(e); }
     if (ev.key === "F2" && selected.size === 1) { ev.preventDefault(); setRenaming([...selected][0]); }
     if (ev.key === "F5" && path) { ev.preventDefault(); void load(path, true); }
-    if (ev.key === "Delete" && selected.size > 0 && path) { ev.preventDefault(); setDeleting(entries.filter((e) => selected.has(e.name)).map((e) => joinPath(path, e.name))); }
+    if (ev.key === "Delete" && selected.size > 0 && path) { ev.preventDefault(); setDeleting({ paths: entries.filter((e) => selected.has(e.name)).map((e) => joinPath(path, e.name)), fast: false }); }
     if (ev.key.toLowerCase() === "c" && ev.ctrlKey && ev.shiftKey && path) {
       ev.preventDefault();
       copy(selected.size ? entries.filter((e) => selected.has(e.name)).map((e) => joinPath(path, e.name)).join("\n") : path);
@@ -537,6 +542,7 @@ export function FilePanel({ paneId, spec, title, cwd, commands, sessionId, onClo
           {moving.length > 3 && <div className="files__xfer files__xfer--more">{t("files.andMore", { count: moving.length - 3 })}</div>}
         </div>
       )}
+      <DeleteJobs loc={loc} />
       <div className="files__foot">
         {/* 操作失败、操作提示写在底栏（替换计数，几秒后恢复），列表不被推下去 */}
         {opError ? <span className="files__op-error pl-ellipsis" role="alert" title={opError}>{opError}</span> : note ? <span className="files__note pl-ellipsis" role="status" title={note}>{note}</span> : listing && (
@@ -563,9 +569,9 @@ export function FilePanel({ paneId, spec, title, cwd, commands, sessionId, onClo
       {deleting && (
         <DeleteDialog
           loc={loc}
-          paths={deleting}
+          paths={deleting.paths}
+          fast={deleting.fast}
           onClose={() => setDeleting(null)}
-          onDone={(err) => { setDeleting(null); setOpError(err); if (path) void load(path, false, true); }}
         />
       )}
       {chmodPath && (

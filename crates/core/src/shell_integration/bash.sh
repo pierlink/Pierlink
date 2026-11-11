@@ -19,6 +19,14 @@ __pl_post() {
         '\[\e]133;A\a\]'*'\[\e]133;B\a\]') ;;
         *) PS1='\[\e]133;A\a\]'${PS1-}'\[\e]133;B\a\]' ;;
     esac
+    if [[ -n ${__pl_run-} ]]; then
+        # 用户钩子可能重设 PS0：每个提示符前补回“命令开始”标记，再报告 shell 在等输入
+        case ${PS0-} in
+            *"$__pl_run"*) ;;
+            *) PS0=$__pl_run${PS0-} ;;
+        esac
+        printf '\033]%s;idle\a' "$__pl_osc"
+    fi
     # 用户钩子可能改变退出码；提示符展开仍需看到用户命令的结果。
     return "${__pl_status-0}"
 }
@@ -40,6 +48,13 @@ fi
 export -n PROMPT_COMMAND
 __pl_history=${HISTCMD-0}
 __pl_seen=
+# 关标签时界面据此知道 shell 在等输入还是在跑命令：命令开始时 PS0 发 run，回到提示符发 idle。
+# PS0 从 bash 4.4 起才有；ble.sh 自己画提示符。这两种情况两个标记都不发，界面按不知道处理，免得把在跑的程序当成空闲。
+if [[ -z ${BLE_VERSION-} ]] && (( BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 4) )); then
+    __pl_run='\e]'$__pl_osc';run\a'
+else
+    __pl_run=
+fi
 if [[ -n ${BLE_VERSION-} ]]; then
     printf '\033]%s;i;native=1\a' "$__pl_osc"
 else

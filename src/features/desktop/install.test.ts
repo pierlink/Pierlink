@@ -14,6 +14,8 @@ function bare(patch: Partial<DesktopDetection> = {}): DesktopDetection {
     missingTools: [],
     officialOk: true,
     installCommand: COMMAND,
+    chromeCommand: null,
+    root: false,
     lightAvailable: true,
     packageBusy: false,
     ...patch,

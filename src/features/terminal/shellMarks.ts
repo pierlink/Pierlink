@@ -3,8 +3,9 @@ import type { HistoryEntry } from "./predict";
 /**
  * shell 钩子发来的提示符标记（后端注入到服务器 bash、zsh 和本机 Git Bash 里）：
  * - OSC 133;A 提示符开始、133;B 提示符结束（输入从这里开始）、133;D;<退出码> 上一条命令结束；
- * - 私有 OSC 7701：i;native=0|1（shell 自带预测时为 1）、c;<退出码>;<命令 base64>（上一条命令）。
- * 每个提示符的顺序：D → c → OSC 7（目录）→ A …提示符… B。
+ * - 私有 OSC 7701：i;native=0|1（shell 自带预测时为 1）、c;<退出码>;<命令 base64>（上一条命令）、
+ *   run（命令开始运行）、idle（回到提示符等输入）；run 和 idle 只在两个都能发时才发（bash 4.4 以前、ble.sh 都不发）。
+ * 每个提示符的顺序：D → c → OSC 7（目录）→ idle → A …提示符… B；按回车执行命令时先来 run。
  */
 export const PIERLINK_OSC = 7701;
 
@@ -14,7 +15,10 @@ export type Mark =
   | { kind: "inputStart" }
   | { kind: "commandEnd"; exit: number | null }
   | { kind: "init"; native: boolean }
-  | { kind: "command"; exit: number | null; command: string };
+  | { kind: "command"; exit: number | null; command: string }
+  /** 钩子报告 shell 现在的状态：run 有命令开始运行，idle 回到提示符等输入 */
+  | { kind: "run" }
+  | { kind: "idle" };
 
 function exitCode(text: string | undefined): number | null {
   return text !== undefined && /^\d{1,3}$/.test(text) && Number(text) <= 255 ? Number(text) : null;
@@ -42,6 +46,8 @@ export function parse133(data: string): Mark | null {
  * @returns 认识的标记；格式不对时为 null
  */
 export function parseMark(data: string): Mark | null {
+  if (data === "run") return { kind: "run" };
+  if (data === "idle") return { kind: "idle" };
   const parts = data.split(";");
   if (parts[0] === "i") return { kind: "init", native: parts.includes("native=1") };
   if (parts[0] !== "c" || parts.length !== 3 || data.length > 4096) return null;
@@ -156,6 +162,19 @@ export class ShellTracker {
   running = false;
   /** 正在运行的那条命令（按回车时提示符后的输入）；取不到时为 null */
   command: string | null = null;
+  /**
+   * 钩子报告的 shell 状态：idle 在等输入，run 有命令在跑（不管是谁输入的，AI 经 MCP 发的也算）；
+   * 钩子不报告（bash 4.4 以前、ble.sh、没装钩子）时为 null。关标签时据此决定要不要确认，不用去服务器查
+   */
+  hook: "idle" | "run" | null = null;
+
+  /**
+   * 关标签时用的 shell 状态：同 hook，但刚在提示符下按了回车、服务器的 run 还没传回来时，上一个 idle 已经不算数，
+   * 返回 null（按不知道处理，去服务器查），免得把刚启动的程序当成空闲直接关掉。
+   */
+  get closeState(): "idle" | "run" | null {
+    return this.hook === "idle" && this.running ? null : this.hook;
+  }
   /** 最近一个提示符是续行提示符：等下一个主提示符再取输入 */
   private secondary = false;
   private anchor: { marker: { readonly line: number; readonly isDisposed: boolean; dispose(): void }; col: number; prompt: string } | null = null;
@@ -192,6 +211,10 @@ export class ShellTracker {
       }
       case "command":
         return { command: mark.command, cwd, exit: mark.exit, at: Date.now() };
+      case "run":
+      case "idle":
+        this.hook = mark.kind;
+        return null;
     }
   }
 
@@ -214,6 +237,7 @@ export class ShellTracker {
     this.secondary = false;
     this.integrated = false;
     this.native = false;
+    this.hook = null;
   }
 
   /** 用户按了回车（或会话重连）：离开提示符，等下一个 B */

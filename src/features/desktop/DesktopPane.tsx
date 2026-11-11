@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import RFB from "@novnc/novnc";
-import { AppWindow, CircleQuestionMark, Expand, Maximize, Minimize, Power, Unplug, X } from "lucide-react";
+import { AppWindow, CircleQuestionMark, Expand, Globe, Maximize, Minimize, Power, Unplug, X } from "lucide-react";
 import { Button, Checkbox, Dialog, Select } from "../../components";
 import { formatError, isAppError } from "../../errors";
 import { clipboardSequence, readMarkedClipboardText, writeClipboardText, writeMarkedClipboardText } from "../shell/clipboard";
@@ -16,7 +16,7 @@ import {
   type AcquireSource, type DesktopConnection, type DesktopCreateProgress, type DesktopDetection, type DesktopSession,
 } from "./api";
 import { desktopActions, INSTALL_POLL_MS, INSTALL_WAIT_MS, installFinished, LIGHT_DESKTOP_ID, preferredDesktop } from "./install";
-import { InstallDialog, InstallingCard, type InstallHint } from "./InstallDesktop";
+import { ChromeDialog, InstallDialog, InstallingCard, type InstallHint } from "./InstallDesktop";
 import { resetInstallProgress } from "./installProgress";
 import "./desktop.css";
 
@@ -151,7 +151,7 @@ export function DesktopPane({ serverId, visible, grabKeyboard = true, title, con
   /** 已经在独立窗口里打开：由上层关掉这个窗格（不给就留在这里显示“已在独立窗口打开”） */
   onPoppedOut?: () => void;
   /**
-   * 安装桌面：在这个窗格下面开一个连同一台服务器的终端，连上后输入并运行 command（要密码时用户在终端里输）。
+   * 安装桌面、Chrome：在这个窗格下面开一个连同一台服务器的终端，连上后输入并运行 command（要密码时用户在终端里输）。
    * 开出来了返回 true；不给（独立窗口里）时改为复制命令
    */
   onInstallTerminal?: (command: string) => boolean;
@@ -184,6 +184,9 @@ export function DesktopPane({ serverId, visible, grabKeyboard = true, title, con
   /** 一行提示（如“断开后服务器可能结束这个桌面”），点 × 关掉 */
   const [notice, setNotice] = useState<string | null>(null);
   const [confirmStop, setConfirmStop] = useState(false);
+  /** 这台服务器装 Chrome 的命令和是不是 root 登录（来自最近一次检测；装不了时为 null，不显示“浏览器”按钮） */
+  const [browser, setBrowser] = useState<{ command: string; root: boolean } | null>(null);
+  const [browserOpen, setBrowserOpen] = useState(false);
   /** 全屏是这个窗格要的（页面全屏时只有它铺满窗口） */
   const wantFull = useRef(false);
   /** 已经连上远程（noVNC 握手完成）：连上之前发剪贴板会被 noVNC 丢掉 */
@@ -311,6 +314,7 @@ export function DesktopPane({ serverId, visible, grabKeyboard = true, title, con
     setPhase({ kind: "detecting" });
     try {
       const detection = await (await getDesktopApi()).detect(serverId);
+      setBrowser(detection.chromeCommand ? { command: detection.chromeCommand, root: detection.root } : null);
       let last: string | null = null;
       try { last = localStorage.getItem(LAST_KEY + serverId); } catch { /* 没有就算了 */ }
       const pick = !auto ? null : detection.sessions.find((s) => s.key === last) ?? (detection.sessions.length === 1 ? detection.sessions[0] : null);
@@ -372,6 +376,12 @@ export function DesktopPane({ serverId, visible, grabKeyboard = true, title, con
     const inTerminal = !!onInstallTerminal && onInstallTerminal(command);
     if (!inTerminal) void writeClipboardText(command).catch(() => undefined);
     setPhase({ kind: "installing", command, hint: !inTerminal ? "copied" : password ? "password" : "terminal", since: Date.now(), timedOut: false });
+  };
+
+  // “浏览器”框里点了“在下面的终端里安装”：开终端运行安装命令，开不出来时复制命令
+  const installChrome = (command: string) => {
+    setBrowserOpen(false);
+    if (!onInstallTerminal?.(command)) void writeClipboardText(command).catch(() => undefined);
   };
 
   // 装的过程中每隔几秒查一次，装好（能新建、没在跑 apt 等）就回到新建卡片并选中 XFCE；等太久就停下，让用户装好后自己点“重新查找”
@@ -663,6 +673,11 @@ export function DesktopPane({ serverId, visible, grabKeyboard = true, title, con
               onClick={toggleFullscreen}>
               {fullscreen ? <Minimize size={14} /> : <Maximize size={14} />}
             </button>
+            {browser && (
+              <button type="button" className="pane__btn" title={t("desktop.chrome.button")} aria-label={t("desktop.chrome.button")} onClick={() => setBrowserOpen(true)}>
+                <Globe size={14} />
+              </button>
+            )}
             <button type="button" className="pane__btn" title={t("desktop.disconnect")} aria-label={t("desktop.disconnect")} onClick={leave}>
               <Unplug size={14} />
             </button>
@@ -745,13 +760,17 @@ export function DesktopPane({ serverId, visible, grabKeyboard = true, title, con
         )}
       </div>
       {installFor?.installCommand && (
-        <InstallDialog serverId={serverId} command={installFor.installCommand} inTerminal={!!onInstallTerminal}
+        <InstallDialog serverId={serverId} command={installFor.installCommand} chrome={installFor.chromeCommand} root={installFor.root} inTerminal={!!onInstallTerminal}
           onClose={() => setInstallFor(null)} onInstall={startInstall}
           onLight={() => {
             const detection = installFor;
             setInstallFor(null);
             void create({ detection, desktopId: LIGHT_DESKTOP_ID, allowOfficialDownload: false, manualPackage: null });
           }} />
+      )}
+      {browserOpen && browser && (
+        <ChromeDialog command={browser.command} root={browser.root} onClose={() => setBrowserOpen(false)}
+          onInstall={onInstallTerminal ? () => installChrome(browser.command) : undefined} />
       )}
       {confirmStop && session && (
         <Dialog title={t("desktop.stopTitle")} danger onDismiss={() => setConfirmStop(false)}

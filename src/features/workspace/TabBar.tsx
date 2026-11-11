@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { useTranslation } from "react-i18next";
-import { ChevronDown, Columns2, PanelRight, Plus, Radio, SquareTerminal, X } from "lucide-react";
+import { ChevronDown, Columns2, PanelLeft, PanelRight, Plus, Radio, SquareTerminal, X } from "lucide-react";
 import { IconButton, Menu, StatusDot, type MenuEntry } from "../../components";
 import { localShellName } from "../terminal/backend";
 import type { ServerView, TabView } from "./types";
@@ -12,13 +12,15 @@ import { formatCombo } from "../shortcuts/keys";
 const dotTone = { online: "ok", connecting: "warn", offline: "neutral" } as const;
 
 /** 终端标签栏：标签、新建（默认终端 + 下拉选择服务器或本机终端）、分屏。 */
-export function TabBar({ tabs, activeId, servers, localShells, onActivate, onClose, onNewDefault, onPickServer, onPickShell, onQuickConnect, onSplit, onTabPointerDown, panelOpen, onTogglePanel, broadcast }: {
+export function TabBar({ tabs, activeId, servers, localShells, onActivate, onClose, onCloseHover, onNewDefault, onPickServer, onPickShell, onQuickConnect, onSplit, onTabPointerDown, panelOpen, onTogglePanel, sidebarOpen, onToggleSidebar, broadcast }: {
   tabs: TabView[];
   activeId: string;
   servers: ServerView[];
   localShells: { id: string; name: string; isDefault: boolean }[];
   onActivate: (id: string) => void;
   onClose: (id: string) => void;
+  /** 鼠标移到关闭按钮上、在标签上按下中键：快要关了（终端区先去查有没有程序在跑） */
+  onCloseHover?: (id: string) => void;
   /** “+”主按钮：打开默认本机终端 */
   onNewDefault: () => void;
   onPickServer: (serverId: string) => void;
@@ -29,6 +31,9 @@ export function TabBar({ tabs, activeId, servers, localShells, onActivate, onClo
   /** 右侧工具面板是否打开；不传 onTogglePanel 时不显示面板按钮 */
   panelOpen?: boolean;
   onTogglePanel?: () => void;
+  /** 左边的服务器列表是否开着；不传 onToggleSidebar 时不显示收起按钮 */
+  sidebarOpen?: boolean;
+  onToggleSidebar?: () => void;
   /** 在标签上按下鼠标（拖动标签：并入别的标签的窗格、调整顺序） */
   onTabPointerDown?: (e: ReactPointerEvent, id: string) => void;
   /** 当前标签在广播输入：在标签栏右边显示一个小标记（不另占一行，开关广播时终端区不跳动） */
@@ -65,8 +70,12 @@ export function TabBar({ tabs, activeId, servers, localShells, onActivate, onClo
     ...localShells.map((l) => ({ id: `sh-${l.id}`, label: localShellName(l), shortcut: l.id === defaultShell?.id ? formatCombo(keys.newTab, " ") || undefined : undefined, onSelect: () => onPickShell(l.id) })),
   ];
 
+  const sidebarLabel = sidebarOpen ? t("workspace.hideSidebar") : t("workspace.showSidebar");
   return (
     <div className="tabbar">
+      {onToggleSidebar && (
+        <IconButton label={sidebarLabel} title={withShortcut(t, sidebarLabel, formatCombo(keys.toggleSidebar))} aria-pressed={!!sidebarOpen} onClick={onToggleSidebar}><PanelLeft size={15} /></IconButton>
+      )}
       <div ref={stripRef} role="tablist" aria-label={t("workspace.newTab")} className="tabbar__tabs">
       {tabs.map((tab) => (
         <div
@@ -76,7 +85,10 @@ export function TabBar({ tabs, activeId, servers, localShells, onActivate, onClo
           aria-selected={tab.id === activeId}
           className="tab"
           data-tab-key={tab.id}
-          onPointerDown={(e) => { if (!(e.target as Element).closest(".tab__close")) onTabPointerDown?.(e, tab.id); }}
+          onPointerDown={(e) => {
+            if (e.button === 1) onCloseHover?.(tab.id);
+            if (!(e.target as Element).closest(".tab__close")) onTabPointerDown?.(e, tab.id);
+          }}
           onClick={() => onActivate(tab.id)}
           onKeyDown={(e) => e.key === "Enter" && onActivate(tab.id)}
           onAuxClick={(e) => e.button === 1 && onClose(tab.id)}
@@ -92,6 +104,7 @@ export function TabBar({ tabs, activeId, servers, localShells, onActivate, onClo
             tabIndex={-1}
             aria-label={t("workspace.closeTab")}
             className="tab__close"
+            onPointerEnter={() => onCloseHover?.(tab.id)}
             onClick={(e) => { e.stopPropagation(); onClose(tab.id); }}
           >
             <X size={12} />

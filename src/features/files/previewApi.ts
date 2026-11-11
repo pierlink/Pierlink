@@ -131,13 +131,27 @@ export function createPreviewFilesApi(): FilesApi {
       add(loc, path, f(baseName(path), 0, 0));
       texts.set(`${locKey(loc)}|${path}`, { text: "", mtime: now });
     },
-    async remove(loc, paths) {
-      await wait();
-      for (const p of paths) {
-        const dir = parentPath(p) ?? "";
-        tree(loc).set(dir, (tree(loc).get(dir) ?? []).filter((x) => x.name !== baseName(p)));
-      }
-      return paths.length;
+    remove(loc, paths, fast, onProgress) {
+      const id = `r${++seq}`;
+      const done = (async () => {
+        // 逐项删除时模拟几步进度（地址里带 slowdelete 时慢一些，方便看浮窗、试“停止”）
+        if (!fast && loc.kind !== "local") {
+          const steps = new URLSearchParams(location.search).has("slowdelete") ? 40 : 4;
+          for (let i = 0; i < steps; i++) {
+            if (cancelled.has(id)) throw { code: "sftp.cancelled", params: {} };
+            onProgress({ deleted: i * 25, current: `${paths[0]}/node_modules/pkg-${i}/index.js` });
+            await wait();
+          }
+        } else await wait();
+        return paths.length;
+      })().then((n) => {
+        for (const p of paths) {
+          const dir = parentPath(p) ?? "";
+          tree(loc).set(dir, (tree(loc).get(dir) ?? []).filter((x) => x.name !== baseName(p)));
+        }
+        return n;
+      });
+      return { id, done };
     },
     async readText(loc, path) {
       await wait();

@@ -219,7 +219,9 @@
     "importFile": "Import from file…",
     "exportServers": "Export servers…",
     "importFileFailed": "Import failed",
-    "desktopInWindow": "The desktop is open in a separate window; click to switch to it"
+    "desktopInWindow": "The desktop is open in a separate window; click to switch to it",
+    "hideSidebar": "Hide server list",
+    "showSidebar": "Show server list"
   },
   "statusbar": {
     "localSync": "Local sync service running",
@@ -797,7 +799,11 @@
         "read_standard_output": "read standard output",
         "read_error_output": "read error output",
         "read_pipe": "read pipe",
-        "write_script": "write script"
+        "write_script": "write script",
+        "delete_no_permission": "no permission",
+        "delete_read_only": "the file system is read-only",
+        "delete_busy": "a file is in use",
+        "delete_left": "rm couldn't remove it"
       },
       "sftp": {
         "field_is_too_long": "field is too long",
@@ -1320,7 +1326,8 @@
         "invalid_server_id": "invalid server ID",
         "invalid_window_address": "invalid window address",
         "setsid_or_xauth_missing": "setsid or xauth",
-        "dbus_launcher_missing": "dbus-run-session or dbus-launch"
+        "dbus_launcher_missing": "dbus-run-session or dbus-launch",
+        "webview_disconnected": "Windows' web component (WebView2) disconnected, so no new window can open: restart Pierlink to fix it"
       },
       "proxy": {
         "connection_unavailable": "couldn't get a connection to the proxy",
@@ -1654,7 +1661,9 @@
       "drag_out_unsupported": "Dragging files out of the window only works on Windows",
       "drag_no_space": "Not enough local disk space: dragged-out files are downloaded to this computer first (needs {{need}} plus 1 GB headroom; {{free}} free)",
       "drag_out_failed": "Couldn't drag out: {{reason}}",
-      "drag_out_empty": "Nothing was downloaded"
+      "drag_out_empty": "Nothing was downloaded",
+      "delete_failed": "Couldn't delete everything ({{reason}}): {{path}}",
+      "fast_delete_unavailable": "This server can't fast delete (no /bin/sh); use Delete instead"
     },
     "clipboard": {
       "busy": "The clipboard is in use by another program. Try pasting again",
@@ -1913,7 +1922,8 @@
     "pasteImageBusy": "Still uploading the previous image",
     "pasteImageExpired": "The terminal moved on; image not pasted",
     "phoneView": "A phone is viewing this terminal at {{cols}} columns; type here to restore",
-    "phoneOpenEnded": "The connection ended before the terminal was ready"
+    "phoneOpenEnded": "The connection ended before the terminal was ready",
+    "restartApp": "Restart Pierlink"
   },
   "hostKey": {
     "title": "Verify the server's identity",
@@ -2720,7 +2730,20 @@
     "dragHintOut": "Drag to another pane to transfer, or out of the window to download",
     "dragOutLabel": "Drag out {{what}}",
     "dragOutLine": "Downloading {{what}}",
-    "dragOutCancelled": "Cancelled"
+    "dragOutCancelled": "Cancelled",
+    "fastDeleteMenu": "Fast delete (rm -rf)…",
+    "fastDeleteMany_one": "Fast delete {{count}} item (rm -rf)…",
+    "fastDeleteMany_other": "Fast delete {{count}} items (rm -rf)…",
+    "fastDelete": "Fast delete",
+    "fastDeleteBody": "Deletes everything at once on the server with rm -rf. This can't be undone or stopped.",
+    "deletingCount_one": "Deleting · {{count}} item removed",
+    "deletingCount_other": "Deleting · {{count}} items removed",
+    "deletingFast_one": "Fast deleting {{count}} item…",
+    "deletingFast_other": "Fast deleting {{count}} items…",
+    "deletingLocal_one": "Moving {{count}} item to the Recycle Bin…",
+    "deletingLocal_other": "Moving {{count}} items to the Recycle Bin…",
+    "deleteStopping": "Stopping…",
+    "stopDelete": "Stop deleting"
   },
   "dbRestored": {
     "title": "Database restored from backup",
@@ -3524,7 +3547,16 @@
     "popOut": "Open in separate window",
     "poppedTitle": "Opened in a separate window",
     "showHere": "Show here",
-    "popOutFailed": "Couldn't open the separate window: {{reason}}"
+    "popOutFailed": "Couldn't open the separate window: {{reason}}",
+    "chrome": {
+      "button": "Browser",
+      "title": "Chrome browser",
+      "also": "Also install Chrome",
+      "run": "Run google-chrome in the desktop's terminal to open the browser.",
+      "runRoot": "Run google-chrome --no-sandbox in the desktop's terminal to open the browser.",
+      "installHint": "If Chrome isn't installed yet, run:",
+      "installHere": "Install in a terminal below"
+    }
   },
   "shortcuts": {
     "lead": "Click a key, then press the new combination. Esc cancels.",
@@ -3577,7 +3609,8 @@
       "openSettings": "Open settings",
       "fontBigger": "Larger font",
       "fontSmaller": "Smaller font",
-      "fontReset": "Reset font size"
+      "fontReset": "Reset font size",
+      "toggleSidebar": "Show/hide server list"
     }
   }
 }

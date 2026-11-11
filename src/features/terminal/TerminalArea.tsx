@@ -11,7 +11,7 @@ import { HostKeyDialog } from "./HostKeyDialog";
 import { reorder, tabPart, zoneAt, zoneBox, type Box, type DragWhat, type DropAt } from "./paneDrag";
 import { TerminalView, type TermHandle } from "./TerminalView";
 import { DesktopPane } from "../desktop/DesktopPane";
-import { focusDesktopWindow, openDesktopWindow, useDesktopPopouts } from "../desktop/popouts";
+import { focusDesktopWindow, openDesktopWindow, restartApp, useDesktopPopouts, webviewGone } from "../desktop/popouts";
 import { DESKTOP_INSTALL_EVENT, desktopWindowUrl } from "../desktop/DesktopWindow";
 import { reportInstallNotTyped, reportInstallOutput } from "../desktop/installProgress";
 import type { Connecting, HostKeyStep, OpenSpec, RemoteSpec } from "./types";
@@ -117,7 +117,7 @@ type Pending =
   /** 正在检查已保存服务器的指纹 */
   | { kind: "checking"; conn: Conn }
   /** 连接已保存服务器失败，可重试 */
-  | { kind: "connectError"; conn: Conn; text: string }
+  | { kind: "connectError"; conn: Conn; text: string; restart?: boolean }
   /** 关闭正在运行的标签（pane 为 null）或窗格前确认 */
   /** busy：只关一个终端时，里面是否有程序在运行（null 为查不到，或一次关多个） */
   | { kind: "close"; tab: string; pane: string | null; busy: boolean | null }
@@ -243,7 +243,7 @@ export interface OpenRequest { id: string; mode: "tab" | "split" | "desktop"; n:
 export interface SnippetRequest { text: string; execute: boolean; n: number }
 
 /** 终端区域：标签栏 + 每个标签一组分屏窗格（隐藏的标签和窗格都保持会话） */
-export function TerminalArea({ servers, serversLoaded = true, openRequest, onConnections, onActiveServer, panelOpen, onTogglePanel, snippetRequest, onSnippetTargets, active = true, focusRequest = 0 }: {
+export function TerminalArea({ servers, serversLoaded = true, openRequest, onConnections, onActiveServer, panelOpen, onTogglePanel, sidebarOpen, onToggleSidebar, snippetRequest, onSnippetTargets, active = true, focusRequest = 0 }: {
   servers: ServerView[];
   /** 服务器列表已经读取过（之前不能据此判断恢复的窗格对应的服务器是否已删除） */
   serversLoaded?: boolean;
@@ -255,6 +255,9 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
   /** 右侧工具面板的开关（按钮在标签栏右边） */
   panelOpen?: boolean;
   onTogglePanel?: () => void;
+  /** 左边的服务器列表开着没有；不传 onToggleSidebar 时标签栏不显示收起按钮 */
+  sidebarOpen?: boolean;
+  onToggleSidebar?: () => void;
   /** 发送命令片段 */
   snippetRequest?: SnippetRequest | null;
   /** 命令片段现在会发到几个窗格（0 = 没有可用的终端），变化时通知 */
@@ -541,7 +544,8 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
   /** 设置里选了“在独立窗口打开”：指纹确认后直接开独立窗口，主窗口不开窗格（窗口里自己检测、连接） */
   const openWindowDesktop = (conn: Conn, serverId: string) => {
     openDesktopWindow(serverId, conn.title, desktopWindowUrl(serverId, conn.title)).catch((err: unknown) => {
-      setPending({ kind: "connectError", conn, text: formatError(err) });
+      // 系统的网页组件断开了：重试没用，给“重启 Pierlink”
+      setPending({ kind: "connectError", conn, text: formatError(err), restart: webviewGone(err) });
     });
   };
   const onHostKeyError = (my: number, conn: Conn, err: unknown) => {
@@ -945,6 +949,7 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
     for (const id of ids) {
       phoneOpened(id, null, { code: "ssh.auth_cancelled", params: {} });
       autoCommands.current.delete(id);
+      busyChecks.current.delete(id);
     }
     const before = tabsRef.current;
     const index = before.findIndex((x) => x.key === tabKey);
@@ -968,10 +973,29 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
     if (focusTab) setKeyFocus({ tab: focusTab.key, pane: focusTab.active });
     setPanes((ps) => { const out = { ...ps }; for (const id of ids) delete out[id]; return out; });
   };
+  /** 要关的窗格里还连着的终端（桌面窗格关了只是断开查看，服务器上的桌面照常运行，不算） */
+  const liveIn = (ids: string[]) => ids.filter((id) => panesRef.current[id]?.status === "running" && !panesRef.current[id]?.desktop);
+  /**
+   * 查一个终端里有没有程序在跑（服务器终端到服务器上查，要走一趟网络）。查过以后终端没再输出、不超过 10 秒的，
+   * 直接用上次的结果（鼠标移到关闭按钮上时先查过，见 prefetchClose）。
+   * @param paneId 窗格
+   * @param session 窗格现在的会话
+   * @returns 有程序在跑为 true，shell 空闲为 false，查不到为 null
+   */
+  const busyChecks = useRef(new Map<string, { session: string; output: number; at: number; result: Promise<boolean | null> }>());
+  const checkBusy = (paneId: string, session: string): Promise<boolean | null> => {
+    const output = handles.current.get(paneId)?.outputBytes() ?? null;
+    const old = busyChecks.current.get(paneId);
+    if (old && output !== null && old.session === session && old.output === output && performance.now() - old.at < 10000) return old.result;
+    const result = backend.busy(session).catch(() => null);
+    if (output !== null) busyChecks.current.set(paneId, { session, output, at: performance.now(), result });
+    return result;
+  };
   /**
    * 关闭前确认（设置里可整体关掉）：
    * - 一次关多个还连着的终端（关整个分屏标签）：确认；
-   * - 只关一个：终端里有程序在运行（如 codex、vim）才确认，shell 空闲时直接关；查不到是否在运行时按在运行处理；
+   * - 只关一个：终端里有程序在运行（如 codex、vim）才确认，shell 空闲时直接关；查不到是否在运行时按在运行处理。
+   *   提示符钩子报告了状态的（服务器上的 bash 4.4 起和 zsh、本机 Git Bash）不用查，马上决定；其他的去查，最多等 3 秒；
    * - 已断开、已结束的直接关闭。
    */
   const closeCheck = useRef<string | null>(null);
@@ -979,19 +1003,20 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
     const tab = tabsRef.current.find((x) => x.key === tabKey);
     if (!tab) return;
     const ids = paneId ? [paneId] : paneIds(tab.layout);
-    // 桌面窗格关了只是断开查看，服务器上的桌面照常运行，不用确认
-    const live = ids.filter((id) => panesRef.current[id]?.status === "running" && !panesRef.current[id]?.desktop);
+    const live = liveIn(ids);
     if (!live.length || !settings.terminal.confirmClose) { dropPanes(tabKey, ids); return; }
     if (live.length > 1) { setPending({ kind: "close", tab: tabKey, pane: paneId, busy: null }); return; }
+    const state = handles.current.get(live[0])?.shellState() ?? null;
+    if (state === "idle") { dropPanes(tabKey, ids); return; }
+    if (state === "run") { setPending({ kind: "close", tab: tabKey, pane: paneId, busy: true }); return; }
     const session = panesRef.current[live[0]]?.session;
     const key = `${tabKey}/${paneId ?? ""}`;
     if (closeCheck.current === key) return;
     closeCheck.current = key;
-    // 查询期间（服务器上要另开一条 SSH 连接）鼠标显示为“正在处理”，避免以为没点上
+    // 查询期间鼠标显示为“正在处理”，避免以为没点上
     document.body.classList.add("pane-checking");
-    // 服务器终端要另外建一条 SSH 连接查询，最多等 3 秒
     const timeout = new Promise<null>((r) => setTimeout(() => r(null), 3000));
-    void Promise.race([session ? backend.busy(session).catch(() => null) : Promise.resolve(null), timeout]).then((busy) => {
+    void Promise.race([session ? checkBusy(live[0], session) : Promise.resolve(null), timeout]).then((busy) => {
       closeCheck.current = null;
       document.body.classList.remove("pane-checking");
       const p = panesRef.current[live[0]];
@@ -999,6 +1024,22 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
       if (busy === false) { dropPanes(tabKey, ids); return; }
       setPending({ kind: "close", tab: tabKey, pane: paneId, busy });
     });
+  };
+  /**
+   * 鼠标移到关闭按钮上（或在标签上按下中键）：提示符钩子没报告状态的服务器终端先去查有没有程序在跑，点下去时多半已经查完。
+   * 只对内置 SSH 连的服务器这样做（用已有的连接查）；系统 OpenSSH 每查一次都要重新登录一次，等点了再查。
+   */
+  const prefetchClose = (tabKey: string, paneId: string | null) => {
+    if (!settings.terminal.confirmClose) return;
+    const tab = tabsRef.current.find((x) => x.key === tabKey);
+    if (!tab) return;
+    const live = liveIn(paneId ? [paneId] : paneIds(tab.layout));
+    if (live.length !== 1) return;
+    const pane = panesRef.current[live[0]];
+    const spec = pane?.spec;
+    if (!pane?.session || spec?.kind !== "server" || handles.current.get(live[0])?.shellState()) return;
+    if (!servers.find((x) => x.id === spec.serverId)?.builtinSsh) return;
+    void checkBusy(live[0], pane.session);
   };
   // ---------- 拖动窗格和标签 ----------
   // 拖窗格标题栏：放到另一个窗格的某一边（或中间交换位置）、放到别的标签上（并入，默认在右边）、放到标签栏空白处（单独成为新标签）。
@@ -1516,12 +1557,15 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
           beginDrag(e, { kind: "tab", tab: key }, count > 1 ? t("terminal.drop.tabLabel", { name: v?.title ?? "", count }) : v?.title ?? "");
         }}
         onClose={(key) => requestClose(key, null)}
+        onCloseHover={(key) => prefetchClose(key, null)}
         onNewDefault={() => openDefault(null)}
         onPickShell={(id) => openShellIn(id, null)}
         onPickServer={(id) => openServer(id, null)}
         onQuickConnect={() => setPending({ kind: "quick", value: "", error: null, target: null })}
         panelOpen={panelOpen}
         onTogglePanel={onTogglePanel}
+        sidebarOpen={sidebarOpen}
+        onToggleSidebar={onToggleSidebar}
         onSplit={(el) => {
           const tab = tabs.find((x) => x.key === activeTab);
           if (tab) openSplitMenu(el, tab.key, tab.active, "row");
@@ -1612,7 +1656,7 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
                           </button>
                         )}
                         {multi && (
-                          <button type="button" className="pane__btn pane__btn--close" title={withKey(t("terminal.closePane"), keyText.closePane)} aria-label={t("terminal.closePane")} onClick={() => requestClose(tab.key, id)}>
+                          <button type="button" className="pane__btn pane__btn--close" title={withKey(t("terminal.closePane"), keyText.closePane)} aria-label={t("terminal.closePane")} onPointerEnter={() => prefetchClose(tab.key, id)} onClick={() => requestClose(tab.key, id)}>
                             <X size={14} />
                           </button>
                         )}
@@ -1675,7 +1719,7 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
                               <Rows2 size={14} />
                             </button>
                             {multi && (
-                              <button type="button" className="pane__btn pane__btn--close" title={withKey(t("terminal.closePane"), keyText.closePane)} aria-label={t("terminal.closePane")} onClick={() => requestClose(tab.key, id)}>
+                              <button type="button" className="pane__btn pane__btn--close" title={withKey(t("terminal.closePane"), keyText.closePane)} aria-label={t("terminal.closePane")} onPointerEnter={() => prefetchClose(tab.key, id)} onClick={() => requestClose(tab.key, id)}>
                                 <X size={14} />
                               </button>
                             )}
@@ -1833,7 +1877,9 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
           onDismiss={closeQuick}
           actions={<>
             <Button onClick={closeQuick}>{t("common.cancel")}</Button>
-            <Button variant="primary" onClick={() => connect(pending.conn)}>{t("common.retry")}</Button>
+            {pending.restart
+              ? <Button variant="primary" onClick={restartApp}>{t("terminal.restartApp")}</Button>
+              : <Button variant="primary" onClick={() => connect(pending.conn)}>{t("common.retry")}</Button>}
           </>}
         >
           <span role="alert" style={{ overflowWrap: "anywhere" }}>{pending.text}</span>

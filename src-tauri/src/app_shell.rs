@@ -459,6 +459,18 @@ fn quit(app: &AppHandle) {
     app.exit(0);
 }
 
+/// 重启 Pierlink（系统的网页组件 WebView2 断开、开不了新窗口时用）：先和退出一样正常关掉同步、隧道、终端，再重新打开
+#[tauri::command]
+#[specta::specta]
+pub fn app_restart(app: AppHandle) {
+    eprintln!("用户点了重启 Pierlink");
+    app.state::<ShellState>()
+        .quitting
+        .store(true, Ordering::SeqCst);
+    // 清理在 RunEvent::Exit 里完成（同时放开“只开一个 Pierlink”的锁），之后 Tauri 再启动新的进程
+    app.request_restart();
+}
+
 /// 界面把相关设置同步给外壳：关闭窗口时是否缩到托盘、托盘菜单的文字（随界面语言）。
 ///
 /// :param close_to_tray: 关闭窗口时缩到托盘

@@ -82,6 +82,10 @@ pub struct DesktopDetectionDto {
     pub official_ok: bool,
     /// 安装完整桌面的命令（root 登录时不带 sudo）；不认识包管理器为 null
     pub install_command: Option<String>,
+    /// 下载并安装 Google Chrome 的命令（只有 x86_64 的 apt、dnf 系统；root 登录时不带 sudo）；装不了为 null
+    pub chrome_command: Option<String>,
+    /// 登录的就是 root（Chrome 要加 --no-sandbox 才能打开）
+    pub root: bool,
     /// 没有桌面环境时能改用精简桌面（只有终端，不用管理员权限）
     pub light_available: bool,
     /// 服务器上正在运行 apt、dpkg、dnf 等（装桌面时等它装完）
@@ -406,6 +410,8 @@ pub async fn desktop_detect(
         let missing = missing_tools(&d.tools);
         let dto = DesktopDetectionDto {
             install_command: vnc::install_command(&d.distro, d.package_manager, d.root),
+            chrome_command: vnc::chrome_command(&d.arch, d.package_manager, d.root, &d.tools),
+            root: d.root,
             // 没有桌面环境时主操作是安装完整桌面；精简桌面只在装不了时作为退路
             can_create: !d.desktops.is_empty() && missing.is_empty(),
             needs_server_program: !has_usable_tigervnc(&d),
@@ -880,9 +886,22 @@ pub async fn desktop_open_window(
     if let Some(args) = crate::e2e_browser_args() {
         builder = builder.additional_browser_args(&args);
     }
-    builder
-        .build()
-        .map_err(|e| AppError::new("vnc.window_failed").with("reason", e))?;
+    builder.build().map_err(|e| {
+        let text = e.to_string();
+        // 系统的网页组件（WebView2）断开了（后台更新过、睡眠唤醒后进程没了）：重试没用，重启 Pierlink 才能再开新窗口
+        if ["0x80010108", "0x800706BA", "0x800706BE"]
+            .iter()
+            .any(|code| text.contains(code))
+        {
+            eprintln!("打开桌面独立窗口失败，WebView2 断开: 服务器={server_id}");
+            AppError::new("vnc.window_failed").with_reason(
+                "vnc.webview_disconnected",
+                "系统的网页组件（WebView2）断开了，开不了新窗口：重启 Pierlink 就好",
+            )
+        } else {
+            AppError::new("vnc.window_failed").with("reason", e)
+        }
+    })?;
     eprintln!("打开桌面独立窗口: 服务器={server_id}");
     Ok(())
 }

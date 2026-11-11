@@ -17,6 +17,8 @@ export interface ServerView {
   linked?: boolean;
   /** 这台服务器关掉了命令预测（全局设置开着也不预测、不装提示符钩子） */
   noPrediction?: boolean;
+  /** 用内置 SSH 连接（规则同后端 select_engine：选了内置、不靠 ssh config 别名、填了地址和用户名） */
+  builtinSsh?: boolean;
   syncState: "none" | "ok" | "busy" | "warn";
 }
 

@@ -113,6 +113,10 @@ export interface TermHandle {
   disconnect: () => void;
   /** 会话已结束时重新连接（清屏后重新打开，和按 Enter 一样）；还连着时不做什么 */
   reconnect: () => void;
+  /** 钩子报告的 shell 状态：idle 在等输入、run 有命令在跑；没装钩子、钩子不报告或会话已结束时为 null */
+  shellState: () => "idle" | "run" | null;
+  /** 到现在为止收到的输出字节数（只增不减）：之前查到的“有没有程序在跑”之后又有输出，就过时了 */
+  outputBytes: () => number;
 }
 
 /** 鼠标停在结束卡片上滚动时，多少像素算一行 */
@@ -464,6 +468,8 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
     let manual = false;
     // 这次连接收到多少输出、按了几次回车（带钩子连上就退出时判断是不是钩子的问题）
     let sessionBytes = 0;
+    /** 收到的输出字节数（重连也不清零，见 TermHandle.outputBytes） */
+    let outputBytes = 0;
     let sessionEnters = 0;
     let last = { cols: term.cols, rows: term.rows };
     // 最近一段输出（只用来判断“登录失败”：ssh 打印 Permission denied 后以 255 退出）
@@ -618,6 +624,7 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
             if (covering) coverOutput(chunk);
             const n = e.data.length;
             sessionBytes += n;
+            outputBytes += n;
             tail = (tail + chunk).slice(-2048);
             cb.current.onOutput?.(tail);
             term.write(e.data, () => {
@@ -909,6 +916,8 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
       focus: () => term.focus(),
       disconnect,
       reconnect: () => { if (exited) reopen(true); },
+      shellState: () => (exited ? null : prediction.shellState),
+      outputBytes: () => outputBytes,
     });
 
     return () => {

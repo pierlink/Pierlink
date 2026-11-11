@@ -53,6 +53,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
         app_info,
         app_shell::app_shell_config,
         app_shell::app_tray_available,
+        app_shell::app_restart,
         explorer_menu::app_take_open_dirs,
         explorer_menu::explorer_menu_config,
         mcp::mcp_settings_get,

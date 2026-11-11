@@ -1,6 +1,7 @@
 //! 文件菜单操作；删除使用 lstat，编辑保存要求原子替换扩展。
 use super::*;
 use crate::fs_local::{FileVersion, TextFile, text};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 fn validate_path(value: &str) -> Result<(), AppError> {
     if value.contains('\0') {
@@ -61,27 +62,50 @@ impl SftpSession {
     }
     /// 递归删除 paths 并返回删除条目数（包含目录和链接）；不跟随链接，失败附实际失败路径。
     pub fn delete(&mut self, paths: &[String]) -> Result<usize, AppError> {
+        self.delete_with(paths, &mut |_, _| {}, &AtomicBool::new(false))
+    }
+    /// 同 delete，每删一项之前调用 progress(已删除的条目数, 正要删的路径)；
+    /// cancel 置位后在下一项之前停下，返回 sftp.cancelled（已经删掉的不恢复）。
+    pub fn delete_with(
+        &mut self,
+        paths: &[String],
+        progress: &mut dyn FnMut(usize, &str),
+        cancel: &AtomicBool,
+    ) -> Result<usize, AppError> {
         let mut count = 0;
         for path in paths {
-            self.delete_tree(path, 0, &mut count)?;
+            self.delete_tree(path, None, 0, &mut count, progress, cancel)?;
         }
         Ok(count)
     }
+    /// kind 是列目录时已经拿到的类型（不跟随链接），省掉每一项再查一次；顶层和类型不明的先查
     fn delete_tree(
         &mut self,
         value: &str,
+        kind: Option<EntryKind>,
         depth: usize,
         count: &mut usize,
+        progress: &mut dyn FnMut(usize, &str),
+        cancel: &AtomicBool,
     ) -> Result<(), AppError> {
         let result = (|| {
+            if cancel.load(Ordering::Relaxed) {
+                return Err(AppError::new("sftp.cancelled"));
+            }
             if depth > 128 {
                 return Err(AppError::new("sftp.failure")
                     .with_reason("sftp.too_deep", "目录层级超过 128 层"));
             }
-            let entry = self
-                .metadata(value, false)?
-                .ok_or_else(|| AppError::new("sftp.not_found"))?;
-            if entry.kind == EntryKind::Dir {
+            let kind = match kind {
+                Some(kind) if kind != EntryKind::Other => kind,
+                _ => {
+                    self.metadata(value, false)?
+                        .ok_or_else(|| AppError::new("sftp.not_found"))?
+                        .kind
+                }
+            };
+            progress(*count, value);
+            if kind == EntryKind::Dir {
                 let listing = self.list_dir(value, 100_000)?;
                 if listing.truncated || listing.skipped_non_utf8 > 0 {
                     return Err(AppError::new("sftp.failure").with_reason(
@@ -90,7 +114,14 @@ impl SftpSession {
                     ));
                 }
                 for entry in listing.entries {
-                    self.delete_tree(&join_path(value, &entry.name), depth + 1, count)?;
+                    self.delete_tree(
+                        &join_path(value, &entry.name),
+                        Some(entry.kind),
+                        depth + 1,
+                        count,
+                        progress,
+                        cancel,
+                    )?;
                 }
                 let mut body = Vec::new();
                 path(&mut body, value)?;

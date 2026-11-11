@@ -109,6 +109,13 @@ body.files-dragging, body.files-dragging * { cursor: grabbing !important; user-s
 
 /* 文件列表底部：传入/传出这个目录的传输，每个一行：方向图标、文件名、进度 */
 .files__xfers { display: flex; flex-direction: column; gap: 2px; padding: 4px 10px; border-top: 1px solid var(--border); }
+/* 删除浮窗：浮在列表右下角（不推动列表），只有浮窗本身接收点击，不挡别的操作 */
+.files__deletes { position: absolute; right: 10px; bottom: 36px; z-index: 5; display: flex; flex-direction: column; gap: 6px; width: min(340px, calc(100% - 20px)); pointer-events: none; }
+.files__delete { pointer-events: auto; display: flex; flex-direction: column; gap: 2px; padding: 6px 6px 6px 10px; background: var(--panel-solid); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow-pop); font-size: var(--fs-xs); }
+.files__delete-head { display: flex; align-items: center; gap: 6px; min-width: 0; color: var(--text); }
+.files__delete-head > span { flex: 1 1 auto; min-width: 0; }
+.files__delete--failed .files__delete-head > span { color: var(--danger); }
+.files__delete-path { min-height: 1.5em; padding-right: 4px; color: var(--text-muted); }
 .files__xfer { display: flex; align-items: center; gap: 6px; color: var(--accent); font-size: var(--fs-xs); min-width: 0; }
 .files__xfer--more { color: var(--text-dim); padding-left: 18px; }
 .files__xfer-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-muted); }

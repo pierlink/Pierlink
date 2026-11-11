@@ -1,4 +1,6 @@
 __pl_exec() {
+    # 命令开始运行（空回车不触发 preexec）：关标签时界面据此知道前台有程序
+    printf '\033]%s;run\a' "$__pl_osc"
     if [[ -o histignorespace && $1 == ' '* ]]; then
         unset __pl_command
     else
@@ -32,6 +34,8 @@ __pl_post() {
         *$'%{\e]133;A\a%}'*$'%{\e]133;B\a%}'*) ;;
         *) PS1=$'%{\e]133;A\a%}'${PS1-}$'%{\e]133;B\a%}' ;;
     esac
+    # 回到提示符：shell 在等输入
+    printf '\033]%s;idle\a' "$__pl_osc"
 }
 typeset -ga precmd_functions preexec_functions
 precmd_functions=(__pl_pre ${precmd_functions:#(__pl_pre|__pl_post)} __pl_post)

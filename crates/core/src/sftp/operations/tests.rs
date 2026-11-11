@@ -104,6 +104,52 @@ fn 删除目录树与链接但不删除链接目标() {
     assert_eq!(session.delete(&[]).unwrap(), 0);
 }
 #[test]
+fn 删除每一项之前报告进度且能中途停下() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let root = crate::test_support::tempdir();
+    let tree = root.path().join("树");
+    let fill = || {
+        fs::create_dir_all(tree.join("子目录")).unwrap();
+        for i in 0..3 {
+            fs::write(tree.join(format!("子目录/{i}")), "x").unwrap();
+        }
+    };
+    fill();
+    let path = tree.to_str().unwrap().to_owned();
+    let mut session = crate::sftp::tests::server();
+    let mut seen = Vec::new();
+    let never = AtomicBool::new(false);
+    let deleted = session
+        .delete_with(
+            std::slice::from_ref(&path),
+            &mut |n, p| seen.push((n, p.to_owned())),
+            &never,
+        )
+        .unwrap();
+    // 树、子目录、三个文件：每项删之前报一次，第一项是顶层目录，已删除数只增不减
+    assert_eq!(deleted, 5);
+    assert_eq!(seen.len(), 5);
+    assert_eq!(seen[0], (0, path.clone()));
+    assert!(seen.windows(2).all(|w| w[0].0 <= w[1].0));
+    assert!(!tree.exists());
+    // 删掉一个文件后要求停下：再删一个就停，剩下的留着
+    fill();
+    let cancel = AtomicBool::new(false);
+    let e = session
+        .delete_with(
+            std::slice::from_ref(&path),
+            &mut |n, _| {
+                if n >= 1 {
+                    cancel.store(true, Ordering::Relaxed);
+                }
+            },
+            &cancel,
+        )
+        .unwrap_err();
+    assert_eq!(e.code, "sftp.cancelled");
+    assert_eq!(fs::read_dir(tree.join("子目录")).unwrap().count(), 1);
+}
+#[test]
 fn 文本三种拒绝bom往返版本冲突权限不变及临时文件清理() {
     let root = crate::test_support::tempdir();
     let path = root.path().join("文本").to_str().unwrap().to_owned();

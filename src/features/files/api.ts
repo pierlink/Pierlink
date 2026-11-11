@@ -2,6 +2,12 @@ import { inTauri } from "../shell/TitleBar";
 import type { ConflictChoice, DragOutLabels, DragOutResult, FileVersion, Listing, Loc, TextFileView, TransferPlanView, TransferProgressView, TransferReportView, TransferRequest } from "./types";
 
 /** 文件面板用到的后端接口：Tauri 实现和浏览器预览实现都遵守它 */
+/** 删除进度：已经删掉几项、正在删哪个 */
+export interface DeleteProgress {
+  deleted: number;
+  current: string;
+}
+
 export interface FilesApi {
   readonly preview: boolean;
   /** 家目录（本机为用户目录，服务器为登录后的初始目录） */
@@ -29,8 +35,12 @@ export interface FilesApi {
   createDir(loc: Loc, path: string): Promise<void>;
   /** 新建空文件（已存在时报错） */
   createFile(loc: Loc, path: string): Promise<void>;
-  /** 删除：本机放进回收站，服务器上直接删除；返回删除的项数 */
-  remove(loc: Loc, paths: string[]): Promise<number>;
+  /**
+   * 删除：本机放进回收站；服务器上逐项删除，onProgress 收到已删几项、正在删哪个，可以用 cancel(id) 停下（done 抛出 sftp.cancelled）；
+   * fast 时服务器上用 rm -rf 一次删完（没有进度，不能停）。
+   * @returns 任务 ID（停下用）和删完时的结果（删除的项数）
+   */
+  remove(loc: Loc, paths: string[], fast: boolean, onProgress: (p: DeleteProgress) => void): { id: string; done: Promise<number> };
   /** 读文本文件（软件内编辑）；太大或不是文本时报错 */
   readText(loc: Loc, path: string): Promise<TextFileView>;
   /** 保存文本文件；expected 为打开时的版本，文件之后被改过时报 files.changed（传 null 直接覆盖） */

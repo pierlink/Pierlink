@@ -62,6 +62,9 @@ describe("提示符标记", () => {
     expect(parseMark("c;0;不是base64")).toBeNull();
     expect(parseMark("c;0")).toBeNull();
     expect(parseMark("x;1")).toBeNull();
+    expect(parseMark("run")).toEqual({ kind: "run" });
+    expect(parseMark("idle")).toEqual({ kind: "idle" });
+    expect(parseMark("run;1")).toBeNull();
   });
 
   it("B 之后取到输入；回车后不再有输入", () => {
@@ -195,6 +198,46 @@ describe("提示符标记", () => {
     expect(s.input(term)).toBeNull();
     s.onMark({ kind: "init", native: true }, term, null);
     expect(s.native).toBe(true);
+  });
+
+  it("钩子报告的 shell 状态：run 在跑、idle 在等输入；没报告过、重连后都不知道", () => {
+    const { t, term } = fakeTerm();
+    const s = new ShellTracker();
+    t.put(0, "$ ");
+    // 只有提示符标记、没有 run/idle（bash 4.4 以前、ble.sh）：不知道
+    s.onMark({ kind: "promptStart" }, term, null);
+    s.onMark({ kind: "inputStart" }, term, null);
+    expect(s.hook).toBeNull();
+    s.onMark({ kind: "idle" }, term, null);
+    expect(s.hook).toBe("idle");
+    // 不是在提示符下按的回车（AI 经 MCP 发的命令）也靠 run 知道在跑
+    s.onMark({ kind: "run" }, term, null);
+    expect(s.hook).toBe("run");
+    s.onMark({ kind: "commandEnd", exit: 0 }, term, null);
+    expect(s.hook).toBe("run");
+    s.onMark({ kind: "idle" }, term, null);
+    expect(s.hook).toBe("idle");
+    s.restart();
+    expect(s.hook).toBeNull();
+  });
+
+  it("关标签用的状态：刚在提示符下按了回车、run 还没回来时不算空闲", () => {
+    const { t, term } = fakeTerm();
+    const s = new ShellTracker();
+    t.put(0, "$ ");
+    s.onMark({ kind: "idle" }, term, null);
+    s.onMark({ kind: "promptStart" }, term, null);
+    s.onMark({ kind: "inputStart" }, term, null);
+    expect(s.closeState).toBe("idle");
+    t.put(0, "$ vim notes.txt");
+    s.enter(term);
+    expect(s.closeState).toBeNull();
+    s.onMark({ kind: "run" }, term, null);
+    expect(s.closeState).toBe("run");
+    // 程序退出：D、idle、新的提示符
+    s.onMark({ kind: "commandEnd", exit: 0 }, term, null);
+    s.onMark({ kind: "idle" }, term, null);
+    expect(s.closeState).toBe("idle");
   });
 
   it("重新连接后钩子和自带预测都要等新会话的标记", () => {

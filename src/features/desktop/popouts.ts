@@ -1,5 +1,6 @@
 import { useSyncExternalStore } from "react";
 import { commands } from "../../bindings/commands";
+import { isAppError } from "../../errors";
 import { inTauri } from "../shell/TitleBar";
 
 /**
@@ -56,6 +57,20 @@ export async function focusDesktopWindow(serverId: string): Promise<boolean> {
   await win.unminimize().catch(() => undefined);
   await win.setFocus().catch(() => undefined);
   return true;
+}
+
+/**
+ * 开独立窗口失败是因为系统的网页组件（WebView2）断开了：重试没用，要重启 Pierlink
+ * @param error 打开窗口时的错误
+ */
+export function webviewGone(error: unknown): boolean {
+  return isAppError(error) && error.params?.reason_key === "vnc.webview_disconnected";
+}
+
+/** 重启 Pierlink（先正常关掉同步、隧道、终端，再重新打开） */
+export function restartApp(): void {
+  if (!inTauri) { window.location.reload(); return; }
+  void commands.appRestart();
 }
 
 /**

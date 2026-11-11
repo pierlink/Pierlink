@@ -88,6 +88,11 @@ export class Prediction {
     return this.tracker.integrated && this.tracker.running && launchesShell(this.tracker.command);
   }
 
+  /** 关标签时用的 shell 状态：idle 在等输入、run 有命令在跑；没装钩子、钩子不报告或刚按了回车还没收到 run 时为 null（见 ShellTracker.closeState） */
+  get shellState(): "idle" | "run" | null {
+    return this.tracker.closeState;
+  }
+
   /** 钩子显示前台是 GNU screen（在提示符下运行了 screen，还没回到提示符）；没装钩子时为 false */
   get screenRunning(): boolean {
     return this.tracker.integrated && this.tracker.running && runsScreen(this.tracker.command);

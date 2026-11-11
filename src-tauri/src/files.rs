@@ -814,24 +814,62 @@ pub async fn files_create_file(app: AppHandle, loc: LocDto, path: String) -> Res
     .await
 }
 
-/// 删除：本机放进回收站；服务器上直接删除（目录递归，不跟随符号链接）。返回删除的项数
+/// 删除进度：已经删掉几项、正在删哪个
+#[derive(Clone, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteProgressDto {
+    pub deleted: u32,
+    pub current: String,
+}
+
+/// 删除：本机放进回收站；服务器上逐项删除（目录递归，不跟随符号链接），进度经 on_progress 推送，
+/// delete_id 由前端生成，用 files_cancel 停下；fast 时在服务器上用一条 rm -rf 删完（没有进度，不能停）。返回删除的项数
 #[tauri::command]
 #[specta::specta]
 pub async fn files_delete(
     app: AppHandle,
+    delete_id: String,
     loc: LocDto,
     paths: Vec<String>,
+    fast: bool,
+    on_progress: Channel<DeleteProgressDto>,
 ) -> Result<f64, AppError> {
-    blocking(app, move |app| {
+    let cancel = app.state::<FilesState>().cancel_flag(&delete_id);
+    let result = blocking(app.clone(), move |app| {
         let n = match loc {
             LocDto::Local => {
                 fs_local::delete(&paths.iter().map(PathBuf::from).collect::<Vec<_>>())?
             }
-            _ => with_session(app, &loc, |s| s.delete(&paths))?,
+            _ if fast => {
+                let (program, cmd) = command(app, &loc, &Purpose::Background)?;
+                pierlink_core::remote::delete::fast_delete(&program, &cmd, &paths)?
+            }
+            _ => {
+                // 单独开一个会话：删得久时文件面板照样能浏览（不占着缓存的浏览会话）
+                let mut session = open_session(app, &loc)?;
+                let mut last = Instant::now() - Duration::from_secs(1);
+                session.delete_with(
+                    &paths,
+                    &mut |deleted, current| {
+                        // 最多每 100 毫秒发一次
+                        if last.elapsed() < Duration::from_millis(100) {
+                            return;
+                        }
+                        last = Instant::now();
+                        let _ = on_progress.send(DeleteProgressDto {
+                            deleted: u32::try_from(deleted).unwrap_or(u32::MAX),
+                            current: current.to_owned(),
+                        });
+                    },
+                    &cancel,
+                )?
+            }
         };
         Ok(n as f64)
     })
-    .await
+    .await;
+    app.state::<FilesState>().forget_transfer(&delete_id);
+    result
 }
 
 /// 读取文本文件（软件内编辑）：超过 5 MiB、不是 UTF-8 文本时报错

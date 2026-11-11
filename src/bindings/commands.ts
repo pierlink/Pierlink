@@ -17,6 +17,8 @@ export const commands = {
 	appShellConfig: (closeToTray: boolean, labels: TrayLabels) => __TAURI_INVOKE<void>("app_shell_config", { closeToTray, labels }),
 	/**  托盘是否可用（界面据此决定设置项是否可选、退出确认框里是否提供“缩到托盘”） */
 	appTrayAvailable: () => __TAURI_INVOKE<boolean>("app_tray_available"),
+	/**  重启 Pierlink（系统的网页组件 WebView2 断开、开不了新窗口时用）：先和退出一样正常关掉同步、隧道、终端，再重新打开 */
+	appRestart: () => __TAURI_INVOKE<void>("app_restart"),
 	/**
 	 *  界面取走等着打开的目录（界面加载好时、收到 pierlink://open-dir 时调用），每个目录在新标签里开一个本机终端。
 	 * 
@@ -256,8 +258,11 @@ export const commands = {
 	filesCreateDir: (loc: LocDto_Deserialize, path: string) => typedError<null, AppError>(__TAURI_INVOKE("files_create_dir", { loc, path })),
 	/**  新建空文件（已存在时报错） */
 	filesCreateFile: (loc: LocDto_Deserialize, path: string) => typedError<null, AppError>(__TAURI_INVOKE("files_create_file", { loc, path })),
-	/**  删除：本机放进回收站；服务器上直接删除（目录递归，不跟随符号链接）。返回删除的项数 */
-	filesDelete: (loc: LocDto_Deserialize, paths: string[]) => typedError<number | null, AppError>(__TAURI_INVOKE("files_delete", { loc, paths })),
+	/**
+	 *  删除：本机放进回收站；服务器上逐项删除（目录递归，不跟随符号链接），进度经 on_progress 推送，
+	 *  delete_id 由前端生成，用 files_cancel 停下；fast 时在服务器上用一条 rm -rf 删完（没有进度，不能停）。返回删除的项数
+	 */
+	filesDelete: (deleteId: string, loc: LocDto_Deserialize, paths: string[], fast: boolean, onProgress: Channel<DeleteProgressDto>) => typedError<number | null, AppError>(__TAURI_INVOKE("files_delete", { deleteId, loc, paths, fast, onProgress })),
 	/**  读取文本文件（软件内编辑）：超过 5 MiB、不是 UTF-8 文本时报错 */
 	filesReadText: (loc: LocDto_Deserialize, path: string) => typedError<TextFileDto_Serialize, AppError>(__TAURI_INVOKE("files_read_text", { loc, path })),
 	/**  保存文本文件（原子替换）。expected 为打开时的版本：文件之后被改过时报 files.changed；传 null 表示直接覆盖 */
@@ -999,6 +1004,12 @@ export type DbRestoredDto = {
 	corruptSavedAs: string,
 };
 
+/**  删除进度：已经删掉几项、正在删哪个 */
+export type DeleteProgressDto = {
+	deleted: number,
+	current: string,
+};
+
 /**  部署无法进行的原因 */
 export type DeployBlockerDto = { kind: "unsupportedArch"; arch: string } | { kind: "noexec" } | { kind: "instanceNewer"; serverVersion: string; appVersion: string };
 
@@ -1145,6 +1156,10 @@ export type DesktopDetectionDto_Deserialize = {
 	officialOk: boolean,
 	/**  安装完整桌面的命令（root 登录时不带 sudo）；不认识包管理器为 null */
 	installCommand?: string | null,
+	/**  下载并安装 Google Chrome 的命令（只有 x86_64 的 apt、dnf 系统；root 登录时不带 sudo）；装不了为 null */
+	chromeCommand?: string | null,
+	/**  登录的就是 root（Chrome 要加 --no-sandbox 才能打开） */
+	root: boolean,
 	/**  没有桌面环境时能改用精简桌面（只有终端，不用管理员权限） */
 	lightAvailable: boolean,
 	/**  服务器上正在运行 apt、dpkg、dnf 等（装桌面时等它装完） */
@@ -1165,6 +1180,10 @@ export type DesktopDetectionDto_Serialize = {
 	officialOk: boolean,
 	/**  安装完整桌面的命令（root 登录时不带 sudo）；不认识包管理器为 null */
 	installCommand: string | null,
+	/**  下载并安装 Google Chrome 的命令（只有 x86_64 的 apt、dnf 系统；root 登录时不带 sudo）；装不了为 null */
+	chromeCommand: string | null,
+	/**  登录的就是 root（Chrome 要加 --no-sandbox 才能打开） */
+	root: boolean,
 	/**  没有桌面环境时能改用精简桌面（只有终端，不用管理员权限） */
 	lightAvailable: boolean,
 	/**  服务器上正在运行 apt、dpkg、dnf 等（装桌面时等它装完） */

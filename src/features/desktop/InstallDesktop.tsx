@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useInstallProgress } from "./installProgress";
 import { useTranslation } from "react-i18next";
-import { Button, Dialog } from "../../components";
+import { Button, Checkbox, Dialog } from "../../components";
 import { formatError } from "../../errors";
 import { CommandLine } from "../mcp/McpParts";
 import { writeClipboardText } from "../shell/clipboard";
@@ -17,14 +17,19 @@ export type InstallHint = "terminal" | "password" | "copied";
  * 安装桌面的确认框。打开就检查服务器；检查中各项先占好位置，结果出来只替换文字，框不跳动。
  * 显示要下载、占用多少，磁盘剩余，内存和核数；空间不够时不能装并写原因，配置低时提醒一行；
  * 没有管理员权限时给命令让管理员运行，能退到精简桌面时给“用精简桌面”。
+ * Chrome 浏览器可以选着一起装：安装命令一直显示（可以复制自己运行），勾上时接在桌面的安装命令后面一起运行。
  * @param command 检测结果里的安装命令（检查完以检查结果里的为准，两者一致）
+ * @param chrome 下载并安装 Chrome 的命令；装不了（不是 x86_64、不认识包管理器）为 null，不显示这一项
+ * @param root 登录的就是 root（打开 Chrome 要加 --no-sandbox）
  * @param inTerminal 能在桌面下面开终端运行；不能时（独立窗口）改为复制命令
  * @param onInstall 确认安装：要运行的命令、要不要输 sudo 密码
  * @param onLight 改用精简桌面
  */
-export function InstallDialog({ serverId, command, inTerminal, onInstall, onLight, onClose }: {
+export function InstallDialog({ serverId, command, chrome, root, inTerminal, onInstall, onLight, onClose }: {
   serverId: string;
   command: string;
+  chrome: string | null;
+  root: boolean;
   inTerminal: boolean;
   onInstall: (command: string, password: boolean) => void;
   onLight: () => void;
@@ -35,6 +40,8 @@ export function InstallDialog({ serverId, command, inTerminal, onInstall, onLigh
   const [error, setError] = useState<string | null>(null);
   /** 点“重试”加一，重新检查 */
   const [round, setRound] = useState(0);
+  /** 勾了“同时安装 Chrome” */
+  const [withChrome, setWithChrome] = useState(false);
   // 这台服务器用系统 OpenSSH 连接时提示换成内置 SSH（开终端自动输入命令、连接进度都靠内置 SSH 更稳）
   const [engine, setEngineState] = useState<"builtin" | "openssh" | "switched" | null>(null);
   useEffect(() => {
@@ -100,7 +107,7 @@ export function InstallDialog({ serverId, command, inTerminal, onInstall, onLigh
           : status.kind === "noAdmin"
             ? (status.light && <Button variant="primary" onClick={onLight}>{t("desktop.install.light")}</Button>)
             : (
-              <Button variant="primary" disabled={status.kind !== "ready"} onClick={() => onInstall(shown, password)}>
+              <Button variant="primary" disabled={status.kind !== "ready"} onClick={() => onInstall(withChrome && chrome ? `${shown} && ${chrome}` : shown, password)}>
                 {inTerminal ? t("desktop.install.confirm") : t("desktop.install.copy")}
               </Button>
             )}
@@ -121,6 +128,41 @@ export function InstallDialog({ serverId, command, inTerminal, onInstall, onLigh
         {engine === "switched" && <p className="desk-install__engine"><span>{t("desktop.install.switched")}</span></p>}
         <p>{label}</p>
         <CommandLine text={shown} />
+        {chrome && (
+          <div className="desk-install__chrome">
+            <Checkbox label={t("desktop.chrome.also")} checked={withChrome} onChange={(e) => setWithChrome(e.target.checked)} />
+            <CommandLine text={chrome} />
+            <p className="desk-install__hint">{t(root ? "desktop.chrome.runRoot" : "desktop.chrome.run")}</p>
+          </div>
+        )}
+      </div>
+    </Dialog>
+  );
+}
+
+/**
+ * 在桌面里用浏览器：怎么打开 Chrome；还没装时给安装命令（可以复制，能开终端时可以直接在下面的终端里装）。
+ * @param command 下载并安装 Chrome 的命令
+ * @param root 登录的就是 root（打开要加 --no-sandbox）
+ * @param onInstall 在下面的终端里运行安装命令；不给（独立窗口里）时只能复制
+ */
+export function ChromeDialog({ command, root, onInstall, onClose }: {
+  command: string;
+  root: boolean;
+  onInstall?: () => void;
+  onClose: () => void;
+}) {
+  const { t } = useTranslation();
+  return (
+    <Dialog title={t("desktop.chrome.title")} onDismiss={onClose}
+      actions={<>
+        <Button onClick={onClose}>{t("common.close")}</Button>
+        {onInstall && <Button variant="primary" onClick={onInstall}>{t("desktop.chrome.installHere")}</Button>}
+      </>}>
+      <div className="desk-install">
+        <p>{t(root ? "desktop.chrome.runRoot" : "desktop.chrome.run")}</p>
+        <p className="desk-install__hint">{t("desktop.chrome.installHint")}</p>
+        <CommandLine text={command} />
       </div>
     </Dialog>
   );

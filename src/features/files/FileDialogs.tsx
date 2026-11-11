@@ -1,42 +1,79 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { X } from "lucide-react";
 import { Button, Dialog } from "../../components";
 import { formatError } from "../../errors";
 import { getFilesApi } from "./api";
-import { baseName } from "./path";
+import { dismissDelete, startDelete, stopDelete, useDeletes } from "./deletes";
+import { baseName, locKey } from "./path";
 import type { Loc } from "./types";
 
-/** 删除确认：本机放进回收站；服务器上永久删除（不能恢复） */
-export function DeleteDialog({ loc, paths, onClose, onDone }: { loc: Loc; paths: string[]; onClose: () => void; onDone: (error: string | null) => void }) {
+/**
+ * 删除确认：本机放进回收站；服务器上永久删除（不能恢复），fast 时用 rm -rf 一次删完。
+ * 点了删除确认框马上关掉，删除在后台进行，进度在文件面板下方的浮窗里（DeleteJobs）。
+ */
+export function DeleteDialog({ loc, paths, fast, onClose }: { loc: Loc; paths: string[]; fast: boolean; onClose: () => void }) {
   const { t } = useTranslation();
-  const [busy, setBusy] = useState(false);
   const local = loc.kind === "local";
   const names = paths.map(baseName);
-  const run = async () => {
-    setBusy(true);
-    try {
-      await (await getFilesApi()).remove(loc, paths);
-      onDone(null);
-    } catch (e) {
-      onDone(formatError(e));
-    }
+  const run = () => {
+    onClose();
+    void startDelete(loc, paths, fast);
   };
   return (
     <Dialog
       title={local ? t("files.deleteLocalTitle", { count: paths.length }) : t("files.deleteRemoteTitle", { count: paths.length })}
       danger
-      onDismiss={busy ? undefined : onClose}
+      onDismiss={onClose}
       actions={<>
-        <Button onClick={onClose} disabled={busy}>{t("common.cancel")}</Button>
-        <Button variant="danger" disabled={busy} onClick={() => void run()}>{local ? t("files.moveToTrash") : t("files.deleteForever")}</Button>
+        <Button onClick={onClose}>{t("common.cancel")}</Button>
+        <Button variant="danger" onClick={run}>{local ? t("files.moveToTrash") : fast ? t("files.fastDelete") : t("files.deleteForever")}</Button>
       </>}
     >
-      <p style={{ marginTop: 0 }}>{local ? t("files.deleteLocalBody") : t("files.deleteRemoteBody")}</p>
+      <p style={{ marginTop: 0 }}>{local ? t("files.deleteLocalBody") : fast ? t("files.fastDeleteBody") : t("files.deleteRemoteBody")}</p>
       <ul className="xfer-conflicts mono">
         {names.slice(0, 20).map((n) => <li key={n}>{n}</li>)}
         {names.length > 20 && <li>{t("files.andMore", { count: names.length - 20 })}</li>}
       </ul>
     </Dialog>
+  );
+}
+
+/**
+ * 文件面板下方的删除浮窗（不挡别的操作）：逐项删除时写已经删掉几项、正在删哪个，× 停下；
+ * 快速删除、移到回收站只写“正在删除”；失败时写原因，× 关掉。
+ */
+export function DeleteJobs({ loc }: { loc: Loc }) {
+  const { t } = useTranslation();
+  const key = locKey(loc);
+  const list = useDeletes().filter((j) => j.loc === key);
+  if (!list.length) return null;
+  return (
+    <div className="files__deletes">
+      {list.map((j) => {
+        const failed = j.state === "failed";
+        const text = failed ? j.error ?? ""
+          : j.mode === "local" ? t("files.deletingLocal", { count: j.count })
+            : j.mode === "fast" ? t("files.deletingFast", { count: j.count })
+              : j.stopping ? t("files.deleteStopping") : t("files.deletingCount", { count: j.deleted });
+        return (
+          <div key={j.key} className={`files__delete${failed ? " files__delete--failed" : ""}`} role={failed ? "alert" : "status"}>
+            <div className="files__delete-head">
+              <span className="pl-ellipsis" title={text}>{text}</span>
+              {(failed || j.mode === "normal") && (
+                <button type="button" className="pane__btn" disabled={j.stopping}
+                  title={failed ? t("common.close") : t("files.stopDelete")} aria-label={failed ? t("common.close") : t("files.stopDelete")}
+                  onClick={() => (failed ? dismissDelete(j.key) : void stopDelete(j.key))}>
+                  <X size={13} />
+                </button>
+              )}
+            </div>
+            {/* 正在删哪个：固定占一行，换文件时不跳 */}
+            {!failed && j.mode === "normal" && <span className="files__delete-path mono pl-ellipsis" title={j.current ?? ""}>{j.current ?? ""}</span>}
+          </div>
+        );
+      })}
+    </div>
   );
 }
 

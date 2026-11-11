@@ -1,5 +1,6 @@
 //! 远程脚本协议。
 pub mod command;
+pub mod delete;
 pub mod framing;
 pub mod raw;
 pub mod run;

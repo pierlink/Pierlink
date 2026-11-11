@@ -13,6 +13,9 @@ use std::{
 
 const A: &str = "\x1b]133;A\x07";
 const B: &str = "\x1b]133;B\x07";
+/// 命令开始运行、shell 回到提示符等输入（关标签时界面据此决定要不要确认）
+const RUN: &str = "\x1b]7701;run\x07";
+const IDLE: &str = "\x1b]7701;idle\x07";
 
 struct Session {
     manager: TerminalManager,
@@ -261,6 +264,54 @@ fn 真实bash加载配置一次并报告原文退出码目录及清理() {
 }
 
 #[test]
+fn 命令开始报告在运行且回到提示符报告在等输入() {
+    let mut shells = vec!["/bin/bash".to_owned()];
+    match zsh() {
+        Some(zsh) => shells.push(zsh),
+        None => eprintln!("未安装 zsh，只测 bash"),
+    }
+    for shell in shells {
+        let zsh = shell.ends_with("zsh");
+        let root = home("");
+        if zsh {
+            fs::write(root.path().join(".zshrc"), "PS1='READY> '\n").unwrap();
+        }
+        let session = Session::remote(root.path(), vec![("SHELL".into(), shell.clone())]);
+        let first = session.read(B);
+        assert!(!first.contains(RUN), "{shell}: {first:?}");
+        assert!(
+            first
+                .rfind(IDLE)
+                .is_some_and(|idle| idle < first.rfind(A).unwrap()),
+            "{shell}: {first:?}"
+        );
+        // 不进历史的命令（前面带空格）也算在运行
+        for line in ["sleep 0", " true"] {
+            let text = session.run(line);
+            assert_eq!(text.matches(RUN).count(), 1, "{shell} {line:?}: {text:?}");
+            let run = text.find(RUN).unwrap();
+            let idle = text.rfind(IDLE).unwrap();
+            assert!(
+                run < idle && idle < text.rfind(A).unwrap(),
+                "{shell} {line:?}: {text:?}"
+            );
+        }
+        // 空回车没有命令运行
+        let text = session.run("");
+        assert!(
+            !text.contains(RUN) && text.contains(IDLE),
+            "{shell}: {text:?}"
+        );
+        if !zsh {
+            // 用户改掉 PS0 后，下一个提示符前补回标记，命令照样报告在运行
+            session.run("PS0='custom '");
+            let text = session.run("echo hi");
+            assert!(text.contains(&format!("{RUN}custom hi")), "{text:?}");
+        }
+    }
+}
+
+#[test]
 fn 字符串数组及重设提示符保留用户钩子和退出码() {
     for hook in [
         "PROMPT_COMMAND='printf USER-HOOK # 注释'",
@@ -394,10 +445,14 @@ fn 超长控制字符与payload上限及中文目录编码() {
     let directory = root.path().join("中文 空格%#");
     fs::create_dir(&directory).unwrap();
     let session = Session::remote(root.path(), vec![]);
-    assert!(session.read(B).contains("\x1b]7701;i;native=1\x07"));
+    let first = session.read(B);
+    assert!(first.contains("\x1b]7701;i;native=1\x07"));
+    // ble.sh 自己画提示符：不报告在运行、在等输入，界面按不知道处理
+    assert!(!first.contains(IDLE), "{first:?}");
     let line = format!("cd {}", sh_quote(directory.to_str().unwrap()).unwrap());
     let text = session.run(&line);
     record(&text, 0, &line);
+    assert!(!text.contains(RUN) && !text.contains(IDLE), "{text:?}");
     assert!(
         text.contains("/%E4%B8%AD%E6%96%87%20%E7%A9%BA%E6%A0%BC%25%23\x07"),
         "{text:?}"

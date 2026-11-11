@@ -45,6 +45,8 @@ export function createTauriDesktopApi(): DesktopApi {
         missingTools: d.missingTools,
         officialOk: d.officialOk,
         installCommand: d.installCommand ?? null,
+        chromeCommand: d.chromeCommand ?? null,
+        root: d.root,
         lightAvailable: d.lightAvailable,
         packageBusy: d.packageBusy,
       };

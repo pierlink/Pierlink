@@ -234,6 +234,49 @@ fn 安装命令装完整桌面_root_不带_sudo_且按发行版选图标主题()
     assert_eq!(install_command(&ubuntu, PackageManager::None, false), None);
 }
 
+#[test]
+fn chrome_安装命令按包管理器和下载工具生成_只有_x86_64() {
+    let wget = Tools {
+        wget: true,
+        curl: true,
+        ..Default::default()
+    };
+    assert_eq!(
+        chrome_command("x86_64", PackageManager::Apt, false, &wget).unwrap(),
+        "sudo apt-get update && wget -O /tmp/google-chrome.deb https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb && sudo apt-get install -y /tmp/google-chrome.deb && rm -f /tmp/google-chrome.deb"
+    );
+    // root 登录不带 sudo；没有 wget 时用 curl
+    let curl = Tools {
+        curl: true,
+        ..Default::default()
+    };
+    assert_eq!(
+        chrome_command("x86_64\n", PackageManager::Apt, true, &curl).unwrap(),
+        "apt-get update && curl -fL -o /tmp/google-chrome.deb https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb && apt-get install -y /tmp/google-chrome.deb && rm -f /tmp/google-chrome.deb"
+    );
+    // 两个都没有：先装 wget
+    assert_eq!(
+        chrome_command("x86_64", PackageManager::Apt, false, &Tools::default()).unwrap(),
+        "sudo apt-get update && sudo apt-get install -y wget && wget -O /tmp/google-chrome.deb https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb && sudo apt-get install -y /tmp/google-chrome.deb && rm -f /tmp/google-chrome.deb"
+    );
+    assert_eq!(
+        chrome_command("x86_64", PackageManager::Dnf, false, &Tools::default()).unwrap(),
+        "sudo dnf install -y https://dl.google.com/linux/direct/google-chrome-stable_current_x86_64.rpm"
+    );
+    assert_eq!(
+        chrome_command("x86_64", PackageManager::None, false, &wget),
+        None
+    );
+    // Chrome 没有 ARM 等架构的 Linux 版
+    for arch in ["aarch64", "armv7l", "i686", ""] {
+        assert_eq!(
+            chrome_command(arch, PackageManager::Apt, false, &wget),
+            None,
+            "{arch}"
+        );
+    }
+}
+
 pub(super) struct MemoryBackend(mpsc::Sender<Vec<u8>>);
 impl stream::Backend for MemoryBackend {
     fn close(&mut self) {
