@@ -16,6 +16,7 @@ import { ExitGuard } from "./features/shell/ExitGuard";
 import { DbRestoredNotice } from "./features/shell/DbRestoredNotice";
 import { Tooltips } from "./features/shell/Tooltips";
 import { NetworkBanner } from "./features/shell/NetworkBanner";
+import { LateErrorHost } from "./features/shell/lateErrors";
 import { UpdateNotice } from "./features/updates/UpdateNotice";
 import { McpConfirmHost } from "./features/mcp/McpConfirmHost";
 import { PairRequestHost } from "./features/mobile/PairRequestHost";
@@ -53,6 +54,7 @@ export default function App() {
       <DbRestoredNotice />
       <Tooltips />
       <NetworkBanner />
+      <LateErrorHost />
       <UpdateNotice />
       <McpConfirmHost />
       <PairRequestHost />

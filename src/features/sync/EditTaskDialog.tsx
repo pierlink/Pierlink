@@ -7,6 +7,7 @@ import { directionOf, modesOf, type Direction } from "./direction";
 import type { TaskSettingsInput } from "./syncApi";
 import type { SyncTaskView } from "./types";
 import { RevertDialog } from "./RevertDialog";
+import { reportLateError, useDetachableClose } from "../shell/lateErrors";
 
 const DIRS: Direction[] = ["both", "toServer", "toLocal"];
 const dirIcon = { both: ArrowLeftRight, toServer: ArrowRight, toLocal: ArrowLeft } as const;
@@ -41,6 +42,8 @@ export function EditTaskDialog({ task, versioning, defaultDelayS, onSave, onReve
   const delayN = Number(delay);
   const delayOk = collab || (Number.isInteger(delayN) && delayN >= 1 && delayN <= 60);
 
+  // 保存要把规则发到各台服务器：保存的时候也能关掉，照常做完，关掉以后才出的错显示在窗口底部
+  const { closed, close } = useDetachableClose(onClose);
   const save = async () => {
     if (!delayOk) return;
     setBusy("save");
@@ -57,8 +60,9 @@ export function EditTaskDialog({ task, versioning, defaultDelayS, onSave, onReve
         conflictMode: conflict,
         rules: rules.split("\n").map((r) => r.trim()).filter(Boolean),
       });
-      onClose();
+      if (!closed.current) onClose();
     } catch (e) {
+      if (closed.current) { reportLateError(t("syncEdit.title", { name: task.name }), formatError(e)); return; }
       setError(formatError(e));
       setBusy(null);
     }
@@ -67,9 +71,9 @@ export function EditTaskDialog({ task, versioning, defaultDelayS, onSave, onReve
     <Dialog
       title={t("syncEdit.title", { name: task.name })}
       size="lg"
-      onDismiss={busy || confirmRevert ? undefined : onClose}
+      onDismiss={confirmRevert ? undefined : close}
       actions={<>
-        <Button onClick={onClose} disabled={!!busy}>{t("common.cancel")}</Button>
+        <Button onClick={close}>{busy ? t("common.close") : t("common.cancel")}</Button>
         <Button variant="primary" disabled={!!busy || !delayOk} onClick={() => void save()}>{busy === "save" ? t("syncEdit.saving") : t("common.save")}</Button>
       </>}
     >

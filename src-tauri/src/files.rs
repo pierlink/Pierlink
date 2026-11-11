@@ -16,6 +16,7 @@ use pierlink_core::ssh::args::{CommonOpts, Purpose, SshCommand, build_args};
 use pierlink_core::ssh::target::SshTarget;
 use serde::{Deserialize, Serialize};
 use specta::Type;
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -216,6 +217,24 @@ pub(crate) fn with_session<T>(
     loc: &LocDto,
     f: impl Fn(&mut SftpSession) -> Result<T, AppError>,
 ) -> Result<T, AppError> {
+    session_call(app, loc, true, f)
+}
+
+/// 同 with_session，但连接断了不重来（删除这类做了一半的操作：重来会把已经删掉的报成找不到）
+pub(crate) fn with_session_once<T>(
+    app: &AppHandle,
+    loc: &LocDto,
+    f: impl Fn(&mut SftpSession) -> Result<T, AppError>,
+) -> Result<T, AppError> {
+    session_call(app, loc, false, f)
+}
+
+fn session_call<T>(
+    app: &AppHandle,
+    loc: &LocDto,
+    retry: bool,
+    f: impl Fn(&mut SftpSession) -> Result<T, AppError>,
+) -> Result<T, AppError> {
     let state = app.state::<FilesState>();
     let key = loc.key();
     for attempt in 0..2 {
@@ -252,6 +271,9 @@ pub(crate) fn with_session<T>(
         match result {
             Err(e) if e.code == "sftp.connection_lost" && attempt == 0 => {
                 lock(&state.sessions).remove(&key);
+                if !retry {
+                    return Err(e);
+                }
             }
             other => return other,
         }
@@ -814,6 +836,60 @@ pub async fn files_create_file(app: AppHandle, loc: LocDto, path: String) -> Res
     .await
 }
 
+/// 系统 OpenSSH 的服务器上，选中项不超过这么多、又都不是文件夹时，删除用缓存的浏览会话
+const QUICK_DELETE_MAX: usize = 50;
+
+/// 这个位置的文件会话是不是系统 OpenSSH：每开一个会话都要重新登录一次（没保存密码时要再输）。
+/// 内置 SSH 新开会话只是在已有连接上再开一个通道，不用登录
+fn sftp_logs_in_again(app: &AppHandle, loc: &LocDto) -> Result<bool, AppError> {
+    use pierlink_core::ssh::engine::{Engine, Feature, engine_for_feature};
+    Ok(match loc {
+        LocDto::Server { server_id } => {
+            let server = crate::servers::load(app, server_id)?;
+            engine_for_feature(&server, Feature::Sftp).engine == Engine::OpenSsh
+        }
+        // 快速连接走系统 OpenSSH
+        _ => true,
+    })
+}
+
+/// 删除用不用缓存的浏览会话：系统 OpenSSH 的服务器上，选中的不多、又都不是文件夹时用
+/// （几次往返就删完，不用再登录一次）；其他情况单独开会话，删得久时文件面板照样能浏览
+fn delete_in_browse_session(
+    app: &AppHandle,
+    loc: &LocDto,
+    paths: &[String],
+) -> Result<bool, AppError> {
+    if paths.len() > QUICK_DELETE_MAX || !sftp_logs_in_again(app, loc)? {
+        return Ok(false);
+    }
+    with_session(app, loc, |s| {
+        for p in paths {
+            if s.stat(p)?.is_some_and(|e| e.kind == EntryKind::Dir) {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    })
+}
+
+/// 发一条删除进度（最多每 100 毫秒一次）
+fn send_delete_progress(
+    channel: &Channel<DeleteProgressDto>,
+    last: &Cell<Instant>,
+    deleted: usize,
+    current: &str,
+) {
+    if last.get().elapsed() < Duration::from_millis(100) {
+        return;
+    }
+    last.set(Instant::now());
+    let _ = channel.send(DeleteProgressDto {
+        deleted: u32::try_from(deleted).unwrap_or(u32::MAX),
+        current: current.to_owned(),
+    });
+}
+
 /// 删除进度：已经删掉几项、正在删哪个
 #[derive(Clone, Serialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -844,23 +920,23 @@ pub async fn files_delete(
                 let (program, cmd) = command(app, &loc, &Purpose::Background)?;
                 pierlink_core::remote::delete::fast_delete(&program, &cmd, &paths)?
             }
+            _ if delete_in_browse_session(app, &loc, &paths)? => {
+                let last = Cell::new(Instant::now() - Duration::from_secs(1));
+                with_session_once(app, &loc, |s| {
+                    s.delete_with(
+                        &paths,
+                        &mut |d, c| send_delete_progress(&on_progress, &last, d, c),
+                        &cancel,
+                    )
+                })?
+            }
             _ => {
                 // 单独开一个会话：删得久时文件面板照样能浏览（不占着缓存的浏览会话）
                 let mut session = open_session(app, &loc)?;
-                let mut last = Instant::now() - Duration::from_secs(1);
+                let last = Cell::new(Instant::now() - Duration::from_secs(1));
                 session.delete_with(
                     &paths,
-                    &mut |deleted, current| {
-                        // 最多每 100 毫秒发一次
-                        if last.elapsed() < Duration::from_millis(100) {
-                            return;
-                        }
-                        last = Instant::now();
-                        let _ = on_progress.send(DeleteProgressDto {
-                            deleted: u32::try_from(deleted).unwrap_or(u32::MAX),
-                            current: current.to_owned(),
-                        });
-                    },
+                    &mut |d, c| send_delete_progress(&on_progress, &last, d, c),
                     &cancel,
                 )?
             }

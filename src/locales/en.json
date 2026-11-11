@@ -220,8 +220,7 @@
     "exportServers": "Export servers…",
     "importFileFailed": "Import failed",
     "desktopInWindow": "The desktop is open in a separate window; click to switch to it",
-    "hideSidebar": "Hide server list",
-    "showSidebar": "Show server list"
+    "serverList": "Server list"
   },
   "statusbar": {
     "localSync": "Local sync service running",
@@ -2507,7 +2506,8 @@
     "trashConfirmTitle": "Clear the trash on {{name}}?",
     "trashConfirmBody": "This deletes {{size}} ({{count}} files) of old versions and can't be undone.",
     "trashCleared": "Cleared {{name}}: removed {{size}} ({{count}} files)",
-    "trashFailed": "{{name}}: {{reason}}"
+    "trashFailed": "{{name}}: {{reason}}",
+    "restoreFailed": "Couldn't restore versions"
   },
   "explorer": {
     "openHere": "Open in Pierlink"
@@ -2540,7 +2540,10 @@
     "terminals_other": "{{count}} terminal sessions will be closed",
     "toTray": "Minimize to tray",
     "toTrayHint": "Minimize to tray to keep syncing in the background.",
-    "quit": "Quit"
+    "quit": "Quit",
+    "restartTitle": "Restart Pierlink?",
+    "restart": "Restart",
+    "syncPauses": "Sync on this computer pauses during the restart and continues afterwards."
   },
   "import": {
     "title": "Import from ssh config",

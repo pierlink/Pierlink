@@ -4,6 +4,7 @@ import { Banner, Button, Dialog, TextField } from "../../components";
 import { formatError } from "../../errors";
 import { formatBytes } from "./format";
 import { getSyncApi, type TrashEndpoint, type VersionRecord } from "./syncApi";
+import { reportLateError, useDetachableClose } from "../shell/lateErrors";
 import "./sync.css";
 
 function when(ms: number): string {
@@ -116,15 +117,22 @@ export function VersionsDialog({ taskId, taskName, onClose }: { taskId: string; 
     return (list ?? []).filter((v) => !q || v.path.toLowerCase().includes(q)).slice(0, 500);
   }, [list, filter]);
 
+  // 恢复的时候也能关掉：照常做完，关掉以后有没恢复成的、出了错，显示在窗口底部
+  const { closed, close } = useDetachableClose(onClose);
   const restore = async () => {
     const picks = (list ?? []).filter((v) => picked.has(key(v))).map((v) => ({ path: v.path, versionTimeMs: v.versionTimeMs }));
     setBusy(true);
     try {
       const failed = await (await getSyncApi()).restoreVersions(taskId, picks);
+      if (closed.current) {
+        if (failed.length) reportLateError(t("versions.restored", { count: picks.length - failed.length }), failed.map((f) => t("common.labeled", { label: f.path, text: f.reason })).join(t("common.itemSep")));
+        return;
+      }
       setResult({ ok: picks.length - failed.length, failed });
       setPicked(new Set());
       load();
     } catch (e) {
+      if (closed.current) { reportLateError(t("versions.restoreFailed"), formatError(e)); return; }
       setError(formatError(e));
     } finally {
       setBusy(false);
@@ -135,9 +143,9 @@ export function VersionsDialog({ taskId, taskName, onClose }: { taskId: string; 
     <Dialog
       title={t("versions.title", { name: taskName })}
       size="lg"
-      onDismiss={busy ? undefined : onClose}
+      onDismiss={close}
       actions={<>
-        <Button onClick={onClose} disabled={busy}>{t("deploy.close")}</Button>
+        <Button onClick={close}>{t("deploy.close")}</Button>
         <Button variant="primary" disabled={busy || picked.size === 0} onClick={() => void restore()}>
           {busy ? t("versions.restoring") : t("versions.restore", { count: picked.size })}
         </Button>

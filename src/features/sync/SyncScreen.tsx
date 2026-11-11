@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Banner, Button, Dialog, Notice } from "../../components";
 import { formatError } from "../../errors";
@@ -14,6 +14,7 @@ import { EditTaskDialog } from "./EditTaskDialog";
 import { RevertDialog } from "./RevertDialog";
 import { DeployFlow } from "./DeployFlow";
 import type { SyncTaskView } from "./types";
+import { reportLateError } from "../shell/lateErrors";
 
 type Modal =
   | { kind: "new" }
@@ -34,6 +35,9 @@ export function SyncScreen() {
   const [servers, setServers] = useState<ServerRecord[]>([]);
   const [deployed, setDeployed] = useState<string[]>([]);
   const [modal, setModal] = useState<Modal | null>(null);
+  // 移除服务器、删除任务进行中也能关掉框：结束时现在开着的已经不是那个框，就不再动它（出的错显示在窗口底部）
+  const modalRef = useRef<Modal | null>(null);
+  modalRef.current = modal;
   const [busyId, setBusyId] = useState<string | null>(null);
 
   const loadServers = async () => {
@@ -113,21 +117,23 @@ export function SyncScreen() {
       {modal?.kind === "removeServer" && (() => {
         const ep = modal.task.endpoints.find((e) => e.serverId === modal.serverId);
         const remove = async () => {
-          setModal({ ...modal, busy: true, error: null });
+          const busy = { ...modal, busy: true, error: null };
+          setModal(busy);
           try {
             await (await getSyncApi()).removeEndpoint(modal.task.id, modal.serverId);
-            setModal(null);
+            if (modalRef.current === busy) setModal(null);
             await reload();
           } catch (e) {
-            setModal({ ...modal, busy: false, error: formatError(e) });
+            if (modalRef.current === busy) setModal({ ...modal, busy: false, error: formatError(e) });
+            else reportLateError(t("sync.removeServerFailed"), formatError(e));
           }
         };
         return (
           <Dialog
             title={t("sync.removeServerTitle", { name: ep?.serverName ?? "", task: modal.task.name })}
-            onDismiss={modal.busy ? undefined : () => setModal(null)}
+            onDismiss={() => setModal(null)}
             actions={<>
-              <Button disabled={modal.busy} onClick={() => setModal(null)}>{t("common.cancel")}</Button>
+              <Button onClick={() => setModal(null)}>{modal.busy ? t("common.close") : t("common.cancel")}</Button>
               <Button variant="danger" disabled={modal.busy} onClick={() => void remove()}>{t("sync.removeServerConfirm")}</Button>
             </>}
           >
@@ -166,15 +172,19 @@ export function SyncScreen() {
         <Dialog
           title={t("sync.removeTitle", { name: modal.task.name })}
           danger
-          onDismiss={modal.busy ? undefined : () => setModal(null)}
+          onDismiss={() => setModal(null)}
           actions={<>
-            <Button onClick={() => setModal(null)} disabled={modal.busy}>{t("common.cancel")}</Button>
+            <Button onClick={() => setModal(null)}>{modal.busy ? t("common.close") : t("common.cancel")}</Button>
             <Button variant="danger" disabled={modal.busy} onClick={() => {
               const m = modal;
-              setModal({ ...m, busy: true, error: null });
+              const busy = { ...m, busy: true, error: null };
+              setModal(busy);
               void getSyncApi().then((api) => api.remove(m.task.id)).then(
-                () => { setModal(null); void reload(); },
-                (e: unknown) => setModal({ ...m, busy: false, error: formatError(e) }),
+                () => { if (modalRef.current === busy) setModal(null); void reload(); },
+                (e: unknown) => {
+                  if (modalRef.current === busy) setModal({ ...m, busy: false, error: formatError(e) });
+                  else reportLateError(t("sync.removeFailed"), formatError(e));
+                },
               );
             }}>{modal.busy ? t("sync.removing") : t("sync.removeTask")}</Button>
           </>}
@@ -194,7 +204,16 @@ export function SyncScreen() {
             task={task}
             versioning={task.versionsBytes !== null}
             defaultDelayS={settings.syncDefaults.watchDelayS}
-            onSave={async (st) => { await (await getSyncApi()).updateSettings(task.id, st); await reload(); }}
+            onSave={async (st) => {
+              // 保存进行中关掉了框也一样：这个任务的按钮先置灰，免得马上又打开、用旧值再保存一次，盖掉这次的改动
+              setBusyId(task.id);
+              try {
+                await (await getSyncApi()).updateSettings(task.id, st);
+                await reload();
+              } finally {
+                setBusyId((b) => (b === task.id ? null : b));
+              }
+            }}
             onRevert={async () => { await (await getSyncApi()).revertLocal(task.id); await reload(); }}
             onClose={() => setModal(null)}
           />

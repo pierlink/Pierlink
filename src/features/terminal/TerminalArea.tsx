@@ -1878,7 +1878,7 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
           actions={<>
             <Button onClick={closeQuick}>{t("common.cancel")}</Button>
             {pending.restart
-              ? <Button variant="primary" onClick={restartApp}>{t("terminal.restartApp")}</Button>
+              ? <Button variant="primary" onClick={() => { closeQuick(); restartApp(); }}>{t("terminal.restartApp")}</Button>
               : <Button variant="primary" onClick={() => connect(pending.conn)}>{t("common.retry")}</Button>}
           </>}
         >

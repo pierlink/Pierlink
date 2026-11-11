@@ -219,8 +219,7 @@
     "exportServers": "导出服务器…",
     "importFileFailed": "导入失败",
     "desktopInWindow": "桌面已在独立窗口打开，点击切到那个窗口",
-    "hideSidebar": "收起服务器列表",
-    "showSidebar": "展开服务器列表"
+    "serverList": "服务器列表"
   },
   "statusbar": {
     "localSync": "本机同步服务运行中",
@@ -2484,7 +2483,8 @@
     "trashConfirmTitle": "清空 {{name}} 的回收站？",
     "trashConfirmBody": "将删除 {{size}}（{{count}} 个文件）旧版本，删除后无法恢复。",
     "trashCleared": "已清空 {{name}}：删除 {{size}}（{{count}} 个文件）",
-    "trashFailed": "{{name}}：{{reason}}"
+    "trashFailed": "{{name}}：{{reason}}",
+    "restoreFailed": "恢复旧版本失败"
   },
   "explorer": {
     "openHere": "在 Pierlink 中打开"
@@ -2514,7 +2514,10 @@
     "terminals": "{{count}} 个终端会话会被关闭",
     "toTray": "缩到托盘",
     "toTrayHint": "缩到托盘可以让同步在后台继续。",
-    "quit": "退出"
+    "quit": "退出",
+    "restartTitle": "重启 Pierlink？",
+    "restart": "重启",
+    "syncPauses": "重启时本机同步会暂停，重新打开后继续。"
   },
   "import": {
     "title": "从 ssh config 导入",

@@ -1,8 +1,9 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button, Dialog } from "../../components";
 import { formatError } from "../../errors";
 import { getSyncApi, type ConfigReport } from "./syncApi";
+import { reportLateError } from "../shell/lateErrors";
 import "./sync.css";
 
 /**
@@ -16,6 +17,8 @@ export function ConfigReportHost() {
   const [report, setReport] = useState<ConfigReport | null>(null);
   const [busy, setBusy] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /** 每关掉一次加一：处理改动进行中也能关掉，关掉以后才回来的结果不再弹框（出的错显示在窗口底部） */
+  const round = useRef(0);
 
   useEffect(() => {
     let alive = true;
@@ -32,18 +35,23 @@ export function ConfigReportHost() {
   if (!report) return null;
   // 还有没处理的改动时只关掉对话框，后端保留着，下次进同步页再提示；否则清掉。服务器的结果看过就清掉
   const close = () => {
+    round.current++;
     const server = !!report.server;
     setReport(null);
     void getSyncApi().then((api) => api.configDismiss(server)).catch(() => {});
   };
   const restoredCount = report.hardened.length + report.restored;
   const resolve = async (index: number, adopt: boolean) => {
+    const my = round.current;
+    const title = report.server ? t("sync.config.serverTitle", { name: report.server }) : t("sync.config.title");
     setBusy(index);
     setError(null);
     try {
       const rest = await (await getSyncApi()).configResolve(index, adopt);
+      if (my !== round.current) return;
       setReport(rest ?? (report.foreign.length || report.hardened.length ? { ...report, changes: [], pausedTask: null } : null));
     } catch (e) {
+      if (my !== round.current) { reportLateError(title, formatError(e)); return; }
       setError(formatError(e));
     } finally {
       setBusy(null);
@@ -55,8 +63,8 @@ export function ConfigReportHost() {
     <Dialog
       title={report.server ? t("sync.config.serverTitle", { name: report.server }) : t("sync.config.title")}
       size="lg"
-      onDismiss={busy === null ? close : undefined}
-      actions={<Button variant="primary" disabled={busy !== null} onClick={close}>{report.changes.length ? t("sync.config.later") : t("mcp.gotIt")}</Button>}
+      onDismiss={close}
+      actions={<Button variant="primary" onClick={close}>{report.changes.length ? t("sync.config.later") : t("mcp.gotIt")}</Button>}
     >
       <div className="cfg-report">
         {report.pausedTask && <p className="trash__status--danger">{t("sync.config.paused", { name: report.pausedTask })}</p>}

@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Banner, Button, Dialog } from "../../components";
 import { formatError } from "../../errors";
+import { reportLateError, useDetachableClose } from "../shell/lateErrors";
 
 /**
  * 还原本机改动前的确认（会删文件）：本机新增的项会被删除，改过的会被覆盖成服务器上的版本。
@@ -16,13 +17,16 @@ export function RevertDialog({ count, versioning, onConfirm, onClose }: {
   const { t } = useTranslation();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // 还原的时候也能关掉：照常做完，关掉以后才出的错显示在窗口底部
+  const { closed, close } = useDetachableClose(onClose);
   const run = async () => {
     setBusy(true);
     setError(null);
     try {
       await onConfirm();
-      onClose();
+      if (!closed.current) onClose();
     } catch (e) {
+      if (closed.current) { reportLateError(t("sync.revertFailed"), formatError(e)); return; }
       setError(formatError(e));
       setBusy(false);
     }
@@ -31,9 +35,9 @@ export function RevertDialog({ count, versioning, onConfirm, onClose }: {
     <Dialog
       title={t("sync.revertTitle", { count })}
       danger
-      onDismiss={busy ? undefined : onClose}
+      onDismiss={close}
       actions={<>
-        <Button onClick={onClose} disabled={busy}>{t("common.cancel")}</Button>
+        <Button onClick={close}>{busy ? t("common.close") : t("common.cancel")}</Button>
         <Button variant="danger" disabled={busy} onClick={() => void run()}>{busy ? t("sync.reverting") : t("sync.revertLocal")}</Button>
       </>}
     >

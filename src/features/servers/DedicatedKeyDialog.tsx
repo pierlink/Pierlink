@@ -4,6 +4,7 @@ import { Badge, Banner, Button, Dialog, TextField } from "../../components";
 import { formatError, isAppError } from "../../errors";
 import { getKeyApi, type KeyInstallResult, type KeyStatus } from "./keyApi";
 import type { ServerRecord } from "./api";
+import { reportLateError, useDetachableClose } from "../shell/lateErrors";
 import "./servers.css";
 
 /**
@@ -42,6 +43,12 @@ export function DedicatedKeyDialog({ server, onChanged, onClose }: { server: Ser
   // 只有已经用专用密钥登录的服务器才能在后台读取 authorized_keys
   useEffect(() => { if (installedHere) loadStatus(); }, [installedHere, loadStatus]);
 
+  // 装、删的时候也能关掉：操作照常做完，关掉以后才出的错显示在窗口底部
+  const { closed, close } = useDetachableClose(onClose);
+  const fail = (text: string) => {
+    if (closed.current) reportLateError(t("keys.title", { name: server.name }), text);
+    else setError(text);
+  };
   const install = async () => {
     setBusy(true);
     setError(null);
@@ -57,10 +64,10 @@ export function DedicatedKeyDialog({ server, onChanged, onClose }: { server: Ser
     } catch (e) {
       // 密码错误只提示，不自动重试，避免触发服务器的登录保护
       // 只有 ssh.auth_failed 才是密码不对；keys.verify_failed（密钥登录被拒、已撤销）有自己的说明
-      if (isAppError(e) && e.code === "ssh.auth_failed") setError(t("keys.wrongPassword"));
+      if (isAppError(e) && e.code === "ssh.auth_failed") fail(t("keys.wrongPassword"));
       else if (isAppError(e) && e.code === "keys.verify_failed" && e.params.fingerprint) {
-        setError(`${formatError(e)} ${t("keys.removeManually", { fingerprint: e.params.fingerprint, comment: e.params.comment ?? "" })}`);
-      } else setError(describe(e));
+        fail(`${formatError(e)} ${t("keys.removeManually", { fingerprint: e.params.fingerprint, comment: e.params.comment ?? "" })}`);
+      } else fail(describe(e));
     } finally {
       setBusy(false);
     }
@@ -74,7 +81,7 @@ export function DedicatedKeyDialog({ server, onChanged, onClose }: { server: Ser
     try {
       const r = await (await getKeyApi()).remove(server.id, publicLine);
       setConfirm(null);
-      if (r === "symlink") { setError(t("keys.symlink")); return; }
+      if (r === "symlink") { fail(t("keys.symlink")); return; }
       if (ours) {
         // 本电脑的密钥移除后改回密码登录，再也不能用密钥读取列表：直接显示安装入口
         setInstalledHere(false);
@@ -83,9 +90,10 @@ export function DedicatedKeyDialog({ server, onChanged, onClose }: { server: Ser
         onChanged();
         return;
       }
-      loadStatus();
+      // 框已经关掉：不用再读一次列表
+      if (!closed.current) loadStatus();
     } catch (e) {
-      setError(describe(e));
+      fail(describe(e));
     } finally {
       setBusy(false);
     }
@@ -97,9 +105,9 @@ export function DedicatedKeyDialog({ server, onChanged, onClose }: { server: Ser
     <Dialog
       title={t("keys.title", { name: server.name })}
       size="lg"
-      onDismiss={busy ? undefined : onClose}
+      onDismiss={close}
       actions={<>
-        <Button onClick={onClose} disabled={busy}>{showInstall ? t("common.cancel") : t("deploy.close")}</Button>
+        <Button onClick={close}>{showInstall && !busy ? t("common.cancel") : t("deploy.close")}</Button>
         {showInstall && (
           <Button variant="primary" disabled={busy || !password} onClick={() => void install()}>
             {busy ? t("keys.installing") : t("keys.install")}

@@ -310,7 +310,16 @@ fn restore_ctrl_c_for_children() {
 pub fn run() {
     // `Pierlink.exe --proxy-connect 主机 端口`：系统 OpenSSH 经代理连接时把本程序当作 ProxyCommand 启动，
     // 只转发数据、不打开界面。和 --mcp 一样要在单实例插件之前
-    let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+    let mut args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+    // 重启出来的进程：命令行和重启前一样，`--open-dir` 已经处理过，不再打开一次；
+    // 标记删掉，免得本机终端等子进程继承它
+    if std::env::var_os(app_shell::RESTARTED_ENV).is_some() {
+        // SAFETY: 启动最早的地方，还没有别的线程读写环境变量
+        unsafe { std::env::remove_var(app_shell::RESTARTED_ENV) };
+        if let Some(i) = args.iter().position(|a| a == explorer_menu::OPEN_DIR_ARG) {
+            args.drain(i..(i + 2).min(args.len()));
+        }
+    }
     if args.first().is_some_and(|a| a == "--proxy-connect") {
         std::process::exit(proxy::run_proxy_connect(&args[1..]));
     }

@@ -31,6 +31,14 @@ export function trayAvailable(): Promise<boolean> {
   return trayPromise;
 }
 
+/** “重启 Pierlink”按钮的请求：交给挂着的 ExitGuard，按退出的规矩先确认 */
+const restartListeners = new Set<() => void>();
+
+/** 请求重启 Pierlink：和退出一样先查有没有会中断的终端、没同步完的文件，有就先确认，没有就直接重启 */
+export function requestRestart(): void {
+  restartListeners.forEach((l) => l());
+}
+
 /** 摘要里没有任何会丢失或中断的内容时，直接退出不打扰用户 */
 function nothingToLose(s: ExitSummary): boolean {
   return s.terminals === 0 && s.tasks.length === 0 && !s.syncUnknown;
@@ -40,7 +48,8 @@ function nothingToLose(s: ExitSummary): boolean {
  * 退出确认（设计 1.4，异常清单 L3、L11）：
  * - 把“关闭窗口时缩到托盘”和托盘菜单文字同步给 Rust 端，资源管理器右键菜单也在这里按设置注册或删除；
  * - 收到退出请求（托盘“退出”、或关掉缩到托盘后关闭窗口）时，先确认收到（否则 Rust 端几秒后直接退出），
- *   再查询未同步文件数和打开的终端数；没有任何会中断的内容时直接退出，否则弹出确认框。
+ *   再查询未同步文件数和打开的终端数；没有任何会中断的内容时直接退出，否则弹出确认框；
+ * - “重启 Pierlink”（requestRestart）同样先查、再确认，确认框写“重启”。
  */
 export function ExitGuard() {
   const { t, i18n } = useTranslation();
@@ -50,6 +59,8 @@ export function ExitGuard() {
   const [error, setError] = useState<string | null>(null);
   const [tray, setTray] = useState(false);
   const [quitting, setQuitting] = useState(false);
+  /** 这次确认的是重启（不是退出） */
+  const [restart, setRestart] = useState(false);
   /** 每次退出请求的序号：旧请求的查询结果晚到时丢弃 */
   const seq = useRef(0);
 
@@ -79,8 +90,13 @@ export function ExitGuard() {
     void shell().then((c) => c.appQuit()).catch(() => setQuitting(false));
   }, []);
 
-  const onRequest = useCallback((request: number) => {
-    void shell().then((c) => c.appExitAck(request)).catch(() => {});
+  const restartNow = useCallback(() => {
+    setQuitting(true);
+    void shell().then((c) => c.appRestart()).catch(() => setQuitting(false));
+  }, []);
+
+  /** 查有没有会中断的内容：没有就直接执行 then，否则打开确认框 */
+  const check = useCallback((then: () => void) => {
     const my = ++seq.current;
     // 确认框已经打开时保留上次的结果，只在后台刷新，避免闪回“正在检查”
     setOpen(true);
@@ -91,14 +107,31 @@ export function ExitGuard() {
         if (my !== seq.current) return;
         if (r.status === "error") throw r.error;
         const s = r.data as ExitSummary;
-        if (nothingToLose(s)) quit();
+        if (nothingToLose(s)) then();
         else setSummary(s);
       })
       .catch((e: unknown) => {
         if (my !== seq.current) return;
         setError(formatError(e));
       });
-  }, [quit]);
+  }, []);
+
+  const onRequest = useCallback((request: number) => {
+    void shell().then((c) => c.appExitAck(request)).catch(() => {});
+    setRestart(false);
+    check(quit);
+  }, [check, quit]);
+
+  useEffect(() => {
+    const onRestart = () => {
+      // 浏览器预览里没有外壳：刷新页面代替
+      if (!inTauri) { window.location.reload(); return; }
+      setRestart(true);
+      check(restartNow);
+    };
+    restartListeners.add(onRestart);
+    return () => { restartListeners.delete(onRestart); };
+  }, [check, restartNow]);
 
   useEffect(() => {
     if (!inTauri) return;
@@ -113,15 +146,17 @@ export function ExitGuard() {
   if (!open) return null;
   const cancel = () => { seq.current++; setOpen(false); setSummary(null); };
   const toTray = () => { cancel(); void shell().then((c) => c.appHideToTray()).catch(() => {}); };
-  return <ExitDialog summary={summary} error={error} tray={tray} quitting={quitting} onCancel={cancel} onTray={toTray} onQuit={quit} />;
+  return <ExitDialog summary={summary} error={error} tray={tray} quitting={quitting} restart={restart} onCancel={cancel} onTray={toTray} onQuit={restart ? restartNow : quit} />;
 }
 
 /** 退出确认框（纯展示，开发预览也用它） */
-export function ExitDialog({ summary, error, tray, quitting, onCancel, onTray, onQuit }: {
+export function ExitDialog({ summary, error, tray, quitting, restart = false, onCancel, onTray, onQuit }: {
   summary: ExitSummary | null;
   error: string | null;
   tray: boolean;
   quitting: boolean;
+  /** 确认的是重启：标题和按钮写“重启”，不给“缩到托盘” */
+  restart?: boolean;
   onCancel: () => void;
   onTray: () => void;
   onQuit: () => void;
@@ -131,13 +166,13 @@ export function ExitDialog({ summary, error, tray, quitting, onCancel, onTray, o
   const syncAffected = !!error || (!!summary && (summary.tasks.length > 0 || summary.syncUnknown));
   return (
     <Dialog
-      title={t("exit.title")}
+      title={restart ? t("exit.restartTitle") : t("exit.title")}
       danger
       onDismiss={quitting ? undefined : onCancel}
       actions={<>
         <Button onClick={onCancel} disabled={quitting}>{t("common.cancel")}</Button>
-        {tray && syncAffected && <Button onClick={onTray} disabled={quitting}>{t("exit.toTray")}</Button>}
-        <Button variant="danger" onClick={onQuit} disabled={quitting}>{t("exit.quit")}</Button>
+        {tray && syncAffected && !restart && <Button onClick={onTray} disabled={quitting}>{t("exit.toTray")}</Button>}
+        <Button variant="danger" onClick={onQuit} disabled={quitting}>{restart ? t("exit.restart") : t("exit.quit")}</Button>
       </>}
     >
       <div className="exit-summary">
@@ -154,7 +189,7 @@ export function ExitDialog({ summary, error, tray, quitting, onCancel, onTray, o
           </>
         )}
         {summary?.syncUnknown && <p>{t("exit.unknown")}</p>}
-        {syncAffected && <p className="exit-summary__muted">{t("exit.syncStops")}{tray ? ` ${t("exit.toTrayHint")}` : ""}</p>}
+        {syncAffected && <p className="exit-summary__muted">{restart ? t("exit.syncPauses") : `${t("exit.syncStops")}${tray ? ` ${t("exit.toTrayHint")}` : ""}`}</p>}
         {summary && summary.terminals > 0 && <p>{t("exit.terminals", { count: summary.terminals })}</p>}
       </div>
     </Dialog>

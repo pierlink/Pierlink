@@ -459,6 +459,10 @@ fn quit(app: &AppHandle) {
     app.exit(0);
 }
 
+/// 重启时设上的环境变量：Tauri 按原来的命令行启动新进程，新进程看到它就不再处理 `--open-dir`
+/// （从资源管理器右键菜单打开的那次，重启后不要再开一次那个目录）
+pub const RESTARTED_ENV: &str = "PIERLINK_RESTARTED";
+
 /// 重启 Pierlink（系统的网页组件 WebView2 断开、开不了新窗口时用）：先和退出一样正常关掉同步、隧道、终端，再重新打开
 #[tauri::command]
 #[specta::specta]
@@ -467,6 +471,8 @@ pub fn app_restart(app: AppHandle) {
     app.state::<ShellState>()
         .quitting
         .store(true, Ordering::SeqCst);
+    // SAFETY: 马上就要退出，之后只有新进程（继承环境变量）读它；Windows 上设置环境变量本身是线程安全的
+    unsafe { std::env::set_var(RESTARTED_ENV, "1") };
     // 清理在 RunEvent::Exit 里完成（同时放开“只开一个 Pierlink”的锁），之后 Tauri 再启动新的进程
     app.request_restart();
 }

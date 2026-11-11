@@ -1,6 +1,7 @@
 import { useSyncExternalStore } from "react";
 import { commands } from "../../bindings/commands";
 import { isAppError } from "../../errors";
+import { requestRestart } from "../shell/ExitGuard";
 import { inTauri } from "../shell/TitleBar";
 
 /**
@@ -67,10 +68,9 @@ export function webviewGone(error: unknown): boolean {
   return isAppError(error) && error.params?.reason_key === "vnc.webview_disconnected";
 }
 
-/** 重启 Pierlink（先正常关掉同步、隧道、终端，再重新打开） */
+/** 重启 Pierlink：和退出一样先确认会关掉的终端、没同步完的文件，再正常关掉同步、隧道、终端，重新打开 */
 export function restartApp(): void {
-  if (!inTauri) { window.location.reload(); return; }
-  void commands.appRestart();
+  requestRestart();
 }
 
 /**

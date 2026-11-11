@@ -200,7 +200,7 @@ describe("提示符标记", () => {
     expect(s.native).toBe(true);
   });
 
-  it("钩子报告的 shell 状态：run 在跑、idle 在等输入；没报告过、重连后都不知道", () => {
+  it("钩子报告的 shell 状态：run 在跑，idle 等随后的主提示符才算在等输入；没报告过、重连后都不知道", () => {
     const { t, term } = fakeTerm();
     const s = new ShellTracker();
     t.put(0, "$ ");
@@ -209,13 +209,21 @@ describe("提示符标记", () => {
     s.onMark({ kind: "inputStart" }, term, null);
     expect(s.hook).toBeNull();
     s.onMark({ kind: "idle" }, term, null);
+    expect(s.hook).toBeNull();
+    s.onMark({ kind: "promptStart" }, term, null);
     expect(s.hook).toBe("idle");
     // 不是在提示符下按的回车（AI 经 MCP 发的命令）也靠 run 知道在跑
     s.onMark({ kind: "run" }, term, null);
     expect(s.hook).toBe("run");
-    s.onMark({ kind: "commandEnd", exit: 0 }, term, null);
-    expect(s.hook).toBe("run");
+    // 程序输出里伪造的 idle 后面没有主提示符（续行提示符也不算）：照样在跑
     s.onMark({ kind: "idle" }, term, null);
+    s.onMark({ kind: "promptStart", secondary: true }, term, null);
+    expect(s.hook).toBe("run");
+    s.onMark({ kind: "run" }, term, null);
+    s.onMark({ kind: "commandEnd", exit: 0 }, term, null);
+    s.onMark({ kind: "idle" }, term, null);
+    expect(s.hook).toBe("run");
+    s.onMark({ kind: "promptStart" }, term, null);
     expect(s.hook).toBe("idle");
     s.restart();
     expect(s.hook).toBeNull();
@@ -237,7 +245,32 @@ describe("提示符标记", () => {
     // 程序退出：D、idle、新的提示符
     s.onMark({ kind: "commandEnd", exit: 0 }, term, null);
     s.onMark({ kind: "idle" }, term, null);
+    s.onMark({ kind: "promptStart" }, term, null);
     expect(s.closeState).toBe("idle");
+  });
+
+  it("exec 换掉 shell 以后不知道状态；exec 只改重定向时回到提示符照常", () => {
+    const { t, term } = fakeTerm();
+    const s = new ShellTracker();
+    t.put(0, "$ ");
+    s.onMark({ kind: "idle" }, term, null);
+    s.onMark({ kind: "promptStart" }, term, null);
+    s.onMark({ kind: "inputStart" }, term, null);
+    t.put(0, "$ exec bash");
+    s.enter(term);
+    s.onMark({ kind: "run" }, term, null);
+    expect(s.closeState).toBeNull();
+    // 像 exec 2>/dev/null 这样 shell 还在：回到提示符照常
+    t.put(1, "$ ");
+    s.onMark({ kind: "idle" }, term, null);
+    s.onMark({ kind: "promptStart" }, term, null);
+    s.onMark({ kind: "inputStart" }, term, null);
+    expect(s.closeState).toBe("idle");
+    // 普通命令照常算在跑
+    t.put(1, "$ execute-me");
+    s.enter(term);
+    s.onMark({ kind: "run" }, term, null);
+    expect(s.closeState).toBe("run");
   });
 
   it("重新连接后钩子和自带预测都要等新会话的标记", () => {

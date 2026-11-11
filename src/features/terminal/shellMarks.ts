@@ -167,6 +167,8 @@ export class ShellTracker {
    * 钩子不报告（bash 4.4 以前、ble.sh、没装钩子）时为 null。关标签时据此决定要不要确认，不用去服务器查
    */
   hook: "idle" | "run" | null = null;
+  /** 收到 idle、还在等随后的主提示符：钩子先发 idle 再画提示符，程序输出里伪造的 idle 后面一般没有提示符 */
+  private idlePending = false;
 
   /**
    * 关标签时用的 shell 状态：同 hook，但刚在提示符下按了回车、服务器的 run 还没传回来时，上一个 idle 已经不算数，
@@ -195,6 +197,11 @@ export class ShellTracker {
       case "commandEnd":
         this.secondary = mark.kind === "promptStart" && !!mark.secondary;
         this.running = false;
+        // 主提示符开始了：前面那个 idle 才算数
+        if (mark.kind === "promptStart" && !this.secondary && this.idlePending) {
+          this.hook = "idle";
+          this.idlePending = false;
+        }
         this.leave();
         return null;
       case "inputStart": {
@@ -212,8 +219,13 @@ export class ShellTracker {
       case "command":
         return { command: mark.command, cwd, exit: mark.exit, at: Date.now() };
       case "run":
+        this.idlePending = false;
+        // exec 换掉了 shell（exec bash、exec zsh）：新的 shell 不带钩子，以后不会再报 idle，按不知道处理（关标签时去服务器查）；
+        // 只改重定向的 exec 回到提示符时照常
+        this.hook = this.running && /^exec(\s|$)/.test(this.command ?? "") ? null : "run";
+        return null;
       case "idle":
-        this.hook = mark.kind;
+        this.idlePending = true;
         return null;
     }
   }
@@ -238,6 +250,7 @@ export class ShellTracker {
     this.integrated = false;
     this.native = false;
     this.hook = null;
+    this.idlePending = false;
   }
 
   /** 用户按了回车（或会话重连）：离开提示符，等下一个 B */

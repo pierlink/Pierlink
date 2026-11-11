@@ -6,6 +6,7 @@ import { formatError } from "../../errors";
 import { getFilesApi } from "./api";
 import { dismissDelete, startDelete, stopDelete, useDeletes } from "./deletes";
 import { baseName, locKey } from "./path";
+import { reportLateError, useDetachableClose } from "../shell/lateErrors";
 import type { Loc } from "./types";
 
 /**
@@ -108,13 +109,16 @@ export function ChmodDialog({ loc, path, onClose, onDone }: { loc: Loc; path: st
     setText(clean);
     if (clean.length >= 3) setMode(parseInt(clean, 8));
   };
+  // 改的时候也能关掉：改完照常生效，关掉以后才出的错显示在窗口底部
+  const { closed, close } = useDetachableClose(onClose);
   const run = async () => {
     if (mode === null) return;
     setBusy(true);
     try {
       await (await getFilesApi()).chmod(loc, path, mode);
-      onDone(null);
+      if (!closed.current) onDone(null);
     } catch (e) {
+      if (closed.current) { reportLateError(t("files.chmodTitle", { name: baseName(path) }), formatError(e)); return; }
       setBusy(false);
       setError(formatError(e));
     }
@@ -122,9 +126,9 @@ export function ChmodDialog({ loc, path, onClose, onDone }: { loc: Loc; path: st
   return (
     <Dialog
       title={t("files.chmodTitle", { name: baseName(path) })}
-      onDismiss={busy ? undefined : onClose}
+      onDismiss={close}
       actions={<>
-        <Button onClick={onClose} disabled={busy}>{t("common.cancel")}</Button>
+        <Button onClick={close}>{busy ? t("common.close") : t("common.cancel")}</Button>
         <Button variant="primary" disabled={busy || mode === null || text.length < 3} onClick={() => void run()}>{t("common.save")}</Button>
       </>}
     >

@@ -110,6 +110,11 @@ export function WorkspacePage({ active = true }: { active?: boolean }) {
   // 用快捷键收起工具面板时焦点在面板里：请终端区把焦点还给当前终端（每次加一），不然焦点掉到页面上
   const [focusRequest, setFocusRequest] = useState(0);
   const focusBackIfInPanel = () => { if (document.activeElement?.closest(".ws__tool")) setFocusRequest((n) => n + 1); };
+  /** 收起服务器列表：焦点在列表里时还给终端 */
+  const toggleSidebar = () => {
+    if (sidebarOpen && document.activeElement?.closest(".ws__side")) setFocusRequest((n) => n + 1);
+    setSidebarOpen((x) => !x);
+  };
 
   // 快捷键：工具面板开关；命令片段（面板已经开在片段页时收起）；搜索服务器
   useShortcut("togglePanel", () => {
@@ -125,7 +130,7 @@ export function WorkspacePage({ active = true }: { active?: boolean }) {
     setSidebarOpen(true);
     requestAnimationFrame(() => { searchRef.current?.focus(); searchRef.current?.select(); });
   }, active);
-  useShortcut("toggleSidebar", () => setSidebarOpen((x) => !x), active);
+  useShortcut("toggleSidebar", toggleSidebar, active);
 
   // 开发预览：#workspace-link 打开第一台导入服务器的设置
   const linkDemo = useRef(false);
@@ -211,7 +216,7 @@ export function WorkspacePage({ active = true }: { active?: boolean }) {
           panelOpen={panel.open}
           onTogglePanel={() => setPanel((x) => ({ ...x, open: !x.open }))}
           sidebarOpen={sidebarOpen}
-          onToggleSidebar={() => setSidebarOpen((x) => !x)}
+          onToggleSidebar={toggleSidebar}
           snippetRequest={snippetRequest}
           onSnippetTargets={setSnippetTargets}
           active={active}

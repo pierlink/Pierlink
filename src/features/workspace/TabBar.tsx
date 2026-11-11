@@ -70,11 +70,10 @@ export function TabBar({ tabs, activeId, servers, localShells, onActivate, onClo
     ...localShells.map((l) => ({ id: `sh-${l.id}`, label: localShellName(l), shortcut: l.id === defaultShell?.id ? formatCombo(keys.newTab, " ") || undefined : undefined, onSelect: () => onPickShell(l.id) })),
   ];
 
-  const sidebarLabel = sidebarOpen ? t("workspace.hideSidebar") : t("workspace.showSidebar");
   return (
     <div className="tabbar">
       {onToggleSidebar && (
-        <IconButton label={sidebarLabel} title={withShortcut(t, sidebarLabel, formatCombo(keys.toggleSidebar))} aria-pressed={!!sidebarOpen} onClick={onToggleSidebar}><PanelLeft size={15} /></IconButton>
+        <IconButton label={t("workspace.serverList")} title={withShortcut(t, t("workspace.serverList"), formatCombo(keys.toggleSidebar))} aria-pressed={!!sidebarOpen} className={sidebarOpen ? "pl-icon-btn--on" : undefined} onClick={onToggleSidebar}><PanelLeft size={15} /></IconButton>
       )}
       <div ref={stripRef} role="tablist" aria-label={t("workspace.newTab")} className="tabbar__tabs">
       {tabs.map((tab) => (
