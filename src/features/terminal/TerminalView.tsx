@@ -10,7 +10,7 @@ import { currentTerminalTheme } from "./theme";
 import { needsPasteConfirm, parseOsc7, parseOsc99 } from "./util";
 import { ConnectCard, ConnectSteps, STEPS, stepIndex, stepOf, type Step } from "./ConnectProgress";
 import { findFakeCursor, placeIme } from "./imeAnchor";
-import { keepsConnectCard, looksTyped } from "./loginOutput";
+import { keepsConnectCard, looksLikePrompt, looksTyped } from "./loginOutput";
 import { useSettings } from "../settings/store";
 import { useContextMenu } from "../../components";
 import { formatError, isAppError } from "../../errors";
@@ -88,12 +88,17 @@ interface Props {
   autoCommand?: string;
   /** 自动命令已经输入（上层据此清掉，之后重新连接不再输入） */
   onAutoCommandSent?: () => void;
+  /** 自动命令没有输入（登录后进了全屏程序）：桌面卡片上说明 */
+  onAutoCommandBlocked?: () => void;
 }
 
 /** 自动命令：登录完成后输出停了这么久（毫秒）就当提示符已经出来 */
 const AUTO_QUIET_MS = 600;
 /** 自动命令：登录完成后最多等这么久（毫秒）就输入 */
 const AUTO_WAIT_MS = 8000;
+/** 自动命令：连接不报“连接完成”时（Windows 上的系统 OpenSSH），最多等这么久（毫秒）看到 shell 提示符，等不到就不输 */
+const AUTO_PROMPT_WAIT_MS = 60000;
+
 /** 光标闪一轮（亮、灭各一半）的毫秒数，和 terminal.css 里的 animation-duration 一致 */
 const CURSOR_BLINK_MS = 1200;
 
@@ -118,14 +123,14 @@ const WHEEL_LINE_PX = 33;
  * 会话断开或退出后，终端内容留着，最下面写一行说明，正中间放一张带“重新连接”的卡片，按 Enter 也能重新连接；
  * 登录失败、没能打开时盖上一块提示，提供“重新连接”和“关闭标签”。不自动重连，也不自动关闭标签（设计 3.9）。
  */
-export function TerminalView({ backend, spec, visible, confirmPaste, openLink, onStatus, onError, onCloseTab, closeLabel, onCwd, onCommand, onAttention, onSession, broadcasting, onInput, onOutput, onHandle, cwd, onSplit, canSplit, fileDrop, prediction, serverPrediction, connectTitle, phoneCols, precheck, onCancelConnect, onRetryConnect, autoCommand, onAutoCommandSent }: Props) {
+export function TerminalView({ backend, spec, visible, confirmPaste, openLink, onStatus, onError, onCloseTab, closeLabel, onCwd, onCommand, onAttention, onSession, broadcasting, onInput, onOutput, onHandle, cwd, onSplit, canSplit, fileDrop, prediction, serverPrediction, connectTitle, phoneCols, precheck, onCancelConnect, onRetryConnect, autoCommand, onAutoCommandSent, onAutoCommandBlocked }: Props) {
   const { t } = useTranslation();
   const host = useRef<HTMLDivElement>(null);
   // 回调放进 ref，避免它们变化时重建终端
   const { settings } = useSettings();
   const opts = settings.terminal;
-  const cb = useRef({ confirmPaste, openLink, onStatus, onError, onCwd, onCommand, onAttention, onSession, t, opts, broadcasting, onInput, onOutput, onHandle, cwd, onSplit, canSplit, prediction, precheck, onRetryConnect, autoCommand, onAutoCommandSent });
-  cb.current = { confirmPaste, openLink, onStatus, onError, onCwd, onCommand, onAttention, onSession, t, opts, broadcasting, onInput, onOutput, onHandle, cwd, onSplit, canSplit, prediction, precheck, onRetryConnect, autoCommand, onAutoCommandSent };
+  const cb = useRef({ confirmPaste, openLink, onStatus, onError, onCwd, onCommand, onAttention, onSession, t, opts, broadcasting, onInput, onOutput, onHandle, cwd, onSplit, canSplit, prediction, precheck, onRetryConnect, autoCommand, onAutoCommandSent, onAutoCommandBlocked });
+  cb.current = { confirmPaste, openLink, onStatus, onError, onCwd, onCommand, onAttention, onSession, t, opts, broadcasting, onInput, onOutput, onHandle, cwd, onSplit, canSplit, prediction, precheck, onRetryConnect, autoCommand, onAutoCommandSent, onAutoCommandBlocked };
   /** 指纹还没核对通过：先不打开会话 */
   const held = !!precheck && precheck.phase !== "go";
   /** 会话已经开始打开（核对通过后只开一次；之后的重新连接走 reopen） */
@@ -466,10 +471,16 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
     const decoder = new TextDecoder();
 
     // 连上后自动输入的命令（安装桌面）：登录完成后，等提示符出来再输入（有提示符钩子时收到“输入从这里开始”的标记就输，
-    // 没有时等输出停一会儿，最多等几秒），只输入一次。登录完成前断开了就留到下次连上
+    // 没有时等输出停一会儿，最多等几秒），只输入一次。登录完成前断开了就留到下次连上。
+    // Windows 上的系统 OpenSSH 不报连接阶段（收不到“连接完成”）：有了输出以后，等提示符钩子的标记，
+    // 或者输出停下来、光标那行像 shell 提示符（不是在问密码、验证码）时再输；一分钟都没等到就不输，让用户自己粘贴
     let autoSent = false;
     let autoTimer: ReturnType<typeof setInterval> | null = null;
     let lastOutput = 0;
+    const cursorLine = () => {
+      const buffer = term.buffer.active;
+      return buffer.getLine(buffer.baseY + buffer.cursorY)?.translateToString(true) ?? "";
+    };
     const stopAuto = () => {
       if (autoTimer) clearInterval(autoTimer);
       autoTimer = null;
@@ -484,19 +495,33 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
       // 登录后进了全屏程序（.bashrc 里 tmux attach、菜单等）：命令会灌进那个程序，不输，提示去卡片上复制
       if (term.buffer.active.type === "alternate") {
         showNotice.current(cb.current.t("desktop.install.notTyped"), 15000);
+        cb.current.onAutoCommandBlocked?.();
         return;
       }
       term.paste(command);
       term.input("\r", true);
       cb.current.onAutoCommandSent?.();
     };
-    const scheduleAuto = () => {
+    /** @param careful 没收到“连接完成”：只在看到 shell 提示符时输入，等不到就放弃 */
+    const scheduleAuto = (careful = false) => {
       if (autoSent || autoTimer || !cb.current.autoCommand) return;
       const readyAt = performance.now();
       lastOutput = readyAt;
       autoTimer = setInterval(() => {
         const now = performance.now();
-        if (disposed || exited || now - lastOutput >= AUTO_QUIET_MS || now - readyAt >= AUTO_WAIT_MS) sendAuto();
+        if (disposed || exited) { sendAuto(); return; }
+        if (!careful) {
+          if (now - lastOutput >= AUTO_QUIET_MS || now - readyAt >= AUTO_WAIT_MS) sendAuto();
+          return;
+        }
+        if (now - lastOutput >= AUTO_QUIET_MS && looksLikePrompt(cursorLine())) {
+          sendAuto();
+        } else if (now - readyAt >= AUTO_PROMPT_WAIT_MS) {
+          stopAuto();
+          autoSent = true;
+          showNotice.current(cb.current.t("desktop.install.noPrompt"), 15000);
+          cb.current.onAutoCommandBlocked?.();
+        }
       }, 100);
     };
     // 提示符钩子的 OSC 133;B：shell 开始等输入了（解析完这段输出再输入）。返回 false，命令预测照样能收到
@@ -585,6 +610,9 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
             return;
           }
           if (e.kind === "output") {
+            // 连接不报阶段（Windows 上的系统 OpenSSH）：从有输出开始等 shell 提示符（要在写进终端前开始等，
+            // 这段输出里的提示符标记才能收到）
+            if (!stageSeen && spec.kind !== "local") scheduleAuto(true);
             lastOutput = performance.now();
             const chunk = decoder.decode(e.data, { stream: true });
             if (covering) coverOutput(chunk);

@@ -1,7 +1,7 @@
 {
   "name": "pierlink",
   "private": true,
-  "version": "1.2.7",
+  "version": "1.2.8",
   "type": "module",
   "license": "FSL-1.1-ALv2",
   "scripts": {

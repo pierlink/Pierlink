@@ -55,6 +55,7 @@
 .desk-install__note { min-height: 1.6em; font-size: var(--fs-sm); overflow-wrap: anywhere; }
 .desk-install__note--warn { color: var(--warn) !important; }
 .desk-install__note--error { color: var(--danger) !important; }
+.desk-install__engine { display: flex; align-items: center; gap: 10px; font-size: var(--fs-sm); color: var(--text-muted); }
 /* 正在安装：进度条停下时也占着位置 */
 .desk__card--installing .desk__progress:empty { background: var(--chip); }
 /* 获取失败：每一步的原因 */

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { keepsConnectCard, looksTyped } from "./loginOutput";
+import { keepsConnectCard, looksLikePrompt, looksTyped } from "./loginOutput";
 
 describe("连接卡片盖着时的输出", () => {
   it("只有控制序列：继续盖着", () => {
@@ -30,6 +30,17 @@ describe("像不像打字（广播只发打字的）", () => {
   it("焦点进出、设备属性、光标位置、颜色应答、鼠标报告不算", () => {
     for (const d of ["\x1b[I", "\x1b[O", "\x1b[?62;22c", "\x1b[>0;276;0c", "\x1b[12;40R", "\x1b[1;5R", "\x1b]11;rgb:1010/1010/1010\x1b\\", "\x1bP1$r0m\x1b\\", "\x1b[<0;10;5M", "\x1b[<0;10;5m", "\x1b[?2004;1$y"]) {
       expect(looksTyped(d), JSON.stringify(d)).toBe(false);
+    }
+  });
+});
+
+describe("光标这行像不像 shell 提示符", () => {
+  it("常见提示符算；在问密码、口令、验证码的不算", () => {
+    for (const line of ["ubuntu@vm:~$ ", "root@vm:/# ", "% ", "PS C:\\> ", "❯ ", "➜  app git:(main) ", "user@host ~ »"]) {
+      expect(looksLikePrompt(line), line).toBe(true);
+    }
+    for (const line of ["ubuntu@vm's password: ", "Enter passphrase for key '/c/k': ", "Verification code: ", "[sudo] ubuntu 的密码：", "Last login: Mon Nov 10 18:12:01 2026 from 1.2.3.4", ""]) {
+      expect(looksLikePrompt(line), line).toBe(false);
     }
   });
 });

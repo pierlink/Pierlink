@@ -4,6 +4,7 @@ mod entries;
 mod host;
 pub mod install;
 pub mod settings;
+mod status;
 pub(crate) mod waiters;
 
 pub use entries::McpEntryStateDto;

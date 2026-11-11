@@ -345,4 +345,9 @@ pub trait McpHost: Send + Sync + 'static {
     fn pin(&self) -> Option<super::peers::PinRecord> {
         None
     }
+    /// Pierlink 自己的基本情况（pierlink_status 工具用）：服务器的名字、分组、连接方式和在线状态，打开着的终端、
+    /// 桌面、同步任务、AI 接入入口。不能含地址、端口、用户名、密钥、密码、令牌、备注和路径
+    fn pierlink_status(&self) -> Result<serde_json::Value, AppError> {
+        Ok(serde_json::json!({}))
+    }
 }

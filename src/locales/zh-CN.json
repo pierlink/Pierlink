@@ -3408,7 +3408,14 @@
       "stageInstall": "正在安装…",
       "stageInstallPct": "正在安装：{{pct}}%",
       "stageError": "安装出错了，看下面这行和终端里的输出",
-      "elapsed": "已用 {{min}} 分 {{sec}} 秒"
+      "elapsed": "已用 {{min}} 分 {{sec}} 秒",
+      "waitPassword": "在打开的终端里输入 sudo 密码后按回车（输入时不显示字符）",
+      "waitLock": "服务器正在自动更新，apt 被占着：等它结束后会接着装，可能要几分钟",
+      "noPrompt": "没等到 shell 提示符，安装命令没有自动输入：到桌面卡片上复制命令粘贴进来",
+      "typeYourself": "安装命令没有自动输入：点下面的“复制命令”，粘贴到打开的终端里运行",
+      "openssh": "这台服务器用系统 OpenSSH 连接，换成内置 SSH 更稳",
+      "useBuiltin": "换成内置 SSH",
+      "switched": "已换成内置 SSH"
     },
     "help": {
       "open": "安装说明",

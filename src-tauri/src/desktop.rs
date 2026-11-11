@@ -229,6 +229,32 @@ pub struct DesktopState {
     creating: Mutex<HashMap<String, Arc<AtomicBool>>>,
 }
 
+impl DesktopState {
+    /// 给 AI 看的基本情况：打开着的桌面连接数，各服务器最近一次检测到的系统（发行版和包管理器）
+    ///
+    /// :return: （连接数, 服务器 ID → {"distro","package_manager"}）
+    pub(crate) fn summary(&self) -> (usize, HashMap<String, serde_json::Value>) {
+        let systems = lock(&self.systems)
+            .iter()
+            .map(|(id, system)| {
+                let manager = match system.package_manager {
+                    PackageManager::Apt => "apt",
+                    PackageManager::Dnf => "dnf",
+                    PackageManager::None => "none",
+                };
+                (
+                    id.clone(),
+                    serde_json::json!({
+                        "distro": format!("{} {}", system.distro.id, system.distro.version_id).trim().to_owned(),
+                        "package_manager": manager,
+                    }),
+                )
+            })
+            .collect();
+        (lock(&self.conns).len(), systems)
+    }
+}
+
 /// 记下这次检测到的工具和系统
 fn remember(app: &AppHandle, server_id: &str, d: &VncDetection) {
     let state = app.state::<DesktopState>();

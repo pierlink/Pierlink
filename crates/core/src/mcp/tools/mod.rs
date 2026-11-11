@@ -314,6 +314,14 @@ pub(super) fn execute(
             states.retain(|state| !state.servers.is_empty());
             Ok(json!(states))
         }
+        "pierlink_status" => {
+            let mut value = shared.host.pierlink_status()?;
+            if let Value::Object(map) = &mut value {
+                map.insert("version".into(), json!(env!("CARGO_PKG_VERSION")));
+                map.insert("computer".into(), json!(local::computer_name()));
+            }
+            Ok(value)
+        }
         "sync_wait" => Ok(json!(sync::wait(
             shared.host.as_ref(),
             &permissions,

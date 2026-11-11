@@ -172,7 +172,7 @@ await rec.step(p, "旧式客户端：握手和工具列表立即回答；本机�
   const info = await agent.initialize("2025-11-25");
   if (info.protocolVersion !== "2025-11-25" || info.serverInfo?.name !== "pierlink") throw new Error(`握手结果不对：${JSON.stringify(info)}`);
   const tools = (await agent.request("tools/list")).result?.tools ?? [];
-  const expected = ["list_targets", "run_command", "open_terminal", "list_terminals", "close_terminal", "terminal_send", "terminal_read", "terminal_screen", "terminal_wait", "read_file", "read_files", "write_file", "make_dir", "delete_path", "rename_path", "copy_path", "edit_file", "search", "find_files", "list_dir", "job_output", "job_stop", "list_jobs", "sync_status", "sync_wait", "transfer_file", "open_path"];
+  const expected = ["list_targets", "run_command", "open_terminal", "list_terminals", "close_terminal", "terminal_send", "terminal_read", "terminal_screen", "terminal_wait", "read_file", "read_files", "write_file", "make_dir", "delete_path", "rename_path", "copy_path", "edit_file", "search", "find_files", "list_dir", "job_output", "job_stop", "list_jobs", "sync_status", "sync_wait", "transfer_file", "open_path", "pierlink_status"];
   const toolNames = tools.map((t) => t.name);
   if (toolNames.length !== expected.length || expected.some((n) => !toolNames.includes(n))) throw new Error(`工具不对：${toolNames.join(",")}`);
   let targets = structured(await agent.call("list_targets"));

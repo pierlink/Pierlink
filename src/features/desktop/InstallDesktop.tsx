@@ -6,6 +6,7 @@ import { formatError } from "../../errors";
 import { CommandLine } from "../mcp/McpParts";
 import { writeClipboardText } from "../shell/clipboard";
 import { formatBytes } from "../sync/format";
+import { getServersApi, notifyServersChanged } from "../servers/api";
 import { getDesktopApi, type DesktopInstallCheck } from "./api";
 import { installStatus } from "./install";
 
@@ -34,6 +35,25 @@ export function InstallDialog({ serverId, command, inTerminal, onInstall, onLigh
   const [error, setError] = useState<string | null>(null);
   /** 点“重试”加一，重新检查 */
   const [round, setRound] = useState(0);
+  // 这台服务器用系统 OpenSSH 连接时提示换成内置 SSH（开终端自动输入命令、连接进度都靠内置 SSH 更稳）
+  const [engine, setEngineState] = useState<"builtin" | "openssh" | "switched" | null>(null);
+  useEffect(() => {
+    let alive = true;
+    void getServersApi().then((api) => api.list()).then(
+      (list) => { if (alive) setEngineState(list.find((s) => s.id === serverId)?.connectionEngine ?? null); },
+      () => undefined,
+    );
+    return () => { alive = false; };
+  }, [serverId]);
+  const switchToBuiltin = async () => {
+    try {
+      await (await getServersApi()).setEngine(serverId, "builtin", null);
+      notifyServersChanged();
+      setEngineState("switched");
+    } catch (e) {
+      setError(formatError(e));
+    }
+  };
   useEffect(() => {
     let alive = true;
     setCheck(null);
@@ -92,6 +112,13 @@ export function InstallDialog({ serverId, command, inTerminal, onInstall, onLigh
           ))}
         </dl>
         <p className={`desk-install__note desk-install__note--${note?.tone ?? "muted"}`} role={note?.tone === "error" ? "alert" : "status"}>{note?.text ?? ""}</p>
+        {engine === "openssh" && (
+          <p className="desk-install__engine">
+            <span>{t("desktop.install.openssh")}</span>
+            <Button size="sm" onClick={() => void switchToBuiltin()}>{t("desktop.install.useBuiltin")}</Button>
+          </p>
+        )}
+        {engine === "switched" && <p className="desk-install__engine"><span>{t("desktop.install.switched")}</span></p>}
         <p>{label}</p>
         <CommandLine text={shown} />
       </div>
@@ -123,14 +150,18 @@ export function InstallingCard({ serverId, since, command, hint, timedOut, onRec
   }, []);
   const seconds = Math.max(0, Math.floor((now - since) / 1000));
   const elapsed = t("desktop.install.elapsed", { min: Math.floor(seconds / 60), sec: String(seconds % 60).padStart(2, "0") });
-  // 阶段和进度：还没有终端输出时（在等 sudo 密码、命令还没输入）照原来的提示
-  const stage = !progress ? (timedOut ? t("desktop.install.notYet", { button: t("desktop.recheck") })
+  // 终端在等什么（sudo 密码、apt 被占着、命令没自动输入）就照实说；还没开始装时照原来的提示
+  const waiting = progress?.stage === "error" ? null
+    : progress?.waiting === "password" ? t("desktop.install.waitPassword")
+      : progress?.waiting === "lock" ? t("desktop.install.waitLock")
+        : progress?.waiting === "notTyped" ? t("desktop.install.typeYourself") : null;
+  const stage = waiting ?? (!progress || progress.stage === "start" ? (timedOut ? t("desktop.install.notYet", { button: t("desktop.recheck") })
     : hint === "password" ? t("desktop.install.followPassword")
       : hint === "copied" ? t("desktop.install.followCopied") : t("desktop.install.follow"))
     : progress.stage === "error" ? t("desktop.install.stageError")
       : progress.stage === "install" ? (progress.percent !== null ? t("desktop.install.stageInstallPct", { pct: progress.percent }) : t("desktop.install.stageInstall"))
         : progress.stage === "download" ? (progress.total ? t("desktop.install.stageDownload", { got: progress.got, total: progress.total }) : t("desktop.install.stageDownloadStart"))
-          : t("desktop.install.stageUpdate");
+          : t("desktop.install.stageUpdate"));
   // 进度条：下载占前一半，安装占后一半；不知道进度时显示忙碌条
   const pct = !progress || progress.stage === "error" ? null
     : progress.stage === "install" ? (progress.percent !== null ? 50 + progress.percent / 2 : null)
@@ -140,7 +171,9 @@ export function InstallingCard({ serverId, since, command, hint, timedOut, onRec
       <b>{t("desktop.install.installing")}</b>
       <p role="status" className={progress?.stage === "error" ? "desk__error" : undefined}>{stage}</p>
       <div className="desk__progress" aria-hidden="true">
-        {pct !== null ? <span className="desk__progress-bar" style={{ width: `${pct}%` }} /> : !timedOut && progress?.stage !== "error" && <span className="desk__progress-busy" />}
+        {/* 在等用户（输密码、自己粘贴命令）时不显示忙碌条，免得看着像在装 */}
+        {pct !== null ? <span className="desk__progress-bar" style={{ width: `${pct}%` }} />
+          : !timedOut && progress?.stage !== "error" && progress?.waiting !== "password" && progress?.waiting !== "notTyped" && <span className="desk__progress-busy" />}
       </div>
       {/* 终端最后一行和已用时间：固定占两行，有没有输出都不跳 */}
       <p className="desk__install-line mono" title={progress?.line}>{progress?.line ?? ""}</p>

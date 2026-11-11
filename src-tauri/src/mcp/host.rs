@@ -398,6 +398,10 @@ impl McpHost for TauriHost {
         super::settings::load_pin(&self.app)
     }
 
+    fn pierlink_status(&self) -> Result<serde_json::Value, AppError> {
+        super::status::collect(&self.app)
+    }
+
     fn open_sftp(&self, server_id: &str) -> Result<pierlink_core::sftp::SftpSession, AppError> {
         super::open_sftp(&self.app, server_id)
     }

@@ -476,7 +476,7 @@ async fn 旧式版本和工具列表不等待入口授权() {
             .permission_blocked
             .store(false, Ordering::Release);
         let tools = list["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 27);
+        assert_eq!(tools.len(), 28);
         assert!(
             tools
                 .iter()
@@ -2512,6 +2512,17 @@ async fn 一次读多个文件的文字超过总量时这个和后面的不读()
             "mcp.read_files_total_limit"
         );
     }
+    client.close().await;
+}
+
+#[tokio::test]
+async fn pierlink_status_带版本和电脑名_不用额外权限() {
+    let fixture = Fixture::new();
+    let mut client = fixture.legacy().await;
+    let result = client.call("pierlink_status", json!({})).await;
+    let value = &result["result"]["structuredContent"];
+    assert_eq!(value["version"], env!("CARGO_PKG_VERSION"), "{result}");
+    assert!(value.get("computer").is_some());
     client.close().await;
 }
 

@@ -3454,7 +3454,14 @@
       "stageInstall": "Installing…",
       "stageInstallPct": "Installing: {{pct}}%",
       "stageError": "The install failed; see the line below and the terminal",
-      "elapsed": "{{min}} min {{sec}} s so far"
+      "elapsed": "{{min}} min {{sec}} s so far",
+      "waitPassword": "Type your sudo password in the opened terminal and press Enter (nothing shows while you type)",
+      "waitLock": "The server is installing automatic updates and apt is busy: installation continues when it finishes, which may take a few minutes",
+      "noPrompt": "No shell prompt showed up, so the install command wasn't typed: copy it from the desktop card and paste it here",
+      "typeYourself": "The install command wasn't typed automatically: click Copy command below and paste it into the opened terminal",
+      "openssh": "This server connects with system OpenSSH; the built-in SSH is more reliable",
+      "useBuiltin": "Use built-in SSH",
+      "switched": "Switched to built-in SSH"
     },
     "help": {
       "open": "How to install",

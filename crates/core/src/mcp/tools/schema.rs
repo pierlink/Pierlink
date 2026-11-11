@@ -101,6 +101,7 @@ pub(super) static TOOLS: LazyLock<Vec<Tool>> = LazyLock::new(|| {
         ("list_jobs", "按开始时间从早到晚列出当前入口的后台任务，包含 command（前 200 个字符）、started_ms（Unix 毫秒）和 stop_reason；完成的任务保留 30 分钟。", json!({}), json!([])),
         ("list_dir", "列出 Windows 授权文件夹内容，path 使用 Windows 绝对路径；每项含 size、mtime_ms、is_dir，最多 2000 项。", json!({"path":id}), json!(["path"])),
         ("sync_status", "查询允许访问的同步任务状态、待同步字节和各服务器完成度；task 为任务名或 ID。", json!({"task":id}), json!([])),
+        ("pierlink_status", "Pierlink 自己的基本情况（只读，不含地址、端口、用户名、密码、密钥、令牌和路径）：版本、这台电脑的名字；全部服务器的名字、分组、连接方式（engine：builtin 内置 SSH，openssh 系统 OpenSSH）、登录方式、是否在线（内置 SSH 才知道）；打开着的终端；远程桌面；同步任务概况；AI 接入入口的状态。排查连接、安装桌面、同步这类问题时先看它；服务器不一定在这个入口的授权里，要操作的话以 list_targets 为准。", json!({}), json!([])),
         ("sync_wait", "先扫描本机改动再等待允许访问的目标同步完成，改完文件后先等待再编译。返回 completed（同步已完成）、timed_out（达到等待期限）、reason（未完成原因）、errors（错误列表）和 tasks（各任务及服务器状态）。任务发生错误、暂停或服务器离线时立即返回。", json!({"task":id,"timeout_secs":sync_timeout}), json!([])),
     ].into_iter().map(|(name, description, properties, required)| {
         let schema = json!({"type":"object","properties":properties,"required":required,"additionalProperties":false});

@@ -52,3 +52,15 @@ export function looksTyped(data: string): boolean {
   // Alt+键：ESC 后面跟一个字符
   return [...rest].length === 1;
 }
+
+/**
+ * 光标所在这一行像不像 shell 在等输入的提示符（以 $ # % > ❯ ➜ » 结尾，或者像 oh-my-zsh 那样以 ➜ ❯ 开头），
+ * 而不是在问密码、口令、验证码。
+ * 连接不报“连接完成”时（Windows 上的系统 OpenSSH）据此判断登录好了没有，再自动输入命令
+ * @param line 光标这一行的文字
+ * @returns 像提示符为 true
+ */
+export function looksLikePrompt(line: string): boolean {
+  const s = line.trimEnd();
+  return (/[$#%>❯➜»]$/.test(s) || /^[➜❯]\s/.test(s)) && !/password|passphrase|passcode|verification code|密码|口令|验证码/i.test(s);
+}

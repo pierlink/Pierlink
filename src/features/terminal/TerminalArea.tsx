@@ -13,7 +13,7 @@ import { TerminalView, type TermHandle } from "./TerminalView";
 import { DesktopPane } from "../desktop/DesktopPane";
 import { focusDesktopWindow, openDesktopWindow, useDesktopPopouts } from "../desktop/popouts";
 import { DESKTOP_INSTALL_EVENT, desktopWindowUrl } from "../desktop/DesktopWindow";
-import { reportInstallOutput } from "../desktop/installProgress";
+import { reportInstallNotTyped, reportInstallOutput } from "../desktop/installProgress";
 import type { Connecting, HostKeyStep, OpenSpec, RemoteSpec } from "./types";
 import { folderName, parseQuickTarget } from "./util";
 import { droppedText } from "./localPaths";
@@ -1699,6 +1699,10 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
                       onRetryConnect={() => retryPane(id)}
                       autoCommand={autoCommands.current.get(id)}
                       onAutoCommandSent={() => autoCommands.current.delete(id)}
+                      onAutoCommandBlocked={() => {
+                        const installing = installPanes.current.get(id);
+                        if (installing) reportInstallNotTyped(installing);
+                      }}
                       onStatus={(s) => setStatus(id, s)}
                       onCwd={(cwd) => { if (cwd !== p.cwd) reportCwd(p.session, cwd); updatePane(id, (x) => (x.cwd === cwd ? {} : { cwd })); }}
                       onCommand={() => updatePane(id, (x) => ({ commands: x.commands + 1 }))}
