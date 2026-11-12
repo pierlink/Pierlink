@@ -29,10 +29,19 @@ function unwrap<T>(r: { status: "ok"; data: T } | { status: "error"; error: unkn
   return r.data;
 }
 
-/** 浏览器预览：没有新版本 */
+/** 浏览器预览：平时没有新版本；地址带 ?update 时假装有一个，用来看右下角的更新卡片 */
 const previewApi: UpdatesApi = {
-  async check() { return null; },
-  async download() { return ""; },
+  async check() {
+    if (!new URLSearchParams(location.search).has("update")) return null;
+    return { version: "9.9.9", currentVersion: "0.0.0", notes: "Pierlink 9.9.9\n\n- 预览用的示例更新说明。", date: null, downloaded: false };
+  },
+  async download(onProgress) {
+    for (let i = 1; i <= 5; i++) {
+      await new Promise((r) => setTimeout(r, 300));
+      onProgress({ kind: "downloading", downloaded: i * 2_000_000, total: 10_000_000 });
+    }
+    return "9.9.9";
+  },
   async install() { /* 预览里不安装 */ },
 };
 

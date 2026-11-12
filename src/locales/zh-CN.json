@@ -128,11 +128,15 @@
       "engine": "同步与连接",
       "licenses": "第三方组件许可证",
       "licensesHint": "随安装包附带，位于程序目录",
-      "license": "许可证"
+      "license": "许可证",
+      "feedback": "反馈",
+      "reportIssue": "提交问题"
     },
     "closeToTray": "关闭窗口时缩到托盘",
     "closeToTrayHint": "同步和终端在后台继续运行",
     "closeToTrayUnavailable": "系统托盘不可用，关闭窗口会退出应用",
+    "autostart": "开机自动启动",
+    "autostartHint": "登录 Windows 后在托盘里启动，不弹出窗口",
     "files": {
       "overwrite": "同名文件直接覆盖",
       "overwriteHint": "拖动传输文件时，目标里有同名的文件就直接覆盖，不再询问"
@@ -2920,7 +2924,7 @@
     "upToDate": "已经是最新版本",
     "checkFailed": "检查失败：{{text}}",
     "autoCheck": "自动检查更新",
-    "autoCheckHint": "启动时检查一次，不会自动下载和安装。",
+    "autoCheckHint": "启动时和之后每 6 小时检查一次，不会自动下载和安装。",
     "available": "Pierlink {{version}} 可以更新了",
     "availableHint": "当前 {{current}}。先下载，下好后你点“安装更新”才会安装。",
     "notes": "更新说明",

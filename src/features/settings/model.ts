@@ -8,6 +8,8 @@ export interface AppSettings {
   language: "system" | "zh-CN" | "en";
   /** 关闭窗口时缩到托盘（同步和终端继续运行）；关掉后关闭窗口 = 退出应用 */
   closeToTray: boolean;
+  /** 开机自动启动（登录 Windows 后在托盘里启动，不弹窗口） */
+  autostart: boolean;
   terminal: {
     fontSize: number;
     cursorStyle: "bar" | "block" | "underline";
@@ -101,6 +103,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   theme: "dark",
   language: "system",
   closeToTray: true,
+  autostart: false,
   terminal: { fontSize: 13, cursorStyle: "bar", cursorWidth: 2, cursorBlink: true, scrollback: 10000, defaultShell: null, confirmMultilinePaste: true, rightClickCopyPaste: false, confirmClose: true, broadcastConfirmDanger: true, commandPrediction: true, powershellBell: true, attention: "all", explorerMenu: true, systemConpty: false },
   files: { overwriteOnDrop: false },
   desktop: { openInWindow: false },
@@ -136,6 +139,7 @@ export function normalizeSettings(raw: unknown): AppSettings {
     theme: oneOf(r.theme, ["dark", "light", "system"] as const, d.theme),
     language: oneOf(r.language, ["system", "zh-CN", "en"] as const, d.language),
     closeToTray: bool(r.closeToTray, d.closeToTray),
+    autostart: bool(r.autostart, d.autostart),
     terminal: {
       fontSize: clamp(t.fontSize, 10, 24, d.terminal.fontSize),
       cursorStyle: oneOf(t.cursorStyle, ["bar", "block", "underline"] as const, d.terminal.cursorStyle),

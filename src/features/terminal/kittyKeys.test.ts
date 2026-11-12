@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { KittyKeyboard, localShellFamily, newlineKey, parseOsc52 } from "./kittyKeys";
+import { copyPasteKey, KittyKeyboard, localShellFamily, newlineKey, parseOsc52 } from "./kittyKeys";
 
 const key = (k: Partial<KeyboardEvent> & { key: string }) => ({ shiftKey: false, altKey: false, ctrlKey: false, metaKey: false, ...k });
 
@@ -109,6 +109,26 @@ describe("Shift+Enter、Ctrl+Enter：和常用终端一样是换行，原生功�
     expect(localShellFamily("c:\\windows\\system32\\cmd.exe")).toBe("cmd");
     expect(localShellFamily("c:\\program files\\git\\bin\\bash.exe")).toBe("other");
     expect(localShellFamily("c:\\windows\\system32\\wsl.exe#ubuntu")).toBe("wsl");
+  });
+});
+
+describe("Ctrl+C、Ctrl+V 认哪个键", () => {
+  it("认物理键；模拟出来的按键（Windows 剪贴板历史帮你粘贴）没有物理键时看字母", () => {
+    expect(copyPasteKey({ code: "KeyV", key: "v" })).toBe("v");
+    expect(copyPasteKey({ code: "KeyC", key: "C" })).toBe("c");
+    // 换了键盘布局，物理键还是 V
+    expect(copyPasteKey({ code: "KeyV", key: "м" })).toBe("v");
+    // Windows 剪贴板历史模拟的 Ctrl+V：不带物理键
+    expect(copyPasteKey({ code: "", key: "v" })).toBe("v");
+    expect(copyPasteKey({ code: "Unidentified", key: "V" })).toBe("v");
+    expect(copyPasteKey({ code: "", key: "c" })).toBe("c");
+    // 非拉丁布局下剪贴板历史发来的 Ctrl+V：字母是别的字，按虚拟键码认
+    expect(copyPasteKey({ code: "", key: "м", keyCode: 86 })).toBe("v");
+    expect(copyPasteKey({ code: "", key: "с", keyCode: 67 })).toBe("c");
+    expect(copyPasteKey({ code: "", key: "ч", keyCode: 88 })).toBeNull();
+    // 有物理键、又不是 C、V：照常交给程序
+    expect(copyPasteKey({ code: "KeyM", key: "v" })).toBeNull();
+    expect(copyPasteKey({ code: "", key: "x" })).toBeNull();
   });
 });
 

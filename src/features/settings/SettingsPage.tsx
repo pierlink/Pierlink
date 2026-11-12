@@ -10,6 +10,7 @@ import { trayAvailable } from "../shell/ExitGuard";
 import { getUpdatesApi } from "../updates/api";
 import { announceUpdate } from "../updates/UpdateNotice";
 import { formatError } from "../../errors";
+import { commands } from "../../bindings/commands";
 import { BackupSection } from "./BackupSection";
 import { MobileSection } from "../mobile/MobileSection";
 import { ProxySection } from "./ProxySection";
@@ -121,6 +122,13 @@ export function SettingsPage({ version }: { version: string | null }) {
   const [historyCleared, setHistoryCleared] = useState(false);
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [updateResult, setUpdateResult] = useState<{ tone: "ok" | "accent" | "danger"; text: string } | null>(null);
+  /** 反馈：打开 GitHub 的“问题反馈”表单，版本一栏先填好（表单按字段 id 预填，不是仓库成员也能用） */
+  const reportIssue = () => {
+    const v = version ?? t("settings.about.devBuild");
+    const url = `https://github.com/pierlink/Pierlink/issues/new?template=bug_report.yml&version=${encodeURIComponent(v)}`;
+    if (inTauri) void commands.openInBrowser(url);
+    else window.open(url, "_blank", "noopener");
+  };
   const checkUpdate = () => {
     setChecking(true);
     setUpdateResult(null);
@@ -170,6 +178,9 @@ export function SettingsPage({ version }: { version: string | null }) {
             </Row>
             <Row label={t("settings.closeToTray")} hint={tray ? t("settings.closeToTrayHint") : t("settings.closeToTrayUnavailable")}>
               <Switch label={t("settings.closeToTray")} checked={settings.closeToTray && tray} disabled={!tray} onChange={(v) => update((s) => ({ ...s, closeToTray: v }))} />
+            </Row>
+            <Row label={t("settings.autostart")} hint={t("settings.autostartHint")}>
+              <Switch label={t("settings.autostart")} checked={settings.autostart} onChange={(v) => update((s) => ({ ...s, autostart: v }))} />
             </Row>
           </div>
         </section>
@@ -339,6 +350,9 @@ export function SettingsPage({ version }: { version: string | null }) {
             )}
             <Row label={t("updates.autoCheck")} hint={t("updates.autoCheckHint")}>
               <Switch label={t("updates.autoCheck")} checked={settings.updates.autoCheck} onChange={(v) => update((s) => ({ ...s, updates: { ...s.updates, autoCheck: v } }))} />
+            </Row>
+            <Row label={t("settings.about.feedback")}>
+              <Button size="sm" onClick={reportIssue}>{t("settings.about.reportIssue")}</Button>
             </Row>
             <Row label={t("settings.about.license")}><span className="mono">FSL-1.1-ALv2</span></Row>
             <Row label={t("settings.about.engine")}>{/* 与 scripts/fetch-bundled.mjs 里固定的版本一致 */}<span className="mono">Syncthing 2.1.7 · Win32-OpenSSH 10.0p2</span></Row>

@@ -85,6 +85,12 @@ export function ExitGuard() {
     void shell().then((c) => c.explorerMenuConfig(settings.terminal.explorerMenu, t("explorer.openHere"))).catch(() => { /* 右键菜单保持原样 */ });
   }, [settings.terminal.explorerMenu, t, i18n.language]);
 
+  // 开机自动启动：按设置写入或删除（每次启动都按当前程序的位置重写）
+  useEffect(() => {
+    if (!inTauri) return;
+    void shell().then((c) => c.autostartConfig(settings.autostart)).catch(() => { /* 保持原样 */ });
+  }, [settings.autostart]);
+
   const quit = useCallback(() => {
     setQuitting(true);
     void shell().then((c) => c.appQuit()).catch(() => setQuitting(false));

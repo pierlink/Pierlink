@@ -4,9 +4,9 @@
 
 # Pierlink
 
-**A Windows workbench for remote development across many servers**
+**A Windows workbench for running a crew of AI agents**
 
-Terminals, file sync and AI access for all your servers, in one window.
+AI agents on your servers edit Windows files, run commands and work in terminals through Pierlink, and can direct another agent in another terminal; you approve risky actions on your desktop or phone. Multi-server terminals, file sync and remote desktop live in the same window.
 
 English · [简体中文](README.md)
 
@@ -22,9 +22,12 @@ English · [简体中文](README.md)
 
 ## Why Pierlink
 
-- **Sign in once, use it everywhere**: the built-in SSH signs in once (passwords and verification codes included), and terminals, files, port forwarding, sync and the overview all share that session.
-- **Edit locally, run on the server**: server folders and local Windows folders stay in sync both ways. Edit in the editor you already use; the server has the new version right away.
-- **AI does the work, you stay in charge**: AI assistants such as Claude Code, Codex and Cursor can work with your terminals and servers; an AI running on a server can edit, build and run on Windows as if it were installed there. It asks before anything risky. Away from your desk? Approve from your phone.
+- **An agent on your server works as if it were installed on Windows**: no Claude Code on Windows needed. The agent on your server reads, writes and edits lines in the Windows folders you allow, and builds, runs and starts background jobs on Windows.
+- **One agent directs another**: an agent can open a visible terminal, run Claude Code, Codex or another agent in it, send it tasks, wait for its answers and read its output; you can take over at any time.
+- **The agents work, you stay in charge**: anything risky (such as `rm -rf` or a force push) asks you first; away from your desk, you can watch terminals and approve from your phone.
+- **Several computers at once**: when several computers connect to the same server, the agent on that server works on the one you're using.
+- **No account**: Pierlink needs no sign-up, and your agents can connect however they sign in.
+- **A handy multi-server tool too**: the built-in SSH signs in once (passwords and verification codes included) for terminals, files, port forwarding, sync and the overview; server folders and local Windows folders stay in sync both ways.
 
 ## Features
 
@@ -87,7 +90,7 @@ English · [简体中文](README.md)
 
 1. Download `Pierlink_<version>_x64-setup.exe` from [Releases](https://github.com/pierlink/Pierlink/releases/latest).
 2. Run the installer, pick English or Chinese, and follow the steps. No administrator rights needed.
-3. When a new version is out, a notice appears at the bottom of the window; one click updates.
+3. When a new version is out, a card appears in the bottom-right corner of the window: choose Download update, then Install update once it's downloaded.
 
 **Requirements**
 

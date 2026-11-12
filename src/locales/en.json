@@ -129,11 +129,15 @@
       "engine": "Sync and connections",
       "licenses": "Third-party licenses",
       "licensesHint": "Shipped with the installer, in the program folder",
-      "license": "License"
+      "license": "License",
+      "feedback": "Feedback",
+      "reportIssue": "Report an issue"
     },
     "closeToTray": "Minimize to tray when closing the window",
     "closeToTrayHint": "Sync and terminals keep running in the background",
     "closeToTrayUnavailable": "The system tray is unavailable, so closing the window quits the app",
+    "autostart": "Start with Windows",
+    "autostartHint": "Starts in the tray after you sign in, without opening a window",
     "files": {
       "overwrite": "Overwrite files with the same name",
       "overwriteHint": "When you transfer by dragging, replace files with the same name without asking"
@@ -2967,7 +2971,7 @@
     "upToDate": "You're on the latest version",
     "checkFailed": "Check failed: {{text}}",
     "autoCheck": "Check for updates automatically",
-    "autoCheckHint": "Checks once at startup; nothing is downloaded or installed automatically.",
+    "autoCheckHint": "Checks at startup and every 6 hours; nothing is downloaded or installed automatically.",
     "available": "Pierlink {{version}} is available",
     "availableHint": "You have {{current}}. It downloads first; nothing is installed until you click Install update.",
     "notes": "What's new",

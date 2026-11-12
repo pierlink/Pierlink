@@ -1,5 +1,6 @@
 import { createPortal } from "react-dom";
 import type { ReactNode } from "react";
+import { useOccupyBottom } from "./bottomOccupied";
 
 let root: HTMLElement | null = null;
 
@@ -19,5 +20,6 @@ function noticeRoot(): HTMLElement {
  * @param order 排序：数字小的离底部近
  */
 export function Notice({ children, order = 0 }: { children: ReactNode; order?: number }) {
+  useOccupyBottom();
   return createPortal(<div className="notice-stack__item" style={{ order }}>{children}</div>, noticeRoot());
 }

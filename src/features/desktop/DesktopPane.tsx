@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import RFB from "@novnc/novnc";
 import { AppWindow, CircleQuestionMark, Expand, Globe, Maximize, Minimize, Power, Unplug, X } from "lucide-react";
 import { Button, Checkbox, Dialog, Select } from "../../components";
+import { copyPasteKey } from "../terminal/kittyKeys";
 import { formatError, isAppError } from "../../errors";
 import { clipboardSequence, readMarkedClipboardText, writeClipboardText, writeMarkedClipboardText } from "../shell/clipboard";
 import { CommandLine } from "../mcp/McpParts";
@@ -491,7 +492,7 @@ export function DesktopPane({ serverId, visible, grabKeyboard = true, title, con
     const XK_CONTROL_L = 0xffe3;
     const onKey = (ev: KeyboardEvent) => {
       if (ev.key === "Control") ctrlHeld = ev.type === "keydown";
-      if (ev.type !== "keydown" || ev.code !== "KeyV" || !ev.ctrlKey || ev.altKey || ev.metaKey || !rfbRef.current) return;
+      if (ev.type !== "keydown" || copyPasteKey(ev) !== "v" || !ev.ctrlKey || ev.altKey || ev.metaKey || !rfbRef.current) return;
       ev.preventDefault();
       ev.stopPropagation();
       const shift = ev.shiftKey;

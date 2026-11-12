@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import { Save, X } from "lucide-react";
-import { Button, Dialog } from "../../components";
+import { Button, Dialog, useOccupyBottom } from "../../components";
 import { formatError } from "../../errors";
 import { getFilesApi } from "./api";
 import { baseName } from "./path";
@@ -41,6 +41,8 @@ export function TextEditor({ loc, path, where, onClose, onSaved }: {
   onSaved: () => void;
 }) {
   const { t } = useTranslation();
+  // 编辑器盖满窗口：右下角的更新卡片先让开，不压住行号和编码
+  useOccupyBottom();
   const [state, setState] = useState<"loading" | "ready" | "error">("loading");
   const [error, setError] = useState<string | null>(null);
   const [text, setText] = useState("");

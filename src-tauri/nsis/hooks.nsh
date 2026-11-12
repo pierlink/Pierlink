@@ -31,12 +31,13 @@
 ; 旧数据只在默认安装目录（%LOCALAPPDATA%\Pierlink）里，安装到别处时不碰，避免误删同名目录。
 !macro NSIS_HOOK_POSTUNINSTALL
   Delete "$INSTDIR\syncthing\pierlink.lock"
-  ; 资源管理器右键菜单“在 Pierlink 中打开”（由程序按设置写在当前用户下，见 src-tauri/src/explorer_menu.rs）。
+  ; 资源管理器右键菜单“在 Pierlink 中打开”和开机自动启动（由程序按设置写在当前用户下，见 src-tauri/src/explorer_menu.rs、autostart.rs）。
   ; 更新时不删：新版本启动后会按设置重新写
   ${If} $UpdateMode <> 1
     DeleteRegKey HKCU "Software\Classes\Directory\Background\shell\Pierlink"
     DeleteRegKey HKCU "Software\Classes\Directory\shell\Pierlink"
     DeleteRegKey HKCU "Software\Classes\Drive\shell\Pierlink"
+    DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "Pierlink"
   ${EndIf}
   ${If} $DeleteAppDataCheckboxState = 1
   ${AndIf} $UpdateMode <> 1

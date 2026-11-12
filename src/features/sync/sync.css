@@ -84,7 +84,8 @@
 .task-row__bar--neutral > span { background: var(--text-dim); }
 .task-row__detail { font-size: var(--fs-xs); color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
-.sync-detail { flex: 1; min-width: 0; min-height: 0; overflow: auto; display: flex; flex-direction: column; gap: 14px; padding: 16px 18px; }
+/* 底部留白加上右下角更新卡片的高度（--upd-float-h），MCP 页也用这一块：窄窗口下最后一排控件能滚到卡片上面 */
+.sync-detail { flex: 1; min-width: 0; min-height: 0; overflow: auto; display: flex; flex-direction: column; gap: 14px; padding: 16px 18px calc(16px + var(--upd-float-h, 0px)); }
 /* 每一块保持自己的高度，内容多了整个面板滚动；不然事件一多，失败文件框、冲突框（overflow: hidden）会被压成一条线 */
 .sync-detail > * { flex-shrink: 0; }
 .sync-detail__head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }

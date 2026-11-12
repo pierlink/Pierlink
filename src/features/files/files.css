@@ -29,7 +29,8 @@
 .files__notice--muted { background: var(--chip); color: var(--text-muted); cursor: default; }
 .files__notice--muted:hover { background: var(--chip); }
 
-.files__list { flex: 1; min-height: 0; overflow: auto; padding: 4px; outline: none; scrollbar-width: thin; }
+/* 右下角有更新卡片时底部留出卡片的高度（--upd-float-h），最后几行能滚到卡片上面 */
+.files__list { flex: 1; min-height: 0; overflow: auto; padding: 4px 4px calc(4px + var(--upd-float-h, 0px)); outline: none; scrollbar-width: thin; }
 .files__list:focus-visible { box-shadow: inset 0 0 0 2px var(--accent-soft); }
 .files__row {
   display: grid; grid-template-columns: 16px minmax(0, 1fr) 56px 74px; align-items: center; gap: 8px;

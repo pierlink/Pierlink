@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Pierlink",
-  "version": "1.2.10",
+  "version": "1.2.11",
   "identifier": "com.pierlink.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -34,8 +34,8 @@
     ],
     "publisher": "Pierlink",
     "category": "DeveloperTool",
-    "shortDescription": "Multi-server remote development workbench for Windows",
-    "longDescription": "Windows 多服务器远程开发工作台 / A Windows workbench for remote development across many servers",
+    "shortDescription": "A Windows workbench for running a crew of AI agents",
+    "longDescription": "管一群 AI agent 的 Windows 工作台 / A Windows workbench for running a crew of AI agents",
     "copyright": "Copyright © 2026 pierlink",
     "license": "FSL-1.1-ALv2",
     "licenseFile": "resources/licenses/Pierlink-LICENSE.txt",

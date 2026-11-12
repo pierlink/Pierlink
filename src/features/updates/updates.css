@@ -1,10 +1,13 @@
-/* 有新版本的提示条：和断网提示一样浮在窗口底部 */
+/* 有新版本的提示卡片：浮在窗口右下角（状态栏上面），不挡中间的内容 */
+.upd-float { position: fixed; right: 16px; bottom: 40px; z-index: 950; width: min(380px, calc(100vw - 32px)); }
 .upd-banner {
-  display: flex; align-items: center; gap: 10px; max-width: calc(100vw - 32px);
-  padding: 10px 14px; border-radius: var(--r-xl); border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border));
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 12px 14px; border-radius: var(--r-xl); border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border));
   background: color-mix(in srgb, var(--panel-solid) 92%, var(--accent)); box-shadow: var(--shadow-pop);
 }
-.upd-banner > svg { flex: none; color: var(--accent); }
+.upd-banner__head { display: flex; align-items: flex-start; gap: 10px; min-width: 0; }
+.upd-banner__head > svg { flex: none; margin-top: 3px; color: var(--accent); }
+.upd-banner__actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 6px; }
 .upd-banner__text { display: flex; flex-direction: column; gap: 2px; font-size: var(--fs-sm); line-height: 1.5; min-width: 0; }
 .upd-notes { margin: 0; white-space: pre-wrap; font-family: inherit; color: var(--text); user-select: text; cursor: text; }
 .upd-progress { height: 6px; border-radius: 3px; background: var(--border); overflow: hidden; margin: 8px 0; }

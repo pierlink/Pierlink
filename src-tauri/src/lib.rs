@@ -2,6 +2,7 @@
 //! 业务逻辑放在 `pierlink-core`，这里只做薄薄的一层转发。
 
 mod app_shell;
+mod autostart;
 mod builtin;
 mod clipboard_image;
 mod convert;
@@ -14,6 +15,8 @@ mod explorer_menu;
 mod files;
 mod forwards;
 mod history;
+#[cfg(windows)]
+mod hkcu;
 mod host_key;
 mod keys;
 mod mcp;
@@ -54,6 +57,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
         app_shell::app_shell_config,
         app_shell::app_tray_available,
         app_shell::app_restart,
+        autostart::autostart_config,
         explorer_menu::app_take_open_dirs,
         explorer_menu::explorer_menu_config,
         mcp::mcp_settings_get,
@@ -268,8 +272,12 @@ fn e2e_devtools_port() -> Option<u16> {
         .filter(|p| *p >= 1024)
 }
 
-/// 按配置创建主窗口（配置里 create=false，由这里创建，才能按需加测试用的浏览器参数）
-fn create_main_window(app: &tauri::AppHandle) -> tauri::Result<()> {
+/// 按配置创建主窗口（配置里 create=false，由这里创建，才能按需加测试用的浏览器参数）。
+///
+/// :param app: 应用句柄
+/// :param hidden: 先不显示（开机自动启动时只在托盘里）
+/// :return: 创建失败时的错误
+fn create_main_window(app: &tauri::AppHandle, hidden: bool) -> tauri::Result<()> {
     let Some(config) = app
         .config()
         .app
@@ -281,6 +289,9 @@ fn create_main_window(app: &tauri::AppHandle) -> tauri::Result<()> {
         return Err(tauri::Error::WindowNotFound);
     };
     let mut builder = tauri::WebviewWindowBuilder::from_config(app, &config)?;
+    if hidden {
+        builder = builder.visible(false);
+    }
     if let Some(args) = e2e_browser_args() {
         eprintln!("自动化测试：打开 WebView2 调试端口: 参数={args}");
         builder = builder.additional_browser_args(&args);
@@ -319,6 +330,8 @@ pub fn run() {
         if let Some(i) = args.iter().position(|a| a == explorer_menu::OPEN_DIR_ARG) {
             args.drain(i..(i + 2).min(args.len()));
         }
+        // 开机自动启动的那次，重启后照常显示窗口
+        args.retain(|a| a != autostart::AUTOSTART_ARG);
     }
     if args.first().is_some_and(|a| a == "--proxy-connect") {
         std::process::exit(proxy::run_proxy_connect(&args[1..]));
@@ -338,6 +351,8 @@ pub fn run() {
     if let Some(code) = keys::run_askpass_if_requested() {
         std::process::exit(code);
     }
+    // 开机自动启动的：主窗口先不显示，只在托盘里
+    let at_login = autostart::launched_at_login(&args);
     let builder = specta_builder();
     #[cfg(debug_assertions)]
     if let Err(e) = export_with(&builder) {
@@ -348,7 +363,10 @@ pub fn run() {
         // 运行中又从资源管理器右键菜单打开（带 --open-dir）：把目录交给已有窗口
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             explorer_menu::forward(app, &args);
-            app_shell::show_main(app);
+            // 开机时又被拉起一次（比如启动文件夹里也放了快捷方式）：不弹窗口
+            if !autostart::launched_at_login(&args) {
+                app_shell::show_main(app);
+            }
         }))
         // 自动更新：从公开仓库的 Releases 检查、下载并校验签名（公钥在 tauri.conf.json）
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -410,7 +428,7 @@ pub fn run() {
             }
             // 最先确定数据目录：旧版本的数据在安装目录里，先搬到新位置
             let prepared = data::prepare_data_dir(app.handle());
-            create_main_window(app.handle())?;
+            create_main_window(app.handle(), at_login)?;
             // 打开数据库（失败时应用仍可使用终端等功能，相关命令返回打开失败的原因）
             let db = match prepared {
                 Ok(()) => data::DbState::open(app.handle()),
@@ -447,6 +465,10 @@ pub fn run() {
             }
             // 托盘要读数据库里的同步任务，放在数据库之后
             app_shell::setup_tray(app.handle());
+            // 开机自动启动时窗口没显示；托盘没建起来就照常显示，免得找不到窗口
+            if at_login && !app_shell::app_tray_available(app.handle().clone()) {
+                app_shell::show_main(app.handle());
+            }
             data::start_daily_backup(app.handle());
             // 有同步任务时在后台启动本机同步服务并连接相关服务器
             sync::resume_on_startup(app.handle());

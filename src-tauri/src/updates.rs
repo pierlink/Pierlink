@@ -328,6 +328,10 @@ pub async fn update_install(app: AppHandle) -> Result<(), AppError> {
         builder = builder.proxy(proxy);
     }
     let updater = builder
+        // 装好后照常重新打开，但不带这次启动时的参数：开机自动启动的（--autostart）装完要显示窗口，
+        // 从资源管理器右键菜单打开的（--open-dir）不再打开一次那个目录。插件默认会经 /ARGS 原样带上
+        .restart_after_install(false)
+        .installer_arg("/R")
         .on_before_exit(move || {
             eprintln!("即将运行安装程序：先关闭同步、隧道和终端");
             // 关闭要同步等几秒：在工作线程上时让运行时先把这个线程上的其他任务挪走

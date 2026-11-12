@@ -125,61 +125,9 @@ pub async fn explorer_menu_config(enabled: bool, label: String) {
 #[cfg(windows)]
 mod registry {
     use super::{KEYS, OPEN_DIR_ARG};
+    use crate::hkcu;
     use std::ffi::{OsStr, OsString};
     use std::io;
-    use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_SUCCESS};
-    use windows_sys::Win32::System::Registry::{
-        HKEY, HKEY_CURRENT_USER, KEY_WRITE, REG_OPTION_NON_VOLATILE, REG_SZ, RegCloseKey,
-        RegCreateKeyExW, RegDeleteTreeW, RegSetValueExW,
-    };
-
-    /// 以 0 结尾的 UTF-16
-    fn wide(s: &OsStr) -> Vec<u16> {
-        s.encode_wide().chain(Some(0)).collect()
-    }
-
-    /// 在 HKCU 下建好 key（已有就打开），写一个字符串值；name 为 None 时写默认值
-    fn set(key: &str, name: Option<&str>, value: &OsStr) -> io::Result<()> {
-        let key_w = wide(OsStr::new(key));
-        let name_w = name.map(|n| wide(OsStr::new(n)));
-        let data = wide(value);
-        let mut hkey: HKEY = std::ptr::null_mut();
-        // SAFETY：字符串都以 0 结尾、在调用期间有效；hkey 成功后由下面关闭
-        let rc = unsafe {
-            RegCreateKeyExW(
-                HKEY_CURRENT_USER,
-                key_w.as_ptr(),
-                0,
-                std::ptr::null(),
-                REG_OPTION_NON_VOLATILE,
-                KEY_WRITE,
-                std::ptr::null(),
-                &mut hkey,
-                std::ptr::null_mut(),
-            )
-        };
-        if rc != ERROR_SUCCESS {
-            return Err(io::Error::from_raw_os_error(rc as i32));
-        }
-        // SAFETY：data 是 u16 数组，按字节长度传入（含结尾的 0）
-        let rc = unsafe {
-            RegSetValueExW(
-                hkey,
-                name_w.as_ref().map_or(std::ptr::null(), |n| n.as_ptr()),
-                0,
-                REG_SZ,
-                data.as_ptr().cast(),
-                (data.len() * 2) as u32,
-            )
-        };
-        // SAFETY：hkey 由上面成功打开
-        unsafe { RegCloseKey(hkey) };
-        if rc != ERROR_SUCCESS {
-            return Err(io::Error::from_raw_os_error(rc as i32));
-        }
-        Ok(())
-    }
 
     /// 注册三处菜单项：文字、图标（本程序）、命令 `"<本程序>" --open-dir "%V"`
     pub(super) fn register(label: &str) -> io::Result<()> {
@@ -188,9 +136,9 @@ mod registry {
         command.push(exe.as_os_str());
         command.push(format!("\" {OPEN_DIR_ARG} \"%V\""));
         for key in KEYS {
-            set(key, None, OsStr::new(label))?;
-            set(key, Some("Icon"), exe.as_os_str())?;
-            set(&format!(r"{key}\command"), None, &command)?;
+            hkcu::set(key, None, OsStr::new(label))?;
+            hkcu::set(key, Some("Icon"), exe.as_os_str())?;
+            hkcu::set(&format!(r"{key}\command"), None, &command)?;
         }
         Ok(())
     }
@@ -198,12 +146,7 @@ mod registry {
     /// 删掉三处菜单项（本来就没有也算成功）
     pub(super) fn unregister() -> io::Result<()> {
         for key in KEYS {
-            let key_w = wide(OsStr::new(key));
-            // SAFETY：key_w 以 0 结尾
-            let rc = unsafe { RegDeleteTreeW(HKEY_CURRENT_USER, key_w.as_ptr()) };
-            if rc != ERROR_SUCCESS && rc != ERROR_FILE_NOT_FOUND {
-                return Err(io::Error::from_raw_os_error(rc as i32));
-            }
+            hkcu::delete_tree(key)?;
         }
         Ok(())
     }

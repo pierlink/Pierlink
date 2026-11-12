@@ -24,7 +24,7 @@ import { commands } from "../../bindings/commands";
 import { inTauri } from "../shell/TitleBar";
 import { droppedText, explorerFolder } from "./localPaths";
 import { passwordBus } from "../passwords/bus";
-import { KittyKeyboard, localShellFamily, newlineKey, parseOsc52 } from "./kittyKeys";
+import { copyPasteKey, KittyKeyboard, localShellFamily, newlineKey, parseOsc52 } from "./kittyKeys";
 import { Prediction } from "./prediction";
 import { historyScope } from "./predict";
 import { shortcutOf } from "../shortcuts/runtime";
@@ -849,12 +849,13 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
         return false;
       }
       if (!ev.ctrlKey || ev.altKey || ev.metaKey) return true;
-      if (ev.code !== "KeyC" && ev.code !== "KeyV") return true;
+      const letter = copyPasteKey(ev);
+      if (letter === null) return true;
       // 只按 Ctrl+C、没有选中文字：交给 xterm 发给程序
-      if (ev.code === "KeyC" && !ev.shiftKey && !term.hasSelection()) return true;
+      if (letter === "c" && !ev.shiftKey && !term.hasSelection()) return true;
       ev.preventDefault();
       if (ev.type !== "keydown") return false;
-      if (ev.code === "KeyC") {
+      if (letter === "c") {
         const sel = term.getSelection();
         if (sel) {
           copyText.current(sel);

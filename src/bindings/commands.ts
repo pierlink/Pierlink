@@ -20,6 +20,12 @@ export const commands = {
 	/**  重启 Pierlink（系统的网页组件 WebView2 断开、开不了新窗口时用）：先和退出一样正常关掉同步、隧道、终端，再重新打开 */
 	appRestart: () => __TAURI_INVOKE<void>("app_restart"),
 	/**
+	 *  界面把设置同步过来：打开时写入（每次启动都按当前程序的位置重写），关掉时删除。只在 Windows 上做事。
+	 * 
+	 *  :param enabled: 设置里“开机自动启动”是否打开
+	 */
+	autostartConfig: (enabled: boolean) => __TAURI_INVOKE<void>("autostart_config", { enabled }),
+	/**
 	 *  界面取走等着打开的目录（界面加载好时、收到 pierlink://open-dir 时调用），每个目录在新标签里开一个本机终端。
 	 * 
 	 *  :return: 目录列表（取走后清空）

@@ -6,3 +6,4 @@ export * from "./Controls";
 export * from "./Select";
 export * from "./SuggestInput";
 export { Notice } from "./NoticeStack";
+export { useBottomOccupied, useOccupyBottom } from "./bottomOccupied";

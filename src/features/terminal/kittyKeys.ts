@@ -74,6 +74,22 @@ export class KittyKeyboard {
   }
 }
 
+/**
+ * 终端里的 Ctrl+C、Ctrl+V 认哪个键：认物理键（换了键盘布局、字母不在原位也照常用）；
+ * 模拟出来的按键不带物理键（code 为空，比如 Windows 剪贴板历史帮你粘贴时按的 Ctrl+V），再看字母；
+ * 非拉丁键盘布局下字母是别的字（俄语布局 V 键是“м”），最后看虚拟键码。
+ * @param ev 按键事件
+ * @returns "c"、"v"；别的键为 null
+ */
+export function copyPasteKey(ev: Pick<KeyboardEvent, "code" | "key"> & { keyCode?: number }): "c" | "v" | null {
+  if (ev.code === "KeyC") return "c";
+  if (ev.code === "KeyV") return "v";
+  if (ev.code && ev.code !== "Unidentified") return null;
+  const k = ev.key.toLowerCase();
+  if (k === "c" || k === "v") return k;
+  return ev.keyCode === 67 ? "c" : ev.keyCode === 86 ? "v" : null;
+}
+
 /** Windows 控制台的“按键”格式（win32-input-mode）：按下、松开。本机 PowerShell、命令提示符按它们自己的原生规则处理 */
 const WIN32_SHIFT_ENTER = "\x1b[13;28;13;1;16;1_\x1b[13;28;13;0;16;1_";
 const WIN32_CTRL_ENTER = "\x1b[13;28;10;1;8;1_\x1b[13;28;10;0;8;1_";

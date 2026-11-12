@@ -1,7 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { X } from "lucide-react";
-import { Button, Dialog } from "../../components";
+import { Button, Dialog, useOccupyBottom } from "../../components";
 import { formatError } from "../../errors";
 import { getFilesApi } from "./api";
 import { dismissDelete, startDelete, stopDelete, useDeletes } from "./deletes";
@@ -48,9 +48,22 @@ export function DeleteJobs({ loc }: { loc: Loc }) {
   const { t } = useTranslation();
   const key = locKey(loc);
   const list = useDeletes().filter((j) => j.loc === key);
-  if (!list.length) return null;
+  const has = list.length > 0;
+  // 浮窗看得见时（所在的标签和页面正显示着）右下角的更新卡片先让开，不盖住这里的 ×；
+  // 切到别的标签或页面时浮窗还挂着、只是藏起来了，这时不挡卡片
+  const ref = useRef<HTMLDivElement | null>(null);
+  const [inView, setInView] = useState(false);
+  useEffect(() => {
+    const el = ref.current;
+    if (!has || !el || typeof IntersectionObserver === "undefined") return;
+    const io = new IntersectionObserver((entries) => setInView(entries[entries.length - 1].isIntersecting));
+    io.observe(el);
+    return () => { io.disconnect(); setInView(false); };
+  }, [has]);
+  useOccupyBottom(has && inView);
+  if (!has) return null;
   return (
-    <div className="files__deletes">
+    <div className="files__deletes" ref={ref}>
       {list.map((j) => {
         const failed = j.state === "failed";
         const text = failed ? j.error ?? ""
