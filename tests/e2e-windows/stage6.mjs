@@ -364,7 +364,12 @@ await rec.step(conn, "Linux 服务器（WSL Ubuntu）：添加、信任指纹、
   await fill("User", LX.user);
   await fill("Display name", LX_NAME);
   await u.clickText("Specific key", ".pl-dialog");
-  await fill("Private key file", LX.key);
+  // 1.2.12 起私钥要先导入（加密存进 Pierlink），再从列表里选；导入过的同一把直接用原来那一把
+  await u.clickText("Import private key", ".pl-dialog");
+  await u.waitFor(`!!document.querySelector('.key-import__file')`, "导入私钥对话框");
+  await fill("Key file", LX.key);
+  await u.clickText("Import", ".pl-dialog:has(.key-import__file)");
+  await u.waitFor(`!document.querySelector('.key-import__file')`, "私钥导入好", 15000);
   await u.clickText("Save", ".pl-dialog");
   await u.waitFor(`!document.querySelector('.pl-dialog')`, "对话框关闭");
   const row = await u.waitFor(`(()=>{const i=[...document.querySelectorAll('.srv-row')].findIndex(r=>r.innerText.includes(${JSON.stringify(LX_NAME)})); return i>=0 ? String(i) : null;})()`, "服务器出现在列表里");

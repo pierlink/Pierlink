@@ -685,7 +685,12 @@ await rec.step(p, "添加服务器（本机 sshd，私钥登录）并连接", as
   await fill("Host", "127.0.0.1");
   await fill("User", USER);
   await u.clickText("Specific key", ".pl-dialog");
-  await fill("Private key file", KEY);
+  // 1.2.12 起私钥要先导入（加密存进 Pierlink），再从列表里选；导入过的同一把直接用原来那一把
+  await u.clickText("Import private key", ".pl-dialog");
+  await u.waitFor(`!!document.querySelector('.key-import__file')`, "导入私钥对话框");
+  await fill("Key file", KEY);
+  await u.clickText("Import", ".pl-dialog:has(.key-import__file)");
+  await u.waitFor(`!document.querySelector('.key-import__file')`, "私钥导入好", 15000);
   await u.clickText("Save", ".pl-dialog");
   await u.waitFor(`!document.querySelector('.pl-dialog')`, "对话框关闭");
   // 列表里可能已有升级测试留下的服务器，按地址找这一行

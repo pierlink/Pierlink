@@ -104,6 +104,11 @@ body.files-dragging, body.files-dragging * { cursor: grabbing !important; user-s
 .xfer-pop__title { font-weight: 600; font-size: var(--fs-sm); }
 .xfer-pop__clear { border: 0; background: none; padding: 2px 6px; border-radius: var(--r-sm); color: var(--text-muted); font: inherit; font-size: var(--fs-xs); cursor: pointer; }
 .xfer-pop__clear:hover { background: var(--hover); color: var(--text); }
+/* 下载文件夹一行：路径太长时省略中间以外的部分，出错时同一行改写原因，不推动下面的列表 */
+.xfer-pop__dir { display: flex; align-items: center; gap: 6px; padding: 6px 8px 6px 12px; border-bottom: 1px solid var(--border); font-size: var(--fs-xs); }
+.xfer-pop__dir-label { flex: none; color: var(--text-muted); }
+.xfer-pop__dir-path { flex: 1; min-width: 0; color: var(--text); }
+.xfer-pop__dir-path--error { color: var(--danger); }
 .xfer-pop__empty { padding: 20px 16px; color: var(--text-dim); font-size: var(--fs-xs); line-height: 1.6; }
 .xfer-pop__list { overflow: auto; padding: 6px; display: flex; flex-direction: column; gap: 6px; scrollbar-width: thin; }
 .xfer-pop__list .xfer__job { box-shadow: none; background: var(--card); animation: none; }

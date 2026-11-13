@@ -1,8 +1,10 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Banner, Button, Dialog, Segmented, SuggestInput, TextField } from "../../components";
+import { Banner, Button, Dialog, Segmented, Select, SuggestInput, TextField } from "../../components";
 import { formatError, isAppError } from "../../errors";
 import type { ServerInputView, ServerRecord } from "./api";
+import { ImportKeyDialog } from "./ImportKeyDialog";
+import { getImportedKeysApi, keyLabel, type ImportedKey } from "./importedKeys";
 import "./servers.css";
 
 type Auth = ServerInputView["authMethod"];
@@ -44,6 +46,21 @@ export function ServerDialog({ server, groups, onSave, onClose }: Props) {
   const [nameTouched, setNameTouched] = useState(!!server);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<{ field: string | null; text: string } | null>(null);
+  /** 导入过的私钥（“指定私钥”从这里选）；还没读到时为 null */
+  const [importedKeys, setImportedKeys] = useState<ImportedKey[] | null>(null);
+  /** 正在导入私钥：预先填好的文件（空串表示自己选） */
+  const [importing, setImporting] = useState<string | null>(null);
+  useEffect(() => {
+    void getImportedKeysApi().then((api) => api.list()).then(setImportedKeys, () => setImportedKeys([]));
+  }, []);
+  // 老服务器还按文件路径用私钥（没导入过）：下拉框里单列一项，旁边的按钮把它导入
+  const notImported = !!form.identityFile && importedKeys !== null
+    && !importedKeys.some((k) => k.path.toLowerCase() === form.identityFile?.toLowerCase());
+  const keyOptions = [
+    ...(form.identityFile ? [] : [{ value: "", label: importedKeys?.length ? t("servers.pickKey") : t("servers.noImportedKeys") }]),
+    ...(importedKeys ?? []).map((k) => ({ value: k.path, label: keyLabel(k) })),
+    ...(notImported && form.identityFile ? [{ value: form.identityFile, label: t("servers.keyNotImported", { path: form.identityFile }) }] : []),
+  ];
 
   const set = (patch: Partial<ServerInputView>) => { setForm((f) => ({ ...f, ...patch })); setError(null); };
   const fieldError = (f: string) => (error?.field === f ? error.text : null);
@@ -161,8 +178,15 @@ export function ServerDialog({ server, groups, onSave, onClose }: Props) {
         )}
         {form.authMethod === "key" && (
           <>
-            <TextField label={t("servers.identityFile")} className="pl-input mono" placeholder={t("servers.identityFilePlaceholder")} value={form.identityFile ?? ""} onChange={(e) => set({ identityFile: e.target.value || null })} aria-invalid={!!fieldError("identityFile")} />
-            {fieldError("identityFile") && <span className="srv-form__err" role="alert">{fieldError("identityFile")}</span>}
+            <div className="wiz-field">
+              <span className="wiz-field__label">{t("servers.privateKey")}</span>
+              <div className="srv-key">
+                <Select label={t("servers.privateKey")} className="srv-key__select" value={form.identityFile ?? ""} onChange={(v) => set({ identityFile: v || null })} options={keyOptions} />
+                <Button onClick={() => setImporting(notImported ? form.identityFile ?? "" : "")}>{notImported ? t("servers.importThisKey") : t("servers.importKey")}</Button>
+              </div>
+            </div>
+            {/* 固定占一行：报错出现、消失时下面的字段不跳 */}
+            <span className="srv-form__err srv-form__err--slot" role={fieldError("identityFile") ? "alert" : undefined}>{fieldError("identityFile") ?? ""}</span>
           </>
         )}
 
@@ -187,6 +211,13 @@ export function ServerDialog({ server, groups, onSave, onClose }: Props) {
         {/* 让回车提交表单 */}
         <button type="submit" hidden />
       </form>
+      {importing !== null && (
+        <ImportKeyDialog
+          initialPath={importing}
+          onCancel={() => setImporting(null)}
+          onDone={(k) => { setImporting(null); setImportedKeys((ks) => [...(ks ?? []).filter((x) => x.id !== k.id), k]); set({ identityFile: k.path }); }}
+        />
+      )}
     </Dialog>
   );
 }

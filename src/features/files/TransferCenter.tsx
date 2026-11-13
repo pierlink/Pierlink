@@ -1,12 +1,14 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { useTranslation } from "react-i18next";
 import { createPortal } from "react-dom";
-import { ArrowDownUp, ArrowRightLeft, Check, CircleAlert, X } from "lucide-react";
+import { ArrowDownUp, ArrowRightLeft, Check, CircleAlert, FolderInput, FolderOpen, X } from "lucide-react";
 import { Button, Dialog } from "../../components";
 import { formatError } from "../../errors";
 import { useSettings } from "../settings/store";
 import { getSyncApi } from "../sync/syncApi";
 import { getFilesApi } from "./api";
+import { pickFolder } from "../shell/pickFolder";
+import { downloadDirOf, prepareDownloadDir } from "./downloadDir";
 import type { DragPayload, DropTarget } from "./dnd";
 import { useDragState, dropTargetInfo } from "./dnd";
 import { formatSize, joinPath, sameLoc, syncCovering, type SyncPair } from "./path";
@@ -162,6 +164,35 @@ export function TransferButton() {
   const { count, percent } = runningSummary(jobs);
   const unseenBad = jobs.some((j) => jobFailed(j) && (j.finishedAt ?? 0) > seen);
   const lastStart = jobs.length ? jobs[jobs.length - 1].key : 0;
+  const { settings, update } = useSettings();
+  /** 下载文件夹（右键“下载”下到这里）；出错时这一行改写原因，不多占一行 */
+  const [downloadDir, setDownloadDir] = useState<string | null>(settings.files.downloadDir);
+  const [dirError, setDirError] = useState<string | null>(null);
+  useEffect(() => {
+    let alive = true;
+    void downloadDirOf(settings.files.downloadDir).then((d) => { if (alive) setDownloadDir(d); }, () => { /* 取不到默认路径时这一行先空着 */ });
+    return () => { alive = false; };
+  }, [settings.files.downloadDir]);
+  /** 换下载文件夹：选好就记进设置 */
+  const changeDir = async () => {
+    setDirError(null);
+    try {
+      const picked = await pickFolder();
+      if (picked) update((s) => ({ ...s, files: { ...s.files, downloadDir: picked } }));
+    } catch (e) {
+      setDirError(formatError(e));
+    }
+  };
+  /** 在资源管理器里打开下载文件夹（还没有就先建好） */
+  const openDir = async () => {
+    setDirError(null);
+    try {
+      const dir = await prepareDownloadDir(settings.files.downloadDir);
+      await (await getFilesApi()).openDefault(dir);
+    } catch (e) {
+      setDirError(formatError(e));
+    }
+  };
   // 新开始一个传输：按钮闪一下，提示进度在这里
   const [flash, setFlash] = useState(false);
   useEffect(() => {
@@ -198,7 +229,7 @@ export function TransferButton() {
         aria-haspopup="dialog"
         title={t("files.transfersTitle")}
         aria-label={t("files.transfers")}
-        onClick={() => setOpen(!open)}
+        onClick={() => { setOpen(!open); setDirError(null); }}
       >
         <ArrowDownUp size={14} />
         <span className="xfer-btn__text">{count > 0 ? t("files.trayRunning", { count, percent }) : t("files.transfers")}</span>
@@ -210,6 +241,12 @@ export function TransferButton() {
           <div className="xfer-pop__head">
             <span className="xfer-pop__title">{t("files.transfers")}</span>
             {ended && <button type="button" className="xfer-pop__clear" onClick={clearFinishedTransfers}>{t("files.clearFinished")}</button>}
+          </div>
+          <div className="xfer-pop__dir">
+            <span className="xfer-pop__dir-label">{t("files.downloadDir")}</span>
+            <span className={`xfer-pop__dir-path pl-ellipsis${dirError ? " xfer-pop__dir-path--error" : " mono"}`} title={dirError ?? downloadDir ?? ""} role={dirError ? "alert" : undefined}>{dirError ?? downloadDir ?? ""}</span>
+            <button type="button" className="pane__btn" title={t("files.changeDownloadDir")} aria-label={t("files.changeDownloadDir")} onClick={() => void changeDir()}><FolderInput size={14} /></button>
+            <button type="button" className="pane__btn" title={t("files.openDownloadDir")} aria-label={t("files.openDownloadDir")} onClick={() => void openDir()}><FolderOpen size={14} /></button>
           </div>
           {jobs.length === 0
             ? <div className="xfer-pop__empty">{t("files.noTransfers")}</div>

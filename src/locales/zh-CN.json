@@ -63,7 +63,8 @@
       "backup": "备份和迁移",
       "phone": "手机",
       "desktop": "服务器桌面",
-      "network": "网络"
+      "network": "网络",
+      "keys": "私钥"
     },
     "term": {
       "defaultShell": "默认本机终端",
@@ -493,7 +494,11 @@
         "authorized_not_file": "授权文件不是普通文件",
         "remote_permissions": "无法读取远程权限",
         "rollback_symlink": "授权文件是符号链接，需手动撤销",
-        "rollback_failed": "撤销失败，需手动检查授权文件"
+        "rollback_failed": "撤销失败，需手动检查授权文件",
+        "imported_read_failed": "读取私钥信息失败",
+        "imported_write_failed": "保存私钥失败",
+        "imported_encrypt_failed": "私钥加密失败",
+        "imported_remove_failed": "删除私钥文件失败"
       },
       "links": {
         "url_exceeds_8192_bytes": "网址不能超过 8192 字节",
@@ -1618,7 +1623,18 @@
       "verify_failed": "只用专用密钥登录没有成功（{{reason}}）。服务器可能禁止密钥登录或用了别的授权文件",
       "invalid_password": "密码不能为空，也不能包含换行",
       "temporary_credential_failed": "临时保存密码失败",
-      "temporary_credential_cleanup_failed": "清理临时密码失败，请到 Windows 凭据管理器里删除 pierlink/temporary 开头的条目"
+      "temporary_credential_cleanup_failed": "清理临时密码失败，请到 Windows 凭据管理器里删除 pierlink/temporary 开头的条目",
+      "imported_failed": "私钥操作失败：{{reason}}",
+      "imported_needs_passphrase": "这个私钥有密码，请填上私钥密码",
+      "imported_wrong_passphrase": "私钥密码不对",
+      "imported_unsupported": "不是能识别的私钥文件",
+      "imported_public_key": "这是公钥，请选私钥（一般是不带 .pub 的那个文件）",
+      "imported_unreadable": "读不了这个文件：{{path}}",
+      "imported_name_invalid": "名字不能为空，最多 60 个字",
+      "imported_not_found": "找不到这个私钥，可能已经删了",
+      "imported_random_passphrase": "这个私钥的密码是导入时自动生成的，不能改",
+      "imported_in_use": "还有服务器在用这个私钥：{{servers}}",
+      "imported_old_format": "读不了这种老格式的私钥，请先运行 ssh-keygen -p -f 私钥文件 转成新格式"
     },
     "sftp": {
       "not_found": "服务器上找不到这个文件或目录",
@@ -2405,7 +2421,7 @@
     },
     "authHint": {
       "agent": "使用 Windows 的 ssh-agent 或 ~/.ssh 里的默认密钥。",
-      "key": "使用指定的私钥文件（只记录路径，不读取、不上传私钥内容）。",
+      "key": "用导入的私钥登录：私钥加密存在这台电脑的 Pierlink 里，不会上传。",
       "password": "连接时输入一次，各功能共用；勾选“记住密码”后下次不用再输。",
       "dedicated_key": "使用本电脑的 Pierlink 专用密钥登录（已安装到这台服务器）。在服务器右键菜单“专用密钥…”里管理。"
     },
@@ -2422,7 +2438,7 @@
       "host": "主机格式不对：只填主机名或 IP，不能含空格和 ; | & 等符号，也不能以 - 开头",
       "port": "端口必须是 1–65535 之间的数字",
       "username": "用户名只能包含字母、数字和 _ - . $，且不能以 - 开头",
-      "identityFile": "请填写私钥文件的完整路径（如 C:\\Users\\你的用户名\\.ssh\\id_ed25519）",
+      "identityFile": "请选择私钥，或先导入一把",
       "loginShell": "登录 Shell 要写完整路径，如 /bin/zsh",
       "notes": "备注太长了（最多 4000 字）",
       "authMethod": "专用密钥需要先在“专用密钥…”里安装",
@@ -2451,7 +2467,6 @@
     "loginShellHint": "一般不用填，用服务器上账户的默认设置；想用 zsh、fish 时填完整路径。",
     "hostPlaceholder": "IP 或域名，如 203.0.113.18",
     "hostHint": "也可以直接粘贴“用户名@主机:端口”，会自动拆分。",
-    "identityFilePlaceholder": "私钥文件完整路径，如 C:\\Users\\你的用户名\\.ssh\\id_ed25519",
     "engine": "连接方式",
     "engineName": {
       "builtin": "内置 SSH（推荐）",
@@ -2465,7 +2480,13 @@
     "engineNote": "说明：{{note}}",
     "engineSwitchHint": "保存后，这台服务器已打开的内置 SSH 终端会断开，需要重新连接。",
     "login": "登录",
-    "copyIpFailed": "没能取得这台服务器的地址"
+    "copyIpFailed": "没能取得这台服务器的地址",
+    "privateKey": "私钥",
+    "pickKey": "选择私钥",
+    "noImportedKeys": "还没有导入私钥，点右边导入",
+    "keyNotImported": "（未导入）{{path}}",
+    "importKey": "导入私钥…",
+    "importThisKey": "导入这个私钥"
   },
   "versions": {
     "title": "{{name}} 的旧版本与已删除文件",
@@ -2693,6 +2714,10 @@
     "outgoingShort": "传出",
     "refreshFailed": "刷新目录失败，显示的是上次读到的：{{reason}}",
     "downloadTo": "下载到…",
+    "download": "下载",
+    "downloadDir": "下载文件夹",
+    "changeDownloadDir": "换一个下载文件夹",
+    "openDownloadDir": "打开下载文件夹",
     "dragHintOut": "拖到另一个窗格传输，拖到窗口外下载",
     "dragOutLabel": "拖出 {{what}}",
     "dragOutLine": "正在下载 {{what}}",
@@ -3569,5 +3594,36 @@
       "fontReset": "还原字号",
       "toggleSidebar": "收起/展开服务器列表"
     }
+  },
+  "privateKeys": {
+    "intro": "导入后私钥加密存在 Pierlink 里；服务器的“指定私钥”从这里选。",
+    "import": "导入私钥…",
+    "empty": "还没有导入私钥",
+    "usedBy": "在用：{{names}}",
+    "unused": "没有服务器在用",
+    "pass": {
+      "saved": "密码已保存",
+      "ask": "连接时问密码",
+      "none": "不用输密码",
+      "lost": "密码丢了，请删掉重新导入"
+    },
+    "savePass": "保存密码",
+    "forgetPass": "不再保存密码",
+    "savePassTitle": "保存“{{name}}”的密码",
+    "rename": "改名",
+    "renameTitle": "给私钥改名",
+    "removeTitle": "删除私钥“{{name}}”？",
+    "removeBody": "删掉的是存在 Pierlink 里的那份和保存的密码，你原来的私钥文件不受影响。",
+    "importTitle": "导入私钥",
+    "file": "私钥文件",
+    "pick": "选择…",
+    "name": "名字",
+    "namePlaceholder": "默认用文件名",
+    "passphrase": "私钥密码",
+    "passphraseHint": "私钥没设密码就空着",
+    "savePassphrase": "保存私钥密码，连接时自动填",
+    "importHint": "支持 OpenSSH、PEM、.ppk 格式。",
+    "importing": "正在导入…",
+    "doImport": "导入"
   }
 }

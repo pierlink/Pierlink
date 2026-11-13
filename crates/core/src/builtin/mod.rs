@@ -7,7 +7,7 @@ mod pool;
 mod state;
 pub use background::BackgroundConnection;
 pub use exec::{ExecCommand, ExecOptions, ExecResult, OutputStream};
-pub use pool::ServerResolver;
+pub use pool::{ServerResolver, SoleMain};
 pub use state::{ConnectionEvent, ConnectionState, StateSubscription};
 
 use pierlink_ssh_engine::Engine;
@@ -50,6 +50,12 @@ pub trait ConnectionCallbacks: Send + Sync {
         path: &Path,
         cancelled: &AtomicBool,
     ) -> Result<Option<Zeroizing<String>>, AppError>;
+
+    /// path 是导入的私钥、口令又存在凭据管理器里时取出口令（连接时自动填，不问用户）；默认没有。
+    /// 读取错误按没有处理（会照常询问），口令不得写入日志。
+    fn saved_passphrase(&self, _server_id: &str, _path: &Path) -> Option<Zeroizing<String>> {
+        None
+    }
 
     /// 为 server_id 询问服务器密码；None 表示取消。记住密码由界面层处理。
     /// 必须合并同一服务器的密码框；取消须在一秒内结束等待。

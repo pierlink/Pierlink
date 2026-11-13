@@ -27,7 +27,10 @@ pub mod test_support;
 #[cfg(test)]
 mod transport_tests;
 
-pub use auth::{Authentication, Challenge, ConfiguredAuthentication, PrivateKeyFile, Prompt};
+pub use auth::{
+    Authentication, Challenge, ConfiguredAuthentication, KeyImportError, PrivateKeyFile, Prompt,
+    decode_private_key,
+};
 pub use channel::{
     ChannelCloser, ExitStatus, Forwarded, Input, Output, Session, SftpHandshake, Tunnel,
 };

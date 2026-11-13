@@ -427,7 +427,12 @@ await rec.step(p, "安装桌面（一）：没有桌面环境的服务器上点�
   await fill("User", "root");
   await fill("Display name", "pl-root");
   await u.clickText("Specific key", ".pl-dialog");
-  await fill("Private key file", key);
+  // 1.2.12 起私钥要先导入（加密存进 Pierlink），再从列表里选；导入过的同一把直接用原来那一把
+  await u.clickText("Import private key", ".pl-dialog");
+  await u.waitFor(`!!document.querySelector('.key-import__file')`, "导入私钥对话框");
+  await fill("Key file", key);
+  await u.clickText("Import", ".pl-dialog:has(.key-import__file)");
+  await u.waitFor(`!document.querySelector('.key-import__file')`, "私钥导入好", 15000);
   await u.clickText("Save", ".pl-dialog");
   await u.waitFor(`!document.querySelector('.pl-dialog')`, "对话框关闭");
   const row = await u.waitFor(`(()=>{const i=[...document.querySelectorAll('.srv-row')].findIndex(r=>r.innerText.includes('pl-root')); return i>=0 ? String(i) : null;})()`, "侧栏里的 pl-root");

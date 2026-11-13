@@ -53,6 +53,48 @@ fn environment_from(
     env
 }
 
+/// 把非 ASCII 的程序路径拆成（“.\\文件名”，所在目录）；路径是纯 ASCII、文件名不是 ASCII 或没有目录时为 None
+fn split_non_ascii_program(path: &str) -> Option<(String, String)> {
+    if path.is_ascii() {
+        return None;
+    }
+    let cut = path.rfind(['\\', '/'])?;
+    let (dir, name) = (&path[..cut], &path[cut + 1..]);
+    (!dir.is_empty() && !name.is_empty() && name.is_ascii())
+        .then(|| (format!(".\\{name}"), dir.to_owned()))
+}
+
+fn relative_askpass_in<K, V>(env: &mut [(K, V)]) -> Option<std::path::PathBuf>
+where
+    K: AsRef<std::ffi::OsStr>,
+    V: AsRef<std::ffi::OsStr> + From<String>,
+{
+    let (_, value) = env
+        .iter_mut()
+        .find(|(key, _)| key.as_ref() == "SSH_ASKPASS")?;
+    let (relative, dir) = split_non_ascii_program(value.as_ref().to_str()?)?;
+    *value = relative.into();
+    Some(dir.into())
+}
+
+/// Windows 版 OpenSSH 启动 SSH_ASKPASS 指的程序时，路径里有中文等非 ASCII 字符就找不到（报 CreateProcessW error 2，
+/// 带空格没事），保存的密码、私钥口令都填不进去；Pierlink 默认装在用户目录下，中文用户名很常见。
+/// 这时把 env 里的 SSH_ASKPASS 改成“.\文件名”，并返回程序所在的目录：调用方把它设成 ssh 的工作目录，
+/// ssh 就按工作目录找到这个程序（启动的还是原来那个文件，密码管道核对程序路径照常通过）。
+///
+/// :param env: 要给 ssh 的环境变量，SSH_ASKPASS 可能被改写
+/// :return: 要给 ssh 设的工作目录；不用改（不是 Windows、没有 SSH_ASKPASS、路径是纯 ASCII）时为 None
+pub(crate) fn relative_askpass<K, V>(env: &mut [(K, V)]) -> Option<std::path::PathBuf>
+where
+    K: AsRef<std::ffi::OsStr>,
+    V: AsRef<std::ffi::OsStr> + From<String>,
+{
+    if !cfg!(windows) {
+        return None;
+    }
+    relative_askpass_in(env)
+}
+
 pub(crate) fn io_error(text_key: &'static str, operation: &str) -> AppError {
     AppError::new("ssh.io_failed").with_text("operation", text_key, operation)
 }
@@ -92,10 +134,17 @@ impl SshProgram {
     pub(crate) fn spawn_with_environment(
         &self,
         cmd: &SshCommand,
-        environment: Vec<(OsString, OsString)>,
+        mut environment: Vec<(OsString, OsString)>,
     ) -> Result<SshProcess, AppError> {
-        let mut process =
-            spawn_tree_command(&self.path, &cmd.args, false, None, &environment, false)?;
+        let cwd = relative_askpass(&mut environment);
+        let mut process = spawn_tree_command(
+            &self.path,
+            &cmd.args,
+            false,
+            cwd.as_deref(),
+            &environment,
+            false,
+        )?;
         process.askpass = cmd.askpass.clone();
         Ok(process)
     }
@@ -787,5 +836,51 @@ mod tree_tests {
             assert!(output.lines().any(|line| line == format!("PATH={value}")));
         }
         process.terminate().unwrap();
+    }
+}
+
+#[cfg(test)]
+mod askpass_path_tests {
+    use super::*;
+
+    #[test]
+    fn 中文路径的自动填口令程序改成相对写法() {
+        let mut env = vec![
+            ("SSH_ASKPASS_REQUIRE".to_owned(), "force".to_owned()),
+            (
+                "SSH_ASKPASS".to_owned(),
+                r"C:\Users\张三\AppData\Local\Pierlink\Pierlink.exe".to_owned(),
+            ),
+        ];
+        let cwd = relative_askpass_in(&mut env);
+        assert_eq!(
+            cwd.as_deref(),
+            Some(std::path::Path::new(
+                r"C:\Users\张三\AppData\Local\Pierlink"
+            ))
+        );
+        assert_eq!(env[1].1, r".\Pierlink.exe");
+        assert_eq!(env[0].1, "force");
+        // 后台命令用的环境是 OsString
+        let mut env: Vec<(OsString, OsString)> =
+            vec![("SSH_ASKPASS".into(), r"D:\工具 箱\pl\Pierlink.exe".into())];
+        assert_eq!(relative_askpass_in(&mut env), Some(r"D:\工具 箱\pl".into()));
+        assert_eq!(env[0].1, OsString::from(r".\Pierlink.exe"));
+    }
+
+    #[test]
+    fn 纯_ascii_路径和改不了的不动() {
+        for path in [
+            r"C:\Program Files\Pierlink\Pierlink.exe",
+            r"C:\工具\程序.exe",
+            "程序.exe",
+            r"\程序",
+        ] {
+            let mut env = vec![("SSH_ASKPASS".to_owned(), path.to_owned())];
+            assert_eq!(relative_askpass_in(&mut env), None, "{path}");
+            assert_eq!(env[0].1, path);
+        }
+        let mut other = vec![("PATH".to_owned(), "中文".to_owned())];
+        assert_eq!(relative_askpass_in(&mut other), None);
     }
 }

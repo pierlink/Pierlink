@@ -5,7 +5,7 @@ use crate::data::{DbState, data_dir};
 use crate::sync::{computer_name, credential_store};
 use crate::terminal::find_ssh;
 use pierlink_core::error::AppError;
-use pierlink_core::keys::{local, remote};
+use pierlink_core::keys::{imported, local, remote};
 use pierlink_core::process::SshProgram;
 use pierlink_core::ssh::args::{AskPass, CommonOpts, DedicatedKey, Purpose, build_args};
 use pierlink_core::ssh::askpass::{self, AskRequest};
@@ -73,6 +73,40 @@ fn key_dir(app: &AppHandle) -> Result<PathBuf, AppError> {
     Ok(data_dir(app)?.join("keys"))
 }
 
+/// 存导入私钥的目录（专用密钥目录下的 imported）
+pub(crate) fn imported_dir(app: &AppHandle) -> Result<PathBuf, AppError> {
+    Ok(key_dir(app)?.join(imported::DIR_NAME))
+}
+
+/// 服务器用的是导入的私钥、口令又存着：ssh 从凭据管理器自动填口令（和专用密钥同一套），不经密码管道。
+/// 口令没存（用户选了每次问）或不是导入的私钥时返回 None，照旧走密码管道。
+fn imported_key_opts(app: &AppHandle, server: &Server) -> Result<Option<CommonOpts>, AppError> {
+    // 只用于应用里建的服务器：来自 ssh config 别名的目标不能改写身份选项
+    if server.auth_method != AuthMethod::Key || server.source != ServerSource::Manual {
+        return Ok(None);
+    }
+    let Some(path) = server.identity_file.as_deref().filter(|p| !p.is_empty()) else {
+        return Ok(None);
+    };
+    let Some(id) = imported::id_of_path(&imported_dir(app)?, std::path::Path::new(path)) else {
+        return Ok(None);
+    };
+    let credential_id = imported::credential_id(&id);
+    if credential_store()?.get(&credential_id)?.is_none() {
+        return Ok(None);
+    }
+    Ok(Some(CommonOpts {
+        dedicated_key: Some(DedicatedKey {
+            private_path: PathBuf::from(path),
+            askpass_program: askpass_program()?,
+            credential_id,
+        }),
+        ..CommonOpts::default()
+    }))
+}
+
+/// ssh 当 SSH_ASKPASS 调用的程序（就是 Pierlink.exe 自己）。路径里有中文时怎么交给 ssh，见
+/// `pierlink_core::process::relative_askpass`
 fn askpass_program() -> Result<PathBuf, AppError> {
     std::env::current_exe()
         .map_err(|e| AppError::new("keys.local_failed").with("reason", e.to_string()))
@@ -96,6 +130,9 @@ pub enum Access {
 /// :param access: 用户操作还是后台功能
 /// :return: 给 `build_args` 的公共参数
 pub fn ssh_opts(app: &AppHandle, server: &Server, access: Access) -> Result<CommonOpts, AppError> {
+    if let Some(opts) = imported_key_opts(app, server)? {
+        return Ok(opts);
+    }
     if server.auth_method != AuthMethod::DedicatedKey {
         let (interactive, purpose) = match access {
             Access::User(p) => (true, p),
@@ -416,14 +453,15 @@ pub fn run_askpass_if_requested() -> Option<i32> {
 
 /// 回答专用密钥的口令提示：成功时把口令写到标准输出并返回 0，否则返回 1
 fn answer_key_passphrase(prompt: &str, key_path: PathBuf) -> i32 {
-    // 只允许读取专用密钥口令，其他凭据（服务器密码、同步组件密钥等）一律拒绝
-    if std::env::var("PIERLINK_CREDENTIAL_ID").ok().as_deref() != Some(local::CREDENTIAL_ID) {
+    // 只允许读取专用密钥和导入私钥的口令，其他凭据（服务器密码、同步组件密钥等）一律拒绝
+    let credential_id = std::env::var("PIERLINK_CREDENTIAL_ID").unwrap_or_default();
+    if credential_id != local::CREDENTIAL_ID && !imported::is_credential_id(&credential_id) {
         eprintln!("Pierlink: 拒绝读取这个凭据");
         return 1;
     }
     let req = AskRequest::KeyPassphrase { key_path };
     let result = credential_store()
-        .and_then(|store| askpass::answer(prompt, &req, store.as_ref(), local::CREDENTIAL_ID));
+        .and_then(|store| askpass::answer(prompt, &req, store.as_ref(), &credential_id));
     match result {
         Ok(secret) => {
             let mut out = std::io::stdout().lock();

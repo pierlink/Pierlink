@@ -17,6 +17,9 @@ function anyOpen() {
   return openCount > 0;
 }
 
+/** 开着的对话框，后开的在最后：Esc、Tab 只交给最上面那个（叠着开时按 Esc 只关上面那个） */
+const stack: symbol[] = [];
+
 /** 有没有对话框开着 */
 export function useAnyDialogOpen(): boolean {
   return useSyncExternalStore(subscribeOpen, anyOpen);
@@ -51,12 +54,15 @@ export function Dialog({ title, children, actions, danger, onDismiss, size = "md
   }, []);
 
   useEffect(() => {
+    const me = Symbol("dialog");
+    stack.push(me);
     const prev = document.activeElement as HTMLElement | null;
     // 内容里已有 autoFocus 的控件就不覆盖它
     if (!ref.current?.contains(document.activeElement)) {
       ref.current?.querySelector<HTMLElement>("button, input, select, textarea, [tabindex]")?.focus();
     }
     const onKey = (e: KeyboardEvent) => {
+      if (stack[stack.length - 1] !== me) return;
       if (e.key === "Escape" && dismissRef.current) dismissRef.current();
       if (e.key === "Tab" && ref.current) {
         const f = Array.from(ref.current.querySelectorAll<HTMLElement>("button:not(:disabled), input, select, textarea, [tabindex]"));
@@ -69,6 +75,8 @@ export function Dialog({ title, children, actions, danger, onDismiss, size = "md
     };
     window.addEventListener("keydown", onKey);
     return () => {
+      const i = stack.indexOf(me);
+      if (i >= 0) stack.splice(i, 1);
       window.removeEventListener("keydown", onKey);
       prev?.focus();
     };

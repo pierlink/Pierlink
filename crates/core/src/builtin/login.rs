@@ -146,6 +146,10 @@ impl Login {
         {
             return Some(phrase.to_string());
         }
+        // 导入的私钥存了口令：自动填（后台连接也能用）
+        if remember && let Some(saved) = self.callbacks.saved_passphrase(&self.server, path) {
+            return Some(saved.to_string());
+        }
         if !self.interactive {
             return self.fail(AppError::new("ssh.password_needed"));
         }
@@ -179,9 +183,17 @@ impl Login {
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
                 .contains_key(&path);
+        // 导入的私钥存了口令时，后台连接（不能弹框）也给口令回调
+        let saved = remember
+            && !cached
+            && !self.interactive
+            && self
+                .callbacks
+                .saved_passphrase(&self.server, &path)
+                .is_some();
         PrivateKeyFile {
             path,
-            passphrase: (self.interactive || cached).then(|| {
+            passphrase: (self.interactive || cached || saved).then(|| {
                 Arc::new(move || login.phrase(&key_path, remember))
                     as Arc<dyn Fn() -> Option<String> + Send + Sync>
             }),

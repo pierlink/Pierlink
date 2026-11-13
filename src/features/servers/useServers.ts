@@ -38,6 +38,8 @@ export function useServers() {
   const remove = useCallback(async (id: string) => {
     await (await getServersApi()).remove(id);
     await reload();
+    // 设置里私钥的“在用”等据此更新
+    notifyServersChanged();
   }, [reload]);
 
   const setFavorite = useCallback(async (id: string, favorite: boolean) => {

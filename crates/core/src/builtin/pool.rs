@@ -13,6 +13,16 @@ use std::{
 /// 按服务器 ID 读取完整记录；None 表示记录已删除，错误必须已脱敏。
 pub type ServerResolver = dyn Fn(&str) -> Result<Option<Server>, AppError> + Send + Sync;
 
+/// 某台服务器“只有一条主连接”时的凭证（见 ConnectionManager::sole_main）
+pub struct SoleMain(Connection);
+
+impl SoleMain {
+    /// 两个凭证指的是不是同一条连接
+    pub fn same(&self, other: &Self) -> bool {
+        self.0.same_connection(&other.0)
+    }
+}
+
 struct Entry {
     class: ConnectionClass,
     connection: Connection,
@@ -702,6 +712,35 @@ impl ConnectionManager {
             }
         });
         self.pool.network.fetch_add(1, Ordering::Release);
+    }
+
+    /// server_id 这时是不是只有一条能接主连接请求的连接（终端、后台命令、端口转发都走它）。
+    /// 前后各取一次、两次 `same` 为真，说明这期间主连接没换过也没多出来：期间在主连接上跑的命令和已有的转发一定在同一条上。
+    ///
+    /// :param two_factor: 这台服务器要验证码（这类服务器所有类别共用一条连接，有别的类别的连接时不算）
+    /// :return: 只有一条时返回它的凭证；没有、不止一条时为 None
+    pub fn sole_main(&self, server_id: &str, two_factor: bool) -> Option<SoleMain> {
+        let slot = self
+            .pool
+            .slots
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(server_id)
+            .cloned()?;
+        let state = slot.state.lock().unwrap_or_else(|p| p.into_inner());
+        let mut open = state
+            .entries
+            .iter()
+            .filter(|entry| !entry.connection.is_closed());
+        let mut mains = open
+            .clone()
+            .filter(|entry| entry.class == ConnectionClass::Main);
+        let only = mains.next()?;
+        let other_class = two_factor && open.any(|entry| entry.class != ConnectionClass::Main);
+        if mains.next().is_some() || other_class {
+            return None;
+        }
+        Some(SoleMain(only.connection.clone()))
     }
 
     /// 用户明确要求重试（比如重新开启端口转发）时，清除 server_id 记住的登录上限（agent 密钥太多被服务器断开），

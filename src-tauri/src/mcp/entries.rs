@@ -104,7 +104,16 @@ struct Running {
     peer_present: bool,
     /// 盯着主入口什么时候关掉的那个后台线程的编号（入口重开后旧线程自己退出）
     watch: u64,
+    /// 上次记下转发所在连接时，隧道报的连上时间：变了就是新连上的，要重新记
+    recorded_at: Option<u64>,
+    /// 这次运行里给这个入口记下的转发所在连接（哪个端口、sshd 会话进程号和启动时间）。只在确定脚本和转发
+    /// 在同一条连接上时才记（见 record_forward），清理旧连接时只认它
+    forward_record: Option<(u16, pierlink_core::mcp::port_check::ForwardRecord)>,
 }
+
+/// 这次运行里所有入口记下过的转发所在连接：清理旧连接时这些一律不碰（除非是那个入口自己的、隧道已经断了的那条）
+static RECORDED_THIS_RUN: Mutex<Vec<pierlink_core::mcp::port_check::ForwardRecord>> =
+    Mutex::new(Vec::new());
 
 /// 后台线程编号
 static WATCHES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -125,6 +134,8 @@ impl Running {
             secondary: None,
             peer_present: false,
             watch: 0,
+            recorded_at: None,
+            forward_record: None,
         }
     }
 
@@ -443,14 +454,25 @@ impl Entries {
                 r.checked_at = Some(Instant::now());
             }
             let connected = event.state == TunnelState::Connected;
+            // 新连上的（隧道报的连上时间变了）：记下这条连接在服务器上的 sshd 会话进程
+            let record = connected
+                && event.last_connected_at_ms.is_some()
+                && r.recorded_at != event.last_connected_at_ms;
+            if record {
+                r.recorded_at = event.last_connected_at_ms;
+            }
             (
                 // 从属入口不写 mcp.json（AI 客户端连的是主入口）
                 connected && !r.file_written && r.secondary.is_none(),
                 connected,
                 check.then_some(r.actual_port()),
+                record.then_some(r.actual_port()),
             )
         };
-        let (write, peer, check) = (write.0, write.1, write.2);
+        let (write, peer, check, record) = (write.0, write.1, write.2, write.3);
+        if let Some(port) = record {
+            self.record_forward(app, server_id, port);
+        }
         if write {
             self.write_file(app, server_id);
         }
@@ -491,6 +513,11 @@ impl Entries {
                 found.occupant, found.free_port
             );
             use pierlink_core::mcp::port_check::Occupant;
+            // 占着的是这台电脑没断干净的旧连接：认得出来就核对后结束它、按原端口马上重连，不用等
+            if found.occupant == Occupant::Stale && state.entries.release_stale(&app, &id, port) {
+                state.entries.reconnect_released(&app, &id, port);
+                return;
+            }
             // 占着的是另一台电脑上的 Pierlink：换一个空闲端口接入，不报冲突
             if found.occupant == Occupant::OtherPc
                 && let Some(free) = found.free_port
@@ -549,6 +576,139 @@ impl Entries {
             .get(server_id)
             .filter(|r| r.state == "running")
             .map(Running::actual_port)
+    }
+
+    /// 新连上后在后台记下这条连接在服务器上的 sshd 会话进程（旧连接没断干净、占着端口时认得出来并结束它）。
+    /// 只在转发和后台脚本走同一条内置 SSH 主连接时做；记不下来不影响使用。
+    ///
+    /// :param port: 服务器上实际监听的端口
+    fn record_forward(&self, app: &AppHandle, server_id: &str, port: u16) {
+        let (app, id) = (app.clone(), server_id.to_owned());
+        std::thread::spawn(move || {
+            let Some(state) = app.try_state::<super::McpState>() else {
+                return;
+            };
+            if !same_main_connection(&app, &id) {
+                return;
+            }
+            // 这台服务器会话数到上限时，连接池会另开一条主连接跑脚本，脚本记下的就不是开转发的那条。
+            // 所以脚本前后各看一次：都只有一条主连接、还是同一条，才能确定脚本和转发在同一条连接上
+            let before = crate::builtin::sole_main(&app, &id);
+            let script = pierlink_core::mcp::port_check::record_forward_script(
+                port,
+                &state.entries.instance,
+            );
+            let output = match run_on_server_value(&app, &id, &script, Duration::from_secs(20)) {
+                Ok(v) => v,
+                Err(e) => {
+                    eprintln!(
+                        "记下转发所在的连接失败: 服务器={id}, 端口={port}, 错误={}",
+                        e.code
+                    );
+                    return;
+                }
+            };
+            let Some(rec) = pierlink_core::mcp::port_check::ForwardRecord::from_output(&output)
+            else {
+                eprintln!("没记下转发所在的连接: 服务器={id}, 端口={port}");
+                return;
+            };
+            let after = crate::builtin::sole_main(&app, &id);
+            let certain = matches!((&before, &after), (Some(a), Some(b)) if a.same(b));
+            eprintln!(
+                "记下转发所在的连接: 服务器={id}, 端口={port}, 进程={}, 确定是开转发的那条={certain}",
+                rec.pid
+            );
+            {
+                // 这次运行里记下过的都留着（清理时一律不碰）；一条 16 字节，放得下
+                let mut all = RECORDED_THIS_RUN.lock().unwrap_or_else(|p| p.into_inner());
+                if !all.contains(&rec) {
+                    if all.len() >= 65536 {
+                        all.remove(0);
+                    }
+                    all.push(rec);
+                }
+            }
+            if let Some(r) = state.entries.lock().get_mut(&id)
+                && r.actual_port() == port
+            {
+                // 不确定时不留旧的：旧的是上一条转发连接的，已经不是现在这条
+                r.forward_record = certain.then_some((port, rec));
+            }
+        });
+    }
+
+    /// 端口被这台电脑没断干净的旧连接占着：按记录核对后结束它（见 release_stale_script：只结束这个入口自己记下的，
+    /// 或这次运行还没记过时上一次运行留下的；这次运行里别的入口记下的一律不碰）。
+    ///
+    /// :return: 结束了，端口已经放出来
+    fn release_stale(&self, app: &AppHandle, server_id: &str, port: u16) -> bool {
+        if !same_main_connection(app, server_id) {
+            return false;
+        }
+        // 只认给这个端口记下的那条
+        let own = self
+            .lock()
+            .get(server_id)
+            .and_then(|r| r.forward_record)
+            .filter(|(recorded, _)| *recorded == port)
+            .map(|(_, rec)| rec);
+        let this_run = RECORDED_THIS_RUN
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
+        let script = pierlink_core::mcp::port_check::release_stale_script(
+            port,
+            &self.instance,
+            own,
+            &this_run,
+        );
+        match run_on_server_value(app, server_id, &script, Duration::from_secs(30)) {
+            Ok(v) => {
+                let released = v["released"].as_bool().unwrap_or(false);
+                eprintln!(
+                    "结束没断干净的旧连接: 服务器={server_id}, 端口={port}, 结束了={released}, 原因={}",
+                    v["reason"]
+                );
+                released
+            }
+            Err(e) => {
+                eprintln!(
+                    "结束没断干净的旧连接失败: 服务器={server_id}, 端口={port}, 错误={}",
+                    e.code
+                );
+                false
+            }
+        }
+    }
+
+    /// 旧连接结束了：端口没变、还是“端口被占用”时按原端口重开转发；重开失败置出错，让下次应用设置时再试
+    fn reconnect_released(&self, app: &AppHandle, server_id: &str, port: u16) {
+        let _applying = self.applying.lock().unwrap_or_else(|p| p.into_inner());
+        let local = {
+            let running = self.lock();
+            let Some(r) = running.get(server_id) else {
+                return;
+            };
+            if r.actual_port() != port || r.state != "port_busy" || r.local_port == 0 {
+                return;
+            }
+            r.local_port
+        };
+        match restart_tunnel(app, server_id, port, local) {
+            Ok(()) => eprintln!("旧连接已结束，按原端口重连: 服务器={server_id}, 端口={port}"),
+            Err(e) => {
+                eprintln!(
+                    "旧连接已结束，重连失败: 服务器={server_id}, 端口={port}, 错误={}",
+                    e.code
+                );
+                if let Some(r) = self.lock().get_mut(server_id) {
+                    r.state = "error".into();
+                    r.error = Some(e);
+                }
+            }
+        }
+        emit(app, self.states());
     }
 
     /// 设置的端口被另一台电脑上的 Pierlink 占着：换到空闲端口接入（从属入口），并开始盯着设置的端口什么时候空出来
@@ -1127,6 +1287,21 @@ fn reachable(port: u16) -> bool {
 /// 在服务器上执行一段脚本（后台方式：不弹密码框；内置 SSH 走主连接）
 fn run_on_server(app: &AppHandle, server_id: &str, script: &str) -> Result<(), AppError> {
     run_on_server_value(app, server_id, script, Duration::from_secs(30)).map(|_| ())
+}
+
+/// 转发和后台脚本都走内置 SSH 的主连接（同一条连接）：这时后台脚本里找到的 sshd 会话进程就是开转发的那个。
+/// 走系统 OpenSSH 时转发是单独的 ssh 进程，后台脚本是另一条连接，记下来的不是开转发的进程，不做。
+fn same_main_connection(app: &AppHandle, server_id: &str) -> bool {
+    use pierlink_core::ssh::engine::{Feature, engine_for_feature};
+    let Ok(server) = crate::servers::load(app, server_id) else {
+        return false;
+    };
+    app.try_state::<crate::builtin::BuiltinState>().is_some()
+        && [Feature::PortForward, Feature::Background]
+            .into_iter()
+            .all(|f| {
+                engine_for_feature(&server, f).engine == pierlink_core::storage::Engine::Builtin
+            })
 }
 
 /// 在服务器上执行一段脚本，返回它输出的 JSON；timeout 内没做完返回错误

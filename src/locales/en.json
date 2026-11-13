@@ -63,7 +63,8 @@
       "backup": "Backup & transfer",
       "phone": "Phone",
       "desktop": "Server desktop",
-      "network": "Network"
+      "network": "Network",
+      "keys": "Private keys"
     },
     "term": {
       "defaultShell": "Default local terminal",
@@ -494,7 +495,11 @@
         "authorized_not_file": "the authorized keys file is not a regular file",
         "remote_permissions": "couldn't read remote permissions",
         "rollback_symlink": "the authorized keys file is a symbolic link; remove the key manually",
-        "rollback_failed": "rollback failed; check the authorized keys file manually"
+        "rollback_failed": "rollback failed; check the authorized keys file manually",
+        "imported_read_failed": "Couldn't read the key's details",
+        "imported_write_failed": "Couldn't save the key",
+        "imported_encrypt_failed": "Couldn't encrypt the key",
+        "imported_remove_failed": "Couldn't delete the key file"
       },
       "links": {
         "url_exceeds_8192_bytes": "the URL exceeds 8192 bytes",
@@ -1619,7 +1624,18 @@
       "verify_failed": "Logging in with only the dedicated key failed ({{reason}}). The server may forbid key logins or use another authorized keys file",
       "invalid_password": "The password cannot be empty or contain line breaks",
       "temporary_credential_failed": "Could not store the password temporarily",
-      "temporary_credential_cleanup_failed": "Could not remove the temporary password; delete entries starting with pierlink/temporary in Windows Credential Manager"
+      "temporary_credential_cleanup_failed": "Could not remove the temporary password; delete entries starting with pierlink/temporary in Windows Credential Manager",
+      "imported_failed": "Private key operation failed: {{reason}}",
+      "imported_needs_passphrase": "This private key has a passphrase; please enter it",
+      "imported_wrong_passphrase": "Wrong passphrase for this private key",
+      "imported_unsupported": "This isn't a private key file Pierlink can read",
+      "imported_public_key": "This is a public key; choose the private key (usually the file without .pub)",
+      "imported_unreadable": "Can't read this file: {{path}}",
+      "imported_name_invalid": "The name can't be empty and can be at most 60 characters",
+      "imported_not_found": "This private key wasn't found; it may have been deleted",
+      "imported_random_passphrase": "This key's passphrase was generated when it was imported and can't be changed",
+      "imported_in_use": "Servers still use this private key: {{servers}}",
+      "imported_old_format": "Old key format: convert it first with ssh-keygen -p -f <key file>"
     },
     "sftp": {
       "not_found": "File or folder not found on the server",
@@ -2426,7 +2442,7 @@
     },
     "authHint": {
       "agent": "Use the Windows ssh-agent or the default keys in ~/.ssh.",
-      "key": "Uses the private key file you choose (only the path is stored; the key is never read or uploaded).",
+      "key": "Signs in with an imported private key, stored encrypted by Pierlink on this computer and never uploaded.",
       "password": "Enter it once when connecting and every feature uses it; tick “Remember password” to skip it next time.",
       "dedicated_key": "Log in with this computer's Pierlink dedicated key (installed on this server). Manage it from the server's right-click menu, \"Dedicated key…\"."
     },
@@ -2443,7 +2459,7 @@
       "host": "Invalid host: enter a host name or IP only, without spaces or symbols like ; | &, and not starting with -",
       "port": "Port must be a number from 1 to 65535",
       "username": "User names may only contain letters, digits and _ - . $, and can't start with -",
-      "identityFile": "Enter the full path of the private key file (e.g. C:\\Users\\<you>\\.ssh\\id_ed25519)",
+      "identityFile": "Choose a private key, or import one first",
       "loginShell": "Enter the login shell's full path, e.g. /bin/zsh",
       "notes": "Notes are too long (4000 characters max)",
       "authMethod": "Install the dedicated key from \"Dedicated key…\" first",
@@ -2472,7 +2488,6 @@
     "loginShellHint": "Usually leave empty to use your account's default; fill in a full path for zsh, fish, etc.",
     "hostPlaceholder": "IP or domain, e.g. 203.0.113.18",
     "hostHint": "You can also paste \"user@host:port\"; it's split automatically.",
-    "identityFilePlaceholder": "Full path of the private key, e.g. C:\\Users\\<you>\\.ssh\\id_ed25519",
     "engine": "Connection",
     "engineName": {
       "builtin": "Built-in SSH (recommended)",
@@ -2486,7 +2501,13 @@
     "engineNote": "Note: {{note}}",
     "engineSwitchHint": "After saving, open built-in SSH terminals to this server disconnect and need reconnecting.",
     "login": "Log in",
-    "copyIpFailed": "Couldn't get this server's address"
+    "copyIpFailed": "Couldn't get this server's address",
+    "privateKey": "Private key",
+    "pickKey": "Choose a private key",
+    "noImportedKeys": "No private keys imported yet; import one on the right",
+    "keyNotImported": "(not imported) {{path}}",
+    "importKey": "Import private key…",
+    "importThisKey": "Import this key"
   },
   "versions": {
     "title": "Old versions and deleted files of {{name}}",
@@ -2734,6 +2755,10 @@
     "outgoingShort": "Sending",
     "refreshFailed": "Couldn't refresh the folder; showing what was read last time: {{reason}}",
     "downloadTo": "Download to…",
+    "download": "Download",
+    "downloadDir": "Download folder",
+    "changeDownloadDir": "Change download folder",
+    "openDownloadDir": "Open download folder",
     "dragHintOut": "Drag to another pane to transfer, or out of the window to download",
     "dragOutLabel": "Drag out {{what}}",
     "dragOutLine": "Downloading {{what}}",
@@ -3619,5 +3644,36 @@
       "fontReset": "Reset font size",
       "toggleSidebar": "Show/hide server list"
     }
+  },
+  "privateKeys": {
+    "intro": "Imported keys are stored encrypted by Pierlink; servers pick their key from here.",
+    "import": "Import private key…",
+    "empty": "No private keys imported yet",
+    "usedBy": "Used by {{names}}",
+    "unused": "Not used by any server",
+    "pass": {
+      "saved": "Passphrase saved",
+      "ask": "Asks for the passphrase",
+      "none": "No passphrase needed",
+      "lost": "Passphrase lost; delete the key and import it again"
+    },
+    "savePass": "Save passphrase",
+    "forgetPass": "Stop saving passphrase",
+    "savePassTitle": "Save the passphrase for “{{name}}”",
+    "rename": "Rename",
+    "renameTitle": "Rename private key",
+    "removeTitle": "Delete private key “{{name}}”?",
+    "removeBody": "This deletes the copy stored in Pierlink and its saved passphrase; your original key file is not touched.",
+    "importTitle": "Import private key",
+    "file": "Key file",
+    "pick": "Browse…",
+    "name": "Name",
+    "namePlaceholder": "Defaults to the file name",
+    "passphrase": "Passphrase",
+    "passphraseHint": "Leave empty if the key has none",
+    "savePassphrase": "Save the passphrase and fill it in when connecting",
+    "importHint": "OpenSSH, PEM and .ppk formats work.",
+    "importing": "Importing…",
+    "doImport": "Import"
   }
 }

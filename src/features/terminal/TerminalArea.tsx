@@ -444,7 +444,8 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
       const key = `tab-${++seq.current}`;
       tabsRef.current = [...tabsRef.current, { key, layout: leaf(id), active: id }];
       setTabs((ts) => [...ts, { key, layout: leaf(id), active: id }]);
-      setActiveTab(key);
+      // AI 开的终端在后台新开标签，不切过去，免得打断你正在看的终端（标签上有 AI 标记）；工作区里原来一个标签都没有时才切过去
+      if (ai === undefined || tabsRef.current.length === 1) setActiveTab(key);
     }
     return id;
   };
@@ -866,7 +867,11 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
     void getMcpApi().then((api) => api.onNotice((n) => {
       if (n.kind !== "passwordPrompt") return;
       const pane = Object.values(panesRef.current).find((x) => x.session === n.terminalId && x.ai);
-      if (pane) updatePane(pane.id, (x) => ({ ai: x.ai && { ...x.ai, waiting: true } }));
+      if (pane) {
+        updatePane(pane.id, (x) => ({ ai: x.ai && { ...x.ai, waiting: true } }));
+        // AI 的终端多半开在后台标签：等密码时标签上也亮提醒点（和响铃一样）
+        raiseRef.current(pane.id);
+      }
     })).then((u) => { if (alive) off = u; else u(); });
     return () => { alive = false; off?.(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1343,6 +1348,9 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
         .catch(() => undefined);
     }
   };
+  /** 给早先注册的回调用：总是调最新的 raiseAttention（读最新的设置） */
+  const raiseRef = useRef(raiseAttention);
+  raiseRef.current = raiseAttention;
   const clearAttention = (ids: string[]) =>
     setAttention((cur) => (ids.some((id) => cur.has(id)) ? new Set([...cur].filter((id) => !ids.includes(id))) : cur));
   // 设置里关掉提醒：已经亮着的提醒点也去掉

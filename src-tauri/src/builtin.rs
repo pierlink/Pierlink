@@ -99,6 +99,20 @@ impl BuiltinState {
     }
 }
 
+/// 这台服务器这时是不是只有一条内置 SSH 主连接（AI 接入记“转发在哪条连接上”时用：前后各取一次、相同才算数）。
+///
+/// :return: 只有一条时返回凭证；没用内置 SSH、没有或不止一条主连接时为 None
+pub(crate) fn sole_main(
+    app: &AppHandle,
+    server_id: &str,
+) -> Option<pierlink_core::builtin::SoleMain> {
+    let state = app.try_state::<BuiltinState>()?;
+    let two_factor = app
+        .try_state::<PasswordState>()
+        .is_some_and(|p| p.vault.seen_two_factor(server_id));
+    state.manager.sole_main(server_id, two_factor)
+}
+
 /// 后台命令（部署、资源概览、专用密钥、同步检查、文件面板的脚本……）：按服务器的连接方式选内置 SSH 或系统 OpenSSH。
 /// 用户刚做的操作（`Access::User`）缺密码时弹框；后台功能不弹框，转为等待输入密码。
 /// `openssh` 只在走系统 OpenSSH 时调用，按原来的规则构造参数。
@@ -281,6 +295,12 @@ impl UiCallbacks {
 }
 
 impl ConnectionCallbacks for UiCallbacks {
+    fn saved_passphrase(&self, _server_id: &str, path: &Path) -> Option<Zeroizing<String>> {
+        let dir = crate::keys::imported_dir(&self.app).ok()?;
+        let store = crate::sync::credential_store().ok()?;
+        pierlink_core::keys::imported::saved_passphrase(&dir, path, store.as_ref())
+    }
+
     fn check_host_key(
         &self,
         _server_id: &str,

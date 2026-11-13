@@ -17,6 +17,8 @@ import type { FileEntry, Listing, Loc } from "./types";
 import "./files.css";
 import { writeClipboardText } from "../shell/clipboard";
 import { pickFolder } from "../shell/pickFolder";
+import { useSettings } from "../settings/store";
+import { prepareDownloadDir } from "./downloadDir";
 import { inTauri } from "../shell/TitleBar";
 
 /** 终端的打开方式 → 文件所在的机器 */
@@ -68,6 +70,7 @@ export function FilePanel({ paneId, spec, title, cwd, commands, sessionId, onClo
   onClose: () => void;
 }) {
   const { t } = useTranslation();
+  const { settings } = useSettings();
   const loc = useMemo(() => locOf(spec), [spec]);
   const [home, setHome] = useState<string | null>(null);
   const [listing, setListing] = useState<Listing | null>(null);
@@ -280,6 +283,17 @@ export function FilePanel({ paneId, spec, title, cwd, commands, sessionId, onClo
   /** 服务器上的文件能拖到窗口外（资源管理器等）：只有 Windows 版 */
   const canDragOut = !local && inTauri && navigator.userAgent.includes("Windows");
   const isDirEntry = (e: FileEntry) => e.kind === "dir" || (e.kind === "symlink" && e.targetIsDir === true);
+  /** “下载”：直接下到下载文件夹（标题栏“传输”里能换、能打开），没有就先建好；同名确认等和拖到本机文件栏一样 */
+  const download = async (dir: string, names: string[]) => {
+    let dest: string;
+    try {
+      dest = await prepareDownloadDir(settings.files.downloadDir);
+    } catch (e) {
+      setOpError(formatError(e));
+      return;
+    }
+    requestDrop({ paneId, loc, home, dir, names }, { paneId: `${paneId}:download`, loc: { kind: "local" }, home: null, dir: dest, title: t("files.thisPc") });
+  };
   /** “下载到…”：选一个本机文件夹，和拖到本机文件栏一样传输（同名确认、“同名文件直接覆盖”设置照样生效） */
   const downloadTo = async (dir: string, names: string[]) => {
     let dest: string | null;
@@ -342,7 +356,10 @@ export function FilePanel({ paneId, spec, title, cwd, commands, sessionId, onClo
       if (!isDirEntry(one)) entriesOut.push({ id: "open-default", label: t("files.openDefault"), onSelect: () => void act((api) => api.openDefault(full(one.name))) });
       entriesOut.push({ id: "reveal", label: t("files.reveal"), onSelect: () => void act((api) => api.reveal(full(one.name))) });
     }
-    if (!local) entriesOut.push({ id: "download-to", label: t("files.downloadTo"), icon: <ArrowDownToLine size={13} />, onSelect: () => void downloadTo(dir, items.map((e) => e.name)) });
+    if (!local) {
+      entriesOut.push({ id: "download", label: t("files.download"), icon: <ArrowDownToLine size={13} />, onSelect: () => void download(dir, items.map((e) => e.name)) });
+      entriesOut.push({ id: "download-to", label: t("files.downloadTo"), onSelect: () => void downloadTo(dir, items.map((e) => e.name)) });
+    }
     if (entriesOut.length) entriesOut.push({ kind: "separator", id: "s0" });
     entriesOut.push(
       { id: "copy-path", label: items.length > 1 ? t("files.copyPaths", { count: items.length }) : t("files.copyPath"), shortcut: "Ctrl Shift C", onSelect: () => copy(items.map((e) => full(e.name)).join("\n")) },

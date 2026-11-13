@@ -3577,7 +3577,7 @@ dependencies = [
 
 [[package]]
 name = "pierlink"
-version = "1.2.11"
+version = "1.2.12"
 dependencies = [
  "base64 0.23.1",
  "if-addrs",
@@ -3607,7 +3607,7 @@ dependencies = [
 
 [[package]]
 name = "pierlink-core"
-version = "1.2.11"
+version = "1.2.12"
 dependencies = [
  "bytes",
  "encoding_rs",
@@ -3651,15 +3651,16 @@ dependencies = [
 
 [[package]]
 name = "pierlink-export-bindings"
-version = "1.2.11"
+version = "1.2.12"
 dependencies = [
  "pierlink",
 ]
 
 [[package]]
 name = "pierlink-ssh-engine"
-version = "1.2.11"
+version = "1.2.12"
 dependencies = [
+ "pkcs5",
  "russh",
  "serde",
  "tempfile",
@@ -3708,6 +3709,7 @@ dependencies = [
  "pbkdf2",
  "rand_core",
  "scrypt",
+ "sha1",
  "sha2 0.11.1",
  "spki",
 ]

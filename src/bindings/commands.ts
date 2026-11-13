@@ -602,6 +602,49 @@ export const commands = {
 	/**  服务器上与 Pierlink 有关的密钥（本电脑的、注释以 pierlink- 开头的）。需要这台服务器已改用专用密钥登录。 */
 	keyStatus: (serverId: string) => typedError<KeyStatusDto_Serialize, AppError>(__TAURI_INVOKE("key_status", { serverId })),
 	/**
+	 *  列出导入的私钥（按导入时间），带着哪些服务器在用。
+	 * 
+	 *  :return: 私钥列表
+	 */
+	keysImportedList: () => typedError<ImportedKeyDto[], AppError>(__TAURI_INVOKE("keys_imported_list")),
+	/**
+	 *  导入私钥：选好的文件读出来（有口令要给口令），加密后存进 Pierlink；原文件不动。
+	 * 
+	 *  :param path: 私钥文件的完整路径
+	 *  :param name: 显示的名字（空时用文件名）
+	 *  :param passphrase: 原文件的口令（没有口令时为 null）
+	 *  :param save_passphrase: 原文件有口令时，要不要存进凭据管理器（连接时自动填）
+	 *  :return: 导入好的私钥
+	 */
+	keysImport: (path: string, name: string, passphrase: string | null, savePassphrase: boolean) => typedError<ImportedKeyDto, AppError>(__TAURI_INVOKE("keys_import", { path, name, passphrase, savePassphrase })),
+	/**
+	 *  给导入的私钥改名。
+	 * 
+	 *  :param id: 私钥编号
+	 *  :param name: 新名字
+	 *  :return: 改好的私钥
+	 */
+	keysImportedRename: (id: string, name: string) => typedError<ImportedKeyDto, AppError>(__TAURI_INVOKE("keys_imported_rename", { id, name })),
+	/**
+	 *  删掉导入的私钥和存着的口令。还有服务器在用时不删，报 keys.imported_in_use（带服务器名）。
+	 * 
+	 *  :param id: 私钥编号
+	 */
+	keysImportedRemove: (id: string) => typedError<null, AppError>(__TAURI_INVOKE("keys_imported_remove", { id })),
+	/**
+	 *  保存或忘掉导入私钥的口令（只对原文件有口令的私钥）。保存前先核对口令能解开私钥。
+	 * 
+	 *  :param id: 私钥编号
+	 *  :param passphrase: 要保存的口令；null 表示忘掉（以后连接时问）
+	 */
+	keysImportedPassphrase: (id: string, passphrase: string | null) => typedError<null, AppError>(__TAURI_INVOKE("keys_imported_passphrase", { id, passphrase })),
+	/**
+	 *  弹出系统的“打开文件”框选私钥文件（从用户的 .ssh 文件夹开始）。
+	 * 
+	 *  :return: 选中的文件完整路径；取消时为 null
+	 */
+	keysPickFile: () => typedError<string | null, AppError>(__TAURI_INVOKE("keys_pick_file")),
+	/**
 	 *  用一次密码安装本电脑的专用密钥并验证；成功后这台服务器改用专用密钥登录。
 	 *  密码只放进本次运行的内存密码库，由自动填口令程序按完全匹配的提示经管道交给 ssh。
 	 * 
@@ -1856,6 +1899,26 @@ export type ImportSkippedDto = {
 	pattern: string,
 	/**  wildcard / negated / inMatchBlock / invalidAlias / duplicate */
 	reason: string,
+};
+
+/**  一把导入的私钥（给界面） */
+export type ImportedKeyDto = {
+	id: string,
+	name: string,
+	/**  算法，如 ssh-ed25519、ssh-rsa */
+	algorithm: string,
+	/**  公钥指纹（SHA256:…） */
+	fingerprint: string,
+	/**  私钥里带的注释（可能为空） */
+	comment: string,
+	/**  原文件有口令（用户自己的口令；没有的话口令是随机生成、一定存着） */
+	userPassphrase: boolean,
+	/**  口令存在凭据管理器里，连接时自动填 */
+	passphraseSaved: boolean,
+	/**  存着的私钥的完整路径：用它的服务器“私钥文件”填这个 */
+	path: string,
+	/**  用这把私钥的服务器名 */
+	usedBy: string[],
 };
 
 export type KeyInstallDto = {

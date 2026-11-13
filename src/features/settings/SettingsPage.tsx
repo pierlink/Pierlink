@@ -7,6 +7,7 @@ import { DEFAULT_IGNORE_RULES, type AppSettings } from "./model";
 import { useSettings } from "./store";
 import { inTauri } from "../shell/TitleBar";
 import { trayAvailable } from "../shell/ExitGuard";
+import { ImportedKeysPanel } from "../servers/ImportedKeysPanel";
 import { getUpdatesApi } from "../updates/api";
 import { announceUpdate } from "../updates/UpdateNotice";
 import { formatError } from "../../errors";
@@ -18,8 +19,8 @@ import { clearHistory } from "../terminal/history";
 import { ShortcutsSection } from "../shortcuts/ShortcutsSection";
 import "./settings.css";
 
-type Section = "appearance" | "terminal" | "shortcuts" | "files" | "desktop" | "sync" | "phone" | "network" | "backup" | "about";
-const SECTIONS: Section[] = ["appearance", "terminal", "shortcuts", "files", "desktop", "sync", "phone", "network", "backup", "about"];
+type Section = "appearance" | "terminal" | "shortcuts" | "files" | "keys" | "desktop" | "sync" | "phone" | "network" | "backup" | "about";
+const SECTIONS: Section[] = ["appearance", "terminal", "shortcuts", "files", "keys", "desktop", "sync", "phone", "network", "backup", "about"];
 
 /** 一行设置：左边说明，右边控件 */
 function Row({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
@@ -83,7 +84,7 @@ export function SettingsPage({ version }: { version: string | null }) {
   const [shells, setShells] = useState<LocalShellView[]>([]);
   const [rulesText, setRulesText] = useState(settings.syncDefaults.ignoreRules.join("\n"));
   const [active, setActive] = useState<Section>("appearance");
-  const refs = useRef<Record<Section, HTMLElement | null>>({ appearance: null, terminal: null, shortcuts: null, files: null, desktop: null, sync: null, phone: null, network: null, backup: null, about: null });
+  const refs = useRef<Record<Section, HTMLElement | null>>({ appearance: null, terminal: null, shortcuts: null, files: null, keys: null, desktop: null, sync: null, phone: null, network: null, backup: null, about: null });
   const term = settings.terminal;
   const sync = settings.syncDefaults;
 
@@ -274,6 +275,11 @@ export function SettingsPage({ version }: { version: string | null }) {
               <Switch label={t("settings.files.overwrite")} checked={settings.files.overwriteOnDrop} onChange={(v) => update((s) => ({ ...s, files: { ...s.files, overwriteOnDrop: v } }))} />
             </Row>
           </div>
+        </section>
+
+        <section ref={(el) => { refs.current.keys = el; }} className="set-section">
+          <h2>{t("settings.section.keys")}</h2>
+          <ImportedKeysPanel />
         </section>
 
         <section ref={(el) => { refs.current.desktop = el; }} className="set-section">

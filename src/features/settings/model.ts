@@ -41,6 +41,8 @@ export interface AppSettings {
   files: {
     /** 拖动传输时遇到同名文件直接覆盖：不先统计、不弹“有同名项”的选择框 */
     overwriteOnDrop: boolean;
+    /** 右键“下载”下到哪个本机文件夹；null 表示系统“下载”文件夹里的 Pierlink */
+    downloadDir: string | null;
   };
   desktop: {
     /** 打开服务器桌面时直接用独立窗口（不在主窗口里开窗格） */
@@ -105,7 +107,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   closeToTray: true,
   autostart: false,
   terminal: { fontSize: 13, cursorStyle: "bar", cursorWidth: 2, cursorBlink: true, scrollback: 10000, defaultShell: null, confirmMultilinePaste: true, rightClickCopyPaste: false, confirmClose: true, broadcastConfirmDanger: true, commandPrediction: true, powershellBell: true, attention: "all", explorerMenu: true, systemConpty: false },
-  files: { overwriteOnDrop: false },
+  files: { overwriteOnDrop: false, downloadDir: null },
   desktop: { openInWindow: false },
   updates: { autoCheck: true },
   notices: { builtinSsh: false },
@@ -158,7 +160,10 @@ export function normalizeSettings(raw: unknown): AppSettings {
       explorerMenu: bool(t.explorerMenu, d.terminal.explorerMenu),
       systemConpty: bool(t.systemConpty, d.terminal.systemConpty),
     },
-    files: { overwriteOnDrop: bool(f.overwriteOnDrop, d.files.overwriteOnDrop) },
+    files: {
+      overwriteOnDrop: bool(f.overwriteOnDrop, d.files.overwriteOnDrop),
+      downloadDir: typeof f.downloadDir === "string" && f.downloadDir.trim() && f.downloadDir.length <= 1000 ? f.downloadDir : null,
+    },
     desktop: { openInWindow: bool(dk.openInWindow, d.desktop.openInWindow) },
     updates: { autoCheck: bool(u.autoCheck, d.updates.autoCheck) },
     notices: { builtinSsh: bool(n.builtinSsh, d.notices.builtinSsh) },

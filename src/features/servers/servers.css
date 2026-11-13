@@ -2,6 +2,8 @@
 .srv-form__row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; }
 .srv-form__row--host { grid-template-columns: minmax(0, 1fr) 110px; }
 .srv-form__err { margin-top: -6px; color: var(--danger); font-size: var(--fs-sm); }
+/* 固定占一行的报错位 */
+.srv-form__err--slot { min-height: 1.5em; line-height: 1.5; }
 .srv-form__notes { resize: vertical; min-height: 64px; padding: 8px 10px; line-height: 1.5; }
 .srv-form .pl-input[aria-invalid="true"] { border-color: var(--danger); }
 @media (max-width: 560px) {
@@ -59,3 +61,28 @@
 .link-convert__head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .link-convert__reasons { margin: 4px 0; padding-left: 18px; }
 .link-convert__actions { display: flex; justify-content: flex-end; }
+
+/* 服务器设置里的“私钥”：下拉框占满，右边是导入按钮 */
+.srv-key { display: flex; gap: 8px; align-items: center; }
+.srv-key__select { flex: 1; min-width: 0; }
+
+/* 导入私钥、改名、保存密码的小框 */
+.key-import { display: flex; flex-direction: column; gap: 10px; }
+.key-import__file { display: flex; gap: 8px; align-items: flex-end; }
+.key-import__file .pl-field { flex: 1; min-width: 0; }
+.key-import__hint { margin: 0; color: var(--text-dim); font-size: var(--fs-xs); line-height: 1.5; }
+/* 出错原因固定占一行，出现、消失时框不跳 */
+.key-import__err { min-height: 1.4em; margin: -4px 0 0; color: var(--danger); font-size: var(--fs-xs); line-height: 1.4; }
+.key-import__err--block { margin: 0; }
+
+/* 设置 → 私钥 */
+.key-list__head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 16px 0; }
+.key-list__err { min-height: 1.4em; padding: 2px 16px 4px; color: var(--danger); font-size: var(--fs-xs); line-height: 1.4; }
+.key-list__empty { padding: 4px 16px 14px; color: var(--text-dim); font-size: var(--fs-sm); }
+.key-row { display: flex; align-items: center; gap: 12px; padding: 10px 16px; border-top: 1px solid var(--border); }
+.key-row__icon { flex: none; color: var(--text-muted); }
+.key-row__text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.key-row__name { font-weight: 600; }
+.key-row__meta, .key-row__state { color: var(--text-dim); font-size: var(--fs-xs); }
+.key-row__state--bad { color: var(--danger); }
+.key-row__actions { flex: none; display: flex; gap: 4px; }

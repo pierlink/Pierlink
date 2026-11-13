@@ -12,6 +12,9 @@ test-support = []
 
 [dependencies]
 russh = "=0.64.1"
+# 只为打开 sha1-insecure：Windows 自带的 ssh-keygen（LibreSSL）和老版本 OpenSSL 生成的加密 PKCS#8 私钥用 PBKDF2-HMAC-SHA1，
+# 不开的话 russh 读不了这种私钥（登录和导入都报密码不对）
+pkcs5 = { version = "0.8", features = ["sha1-insecure"] }
 tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "sync", "time", "macros", "fs"] }
 thiserror.workspace = true
 serde.workspace = true

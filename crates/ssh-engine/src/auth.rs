@@ -146,6 +146,65 @@ async fn rsa_hash(
     }
 }
 
+/// 导入私钥时读不出来的原因
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyImportError {
+    /// 私钥有口令，要先给口令
+    NeedsPassphrase,
+    /// 口令不对
+    WrongPassphrase,
+    /// 老式 PEM 加密（文件里有 DEK-Info 一行）里读不了的：不是 RSA 私钥，或者不是用 AES-128-CBC 加密的。
+    /// 用 `ssh-keygen -p -f 文件` 转成新格式后就能读
+    OldFormat,
+    /// 不是认得的私钥（公钥、证书或别的文件）
+    Unsupported,
+}
+
+/// 老式 PEM 加密里解码器读不了的：不是 RSA 私钥（EC、DSA），或者不是用 AES-128-CBC 加密的（AES-256、3DES 等）
+fn unreadable_legacy_pem(text: &str) -> bool {
+    let Some(dek) = text
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("DEK-Info:"))
+    else {
+        return false;
+    };
+    let cipher = dek.split(',').next().unwrap_or_default().trim();
+    !cipher.eq_ignore_ascii_case("AES-128-CBC") || !text.contains("-----BEGIN RSA PRIVATE KEY-----")
+}
+
+/// 读出私钥文件的内容，导入时用：和登录时同一个解码器（OpenSSH、PEM、PKCS#8、.ppk 都认），
+/// 导入成功的私钥登录时一定读得出来。
+///
+/// :param text: 私钥文件内容
+/// :param passphrase: 私钥的口令（没有口令时为 None）
+/// :return: 解开的私钥，以及原文件有没有口令
+pub fn decode_private_key(
+    text: &str,
+    passphrase: Option<&str>,
+) -> std::result::Result<(PrivateKey, bool), KeyImportError> {
+    if unreadable_legacy_pem(text) {
+        return Err(KeyImportError::OldFormat);
+    }
+    match keys::decode_secret_key(text, None) {
+        Ok(key) => Ok((key, false)),
+        Err(e) => {
+            // PEM、PKCS#8、.ppk 加密时不一定报 KeyIsEncrypted，再看文件里的加密标记
+            let encrypted = matches!(e, keys::Error::KeyIsEncrypted)
+                || text.contains("ENCRYPTED")
+                || text.contains("Encryption: aes");
+            if !encrypted {
+                return Err(KeyImportError::Unsupported);
+            }
+            let phrase = passphrase
+                .filter(|p| !p.is_empty())
+                .ok_or(KeyImportError::NeedsPassphrase)?;
+            keys::decode_secret_key(text, Some(phrase))
+                .map(|key| (key, true))
+                .map_err(|_| KeyImportError::WrongPassphrase)
+        }
+    }
+}
+
 pub(crate) async fn load_key(path: PathBuf, passphrase: Option<Passphrase>) -> Result<PrivateKey> {
     tokio::task::spawn_blocking(move || match keys::load_secret_key(&path, None) {
         Ok(key) => Ok(key),

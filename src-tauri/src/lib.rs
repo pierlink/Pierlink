@@ -18,6 +18,7 @@ mod history;
 #[cfg(windows)]
 mod hkcu;
 mod host_key;
+mod imported_keys;
 mod keys;
 mod mcp;
 mod mobile;
@@ -197,6 +198,12 @@ fn specta_builder() -> Builder<tauri::Wry> {
         builtin::server_login,
         servers::server_resolve,
         keys::key_status,
+        imported_keys::keys_imported_list,
+        imported_keys::keys_import,
+        imported_keys::keys_imported_rename,
+        imported_keys::keys_imported_remove,
+        imported_keys::keys_imported_passphrase,
+        imported_keys::keys_pick_file,
         keys::key_install,
         keys::key_remove,
         ssh_import::ssh_import_preview,

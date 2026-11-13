@@ -206,7 +206,9 @@ pub(super) fn spawn(kind: TerminalKind, pair: &super::Pair) -> Result<Process, A
                 }
             }
             log = ssh_log::Log::prepare(&mut command.args, &config_dir, cfg!(windows));
-            (ssh, command.args, None, command.env)
+            // 自动填口令程序的路径里有中文时：改成相对写法，ssh 的工作目录设到程序所在的目录
+            let cwd = crate::process::relative_askpass(&mut command.env);
+            (ssh, command.args, cwd, command.env)
         }
     };
     if cwd.as_ref().is_some_and(|path| !path.is_dir()) {

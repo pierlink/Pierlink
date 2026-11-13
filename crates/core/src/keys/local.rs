@@ -45,7 +45,7 @@ fn path_exists(path: &Path) -> Result<bool, AppError> {
     }
 }
 
-fn permissions(path: &Path, directory: bool) -> Result<(), AppError> {
+pub(super) fn permissions(path: &Path, directory: bool) -> Result<(), AppError> {
     if io(fs::symlink_metadata(path))?.file_type().is_symlink() {
         return Err(failed(
             "keys.key_paths_cannot_be_symbolic_links",
