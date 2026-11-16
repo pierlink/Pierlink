@@ -18,9 +18,9 @@ English · [简体中文](README.md)
 
 </div>
 
-![The top pane is Claude Code running in a server terminal; the bottom pane is the terminal it opened on this Windows PC through Pierlink](assets/readme/ai-terminal-en.png)
+![The left pane is Claude Code running in a server terminal; the right pane is the terminal it opened on this Windows PC through Pierlink](assets/readme/ai-terminal-en.png)
 
-<div align="center">Top: Claude Code running on a server. Bottom: the terminal it opened on this Windows PC. The two environments stay separate, and Windows needs no Claude Code.</div>
+<div align="center">Left: Claude Code running on a server. Right: the terminal it opened on this Windows PC. The two environments stay separate, and Windows needs no Claude Code.</div>
 
 ## Why Pierlink
 

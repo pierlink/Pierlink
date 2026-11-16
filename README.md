@@ -18,9 +18,9 @@
 
 </div>
 
-![上面一格是服务器终端里运行的 Claude Code，下面一格是它经 Pierlink 在这台 Windows 上开的终端](assets/readme/ai-terminal-zh.png)
+![左边一格是服务器终端里运行的 Claude Code，右边一格是它经 Pierlink 在这台 Windows 上开的终端](assets/readme/ai-terminal-zh.png)
 
-<div align="center">上：服务器上运行的 Claude Code　下：它在这台 Windows 上开的终端。两边环境各管各的，Windows 上不用装 Claude Code。</div>
+<div align="center">左：服务器上运行的 Claude Code　右：它在这台 Windows 上开的终端。两边环境各管各的，Windows 上不用装 Claude Code。</div>
 
 ## 为什么用 Pierlink
 
