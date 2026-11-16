@@ -45,7 +45,8 @@
 .tab { flex: none; display: flex; align-items: center; gap: 7px; height: 32px; padding: 0 6px 0 10px; border: 0; border-radius: var(--r-md); background: transparent; color: var(--text-muted); font-size: var(--fs-sm); cursor: pointer; max-width: 280px; }
 .tab:hover { background: var(--hover); }
 .tab[aria-selected="true"] { background: var(--tab-active); color: var(--text); }
-/* 名字太长（自己起的名字最多 40 个字）时在标签里截断显示；先让后面的说明缩，说明缩没了才轮到名字 */
+/* 名字太长（自己起的名字最多 40 个字）时在标签里截断显示；先让后面的说明缩，说明缩没了才轮到名字。
+   说明的收缩系数要大到名字连零点零几像素都分不到：名字只要比内容窄一点点，就会被画成省略号 */
 .tab__title { font-weight: 500; white-space: nowrap; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 /* 图标、状态点、标记、关闭按钮不跟着缩 */
 .tab > :not(.tab__title):not(.tab__sub) { flex: none; }
@@ -55,7 +56,7 @@
 .tab__attention { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--warn); box-shadow: 0 0 0 3px color-mix(in srgb, var(--warn) 25%, transparent); animation: tab-attention 1.2s ease-in-out infinite; }
 @keyframes tab-attention { 50% { opacity: 0.35; } }
 @media (prefers-reduced-motion: reduce) { .tab__attention { animation: none; } }
-.tab__sub { font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--text-dim); flex-shrink: 1000; }
+.tab__sub { font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--text-dim); flex-shrink: 1000000; }
 .tab__close { display: grid; place-items: center; width: 20px; height: 20px; border-radius: 4px; color: var(--text-dim); }
 .tab__close:hover { background: var(--hover); color: var(--text); }
 .term-placeholder { flex: 1; display: grid; place-items: center; color: var(--text-dim); font-family: var(--font-mono); font-size: var(--fs-sm); }

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { useTranslation } from "react-i18next";
 import { ChevronDown, Columns2, PanelLeft, PanelRight, Plus, Radio, SquareTerminal, X } from "lucide-react";
 import { IconButton, Menu, StatusDot, useContextMenu, type MenuEntry } from "../../components";
@@ -195,6 +195,8 @@ export function TabBar({ tabs, activeId, servers, localShells, onActivate, onClo
  */
 function TabNameInput({ initial, placeholder, label, width, onDone }: { initial: string; placeholder: string; label: string; width: number; onDone: (value: string | null) => void }) {
   const done = useRef(false);
+  // 输入框被撤掉（比如标签关了）不算确定：撤掉时浏览器还会发一次失焦，先标成处理过了
+  useLayoutEffect(() => { done.current = false; return () => { done.current = true; }; }, []);
   const finish = (value: string | null) => {
     if (done.current) return;
     done.current = true;

@@ -1577,7 +1577,9 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
             // 清空：去掉名字，标签重新跟着当前窗格显示
             commitTabs(tabsRef.current.map((x) => (x.key !== key ? x : { key: x.key, layout: x.layout, active: x.active, ...(clean ? { name: clean } : {}) })), null);
           }
-          if (activeTabRef.current) restoreFocus(activeTabRef.current);
+          // 改名框撤掉后焦点没去别处才把键盘还给终端；用点别的输入框来确定名字的，不把焦点抢回来
+          const back = activeTabRef.current;
+          if (back) setTimeout(() => { if (!document.activeElement || document.activeElement === document.body) restoreFocus(back); }, 0);
         }}
         onNewDefault={() => openDefault(null)}
         onPickShell={(id) => openShellIn(id, null)}

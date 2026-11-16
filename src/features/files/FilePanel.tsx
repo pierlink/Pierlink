@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
 import { useTranslation } from "react-i18next";
 import { ArrowDownToLine, ArrowUpFromLine, Check, ChevronRight, Copy, Eye, EyeOff, File, FilePlus, Folder, FolderPlus, FolderSymlink, Link2, LocateFixed, RefreshCw, X } from "lucide-react";
 import { useContextMenu, type MenuEntry } from "../../components";
@@ -599,6 +599,8 @@ export function FilePanel({ paneId, spec, title, cwd, commands, sessionId, onClo
 function NameInput({ initial, placeholder, onDone }: { initial: string; placeholder?: string; onDone: (value: string | null) => void }) {
   const ref = useRef<HTMLInputElement>(null);
   const done = useRef(false);
+  // 输入框被撤掉（比如换了目录）不算确定：撤掉时浏览器还会发一次失焦，先标成处理过了
+  useLayoutEffect(() => { done.current = false; return () => { done.current = true; }; }, []);
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
