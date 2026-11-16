@@ -54,7 +54,8 @@ export function createPreviewFilesApi(): FilesApi {
     preview: true,
     async home(loc) { return loc.kind === "local" ? "C:\\Users\\me" : "/home/dev"; },
     async list(loc, path) {
-      await new Promise((r) => setTimeout(r, 120));
+      // 地址里带 slowlist 时读目录慢一些，方便看“先进去再读”、试连着点几个目录
+      await new Promise((r) => setTimeout(r, new URLSearchParams(location.search).has("slowlist") ? 1500 : 120));
       const entries = tree(loc).get(path);
       if (!entries) {
         // 没有内容的目录：如果父目录里有它就当空目录，否则报不存在

@@ -18,7 +18,7 @@
 
 </div>
 
-![工作区：上面是服务器终端（右上角是服务器概况），下面是本机 PowerShell](assets/readme/workspace-zh.png)
+![服务器上的 AI 经 Pierlink 在这台 Windows 上开终端跑测试、读代码改代码；删除这类危险操作先问你；做过的每一步都有记录](assets/readme/ai-demo-zh.gif)
 
 ## 为什么用 Pierlink
 
@@ -40,6 +40,8 @@
 - 从资源管理器把文件拖进本机终端，自动填上路径（PowerShell、命令提示符、WSL 各按自己的写法）
 - 在服务器终端里粘贴图片：图片传到服务器、粘贴路径，Claude Code 里显示成 [Image #1]
 - 服务器概况常驻在终端右上角：CPU、内存、交换、GPU、各挂载点磁盘、网速
+
+![工作区：上面是服务器终端（右上角是服务器概况），下面是本机 PowerShell](assets/readme/workspace-zh.png)
 
 ### 连接
 - 内置 SSH（CentOS 7 这样的老服务器也能连）；也可以按 `~/.ssh/config` 用系统 OpenSSH 连接，并一键导入

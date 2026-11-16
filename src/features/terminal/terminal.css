@@ -36,9 +36,15 @@
 .term-host {
   flex: 1;
   min-height: 0;
-  padding: var(--sp-2) var(--sp-1) var(--sp-1) var(--sp-3);
+  /* 只留左右的留白。上下的留白放在下面的 .xterm 上：行数是按这个元素的高度算的（它的 padding 不会被扣掉），
+     上下留白放在这里的话，窗格高度凑巧时会多算出一行，最下面一行被下边缘切掉一截 */
+  padding: 0 var(--sp-1) 0 var(--sp-3);
   /* clip 不是滚动容器：输入法组字时隐藏输入框变宽，浏览器也没法把整个终端往左挪 */
   overflow: clip;
+}
+/* 终端上下的留白：算行数时会扣掉 .xterm 自己的 padding */
+.term-host > .xterm {
+  padding: var(--sp-2) 0 var(--sp-1);
 }
 /* 下划线光标：xterm 只画 1 像素、和一个字一样宽，不显眼。加粗到 2 像素，左右各伸出 1 像素
    （负外边距抵掉内边距，字的位置不变；闪烁照样是把这条边藏起来） */

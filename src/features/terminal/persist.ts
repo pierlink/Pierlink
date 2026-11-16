@@ -23,6 +23,22 @@ export interface SavedTab {
   layout: Layout;
   active: string;
   panes: Record<string, SavedPane>;
+  /** 用户给标签起的名字（没起时没有这一项，标签显示当前窗格的标题） */
+  name?: string;
+}
+
+/** 自己起的标签名最多多少个字 */
+export const TAB_NAME_MAX = 40;
+
+/**
+ * 整理用户填的标签名：换行、连着的空白并成一个空格，去掉两头的空白，太长的截短。
+ * @param raw 填的内容
+ * @returns 整理好的名字；空的（表示不起名字，用自动的）或不是文字时为 null
+ */
+export function cleanTabName(raw: unknown): string | null {
+  if (typeof raw !== "string") return null;
+  const name = [...raw.replace(/\s+/g, " ").trim()].slice(0, TAB_NAME_MAX).join("").trim();
+  return name || null;
 }
 
 export interface SavedWorkspace {
@@ -83,7 +99,8 @@ export function parseSaved(raw: unknown): SavedWorkspace | null {
         ...(p.desktop === true && (p.spec as OpenSpec).kind === "server" ? { desktop: true } : {}),
       };
     }
-    tabs.push({ layout: t.layout, active: typeof t.active === "string" && ids.includes(t.active) ? t.active : ids[0], panes: clean });
+    const name = cleanTabName(t.name);
+    tabs.push({ layout: t.layout, active: typeof t.active === "string" && ids.includes(t.active) ? t.active : ids[0], panes: clean, ...(name ? { name } : {}) });
   }
   if (!tabs.length) return null;
   const active = typeof w.active === "number" && w.active >= 0 && w.active < tabs.length ? Math.floor(w.active) : 0;

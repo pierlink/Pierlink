@@ -6,6 +6,7 @@ import { formatError } from "../../errors";
 import i18n from "../../i18n";
 import type { OpenSpec } from "../terminal/types";
 import { getFilesApi } from "./api";
+import { createDirLoader, type DirUpdate } from "./dirLoader";
 import { beginDrag, registerDropTarget, useDragState, type DragOut, type DragPayload } from "./dnd";
 import { baseName, crumbs, formatSize, isWindowsPath, joinPath, locKey, parentPath } from "./path";
 import { requestDrop } from "./TransferCenter";
@@ -38,10 +39,8 @@ function sortEntries(entries: FileEntry[]): FileEntry[] {
   return [...entries].sort((a, b) => Number(isDir(b)) - Number(isDir(a)) || a.name.localeCompare(b.name, undefined, { sensitivity: "base", numeric: true }));
 }
 
-/** 修改时间：今天显示时分，今年显示月日，更早显示年月日 */
-/** 每个文件面板最多记住多少个目录的列表 */
-const CACHE_MAX = 100;
 
+/** 修改时间：今天显示时分，今年显示月日，更早显示年月日 */
 function formatTime(sec: number): string {
   if (!sec) return "";
   const d = new Date(sec * 1000);
@@ -84,7 +83,6 @@ export function FilePanel({ paneId, spec, title, cwd, commands, sessionId, onClo
   const [showHidden, setShowHidden] = useState(true);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const anchor = useRef<string | null>(null);
-  const seq = useRef(0);
   const ctx = useContextMenu(t("files.menuLabel"));
   const drag = useDragState();
   /** 正在原地重命名的项（名字） */
@@ -112,48 +110,39 @@ export function FilePanel({ paneId, spec, title, cwd, commands, sessionId, onClo
   }, [note]);
   const listRef = useRef<HTMLDivElement>(null);
 
-  /** 看过的目录：再进去时先显示记住的列表（不用等），同时在后台重新读一次 */
-  const cache = useRef(new Map<string, Listing>());
-  useEffect(() => { cache.current.clear(); }, [loc]);
-  const remember = (dir: string, result: Listing) => {
-    const m = cache.current;
-    for (const key of new Set([dir, result.path])) { m.delete(key); m.set(key, result); }
-    while (m.size > CACHE_MAX) m.delete(m.keys().next().value as string);
-  };
-  /**
-   * 读目录。force 为 false（进出目录）时有记住的列表就先显示它，后台再读一次、有变化再更新；
-   * force 为 true（刷新、改动之后）时只显示读到的结果。
-   */
-  const load = useCallback(async (dir: string, keepSelection = false, force = keepSelection) => {
-    const my = ++seq.current;
-    const cached = force ? undefined : cache.current.get(dir);
-    if (cached) {
-      setListing(cached);
-      setPath(cached.path);
-      setError(null);
-      if (!keepSelection) { setSelected(new Set()); anchor.current = null; }
-    }
-    setLoading(true);
-    try {
-      const result = await (await getFilesApi()).list(loc, dir);
-      if (my !== seq.current) return;
-      remember(dir, result);
-      setListing(result);
-      setPath(result.path);
-      setError(null);
-      if (!keepSelection && !cached) { setSelected(new Set()); anchor.current = null; }
-    } catch (e) {
-      if (my !== seq.current) return;
-      // 后台重新读失败：先留着记住的列表，在底栏说明
-      if (cached) { setOpError(t("files.refreshFailed", { reason: describeError(e, t("files.authHint")) })); return; }
-      setPath(dir);
+  // 读目录：进目录时先进去（路径马上换、列表先“正在读取”），读到了再填上；看过的目录先显示记住的列表、后台再读一次；
+  // 连着点几个目录只认最后一次。规则在 dirLoader 里，这里只照它说的改界面
+  const applyDir = useRef<(u: DirUpdate) => void>(() => {});
+  applyDir.current = (u) => {
+    if (u.kind === "loading") { setLoading(u.on); return; }
+    // 后台重新读失败：先留着记住的列表，在底栏说明
+    if (u.kind === "refreshFailed") { setOpError(t("files.refreshFailed", { reason: describeError(u.error, t("files.authHint")) })); return; }
+    if (u.kind === "error") {
+      setPath(u.path);
       setListing(null);
       // 浏览文件要另外建立一条 SSH 连接：用密码登录且没保存密码时无法自动登录
-      setError(describeError(e, t("files.authHint")));
-    } finally {
-      if (my === seq.current) setLoading(false);
+      setError(describeError(u.error, t("files.authHint")));
+      return;
     }
-  }, [loc, t]);
+    setListing(u.listing);
+    setPath(u.path);
+    setError(null);
+    if (u.clearSelection) { setSelected(new Set()); anchor.current = null; }
+    // 换了目录：没做完的改名、新建不带过去，列表回到最上面
+    if (u.entered) { setRenaming(null); setCreating(null); listRef.current?.scrollTo({ top: 0 }); }
+  };
+  /** 现在用的加载器（一台机器一个）：换了机器以后，旧的那个晚到的更新不要 */
+  const currentLoader = useRef<ReturnType<typeof createDirLoader> | null>(null);
+  const loader = useMemo(() => {
+    const mine = createDirLoader(
+      async (dir) => (await getFilesApi()).list(loc, dir),
+      (u) => { if (currentLoader.current === mine) applyDir.current(u); },
+    );
+    return mine;
+  }, [loc]);
+  currentLoader.current = loader;
+  /** 读目录；keepSelection、force 见 dirLoader 的 load */
+  const load = useCallback((dir: string, keepSelection = false, force = keepSelection) => loader.load(dir, keepSelection, force), [loader]);
 
   // 家目录：终端还没报告当前目录时先显示它
   useEffect(() => {

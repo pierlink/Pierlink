@@ -25,7 +25,10 @@ export interface ServerView {
 export interface TabView {
   id: string;
   kind: "remote" | "local";
+  /** 标签上显示的名字：用户起的，没起时是当前窗格的标题 */
   title: string;
+  /** 没起名字时会显示的名字（改名框清空后用它） */
+  autoTitle?: string;
   /** 当前目录或说明 */
   subtitle: string;
   status: ConnStatus;

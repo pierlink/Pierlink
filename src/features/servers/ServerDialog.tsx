@@ -179,14 +179,16 @@ export function ServerDialog({ server, groups, onSave, onClose }: Props) {
         {form.authMethod === "key" && (
           <>
             <div className="wiz-field">
-              <span className="wiz-field__label">{t("servers.privateKey")}</span>
+              {/* 报错写在“私钥”这一行的右边：不另占一行，出现、消失时下面的字段不跳 */}
+              <span className="wiz-field__label srv-key__label">
+                {t("servers.privateKey")}
+                <span className="srv-key__err pl-ellipsis" role={fieldError("identityFile") ? "alert" : undefined}>{fieldError("identityFile") ?? ""}</span>
+              </span>
               <div className="srv-key">
                 <Select label={t("servers.privateKey")} className="srv-key__select" value={form.identityFile ?? ""} onChange={(v) => set({ identityFile: v || null })} options={keyOptions} />
                 <Button onClick={() => setImporting(notImported ? form.identityFile ?? "" : "")}>{notImported ? t("servers.importThisKey") : t("servers.importKey")}</Button>
               </div>
             </div>
-            {/* 固定占一行：报错出现、消失时下面的字段不跳 */}
-            <span className="srv-form__err srv-form__err--slot" role={fieldError("identityFile") ? "alert" : undefined}>{fieldError("identityFile") ?? ""}</span>
           </>
         )}
 

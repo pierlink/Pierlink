@@ -10,6 +10,7 @@ import { currentTerminalTheme } from "./theme";
 import { needsPasteConfirm, parseOsc7, parseOsc99 } from "./util";
 import { ConnectCard, ConnectSteps, STEPS, stepIndex, stepOf, type Step } from "./ConnectProgress";
 import { findFakeCursor, placeIme } from "./imeAnchor";
+import { createImeBypass } from "./imeBypass";
 import { keepsConnectCard, looksLikePrompt, looksTyped } from "./loginOutput";
 import { useSettings } from "../settings/store";
 import { useContextMenu } from "../../components";
@@ -443,6 +444,17 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
     el.addEventListener("scroll", unscroll);
     const dropIme = () => { want = null; };
     term.textarea?.addEventListener("blur", dropIme);
+    // 输入法没接在输入框上时送来的字（见 imeBypass）：接过来只发一遍。挂在外层的捕获阶段，先于 xterm 自己的监听
+    const bypass = createImeBypass((text) => term.input(text, true));
+    const onBypassDown = (ev: KeyboardEvent) => bypass.keyDown(ev.keyCode);
+    const onBypassPress = (ev: KeyboardEvent) => {
+      if (ev.target !== term.textarea || ev.ctrlKey || ev.altKey || ev.metaKey) return;
+      if (!bypass.keyPress(ev.charCode, ev.key)) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+    };
+    el.addEventListener("keydown", onBypassDown, true);
+    el.addEventListener("keypress", onBypassPress, true);
 
     let id: string | null = null;
     // 会话 ID 返回之前就到达的输出，先累计字节数，拿到 ID 后再一并确认（否则流量控制会少算）
@@ -935,6 +947,8 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
       term.textarea?.removeEventListener("blur", dropIme);
       term.textarea?.removeEventListener("compositionupdate", alignSoon);
       el.removeEventListener("scroll", unscroll);
+      el.removeEventListener("keydown", onBypassDown, true);
+      el.removeEventListener("keypress", onBypassPress, true);
       keepIme.disconnect();
       if (imeFrame) cancelAnimationFrame(imeFrame);
       el.removeEventListener("mousedown", onRightButton, true);

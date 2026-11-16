@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { maxPaneNumber, parseSaved } from "./persist";
+import { cleanTabName, maxPaneNumber, parseSaved, TAB_NAME_MAX } from "./persist";
 import { pane, splitPane } from "./panes";
 
 const local = { spec: { kind: "local", shellId: "pwsh" }, title: "PowerShell 7", subtitle: "本机", files: { open: true, width: 320 } };
@@ -32,5 +32,42 @@ describe("工作区恢复数据", () => {
     const w = parseSaved({ tabs: [{ layout: pane("pane-1"), active: "nope", panes: { "pane-1": { spec: local.spec, title: "a", subtitle: "b" } } }] });
     expect(w?.tabs[0].panes["pane-1"].files).toEqual({ open: false, width: 300 });
     expect(w?.tabs[0].active).toBe("pane-1");
+  });
+});
+
+describe("自己起的标签名", () => {
+  it("去掉两头的空白，换行和连着的空白并成一个空格", () => {
+    expect(cleanTabName("  训练 A  ")).toBe("训练 A");
+    expect(cleanTabName("部署\n脚本\t 二")).toBe("部署 脚本 二");
+  });
+  it("空的、全是空白的、不是文字的：不算起了名字", () => {
+    expect(cleanTabName("")).toBeNull();
+    expect(cleanTabName(" \n\t ")).toBeNull();
+    expect(cleanTabName(undefined)).toBeNull();
+    expect(cleanTabName(42)).toBeNull();
+    expect(cleanTabName({ name: "x" })).toBeNull();
+  });
+  it("太长的截短（按字算，表情不会被切成半个）", () => {
+    expect(cleanTabName("字".repeat(TAB_NAME_MAX + 5))).toBe("字".repeat(TAB_NAME_MAX));
+    const long = cleanTabName("😀".repeat(TAB_NAME_MAX + 3));
+    expect(long).toBe("😀".repeat(TAB_NAME_MAX));
+  });
+  it("截短后末尾的空白也去掉", () => {
+    expect(cleanTabName(`${"a".repeat(TAB_NAME_MAX - 1)} bcd`)).toBe("a".repeat(TAB_NAME_MAX - 1));
+  });
+  it("随工作区保存和恢复；没起名字的标签没有这一项", () => {
+    const named = { layout: pane("pane-1"), active: "pane-1", panes: { "pane-1": local }, name: "  炼丹  " };
+    const plain = { layout: pane("pane-2"), active: "pane-2", panes: { "pane-2": server } };
+    const w = parseSaved({ tabs: [named, plain], active: 0 });
+    expect(w?.tabs[0].name).toBe("炼丹");
+    expect(w?.tabs[1]).not.toHaveProperty("name");
+  });
+  it("存坏了的名字丢掉，标签照常恢复", () => {
+    const bad = { layout: pane("pane-1"), active: "pane-1", panes: { "pane-1": local }, name: { evil: true } };
+    const blank = { layout: pane("pane-2"), active: "pane-2", panes: { "pane-2": server }, name: "   " };
+    const w = parseSaved({ tabs: [bad, blank], active: 0 });
+    expect(w?.tabs.length).toBe(2);
+    expect(w?.tabs[0]).not.toHaveProperty("name");
+    expect(w?.tabs[1]).not.toHaveProperty("name");
   });
 });

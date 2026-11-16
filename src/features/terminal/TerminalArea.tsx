@@ -23,7 +23,7 @@ import { useSettings } from "../settings/store";
 import { computeRects, insertBeside, pairNodes, pairSpan, pane as leaf, paneIds, removePane, resizeAt, seriesCount, splitPane, swapPanes, type Dir, type Layout, type Rect, type Side } from "./panes";
 import { FilePanel } from "../files/FilePanel";
 import { systemDragEnd, systemDragOver, systemDrop } from "../files/dnd";
-import { loadWorkspace, maxPaneNumber, saveWorkspace, type SavedWorkspace } from "./persist";
+import { cleanTabName, loadWorkspace, maxPaneNumber, saveWorkspace, type SavedWorkspace } from "./persist";
 import { TransferCenter } from "../files/TransferCenter";
 import { isDangerous, LineBuffer, looksLikePasswordPrompt } from "./broadcast";
 import { getMcpApi } from "../mcp/api";
@@ -84,6 +84,8 @@ interface Tab {
   layout: Layout;
   /** 当前选中的窗格（标签栏显示它的标题） */
   active: string;
+  /** 用户给这个标签起的名字：有的话标签栏显示它，不再跟着当前窗格变 */
+  name?: string;
 }
 
 /** 新终端放在哪里：新标签（null），或者在某个窗格旁边拆分出来 */
@@ -165,7 +167,7 @@ function restoreWorkspace(): { tabs: Tab[]; panes: Record<string, Pane>; active:
         cwd: null, commands: 0, session: null, overview: overviewDefault(),
       };
     }
-    tabs.push({ key: `tab-${++seq}`, layout: t.layout, active: t.active });
+    tabs.push({ key: `tab-${++seq}`, layout: t.layout, active: t.active, ...(t.name ? { name: t.name } : {}) });
   }
   return { tabs, panes, active: tabs[saved.active]?.key ?? tabs[0]?.key ?? null, seq };
 }
@@ -177,6 +179,7 @@ function snapshot(tabs: Tab[], panes: Record<string, Pane>, active: string | nul
     tabs: tabs.map((x) => ({
       layout: x.layout,
       active: x.active,
+      ...(x.name ? { name: x.name } : {}),
       panes: Object.fromEntries(paneIds(x.layout).filter((id) => panes[id]).map((id) => {
         const p = panes[id];
         return [id, { spec: p.spec, title: p.title, subtitle: p.subtitle, files: p.files, ...(p.desktop ? { desktop: true } : {}) }];
@@ -329,8 +332,8 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
   }, []);
   const restoreFocus = (tabKey: string) => {
     requestAnimationFrame(() => {
-      // 等界面切过去；期间又切走了、开着对话框时不动
-      if (activeTabRef.current !== tabKey || document.querySelector(".pl-dialog")) return;
+      // 等界面切过去；期间又切走了、开着对话框、正在给标签改名（双击标签：第一下切标签，第二下开始改名）时不动
+      if (activeTabRef.current !== tabKey || document.querySelector(".pl-dialog") || document.activeElement?.classList.contains("tab__rename")) return;
       const tab = tabsRef.current.find((x) => x.key === tabKey);
       if (!tab) return;
       const saved = lastFocus.current.get(tabKey);
@@ -1428,7 +1431,8 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
     return [{
       id: x.key,
       kind: p.spec.kind === "local" ? "local" : "remote",
-      title: shown(p.spec, p.title),
+      title: x.name ?? shown(p.spec, p.title),
+      autoTitle: shown(p.spec, p.title),
       subtitle: shown(p.spec, p.subtitle),
       // 有窗格正在连接（核对指纹到会话建立前）显示“连接中”；核对没通过的不算在线
       status: ids.some((id) => isConnecting(panes[id])) ? "connecting"
@@ -1566,6 +1570,15 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
         }}
         onClose={(key) => requestClose(key, null)}
         onCloseHover={(key) => prefetchClose(key, null)}
+        onRename={(key, name) => {
+          // name 为 null：取消了，只把键盘还给终端
+          if (name !== null) {
+            const clean = cleanTabName(name);
+            // 清空：去掉名字，标签重新跟着当前窗格显示
+            commitTabs(tabsRef.current.map((x) => (x.key !== key ? x : { key: x.key, layout: x.layout, active: x.active, ...(clean ? { name: clean } : {}) })), null);
+          }
+          if (activeTabRef.current) restoreFocus(activeTabRef.current);
+        }}
         onNewDefault={() => openDefault(null)}
         onPickShell={(id) => openShellIn(id, null)}
         onPickServer={(id) => openServer(id, null)}

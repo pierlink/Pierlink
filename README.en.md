@@ -18,7 +18,7 @@ English · [简体中文](README.md)
 
 </div>
 
-![Workspace: a server terminal on top (server overview in its top-right corner) and a local PowerShell below](assets/readme/workspace-en.png)
+![An AI on a server uses Pierlink to run tests in a terminal and edit code on this Windows PC; risky actions such as deleting ask you first; everything it did is on record](assets/readme/ai-demo-en.gif)
 
 ## Why Pierlink
 
@@ -40,6 +40,8 @@ English · [简体中文](README.md)
 - Drag files from File Explorer into a local terminal to insert their paths (written the way PowerShell, Command Prompt or WSL expects)
 - Paste images into server terminals: the image is uploaded to the server and its path pasted, which Claude Code shows as [Image #1]
 - Server overview pinned to the terminal: CPU, memory, swap, GPU, disk per mount point, network speed
+
+![Workspace: a server terminal on top (server overview in its top-right corner) and a local PowerShell below](assets/readme/workspace-en.png)
 
 ### Connections
 - Built-in SSH (works with servers as old as CentOS 7); or connect with system OpenSSH using `~/.ssh/config`, with one-step import

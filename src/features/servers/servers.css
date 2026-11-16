@@ -2,8 +2,9 @@
 .srv-form__row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; }
 .srv-form__row--host { grid-template-columns: minmax(0, 1fr) 110px; }
 .srv-form__err { margin-top: -6px; color: var(--danger); font-size: var(--fs-sm); }
-/* 固定占一行的报错位 */
-.srv-form__err--slot { min-height: 1.5em; line-height: 1.5; }
+/* “私钥”标签那一行：左边是标签，右边是报错（不另占一行） */
+.srv-key__label { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.srv-key__err { min-width: 0; color: var(--danger); }
 .srv-form__notes { resize: vertical; min-height: 64px; padding: 8px 10px; line-height: 1.5; }
 .srv-form .pl-input[aria-invalid="true"] { border-color: var(--danger); }
 @media (max-width: 560px) {

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Menu, type MenuEntry } from "../../components";
 import { readClipboardText, writeClipboardText } from "./clipboard";
+import { installImeResync } from "./imeResync";
 
 /** 可编辑的文本框（只读、禁用的不算） */
 function editableTarget(t: EventTarget | null): HTMLInputElement | HTMLTextAreaElement | null {
@@ -32,6 +33,7 @@ function isBrowserShortcut(e: KeyboardEvent): boolean {
  * 全局保护（另含：数字框的滚轮和上下方向键不改值）：
  * - 屏蔽 WebView 自带的右键菜单（返回、刷新、另存为、打印……）；文本框里换成应用自己的编辑菜单，选中了文字时给“复制”；
  * - 屏蔽浏览器快捷键（刷新、打印、查找、开发者工具等）。
+ * - 窗口焦点出去又回来之后让输入法重新接到输入框上（见 imeResync）。
  * 开发模式下按住 Shift 右键仍显示原生菜单，便于调试。
  */
 export function GlobalGuards() {
@@ -101,6 +103,8 @@ export function GlobalGuards() {
       window.removeEventListener("wheel", onWheel);
     };
   }, [t]);
+
+  useEffect(() => installImeResync(), []);
 
   return menu ? <Menu x={menu.x} y={menu.y} entries={menu.entries} label={t("common.edit")} onClose={() => setMenu(null)} /> : null;
 }
