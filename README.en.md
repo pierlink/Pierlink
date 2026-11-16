@@ -18,7 +18,9 @@ English · [简体中文](README.md)
 
 </div>
 
-![An AI on a server uses Pierlink to run tests in a terminal and edit code on this Windows PC; risky actions such as deleting ask you first; everything it did is on record](assets/readme/ai-demo-en.gif)
+![The top pane is Claude Code running in a server terminal; the bottom pane is the terminal it opened on this Windows PC through Pierlink](assets/readme/ai-terminal-en.png)
+
+<div align="center">Top: Claude Code running on a server. Bottom: the terminal it opened on this Windows PC. The two environments stay separate, and Windows needs no Claude Code.</div>
 
 ## Why Pierlink
 
