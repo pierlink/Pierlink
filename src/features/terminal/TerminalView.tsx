@@ -911,6 +911,9 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
       timer = setTimeout(() => {
         if (disposed || !el.offsetWidth || !el.offsetHeight) return;
         fit.fit();
+        // xterm 只在真的改了大小之后才重新量一次字符。量出来的行高变了（等宽字体比第一次测量晚到）时，
+        // 上面那次是按旧行高算的，行数会多出几行、被下边缘切掉：再算一次，行高没变时这次什么都不做
+        fit.fit();
         if ((term.cols !== last.cols || term.rows !== last.rows) && id) {
           last = { cols: term.cols, rows: term.rows };
           void backend.resize(id, term.cols, term.rows);
@@ -920,8 +923,13 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
     resizeRef.current = doResize;
     const ro = new ResizeObserver(doResize);
     ro.observe(el);
-    // 字体加载完成后字符尺寸会变，需要重新计算行列
-    void document.fonts?.ready.then(doResize);
+    // 等宽字体加载完成后字符尺寸会变：让 xterm 重新量一次，再重新计算行列。
+    // 要指名等这个字体：document.fonts.ready 在字体还没开始加载时就算“好了”
+    void document.fonts?.load(`${term.options.fontSize ?? 13}px "JetBrains Mono Variable"`).then(() => {
+      if (disposed) return;
+      (term as unknown as { _core?: { _charSizeService?: { measure?: () => void } } })._core?._charSizeService?.measure?.();
+      doResize();
+    }, () => undefined);
 
     // 主题切换时更新终端配色
     const mo = new MutationObserver(() => { term.options.theme = currentTerminalTheme(); cursorColors(); });
