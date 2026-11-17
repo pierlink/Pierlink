@@ -599,8 +599,10 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
       setSteps(lastStep ? { at: lastStep, stepStart: now, start: fromPrecheck && pre ? pre.start : now, failed: false } : null);
       cb.current.onStatus?.("running");
       opening = true;
+      // 开会话时告诉后端的大小（会话开出来之前窗格大小可能还会变）
+      const asked = { cols: term.cols, rows: term.rows };
       try {
-        const newId = await backend.open(spec, term.cols, term.rows, (e) => {
+        const newId = await backend.open(spec, asked.cols, asked.rows, (e) => {
           if (disposed) return;
           if (e.kind === "stage") {
             if (!lastStep) return;
@@ -682,6 +684,13 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
         // 已经结束（连上前就断了，退出事件先到）：不再记这个会话
         if (exited) return;
         id = newId;
+        // 会话开出来的这段时间里窗格变了大小（标签栏冒出滚动条、窗口刚还原）：那时还没有会话，没法通知后端，
+        // 现在补上。不补的话后端以为的行数比界面多，全屏程序画在最下面几行的东西（输入框）就看不到了
+        last = asked;
+        if (term.cols !== last.cols || term.rows !== last.rows) {
+          last = { cols: term.cols, rows: term.rows };
+          void backend.resize(newId, term.cols, term.rows);
+        }
         for (const data of earlyReplies.splice(0)) void backend.write(newId, data).catch(() => undefined);
         cb.current.onSession?.(newId);
         if (earlyBytes > 0) {
