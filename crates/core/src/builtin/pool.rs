@@ -857,11 +857,18 @@ fn connection_options(server: &Server) -> Result<ConnectionOptions, AppError> {
         .as_deref()
         .filter(|s| !s.trim().is_empty())
         .ok_or_else(|| AppError::new("server.invalid_field").with("field", "host"))?;
-    // 没填用户名时用这台电脑当前的用户名（和 ssh 的默认一样）
+    // 没填用户名时用这台电脑当前的用户名（和 ssh 的默认一样；Windows 上的 ssh 会把它转成小写，这里照做）
     let local = ["USERNAME", "USER"]
         .into_iter()
         .filter_map(|name| std::env::var(name).ok())
-        .map(|name| name.trim().to_owned())
+        .map(|name| {
+            let name = name.trim();
+            if cfg!(windows) {
+                name.to_lowercase()
+            } else {
+                name.to_owned()
+            }
+        })
         .find(|name| !name.is_empty());
     let user = server
         .username

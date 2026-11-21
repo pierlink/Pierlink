@@ -177,9 +177,16 @@ fn request_dto(
     PasswordRequestDto {
         id: 0.0,
         server_id: server_id.to_owned(),
-        server_name: server
-            .as_ref()
-            .map_or_else(|| server_id.to_owned(), |s| s.name.clone()),
+        // 快速连接没有保存的记录：编号是 quick:用户@主机:端口，去掉前缀当名字
+        server_name: server.as_ref().map_or_else(
+            || {
+                server_id
+                    .strip_prefix("quick:")
+                    .unwrap_or(server_id)
+                    .to_owned()
+            },
+            |s| s.name.clone(),
+        ),
         kind: kind.to_owned(),
         prompt: prompt.map(str::to_owned),
         purpose: purpose.to_owned(),

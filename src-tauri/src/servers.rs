@@ -75,17 +75,12 @@ pub fn load(app: &AppHandle, id: &str) -> Result<Server, AppError> {
         .ok_or_else(|| AppError::new("server.not_found"))
 }
 
-/// 这台电脑当前的用户名（没写用户名的连接用它，和 ssh 的默认一样）
-pub(crate) fn local_user() -> Option<String> {
-    ["USERNAME", "USER"]
-        .into_iter()
-        .filter_map(|name| std::env::var(name).ok())
-        .map(|name| name.trim().to_owned())
-        .find(|name| !name.is_empty())
-}
-
 /// 快速连接（临时输入的 用户@主机:端口）当成一台不存进数据库的服务器，内置 SSH 按它连接：
-/// 登录方式和 ssh 默认的一样（密钥代理、默认位置的私钥，都不行再问密码），没写用户名时用这台电脑的用户名。
+/// 登录方式和 ssh 默认的一样（密钥代理、默认位置的私钥，都不行再问密码），没写用户名时用这台电脑的用户名
+/// （由内置 SSH 连接时补上）。
+///
+/// 用户名不按保存服务器时的规则查：堡垒机、域账号的用户名里有 @（如 `user@corp.local`），
+/// 内置 SSH 把它放在协议里原样发，不经过命令行，只挡掉控制字符和以 - 开头的。
 ///
 /// :param id: 这个连接的固定编号（同一个地址每次都一样，终端和文件面板才能共用一条连接）
 /// :return: 临时的服务器记录；地址、用户名不合法时返回 `server.invalid_field`
@@ -95,18 +90,17 @@ pub(crate) fn quick(
     port: u16,
     user: Option<&str>,
 ) -> Result<Server, AppError> {
-    let username = user
-        .map(str::trim)
-        .filter(|user| !user.is_empty())
-        .map(str::to_owned)
-        .or_else(local_user);
+    let username = user.map(str::trim).filter(|user| !user.is_empty());
+    if username.is_some_and(|user| user.starts_with('-') || user.chars().any(char::is_control)) {
+        return Err(AppError::new("server.invalid_field").with("field", "username"));
+    }
     let input = ServerInput {
         id: None,
         name: host.chars().take(64).collect(),
         group_name: None,
         host: host.to_owned(),
         port,
-        username,
+        username: None,
         auth_method: AuthMethod::Agent,
         connection_engine: Some(Engine::Builtin),
         engine_note: None,
@@ -114,7 +108,9 @@ pub(crate) fn quick(
         login_shell: None,
         notes: String::new(),
     };
-    build_server(&input, None, id, now_ms())
+    let mut server = build_server(&input, None, id, now_ms())?;
+    server.username = username.map(str::to_owned);
+    Ok(server)
 }
 
 /// 一个远程位置对应的服务器记录：保存过的从数据库读，快速连接现造一个（见 quick）

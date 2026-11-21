@@ -58,6 +58,39 @@ fn 本机终端多订阅及屏幕增量查询() {
         .unwrap();
     assert!(manager.screen_text(&id).unwrap().ends_with("[0] 0:bash*"));
     assert!(manager.prompt_text(&id).unwrap().ends_with("Password: "));
+    // 折到下一行的命令、密码提示算同一行：最后一行是完整的命令，不是折下来的后半截
+    let long = format!("$ sudo rm -rf /var/lib/{}", "x".repeat(100));
+    manager
+        .feed_output_at(
+            &id,
+            format!("\x1b[2J\x1b[24;1H[0] 0:bash*\x1b[3;1H{long}").as_bytes(),
+            Instant::now(),
+        )
+        .unwrap();
+    let prompt = manager.prompt_text(&id).unwrap();
+    assert_eq!(prompt.lines().last(), Some(long.as_str()), "{prompt}");
+    // 光标被移回这条命令的第一行（比如按了 Home）：还是取到这条命令结束
+    manager
+        .feed_output_at(&id, b"\x1b[3;5H", Instant::now())
+        .unwrap();
+    assert_eq!(
+        manager.prompt_text(&id).unwrap().lines().last(),
+        Some(long.as_str())
+    );
+    let ask = format!(
+        "Enter passphrase for key '/home/{}/.ssh/id_ed25519': ",
+        "u".repeat(80)
+    );
+    manager
+        .feed_output_at(
+            &id,
+            format!("\x1b[2J\x1b[24;1H[0] 0:bash*\x1b[3;1H{ask}").as_bytes(),
+            Instant::now(),
+        )
+        .unwrap();
+    assert!(crate::mcp::safety::looks_like_password_prompt(
+        &manager.prompt_text(&id).unwrap()
+    ));
     // 光标藏起来的程序（自己画光标）：给整屏
     manager
         .feed_output_at(&id, b"\x1b[?25l", Instant::now())

@@ -603,6 +603,8 @@ impl TerminalManager {
 
     /// 判断“现在在等什么输入”（等密码、命令行上是什么命令）用的屏幕文字：光标看得见时只到光标所在的那一行为止。
     /// 命令行和密码提示都在光标这一行；tmux 的状态栏、程序画在底下的提示条在光标下面，不能当成最后一行。
+    /// 太长折到下一行的内容算同一行（和 screen_text 一样接在一起，不加换行）：窄窗口里命令、密码提示都会折行，
+    /// 光标所在的这一行如果还折到下面，一直取到它结束。
     /// 光标藏起来的程序（自己画光标的全屏程序）给整屏，和 screen_text 一样。不存在的终端返回错误。
     pub fn prompt_text(&self, id: &str) -> Result<String, AppError> {
         let terminal = self.get(id)?;
@@ -611,13 +613,20 @@ impl TerminalManager {
         if screen.hide_cursor() {
             return Ok(screen.contents());
         }
-        let (row, _) = screen.cursor_position();
+        let (cursor_row, _) = screen.cursor_position();
         let (_, cols) = screen.size();
-        let text = screen
-            .rows(0, cols)
-            .take(usize::from(row) + 1)
-            .collect::<Vec<_>>()
-            .join("\n");
+        let mut text = String::new();
+        for (index, row) in screen.rows(0, cols).enumerate() {
+            let index = u16::try_from(index).unwrap_or(u16::MAX);
+            text.push_str(&row);
+            let wrapped = screen.row_wrapped(index);
+            if index >= cursor_row && !wrapped {
+                break;
+            }
+            if !wrapped {
+                text.push('\n');
+            }
+        }
         Ok(text)
     }
 
