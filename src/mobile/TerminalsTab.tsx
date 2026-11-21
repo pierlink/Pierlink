@@ -463,20 +463,22 @@ function TerminalView({ me, term, pending, onOpenConfirms, onBack, onAuthLost }:
   /** 等危险确认时为 true：这期间排着队的按键不再发 */
   const dangerOpen = useRef(false);
   /**
-   * 依次发出 queue（同一次操作，如多行文字和后面的回车）；遇到危险命令停下来问，
-   * 确认后从这一条接着发，剩下的也算确认过（同样的内容不再问第二次）
+   * 依次发出 queue（同一次操作，如一组键）；遇到危险命令停下来问，
+   * 确认后从这一条接着发：只有被问的这一条算确认过，后面的回车照样核对
    */
   const run = async (queue: InputRequest[], sent?: string) => {
     setBusy(true);
     setStatus(null);
     try {
       for (let i = 0; i < queue.length; i++) {
+        // 一组键里的回车前等一下：前面的键改出来的命令（比如 ↑ 调出的上一条）要先显示到电脑的屏幕上，电脑才核对得了
+        if (i > 0 && startsWithSubmit(queue[i])) await new Promise((resolve) => setTimeout(resolve, SUBMIT_AFTER_MS));
         try {
           await api.input(term.id, queue[i]);
         } catch (e) {
           if (e instanceof ApiError && e.status === 409 && e.body?.needs_confirm) {
             dangerOpen.current = true;
-            setDanger({ lines: Array.isArray(e.body.lines) ? (e.body.lines as string[]) : [], queue: queue.slice(i).map((q) => ({ ...q, confirmed: true })), sent });
+            setDanger({ lines: Array.isArray(e.body.lines) ? (e.body.lines as string[]) : [], queue: queue.slice(i).map((q, n) => (n === 0 ? { ...q, confirmed: true } : q)), sent });
             return false;
           }
           throw e;
@@ -518,14 +520,7 @@ function TerminalView({ me, term, pending, onOpenConfirms, onBack, onAuthLost }:
   };
   const press = (key: string) => void enqueue([{ keys: [key] }]);
   /** 发一组键（组合键面板、键盘栏上存的） */
-  const pressSteps = (steps: KeyStep[]) => void (async () => {
-    const requests = toRequests(steps);
-    for (let i = 0; i < requests.length; i++) {
-      // 回车前等一下：前面的键改出来的命令（比如 ↑ 调出的上一条）要先显示到电脑的屏幕上，电脑才核对得了
-      if (i > 0 && startsWithSubmit(requests[i])) await new Promise((resolve) => setTimeout(resolve, SUBMIT_AFTER_MS));
-      if (!(await enqueue([requests[i]]))) return;
-    }
-  })();
+  const pressSteps = (steps: KeyStep[]) => void enqueue(toRequests(steps));
   const choose = (c: Choice) => void enqueue([{ text: c.enter ? `${c.key}\r` : c.key }]);
 
   /** 按下按钮时输入框有焦点（键盘开着）：发完把焦点还给它 */

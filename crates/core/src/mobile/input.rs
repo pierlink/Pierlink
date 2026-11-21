@@ -248,6 +248,12 @@ impl Shared {
             unverified(dangerous);
         } else if pending.edited {
             self.check_edited(id, dangerous).await;
+            // 屏幕最后一行不一定是命令行（tmux 底下有状态栏，刚发的字也可能还没显示出来）：手机这边记下的字也查
+            for line in dangerous_lines(&pending.text) {
+                if !dangerous.contains(&line) {
+                    dangerous.push(line);
+                }
+            }
         } else {
             dangerous.extend(dangerous_lines(&pending.text));
         }
