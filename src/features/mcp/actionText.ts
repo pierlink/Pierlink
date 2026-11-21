@@ -58,3 +58,14 @@ export function localizeAction(action: string, language: string): string {
   }
   return text.replace(TRUNCATED, (_m, n: string) => `… (${n} characters in total)`);
 }
+
+/**
+ * 按界面语言显示操作记录里的摘要（后端写的是中文）。
+ * @param summary 后端给的摘要
+ * @param language 界面语言（i18n.language）；中文原样返回
+ * @returns 要显示的文字
+ */
+export function localizeSummary(summary: string, language: string): string {
+  if (language.startsWith("zh")) return summary;
+  return summary.replace(/（替换 (\d+) 次）$/, (_m, n: string) => ` (${n} replaced)`);
+}

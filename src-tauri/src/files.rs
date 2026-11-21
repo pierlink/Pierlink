@@ -176,8 +176,8 @@ fn command(
     let (target, opts) = remote(app, loc)?;
     let cmd = match (purpose, loc) {
         // 文件面板的后台脚本（统计目录、读写小文件等）按服务器的连接方式选内置 SSH 或系统 OpenSSH
-        (Purpose::Background, LocDto::Server { server_id }) => {
-            let server = crate::servers::load(app, server_id)?;
+        (Purpose::Background, LocDto::Server { .. } | LocDto::Quick { .. }) => {
+            let server = crate::servers::load_loc(app, loc)?;
             crate::builtin::background(
                 app,
                 &server,
@@ -186,8 +186,8 @@ fn command(
             )?
         }
         // 文件面板本身（SFTP）：内置模式走批量连接，大文件传输不拖慢终端
-        (Purpose::Sftp, LocDto::Server { server_id }) => {
-            let server = crate::servers::load(app, server_id)?;
+        (Purpose::Sftp, LocDto::Server { .. } | LocDto::Quick { .. }) => {
+            let server = crate::servers::load_loc(app, loc)?;
             crate::builtin::sftp(app, &server, || build_args(&target, purpose, &opts))?
         }
         _ => build_args(&target, purpose, &opts)?,

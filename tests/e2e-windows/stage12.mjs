@@ -172,18 +172,6 @@ async function openServer(name, marker) {
   await u.waitFor(`/^${marker}-42$/m.test(${TERM})`, `终端输出 ${marker}-42`, 15000);
 }
 
-/** 把服务器的连接方式改成 label 对应的一项（同 stage7.mjs） */
-async function setEngine(name, label) {
-  await u.clickText("Workspace", "header nav");
-  await u.click(".srv-row", await serverRow(name), "right");
-  await u.clickText("Edit", ".pl-menu");
-  await u.waitFor(`!!document.querySelector('.pl-dialog [role=tablist][aria-label="Connection"]')`, "编辑服务器对话框里的连接方式");
-  await u.clickText(label, ".pl-dialog [role=tablist]");
-  await u.waitFor(`(document.querySelector('.pl-dialog [role=tablist][aria-label="Connection"] [aria-selected=true]')?.textContent||'').startsWith(${JSON.stringify(label)})`, `连接方式选中“${label}”`);
-  await u.clickText("Save", ".pl-dialog");
-  await u.waitFor(`!document.querySelector('.pl-dialog')`, "对话框关闭");
-}
-
 /** 填对话框里的文本框（按标签开头匹配） */
 async function fill(label, value) {
   const ok = await p.js(`(()=>{const l=[...document.querySelectorAll('.pl-dialog label.pl-field')].find(l=>l.firstChild?.textContent?.trim()===${JSON.stringify(label)} || l.textContent.trim().startsWith(${JSON.stringify(label)})); const i=l?.querySelector('input,textarea'); if(!i) return false; i.focus(); i.select(); return true;})()`);
@@ -336,19 +324,7 @@ await rec.step(conn, "经 HTTP 代理连服务器（内置 SSH）：代理收到
   return `WSL 地址 ${PX_IP}，经代理 ${before} → ${after}`;
 });
 
-await rec.step(conn, "系统 OpenSSH 经 HTTP 代理：ssh.exe 用 Pierlink.exe --proxy-connect 当 ProxyCommand，终端能用", async () => {
-  if (!PX_IP) throw new Error("上一步没有添加经代理的服务器");
-  await setEngine(PX_NAME, "System OpenSSH");
-  const before = viaProxy("http", PX_IP);
-  await openServer(PX_NAME, "pl-px2");
-  const helpers = Number(pwsh(`@(Get-CimInstance Win32_Process -Filter "Name='Pierlink.exe'" | Where-Object { $_.CommandLine -match '--proxy-connect' }).Count`).split("\n")[0].trim());
-  if (!(helpers >= 1)) throw new Error("没有找到 Pierlink.exe --proxy-connect 进程");
-  const after = viaProxy("http", PX_IP);
-  if (!(after > before)) throw new Error(`系统 OpenSSH 的连接没有经过代理：${JSON.stringify(targets)}`);
-  return `代理入口进程 ${helpers} 个，经代理 ${before} → ${after}`;
-});
-
-await rec.step(conn, "Pierlink 在带空格和中文的目录里运行：系统 OpenSSH 的 ProxyCommand 照常能用", async () => {
+await rec.step(conn, "Pierlink 在带空格和中文的目录里运行：经代理连服务器照常能用", async () => {
   if (!PX_IP) throw new Error("前面没有添加经代理的服务器");
   p.close();
   killApp(EXE);
@@ -358,10 +334,8 @@ await rec.step(conn, "Pierlink 在带空格和中文的目录里运行：系统 
   ({ p, u } = await launchApp(join(SPACED_DIR, basename(EXE)), OUT, PORT));
   const before = viaProxy("http", PX_IP);
   await openServer(PX_NAME, "pl-px2b");
-  const helpers = Number(pwsh(`@(Get-CimInstance Win32_Process -Filter "Name='Pierlink.exe'" | Where-Object { $_.CommandLine -match '--proxy-connect' -and $_.CommandLine -match 'Pier link' }).Count`).split("\n")[0].trim());
-  if (!(helpers >= 1)) throw new Error("没有找到从带空格目录启动的 Pierlink.exe --proxy-connect 进程");
   const after = viaProxy("http", PX_IP);
-  if (!(after > before)) throw new Error(`从带空格目录运行时系统 OpenSSH 没有经过代理：${JSON.stringify(targets)}`);
+  if (!(after > before)) throw new Error(`从带空格目录运行时连接没有经过代理：${JSON.stringify(targets)}`);
   return `${SPACED_DIR}，经代理 ${before} → ${after}`;
 });
 
@@ -377,17 +351,13 @@ await rec.step(conn, "本机 PowerShell 有 HTTP 代理的环境变量", async (
   return want;
 });
 
-await rec.step(conn, "改成 SOCKS5 代理：系统 OpenSSH 和内置 SSH 新开的终端都经 SOCKS5；本机终端只设 ALL_PROXY", async () => {
+await rec.step(conn, "改成 SOCKS5 代理：新开的服务器终端经 SOCKS5；本机终端只设 ALL_PROXY", async () => {
   if (!PX_IP) throw new Error("前面没有添加经代理的服务器");
   await saveProxy("Custom", "SOCKS5", SOCKS_PORT);
   const s0 = viaProxy("socks5", PX_IP);
   await openServer(PX_NAME, "pl-px3");
-  const s1 = viaProxy("socks5", PX_IP);
-  if (!(s1 > s0)) throw new Error(`系统 OpenSSH 没有经过 SOCKS5：${JSON.stringify(targets)}`);
-  await setEngine(PX_NAME, "Built-in SSH");
-  await openServer(PX_NAME, "pl-px4");
   const s2 = viaProxy("socks5", PX_IP);
-  if (!(s2 > s1)) throw new Error(`内置 SSH 没有经过 SOCKS5：${JSON.stringify(targets)}`);
+  if (!(s2 > s0)) throw new Error(`连接没有经过 SOCKS5：${JSON.stringify(targets)}`);
   await u.click('.tabbar button[aria-label="New terminal tab"]');
   await u.waitFor(PS_PROMPT, "PowerShell 提示符", 30000);
   await clickVisible(".xterm-screen");

@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
+import i18n from "../../i18n";
+import { localizeSummary } from "./actionText";
 import { Bot, CircleAlert, Pin } from "lucide-react";
 import { Button } from "../../components";
 import { getServersApi } from "../servers/api";
@@ -222,13 +224,13 @@ export function McpIndicator() {
                 const out = a.output && (a.output.stdout || a.output.stderr) ? a.output : null;
                 return (
                 <div key={key}>
-                <div className={`mcp-pop__act mcp-pop__act--${a.outcome === "ok" ? "ok" : "bad"}${out ? " mcp-pop__act--out" : ""}`} title={out ? t("mcp.showOutput") : a.summary}
+                <div className={`mcp-pop__act mcp-pop__act--${a.outcome === "ok" ? "ok" : "bad"}${out ? " mcp-pop__act--out" : ""}`} title={out ? t("mcp.showOutput") : localizeSummary(a.summary, i18n.language)}
                   role={out ? "button" : undefined} tabIndex={out ? 0 : undefined} aria-expanded={out ? openAct === key : undefined}
                   onClick={out ? () => setOpenAct(openAct === key ? null : key) : undefined}
                   onKeyDown={out ? (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setOpenAct(openAct === key ? null : key); } } : undefined}>
                   <span className="mcp-pop__time">{time(a.timeMs)}</span>
                   <span className="mcp-pop__tool mono">{a.tool}</span>
-                  <span className="pl-ellipsis">{a.forwardedTo ? `${t("mcp.forwardedTo", { computer: a.forwardedTo })} ` : ""}{a.target ? `${serverName(a.target)}: ` : ""}{a.summary}</span>
+                  <span className="pl-ellipsis">{a.forwardedTo ? `${t("mcp.forwardedTo", { computer: a.forwardedTo })} ` : ""}{a.target ? `${serverName(a.target)}: ` : ""}{localizeSummary(a.summary, i18n.language)}</span>
                   {a.outcome === "ok" && (a.approval === "session" || a.approval === "auto") && <span className="mcp-pop__outcome mcp-pop__outcome--auto" title={t(`mcp.approvedBy.${a.approval}`)}>{t(`mcp.approvedBy.${a.approval}`)}</span>}
                   {a.outcome !== "ok" && <span className="mcp-pop__outcome" title={a.outcome}>{a.outcome === "denied" || a.outcome === "cancelled" ? t(`mcp.outcome.${a.outcome}`) : t("mcp.outcome.failed")}</span>}
                 </div>

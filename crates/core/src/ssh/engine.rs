@@ -52,13 +52,7 @@ pub fn select_engine(server: &Server) -> EngineSelection {
     if server.host.as_deref().is_none_or(|s| s.trim().is_empty()) {
         return openssh("服务器未填写主机地址，需由系统 OpenSSH 解析");
     }
-    if server
-        .username
-        .as_deref()
-        .is_none_or(|s| s.trim().is_empty())
-    {
-        return openssh("服务器未填写用户名，需由系统 OpenSSH 确定登录用户");
-    }
+    // 没填用户名的也走内置：登录时用这台电脑当前的用户名（和 ssh 的默认一样）
     EngineSelection {
         engine: Engine::Builtin,
         reason: None,
@@ -123,9 +117,10 @@ mod tests {
             let mut host = base.clone();
             host.host = value.clone();
             cases.push(host);
+            // 没填用户名不再回退：内置 SSH 用这台电脑当前的用户名
             let mut user = base.clone();
             user.username = value;
-            cases.push(user);
+            assert_eq!(select_engine(&user).engine, Engine::Builtin);
         }
         for server in cases {
             let selected = select_engine(&server);

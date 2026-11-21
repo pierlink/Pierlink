@@ -24,6 +24,7 @@ import { readClipboardText, writeClipboardText } from "../shell/clipboard";
 import { commands } from "../../bindings/commands";
 import { inTauri } from "../shell/TitleBar";
 import { droppedText, explorerFolder } from "./localPaths";
+import { createOscGuard } from "./oscGuard";
 import { passwordBus } from "../passwords/bus";
 import { copyPasteKey, KittyKeyboard, localShellFamily, newlineKey, parseOsc52 } from "./kittyKeys";
 import { Prediction } from "./prediction";
@@ -161,8 +162,6 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
    * failed 表示连接停在这一步（显示在失败提示块上）
    */
   const [steps, setSteps] = useState<{ at: Step; stepStart: number; start: number; failed: boolean; done?: boolean } | null>(null);
-  /** 内置 SSH 连不上或密钥没通过：提供“改用系统 OpenSSH 重试”（只对保存过的服务器） */
-  const offerOpenSsh = spec.kind === "server" && (ended?.kind === "failed" || ended?.kind === "authFailed") && !!ended.builtin;
   /** 右键菜单里开关这台服务器的命令预测；失败时在终端顶部提示 */
   const setServerPrediction = async (serverId: string, on: boolean) => {
     try {
@@ -170,19 +169,6 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
       notifyServersChanged();
     } catch (e) {
       showNotice.current(formatError(e));
-    }
-  };
-  /** 把这台服务器改成系统 OpenSSH（原因写进服务器设置），再重新连接 */
-  const switchToOpenSsh = async () => {
-    if (spec.kind !== "server" || !ended) return;
-    const reason = ended.kind === "failed" ? ended.text : t("terminal.endedAuth");
-    try {
-      await (await getServersApi()).setEngine(spec.serverId, "openssh", t("terminal.openSshNote", { reason }));
-      notifyServersChanged();
-      reopenRef.current(true);
-    } catch (e) {
-      setSteps(null);
-      setEnded({ kind: "failed", text: formatError(e) });
     }
   };
   // 没输密码而结束的服务器终端：这台服务器有了密码（在别处输入，或密码框晚一步答完）就自动重新连接
@@ -499,6 +485,8 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
     // 最近一段输出（只用来判断“登录失败”：ssh 打印 Permission denied 后以 255 退出）
     let tail = "";
     const decoder = new TextDecoder();
+    // 标题里夹着的 C1 控制字符先去掉（服务器上的 screen 会发出存坏的标题，见 oscGuard）
+    const oscGuard = createOscGuard();
 
     // 连上后自动输入的命令（安装桌面）：登录完成后，等提示符出来再输入（有提示符钩子时收到“输入从这里开始”的标记就输，
     // 没有时等输出停一会儿，最多等几秒），只输入一次。登录完成前断开了就留到下次连上。
@@ -653,7 +641,7 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
             outputBytes += n;
             tail = (tail + chunk).slice(-2048);
             cb.current.onOutput?.(tail);
-            term.write(e.data, () => {
+            term.write(oscGuard(e.data), () => {
               if (id) void backend.ack(id, n);
               else earlyBytes += n;
             });
@@ -1123,10 +1111,8 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
                 : ended.kind === "authFailed" ? t(ended.tooManyAuth ? "terminal.endedTooManyAuthDetail" : ended.twoFactor ? "terminal.endedTwoFactorDetail" : ended.password ? "terminal.endedAuthPasswordDetail" : "terminal.endedAuthDetail")
                 : ended.kind === "failed" ? ended.text : null}
             </div>
-            {offerOpenSsh && <div className="term-ended__detail">{t("terminal.openSshOffer")}</div>}
             <div className="term-ended__actions">
               <Button onClick={() => onCloseTab?.()}>{closeLabel ?? t("terminal.closeTab")}</Button>
-              {offerOpenSsh && <Button className="term-ended__openssh" onClick={() => void switchToOpenSsh()}>{t("terminal.useOpenSsh")}</Button>}
               <Button variant="primary" autoFocus onClick={() => reopenRef.current(true)}>
                 {spec.kind === "local" ? t("terminal.reopen") : t("terminal.reconnect")}
               </Button>

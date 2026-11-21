@@ -954,7 +954,7 @@ impl MobileHost for TauriMobileHost {
             let plain = manager.recent_lines(&id, lines)?;
             // 同样的行带颜色码（只有 SGR），手机按颜色显示
             let colored = manager.recent_lines_formatted(&id, lines)?;
-            let screen = manager.screen_text(&id)?;
+            let screen = manager.prompt_text(&id)?;
             Ok(json!({
                 "text": plain.join("\n"),
                 "lines": colored,
@@ -968,7 +968,8 @@ impl MobileHost for TauriMobileHost {
     fn terminal_text<'a>(&'a self, id: &'a str) -> HostFuture<'a, String> {
         let id = id.to_owned();
         closed_as_missing(blocking(&self.app, move |app| {
-            app.state::<TerminalState>().manager.screen_text(&id)
+            // 手机输入前的核对（等密码、危险命令）看的是命令行所在的那一行
+            app.state::<TerminalState>().manager.prompt_text(&id)
         }))
     }
 
@@ -982,7 +983,7 @@ impl MobileHost for TauriMobileHost {
             // 写之前再看一次：屏幕在等密码时不发文字（密码只能在电脑上输入）
             if let Some(text) = text.as_deref().filter(|t| !t.is_empty()) {
                 if pierlink_core::mcp::safety::looks_like_password_prompt(
-                    &manager.screen_text(&id)?,
+                    &manager.prompt_text(&id)?,
                 ) {
                     return Err(AppError::new("mobile.password_prompt"));
                 }
@@ -1045,7 +1046,7 @@ impl MobileHost for TauriMobileHost {
             };
             // 写之前再看一次：终端在等密码时不写
             if pierlink_core::mcp::safety::looks_like_password_prompt(
-                &state.manager.screen_text(&id)?,
+                &state.manager.prompt_text(&id)?,
             ) {
                 return Err(AppError::new("mobile.password_prompt"));
             }

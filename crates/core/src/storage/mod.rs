@@ -112,6 +112,7 @@ pub fn open(path: &Path) -> Result<Db, AppError> {
         M::up(include_str!("v7.sql")),
         M::up(include_str!("v8.sql")),
         M::up(include_str!("v9.sql")),
+        M::up(include_str!("v10.sql")),
     ])
     .to_latest(&mut conn)
     .map_err(|_| {

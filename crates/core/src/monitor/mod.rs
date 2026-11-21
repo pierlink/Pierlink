@@ -367,6 +367,10 @@ fn run(
     on_event(MonitorEvent::Stopped);
 }
 
+/// 连上多久才算稳定、把连续失败的次数清零。采到一条样本就清零的话，网络时通时断时
+/// 每次断开都只隔一秒就重新登录，服务器的安全检测会当成有人在试密码。
+const STABLE_AFTER: Duration = Duration::from_secs(60);
+
 fn observe(
     session: &mut Session,
     mut interval: Duration,
@@ -377,6 +381,8 @@ fn observe(
 ) -> End {
     let mut last_sample = Instant::now();
     let mut sampled = false;
+    // 这条连接是什么时候开始的：连稳了才把连续失败的次数清零（见 STABLE_AFTER）
+    let started = Instant::now();
     loop {
         let (stopped, current) = control.snapshot();
         if stopped {
@@ -402,7 +408,9 @@ fn observe(
                         Frame::Sample(sample) => {
                             last_sample = Instant::now();
                             sampled = true;
-                            *attempt = 0;
+                            if started.elapsed() >= STABLE_AFTER {
+                                *attempt = 0;
+                            }
                             on_event(MonitorEvent::Sample(*sample));
                         }
                         Frame::Unsupported => return End::Unsupported("no_proc".into()),

@@ -48,6 +48,24 @@ fn 本机终端多订阅及屏幕增量查询() {
             .code,
         "terminal.automation_rejected"
     );
+    // 判断在等什么输入时只看到光标所在的那一行：底下的状态栏（tmux）不算最后一行
+    manager
+        .feed_output_at(
+            &id,
+            b"\x1b[2J\x1b[24;1H[0] 0:bash*\x1b[3;1HPassword: ",
+            Instant::now(),
+        )
+        .unwrap();
+    assert!(manager.screen_text(&id).unwrap().ends_with("[0] 0:bash*"));
+    assert!(manager.prompt_text(&id).unwrap().ends_with("Password: "));
+    // 光标藏起来的程序（自己画光标）：给整屏
+    manager
+        .feed_output_at(&id, b"\x1b[?25l", Instant::now())
+        .unwrap();
+    assert!(manager.prompt_text(&id).unwrap().ends_with("[0] 0:bash*"));
+    manager
+        .feed_output_at(&id, b"\x1b[?25h", Instant::now())
+        .unwrap();
     manager.close(&id).unwrap();
     assert!(until_exit(&rx).2);
     // 关闭时会先给 shell 发结束输入的按键，cat 会把它原样输出；跳过这些输出，等退出事件

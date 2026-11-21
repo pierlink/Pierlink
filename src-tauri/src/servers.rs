@@ -75,6 +75,59 @@ pub fn load(app: &AppHandle, id: &str) -> Result<Server, AppError> {
         .ok_or_else(|| AppError::new("server.not_found"))
 }
 
+/// 这台电脑当前的用户名（没写用户名的连接用它，和 ssh 的默认一样）
+pub(crate) fn local_user() -> Option<String> {
+    ["USERNAME", "USER"]
+        .into_iter()
+        .filter_map(|name| std::env::var(name).ok())
+        .map(|name| name.trim().to_owned())
+        .find(|name| !name.is_empty())
+}
+
+/// 快速连接（临时输入的 用户@主机:端口）当成一台不存进数据库的服务器，内置 SSH 按它连接：
+/// 登录方式和 ssh 默认的一样（密钥代理、默认位置的私钥，都不行再问密码），没写用户名时用这台电脑的用户名。
+///
+/// :param id: 这个连接的固定编号（同一个地址每次都一样，终端和文件面板才能共用一条连接）
+/// :return: 临时的服务器记录；地址、用户名不合法时返回 `server.invalid_field`
+pub(crate) fn quick(
+    id: &str,
+    host: &str,
+    port: u16,
+    user: Option<&str>,
+) -> Result<Server, AppError> {
+    let username = user
+        .map(str::trim)
+        .filter(|user| !user.is_empty())
+        .map(str::to_owned)
+        .or_else(local_user);
+    let input = ServerInput {
+        id: None,
+        name: host.chars().take(64).collect(),
+        group_name: None,
+        host: host.to_owned(),
+        port,
+        username,
+        auth_method: AuthMethod::Agent,
+        connection_engine: Some(Engine::Builtin),
+        engine_note: None,
+        identity_file: None,
+        login_shell: None,
+        notes: String::new(),
+    };
+    build_server(&input, None, id, now_ms())
+}
+
+/// 一个远程位置对应的服务器记录：保存过的从数据库读，快速连接现造一个（见 quick）
+pub(crate) fn load_loc(app: &AppHandle, loc: &crate::files::LocDto) -> Result<Server, AppError> {
+    match loc {
+        crate::files::LocDto::Local => Err(AppError::new("files.not_remote")),
+        crate::files::LocDto::Server { server_id } => load(app, server_id),
+        crate::files::LocDto::Quick { host, port, user } => {
+            quick(&loc.key(), host, *port, user.as_deref())
+        }
+    }
+}
+
 /// 由服务器记录得到 SSH 目标。跳板机设置在后续阶段接入，目前忽略。
 pub fn target(server: &Server) -> Result<SshTarget, AppError> {
     match server.source {

@@ -78,18 +78,6 @@ async function openLinux() {
   await sleep(300);
 }
 
-/** 把服务器（默认 pl-linux）的连接方式改成 label 对应的一项（同 stage7.mjs） */
-async function setEngine(label, name = LX_NAME) {
-  await u.clickText("Workspace", "header nav");
-  await u.click(".srv-row", await serverRow(name), "right");
-  await u.clickText("Edit", ".pl-menu");
-  await u.waitFor(`!!document.querySelector('.pl-dialog [role=tablist][aria-label="Connection"]')`, "编辑服务器对话框里的连接方式");
-  await u.clickText(label, ".pl-dialog [role=tablist]");
-  await u.waitFor(`(document.querySelector('.pl-dialog [role=tablist][aria-label="Connection"] [aria-selected=true]')?.textContent||'').startsWith(${JSON.stringify(label)})`, `连接方式选中“${label}”`);
-  await u.clickText("Save", ".pl-dialog");
-  await u.waitFor(`!document.querySelector('.pl-dialog')`, "对话框关闭");
-}
-
 /** 输入一段文字后等一会儿，确认没有出现预测 */
 async function expectNoGhost(text, what) {
   await u.type(text);
@@ -145,7 +133,7 @@ await rec.step(conn, "本机 PowerShell：没有 Pierlink 的预测（PowerShell
   await u.esc();
 });
 
-// Git Bash 和系统 OpenSSH 的输出要经过 Windows 的 ConPTY 重新渲染：提示符标记能不能传过来只能在真机上看
+// Git Bash 的输出要经过 Windows 的 ConPTY 重新渲染：提示符标记能不能传过来只能在真机上看
 await rec.step(conn, "本机 Git Bash（经过 ConPTY）：敲过的命令也有预测", async () => {
   await u.click(".pl-split__more");
   await u.clickText("Git Bash", ".pl-menu");
@@ -158,50 +146,6 @@ await rec.step(conn, "本机 Git Bash（经过 ConPTY）：敲过的命令也有
   const g = await u.waitFor(GHOST, "Git Bash 里的浅色预测", 10000);
   await clearLine();
   return `预测：${g}`;
-});
-
-await rec.step(conn, "系统 OpenSSH 连接（经过 ConPTY）：同一台服务器的记录也能预测；测完改回内置 SSH", async () => {
-  try {
-    await setEngine("System OpenSSH");
-    await openLinux();
-    await u.type("echo pl-pre");
-    const g = await u.waitFor(GHOST, "系统 OpenSSH 连接里的浅色预测", 10000);
-    await clearLine();
-    return `预测：${g}`;
-  } finally {
-    await setEngine("Built-in SSH");
-  }
-});
-
-await rec.step(conn, "Windows 服务器改用系统 OpenSSH：带钩子连上就退出，自动为它关掉预测，按 Enter 照常连上；测完改回", async () => {
-  try {
-    await setEngine("System OpenSSH", WIN_NAME);
-    await u.click(".srv-row", await serverRow(WIN_NAME), "left", 2);
-    const text = await u.waitFor(`(()=>{const t=${TERM}; return /Command prediction doesn't work on this server/.test(t) ? t : null;})()`, "终端里说明已为这台服务器关掉预测", 30000);
-    // 关掉预测后服务器列表异步刷新：等右键菜单里变成“开启命令预测”
-    let items = [];
-    const deadline = Date.now() + 10000;
-    for (;;) {
-      await u.click(".srv-row", await serverRow(WIN_NAME), "right");
-      items = await p.js(`[...document.querySelectorAll('.pl-menu [role=menuitem]')].map(x=>x.textContent.trim())`);
-      await u.esc();
-      if (items.includes("Turn on command prediction") || Date.now() > deadline) break;
-      await sleep(500);
-    }
-    if (!items.includes("Turn on command prediction")) throw new Error(`右键菜单里应该变成“开启命令预测”：${items.join(" / ")}`);
-    await clickVisible(".xterm-screen");
-    await u.enter();
-    await u.waitFor(`/>$/.test(${LAST}) && !/Command prediction doesn't work/.test(${TERM})`, "按 Enter 后不带钩子连上 Windows 服务器", 30000);
-    return text.split("\n").filter(Boolean).slice(-2).join(" / ");
-  } finally {
-    // 恢复失败只记下，不盖住这一步原本的错误
-    try { await setEngine("Built-in SSH", WIN_NAME); } catch (e) { console.log(`改回内置 SSH 失败：${e}`); }
-    // 恢复默认：这台服务器的预测重新打开
-    await u.click(".srv-row", await serverRow(WIN_NAME), "right");
-    const items = await p.js(`[...document.querySelectorAll('.pl-menu [role=menuitem]')].map(x=>x.textContent.trim())`);
-    if (items.includes("Turn on command prediction")) await u.clickText("Turn on command prediction", ".pl-menu");
-    else await u.esc();
-  }
 });
 
 await rec.step(conn, "重新打开 Pierlink：服务器的命令记录还在（存在本机）", async () => {

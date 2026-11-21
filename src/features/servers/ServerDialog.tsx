@@ -8,7 +8,6 @@ import { getImportedKeysApi, keyLabel, type ImportedKey } from "./importedKeys";
 import "./servers.css";
 
 type Auth = ServerInputView["authMethod"];
-type Engine = ServerInputView["connectionEngine"];
 
 interface Props {
   /** 修改时传原记录，新建时为 null */
@@ -40,7 +39,8 @@ export function ServerDialog({ server, groups, onSave, onClose }: Props) {
     identityFile: server?.identityFile ?? null,
     loginShell: server?.loginShell ?? null,
     notes: server?.notes ?? "",
-    connectionEngine: server?.connectionEngine ?? "builtin",
+    // 只有内置 SSH 一种连接方式（1.2.16 起）
+    connectionEngine: "builtin",
   }));
   const [portText, setPortText] = useState(String(form.port));
   const [nameTouched, setNameTouched] = useState(!!server);
@@ -134,26 +134,6 @@ export function ServerDialog({ server, groups, onSave, onClose }: Props) {
           <span className="wiz-hint">{t(`servers.authHint.${form.authMethod}`)}</span>
         </div>
 
-        <div className="wiz-field">
-          <span className="wiz-field__label">{t("servers.engine")}</span>
-          <Segmented<Engine>
-            label={t("servers.engine")}
-            value={form.connectionEngine}
-            onChange={(connectionEngine) => set({ connectionEngine })}
-            options={(["builtin", "openssh"] as Engine[]).map((v) => ({ value: v, label: t(`servers.engineName.${v}`) }))}
-          />
-          <span className="wiz-hint">{t(`servers.engineHint.${form.connectionEngine}`)}</span>
-          {/* 内置 SSH 要明确的用户名；没填（地址框里也没写 用户@）时这台服务器实际会改用系统 OpenSSH */}
-          {form.connectionEngine === "builtin" && !form.username?.trim() && !form.host.includes("@") && (
-            <span className="wiz-hint wiz-hint--warn">{t("servers.builtinNeedsUsername")}</span>
-          )}
-          {form.connectionEngine === "openssh" && server?.engineNote && (
-            <span className="wiz-hint">{t("servers.engineNote", { note: server.engineNote })}</span>
-          )}
-          {server && form.connectionEngine !== server.connectionEngine && (
-            <span className="wiz-hint wiz-hint--warn">{t("servers.engineSwitchHint")}</span>
-          )}
-        </div>
         {form.authMethod === "password" && (
           <>
             <TextField

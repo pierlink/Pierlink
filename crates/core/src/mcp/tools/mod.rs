@@ -682,7 +682,7 @@ fn terminal_call(
                 .map(terminal::normalized_key)
                 .collect();
             if (image.is_some() || text.is_some_and(|text| !text.is_empty()))
-                && safety::looks_like_password_prompt(&shared.terminals.screen_text(id)?)
+                && safety::looks_like_password_prompt(&shared.terminals.prompt_text(id)?)
             {
                 shared.host.notify(HostEvent::PasswordPrompt {
                     terminal_id: id.into(),

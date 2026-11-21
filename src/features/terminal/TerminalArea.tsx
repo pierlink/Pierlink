@@ -1455,7 +1455,7 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
     if (!h) return;
     h.paste(snippetRequest.text);
     if (snippetRequest.execute) h.input("\r");
-    h.focus();
+    focusPaneContent(via);
   }, [snippetRequest]);
 
   // 当前窗格所在的服务器（右侧面板跟随它）
@@ -1711,7 +1711,7 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
                                 if (p.restored) revive(id);
                                 else if (live) h?.disconnect();
                                 else h?.reconnect();
-                                h?.focus();
+                                focusPaneContent(id);
                               }}>
                               {live ? <Unplug size={14} /> : <Plug size={14} />}
                             </button>

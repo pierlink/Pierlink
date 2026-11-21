@@ -565,7 +565,7 @@ pub(super) fn send_at_generation(
 ) -> Result<SendOutcome, AppError> {
     let parts = input_parts(m, id, input)?;
     if (input.image.is_some() || input.text.is_some_and(|v| !v.is_empty()))
-        && looks_like_password_prompt(&m.screen_text(id)?)
+        && looks_like_password_prompt(&m.prompt_text(id)?)
     {
         return Err(AppError::new("mcp.password_prompt").with_reason(
             "mcp.terminal_is_waiting_for_a_password_enter_it_in_pierlink",

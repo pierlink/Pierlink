@@ -120,26 +120,11 @@ async function answerLogin() {
   return kind;
 }
 
-/** 对话框里“连接方式”当前选中的文字 */
-const selectedEngine = () => p.js(`document.querySelector('.pl-dialog [role=tablist][aria-label="Connection"] [aria-selected=true]')?.textContent ?? null`);
-
 /** 选中侧栏里的某台服务器，返回行号 */
 async function selectServer(name) {
   const row = await u.waitFor(`(()=>{const i=[...document.querySelectorAll('.srv-row')].findIndex(r=>r.innerText.includes(${JSON.stringify(name)})); return i>=0 ? String(i) : null;})()`, `侧栏里的 ${name}`);
   await u.click(".srv-row", Number(row));
   return Number(row);
-}
-
-/** 打开服务器的编辑对话框，把连接方式改成 label 对应的一项并保存 */
-async function setEngine(name, label) {
-  const row = await selectServer(name);
-  await u.click(".srv-row", row, "right");
-  await u.clickText("Edit", ".pl-menu");
-  await u.waitFor(`!!document.querySelector('.pl-dialog [role=tablist][aria-label="Connection"]')`, "编辑服务器对话框里的连接方式");
-  await u.clickText(label, ".pl-dialog [role=tablist]");
-  await u.waitFor(`(document.querySelector('.pl-dialog [role=tablist][aria-label="Connection"] [aria-selected=true]')?.textContent||'').startsWith(${JSON.stringify(label)})`, `连接方式选中“${label}”`);
-  await u.clickText("Save", ".pl-dialog");
-  await u.waitFor(`!document.querySelector('.pl-dialog')`, "对话框关闭");
 }
 
 /** 页面表达式：可见窗格里出现 bash 提示符（pl@主机名:~$）的个数 */
@@ -164,98 +149,24 @@ async function openTerminal(name, marker) {
   await u.waitFor(`[...document.querySelectorAll('.pane-slot')].filter(s=>s.style.display!=='none').some(s=>/^${marker}-42$/m.test(s.querySelector('.xterm-rows')?.innerText||''))`, `终端输出 ${marker}-42`, 15000);
 }
 
-await rec.step(p, "新建服务器：连接方式默认是内置 SSH；升级说明不会出现在新装或已说明过的列表里", async () => {
+await rec.step(p, "新建服务器：对话框里没有“连接方式”（只有内置 SSH）；升级说明不会出现在新装或已说明过的列表里", async () => {
   await u.click('[aria-label="Add server"]');
-  await u.waitFor(`!!document.querySelector('.pl-dialog [role=tablist][aria-label="Connection"]')`, "添加服务器对话框里的连接方式");
-  const selected = await selectedEngine();
-  if (!/^Built-in SSH/.test(selected ?? "")) throw new Error(`默认连接方式不是内置 SSH：${selected}`);
-  const hint = await p.js(`document.querySelector('.pl-dialog')?.innerText || ''`);
-  if (!/n't read ~\/\.ssh\/config/i.test(hint)) throw new Error(`内置 SSH 的说明里没写不读 ~/.ssh/config：${hint.slice(0, 300)}`);
+  await u.waitFor(`!!document.querySelector('.pl-dialog .srv-form')`, "添加服务器对话框");
+  const text = await p.js(`document.querySelector('.pl-dialog')?.innerText || ''`);
+  if (/System OpenSSH|Connection method/i.test(text) || await p.js(`!!document.querySelector('.pl-dialog [role=tablist][aria-label="Connection"]')`)) throw new Error(`对话框里还有连接方式：${text.slice(0, 300)}`);
   await u.clickText("Cancel", ".pl-dialog");
   await u.waitFor(`!document.querySelector('.pl-dialog')`, "对话框关闭");
   if (await p.js(`!!document.querySelector('.srv-notice')`)) throw new Error("服务器列表顶部不该再出现内置 SSH 的升级说明");
-  return selected;
+  return "没有连接方式一栏";
 });
 
-await rec.step(p, "改成系统 OpenSSH：新开的终端由 ssh.exe 连接，照常能用；终端里没有调试信息", async () => {
+await rec.step(p, "保存过的服务器走内置 SSH：新开的终端不启动 ssh.exe，照常能用", async () => {
   if (!HAVE_LINUX) throw new Error("没有 WSL Linux 服务器");
-  await setEngine(LX_NAME, "System OpenSSH");
-  const before = sshProcesses();
-  await openTerminal(LX_NAME, "pl-openssh");
-  const after = sshProcesses();
-  if (!(after > before)) throw new Error(`系统 OpenSSH 模式下没有新的 ssh.exe 进程：之前 ${before}，之后 ${after}`);
-  // Windows 版 OpenSSH 写日志文件时不许别人同时读，所以 Windows 上不让 ssh 写调试日志（错误照常打在终端里）
-  const logged = Number(pwsh(`@(Get-CimInstance Win32_Process -Filter "Name='ssh.exe'" | Where-Object { $_.CommandLine -match '-p ${LX.port} -l ${LX.user}\\b' -and $_.CommandLine -match 'LogLevel=DEBUG1' }).Count`).split("\n")[0].trim());
-  if (logged !== 0) throw new Error("Windows 上的 ssh.exe 不该带 -o LogLevel=DEBUG1");
-  const text = await p.js(`[...document.querySelectorAll('.pane-slot')].filter(s=>s.style.display!=='none').map(s=>s.querySelector('.xterm-rows')?.innerText||'').join('\\n')`);
-  if (/debug\d:/.test(text)) throw new Error(`终端里出现了 ssh 的调试信息：${text.slice(0, 400)}`);
-  if (/^(Authenticated to|Transferred: sent|Bytes per second:)/m.test(text)) throw new Error(`终端里出现了 ssh 的 VERBOSE 信息：${text.slice(0, 400)}`);
-  return `ssh.exe 进程 ${before} → ${after}`;
-});
-
-/** 最后一个可见窗格（刚开的系统 OpenSSH 终端）的 .xterm-rows 和它的文字 */
-const LAST_ROWS = `[...document.querySelectorAll('.pane-slot')].filter(s=>s.style.display!=='none').pop()?.querySelector('.xterm-rows')`;
-const LAST_TEXT = `(${LAST_ROWS}?.innerText||'')`;
-
-await rec.step(p, "系统 OpenSSH（ssh.exe 跑在 ConPTY 里）：服务器上的转圈动画时光标一直在转圈字符后面，不来回跳", async () => {
-  if (!HAVE_LINUX) throw new Error("没有 WSL Linux 服务器");
-  await focusTerminal();
-  await u.typeLine("f='-\\|/'; for i in $(seq 0 45); do printf '\\033[1G'; printf '\\033[0K'; printf '%s' \"${f:i%4:1}\"; sleep 0.13; done; printf '\\033[1G\\033[0KPL-SPIN-DONE\\n'");
-  const r = await spinnerCursor(p, LAST_ROWS);
-  await u.waitFor(`/^PL-SPIN-DONE\\s*$/m.test(${LAST_TEXT})`, "转圈结束", 15000);
-  if (r.bad > 2 || r.badMs > 60) throw new Error(r.summary);
-  return r.summary;
-});
-
-await rec.step(p, "系统 OpenSSH：闲着的 bash 里光标亮灭各 0.6 秒，节奏不乱", async () => {
-  if (!HAVE_LINUX) throw new Error("没有 WSL Linux 服务器");
-  await focusTerminal();
-  await sleep(300);
-  const r = await blinkRhythm(p, LAST_ROWS);
-  if (!blinkSteady(r)) throw new Error(r.summary);
-  return r.summary;
-});
-
-await rec.step(p, "系统 OpenSSH：bash 打开的括号粘贴传到了界面，粘贴两行不弹确认、不马上执行，按回车两行都执行", async () => {
-  if (!HAVE_LINUX) throw new Error("没有 WSL Linux 服务器");
-  await focusTerminal();
-  execFileSync("powershell.exe", ["-NoProfile", "-Command", "Set-Clipboard -Value ('echo PL-BP-$((1+1))' + [char]10 + 'echo PL-BP-B')"]);
-  await u.key("v", "KeyV", 86, 2);
-  await sleep(1500);
-  if (await p.js(`/Paste multiple lines/.test(document.querySelector('.pl-dialog')?.innerText||'')`)) {
-    await u.esc();
-    throw new Error("弹了多行粘贴确认：括号粘贴没有传到界面");
-  }
-  if (await p.js(`/^PL-BP-2\\s*$/m.test(${LAST_TEXT})`)) throw new Error("粘贴后没按回车就执行了");
-  await u.enter();
-  await u.waitFor(`/^PL-BP-2\\s*$/m.test(${LAST_TEXT}) && /^PL-BP-B\\s*$/m.test(${LAST_TEXT})`, "回车后两行都执行", 10000);
-  return "两行在提示符里等回车，回车后都执行";
-});
-
-await rec.step(p, "系统 OpenSSH：服务器上的程序打开 kitty 键盘协议后，Shift+Enter 发的是 ESC[13;2u", async () => {
-  if (!HAVE_LINUX) throw new Error("没有 WSL Linux 服务器");
-  await focusTerminal();
-  // 开着 kitty 协议时 Ctrl+C、Ctrl+D 也会编成序列，所以用 read 读一行：Shift+Enter 之后再按一次回车结束
-  await u.typeLine("printf '\\033[>1u'; IFS= read -r l; printf '\\033[<u'; printf '%s\\n' \"$l\" | cat -v; echo PL-KITTY-$((6+1))");
-  await sleep(800);
-  await u.key("Enter", "Enter", 13, 8, "\r");
-  await u.enter();
-  await u.waitFor(`/^PL-KITTY-7\\s*$/m.test(${LAST_TEXT})`, "read 结束、kitty 协议关掉", 10000);
-  if (!(await p.js(`/\\^\\[\\[13;2u/.test(${LAST_TEXT})`))) throw new Error(`Shift+Enter 没有按 kitty 协议发：${(await p.js(LAST_TEXT)).split("\\n").slice(-6).join(" / ")}`);
-  // 关掉以后普通回车照常执行
-  await u.typeLine("echo PL-AFTER-$((2+3))");
-  await u.waitFor(`/^PL-AFTER-5\\s*$/m.test(${LAST_TEXT})`, "之后回车照常执行", 10000);
-  return "Shift+Enter 收到 ^[[13;2u";
-});
-
-await rec.step(p, "改回内置 SSH：新开的终端不再启动 ssh.exe，照常能用", async () => {
-  if (!HAVE_LINUX) throw new Error("没有 WSL Linux 服务器");
-  await setEngine(LX_NAME, "Built-in SSH");
   const before = sshProcesses();
   await openTerminal(LX_NAME, "pl-builtin");
   await sleep(1000);
   const after = sshProcesses();
-  if (after > before) throw new Error(`内置模式下又启动了 ssh.exe：之前 ${before}，之后 ${after}`);
+  if (after > before) throw new Error(`连接时启动了 ssh.exe：之前 ${before}，之后 ${after}`);
   return `ssh.exe 进程 ${before} → ${after}`;
 });
 
@@ -285,13 +196,12 @@ await rec.step(p, "从 ssh config 导入的服务器：检查后转换成内置 
   if (!preview.includes(`${LX.host}:${LX.port}`)) throw new Error(`预览里没有 ${LX.host}:${LX.port}：${preview}`);
   await u.clickText("Switch", ".link-convert");
   await u.waitFor(`!document.querySelector('.pl-dialog')`, "转换后对话框关闭", 30000);
-  // 转换后是应用内添加、用内置 SSH 的服务器：编辑对话框里有“连接方式”，选中内置 SSH
+  // 转换后是应用内添加的服务器：编辑对话框是普通的服务器表单（不再是“改用内置 SSH”那个）
   await u.click(".srv-row", await selectServer("pl-conv"), "right");
   await u.clickText("Edit", ".pl-menu");
-  await u.waitFor(`!!document.querySelector('.pl-dialog [role=tablist][aria-label="Connection"]')`, "转换后的编辑对话框");
-  const engine = await selectedEngine();
+  await u.waitFor(`!!document.querySelector('.pl-dialog .srv-form')`, "转换后的编辑对话框");
   await u.clickText("Cancel", ".pl-dialog");
-  if (!/^Built-in SSH/.test(engine ?? "")) throw new Error(`转换后连接方式不是内置 SSH：${engine}`);
+  await u.waitFor(`!document.querySelector('.pl-dialog')`, "对话框关闭");
   const procs = sshProcesses();
   await openTerminal("pl-conv", "pl-conv");
   if (sshProcesses() > procs) throw new Error("转换后的服务器还在用 ssh.exe 连接");

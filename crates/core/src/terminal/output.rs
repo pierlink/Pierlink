@@ -601,6 +601,26 @@ impl TerminalManager {
         Ok(lock(&self.get(id)?.output).parser.screen().contents())
     }
 
+    /// 判断“现在在等什么输入”（等密码、命令行上是什么命令）用的屏幕文字：光标看得见时只到光标所在的那一行为止。
+    /// 命令行和密码提示都在光标这一行；tmux 的状态栏、程序画在底下的提示条在光标下面，不能当成最后一行。
+    /// 光标藏起来的程序（自己画光标的全屏程序）给整屏，和 screen_text 一样。不存在的终端返回错误。
+    pub fn prompt_text(&self, id: &str) -> Result<String, AppError> {
+        let terminal = self.get(id)?;
+        let output = lock(&terminal.output);
+        let screen = output.parser.screen();
+        if screen.hide_cursor() {
+            return Ok(screen.contents());
+        }
+        let (row, _) = screen.cursor_position();
+        let (_, cols) = screen.size();
+        let text = screen
+            .rows(0, cols)
+            .take(usize::from(row) + 1)
+            .collect::<Vec<_>>()
+            .join("\n");
+        Ok(text)
+    }
+
     /// 返回 id 最近 count 行已渲染文字（回滚加当前屏幕），最多 10000 行；不包含末尾空屏行。
     pub fn recent_lines(&self, id: &str, count: usize) -> Result<Vec<String>, AppError> {
         Ok(lock(&self.get(id)?.output).recent(count))

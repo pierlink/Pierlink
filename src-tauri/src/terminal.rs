@@ -718,32 +718,27 @@ async fn open_remote(
                 config_dir: ssh_config_dir(app)?,
             })
         };
-        // 保存过的服务器按它的连接方式选内置 SSH 或系统 OpenSSH；临时输入地址的快速连接照旧用系统 OpenSSH
-        let mut kind = match &loc {
-            crate::files::LocDto::Server { server_id } => {
-                let server = crate::servers::load(app, server_id)?;
-                match (
-                    app.try_state::<crate::builtin::BuiltinState>(),
-                    app.try_state::<crate::passwords::PasswordState>(),
-                ) {
-                    (Some(builtin), Some(passwords)) => pierlink_core::terminal::remote(
-                        &builtin.manager,
-                        pierlink_core::builtin::ConnectionRequest {
-                            server: &server,
-                            class: pierlink_core::builtin::ConnectionClass::Main,
-                            vault: passwords.vault.clone(),
-                            callbacks: builtin.callbacks.clone(),
-                            interactive: true,
-                            cancelled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-                            progress: Some(progress),
-                        },
-                        Some(marker.clone()),
-                        prediction,
-                        openssh,
-                    )?,
-                    _ => openssh()?,
-                }
-            }
+        // 保存过的服务器和临时输入地址的快速连接都走内置 SSH（快速连接当成一台不存进数据库的服务器）
+        let server = crate::servers::load_loc(app, &loc)?;
+        let mut kind = match (
+            app.try_state::<crate::builtin::BuiltinState>(),
+            app.try_state::<crate::passwords::PasswordState>(),
+        ) {
+            (Some(builtin), Some(passwords)) => pierlink_core::terminal::remote(
+                &builtin.manager,
+                pierlink_core::builtin::ConnectionRequest {
+                    server: &server,
+                    class: pierlink_core::builtin::ConnectionClass::Main,
+                    vault: passwords.vault.clone(),
+                    callbacks: builtin.callbacks.clone(),
+                    interactive: true,
+                    cancelled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                    progress: Some(progress),
+                },
+                Some(marker.clone()),
+                prediction,
+                openssh,
+            )?,
             _ => openssh()?,
         };
         // 内置 SSH 的终端在握手后才生成启动命令：重连时的启动目录另外交给它

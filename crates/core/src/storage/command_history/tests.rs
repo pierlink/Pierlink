@@ -75,7 +75,7 @@ fn 从旧库升级保留全部实体并默认跟随全局预测设置() {
         db.conn
             .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
             .unwrap(),
-        9
+        10
     );
     let mut server = db.get_server("old").unwrap().unwrap();
     assert!(server.command_prediction);

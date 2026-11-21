@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import i18n from "../../i18n";
+import { localizeSummary } from "./actionText";
 import { Check, Monitor, Plus, Server, Trash2 } from "lucide-react";
 import { Banner, Button, Checkbox, Dialog, Notice, Segmented, Select, Switch } from "../../components";
 import { formatError } from "../../errors";
@@ -803,10 +805,10 @@ function ActivityView({ activity, settings, serverName, onError }: {
                   <td title={serverName(a.entry)}>{serverName(a.entry)}</td>
                   <td className="mono" title={a.tool}>{a.tool}</td>
                   <td title={a.target ? serverName(a.target) : undefined}>{a.target ? serverName(a.target) : "—"}</td>
-                  <td className="mono mcp-table__summary" title={a.summary}>
+                  <td className="mono mcp-table__summary" title={localizeSummary(a.summary, i18n.language)}>
                     {a.forwardedTo && <span className="mcp-table__via">{t("mcp.forwardedTo", { computer: a.forwardedTo })}</span>}
                     {a.forwardedFrom && <span className="mcp-table__via">{t("mcp.forwardedFrom", { computer: a.forwardedFrom })}</span>}
-                    {a.summary}
+                    {localizeSummary(a.summary, i18n.language)}
                   </td>
                   <td title={[outcome(a), a.approval === "user" || a.approval === "session" || a.approval === "auto" ? t(`mcp.approvedByLong.${a.approval}`) : ""].filter(Boolean).join(" · ")}>
                     <span className={`mcp-table__result mcp-table__result--${a.outcome === "ok" ? "ok" : "bad"}`}>{outcome(a)}</span>
