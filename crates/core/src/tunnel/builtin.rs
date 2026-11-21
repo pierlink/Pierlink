@@ -321,7 +321,7 @@ impl Entry {
             self.change(TunnelState::Connected, None, false, events);
         }
         if let Some(attempt) = &self.builtin_connection {
-            if attempt.ready && attempt.started.elapsed() >= Duration::from_secs(3) {
+            if attempt.ready && attempt.started.elapsed() >= super::STABLE_AFTER {
                 self.event.attempt = 0;
             }
             if let Some((error, streamlocal)) = attempt

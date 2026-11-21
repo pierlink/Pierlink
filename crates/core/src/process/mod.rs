@@ -12,6 +12,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[cfg(any(windows, test))]
+pub(crate) mod user_env;
 #[cfg(windows)]
 pub(crate) mod windows;
 
@@ -207,6 +209,12 @@ fn spawn_tree_command(
         .stderr(Stdio::piped());
     if !inherit {
         command.env_clear();
+    }
+    // Windows 上“继承”的是从系统重新取的那一份（见 user_env），不是本进程启动时的
+    #[cfg(windows)]
+    if inherit {
+        command.env_clear();
+        command.envs(user_env::base());
     }
     command.envs(env.iter().map(|(k, v)| (k, v)));
     if let Some(cwd) = cwd {

@@ -48,6 +48,23 @@ export function toggleServer(entry: EntrySettings, serverId: string): EntrySetti
 }
 
 /**
+ * 给一台服务器填（或清掉）工作目录：AI 在这台服务器上执行命令、开终端时默认从这里开始。
+ * @param entry 入口设置
+ * @param serverId 服务器 ID
+ * @param dir 目录；空白表示不指定
+ * @returns 新的入口设置；没变时原样返回
+ */
+export function setServerDir(entry: EntrySettings, serverId: string, dir: string): EntrySettings {
+  const value = dir.trim();
+  const dirs = entry.serverDirs ?? {};
+  if ((dirs[serverId] ?? "") === value) return entry;
+  const next = { ...dirs };
+  if (value) next[serverId] = value;
+  else delete next[serverId];
+  return { ...entry, serverDirs: next };
+}
+
+/**
  * AI 在本机打开终端时用的 shell：优先 PowerShell 7，其次 Windows PowerShell（命令写法确定，切目录用 Set-Location）。
  * @param shells 检测到的本机 shell
  * @returns 选中的 shell；一个 PowerShell 都没有时为 undefined

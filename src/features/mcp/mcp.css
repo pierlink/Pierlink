@@ -48,6 +48,10 @@
 .mcp-perms__add { display: flex; align-items: flex-end; gap: 8px; flex-wrap: wrap; }
 .mcp-perms__add .pl-field { flex: 1; min-width: 220px; }
 .mcp-perms__servers { display: flex; flex-wrap: wrap; gap: 6px 16px; }
+/* 服务器的工作目录：名字固定宽度，后面的输入框占满 */
+.mcp-perms__dir { display: flex; align-items: center; gap: 8px; }
+.mcp-perms__dir-name { flex: none; width: 120px; font-size: var(--fs-sm); }
+.mcp-perms__dir .pl-input { flex: 1; min-width: 0; }
 
 /* AI 打开的终端：标签上的“AI”标记、窗格顶部的提示条 */
 .ai-badge { display: inline-flex; align-items: center; padding: 0 5px; height: 16px; border-radius: 8px; background: var(--accent-soft); color: var(--accent); font-size: 10px; font-weight: 700; letter-spacing: 0.04em; flex: none; }

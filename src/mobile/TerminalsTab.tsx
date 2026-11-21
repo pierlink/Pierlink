@@ -1,11 +1,13 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
-import { ArrowDown, ArrowLeft, Bot, ChevronDown, ChevronUp, Eye, ImagePlus, MoreHorizontal, Plus, ShieldAlert } from "lucide-react";
+import { ArrowDown, ArrowLeft, Bot, ChevronDown, ChevronUp, Eye, ImagePlus, Keyboard, MoreHorizontal, Plus, ShieldAlert } from "lucide-react";
 import { api, ApiError, type InputRequest, type Me, type OverviewServer, type Screen, type TerminalItem } from "./api";
 import { handleError } from "./App";
 import { parseSgrLine, stripSgr, type Style } from "./ansi";
 import { detectChoices, type Choice } from "./choices";
 import { prepareImage } from "./image";
+import { KeySheet } from "./KeySheet";
+import { presetLabel, startsWithSubmit, toRequests, type KeyStep } from "./keys";
 import { FONT_SIZES, loadPrefs, savePrefs, type Prefs } from "./prefs";
 import { useWakeLock } from "./viewport";
 
@@ -31,8 +33,8 @@ const POLL_MS = 1000;
 const SOON_MS = 150;
 /** 往上翻、往下翻一次挪几行（有历史行时在手机上挪；全屏程序按它自己滚一格的距离） */
 const SCROLL_LINES = 5;
-/** 长按“发送”多久算长按（只输入不回车） */
-const LONG_PRESS_MS = 450;
+/** 一组键里的回车，在前面的键发出后隔多久再发（等电脑的屏幕显示出改过的命令行） */
+const SUBMIT_AFTER_MS = 300;
 /** 按手机宽度显示：多久续一次期（电脑端 45 秒没收到就自动恢复） */
 const FIT_RENEW_MS = 20_000;
 
@@ -268,6 +270,8 @@ function TerminalView({ me, term, pending, onOpenConfirms, onBack, onAuthLost }:
   const [danger, setDanger] = useState<{ lines: string[]; queue: InputRequest[]; sent?: string } | null>(null);
   const [prefs, setPrefs] = useState<Prefs>(loadPrefs);
   const [menu, setMenu] = useState(false);
+  /** 组合键面板开着 */
+  const [keySheet, setKeySheet] = useState(false);
   const [follow, setFollow] = useState(true);
   const [linesStep, setLinesStep] = useState(0);
   const [uploading, setUploading] = useState(false);
@@ -499,7 +503,10 @@ function TerminalView({ me, term, pending, onOpenConfirms, onBack, onAuthLost }:
     return next;
   };
   const closeDanger = () => { dangerOpen.current = false; setDanger(null); };
-  /** 发出输入框里的文字；enter 为 false 时只输入不回车。多行按粘贴写入，不会一行一行地提交 */
+  /**
+   * 发出输入框里的文字；enter 为 false 时只填进终端、不回车。多行按粘贴写入，不会一行一行地提交。
+   * 输入框是空的：enter 为 true 时只按一下回车
+   */
   const sendText = async (enter: boolean) => {
     const value = text.replace(/\r\n?/g, "\n");
     if (!value) { if (enter) await enqueue([{ keys: ["Enter"] }]); return; }
@@ -510,31 +517,33 @@ function TerminalView({ me, term, pending, onOpenConfirms, onBack, onAuthLost }:
     await enqueue(queue, value);
   };
   const press = (key: string) => void enqueue([{ keys: [key] }]);
+  /** 发一组键（组合键面板、键盘栏上存的） */
+  const pressSteps = (steps: KeyStep[]) => void (async () => {
+    const requests = toRequests(steps);
+    for (let i = 0; i < requests.length; i++) {
+      // 回车前等一下：前面的键改出来的命令（比如 ↑ 调出的上一条）要先显示到电脑的屏幕上，电脑才核对得了
+      if (i > 0 && startsWithSubmit(requests[i])) await new Promise((resolve) => setTimeout(resolve, SUBMIT_AFTER_MS));
+      if (!(await enqueue([requests[i]]))) return;
+    }
+  })();
   const choose = (c: Choice) => void enqueue([{ text: c.enter ? `${c.key}\r` : c.key }]);
 
-  // 长按“发送”只输入不回车
-  const longTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const longFired = useRef(false);
-  /** 按下“发送”时输入框有焦点（键盘开着）：发完把焦点还给它 */
+  /** 按下按钮时输入框有焦点（键盘开着）：发完把焦点还给它 */
   const typing = useRef(false);
+  /**
+   * 输入框右边的按钮：框里有字时是“填入”（把字写进终端、不回车，可以先在屏幕上看一眼），
+   * 框里没字时是“发送”（按一下回车）
+   */
   const sendDown = (e: ReactPointerEvent) => {
-    // 不让输入框失焦：发完一句键盘还在，接着打字
+    // 不让输入框失焦：填完一句键盘还在，接着打字
     e.preventDefault();
     typing.current = document.activeElement === textRef.current;
-    longFired.current = false;
-    longTimer.current = setTimeout(() => {
-      longFired.current = true;
-      navigator.vibrate?.(20);
-      void sendText(false);
-    }, LONG_PRESS_MS);
   };
-  const sendUp = () => {
-    if (longTimer.current) clearTimeout(longTimer.current);
-    if (!longFired.current) void sendText(true);
+  const sendClick = () => {
+    void sendText(!text);
     // 有的浏览器按按钮时还是会让输入框失焦：在这次点按里放回去，键盘不会收起再弹出
     if (typing.current && document.activeElement !== textRef.current) textRef.current?.focus();
   };
-  const sendCancel = () => { if (longTimer.current) clearTimeout(longTimer.current); longFired.current = true; };
   /** 点键盘栏、选项按钮时不让输入框失焦：键盘开着就一直开着，可以接着按、接着打字 */
   const holdFocus = (e: ReactPointerEvent) => {
     e.preventDefault();
@@ -632,8 +641,16 @@ function TerminalView({ me, term, pending, onOpenConfirms, onBack, onAuthLost }:
               ))}
             </div>
           )}
+          {keySheet && (
+            <KeySheet presets={prefs.presets} disabled={!canType} onSend={pressSteps} onPresets={(presets) => updatePrefs({ presets })} onClose={() => setKeySheet(false)} />
+          )}
           <div className="m-keys">
+            <button type="button" className={`m-key${keySheet ? " m-key--on" : ""}`} aria-label={t("mobile.terminals.keys.title")} aria-expanded={keySheet} onPointerDown={holdFocus} onClick={() => { setKeySheet((v) => !v); refocus(); }}><Keyboard size={20} aria-hidden="true" /></button>
             {KEYS.map((k) => <button key={k.key} type="button" className="m-key" disabled={!canType} onPointerDown={holdFocus} onClick={() => { press(k.key); refocus(); }}>{k.label}</button>)}
+            {prefs.presets.map((p) => {
+              const label = presetLabel(p.steps);
+              return <button key={label} type="button" className="m-key" disabled={!canType} onPointerDown={holdFocus} onClick={() => { pressSteps(p.steps); refocus(); }}>{label}</button>;
+            })}
           </div>
           <div className="m-term__line">
             <button type="button" className="m-icon-btn m-icon-btn--field" aria-label={t("mobile.terminals.image")} disabled={!canType || uploading} onClick={() => fileRef.current?.click()}><ImagePlus size={20} /></button>
@@ -651,18 +668,15 @@ function TerminalView({ me, term, pending, onOpenConfirms, onBack, onAuthLost }:
               onCompositionStart={() => { composing.current = true; }}
               onCompositionEnd={() => { composing.current = false; }}
               onKeyDown={(e) => {
-                // 电脑浏览器里（精确指针）Enter 发送、Shift+Enter 换行；手机上的回车照常换行，点“发送”发出
+                // 电脑浏览器里（精确指针）Enter 直接发出并回车、Shift+Enter 换行；手机上的回车照常换行，点按钮填入
                 if (e.key !== "Enter" || e.shiftKey || composing.current || e.nativeEvent.isComposing) return;
                 if (!window.matchMedia("(pointer: fine)").matches) return;
                 e.preventDefault();
                 void sendText(true);
               }}
             />
-            <button type="button" className="m-btn m-btn--primary m-send" disabled={busy || !canType} title={t("mobile.terminals.sendHint")}
-              onPointerDown={sendDown} onPointerUp={sendUp} onPointerLeave={sendCancel} onPointerCancel={sendCancel}
-              onContextMenu={(e) => e.preventDefault()}
-              onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); void sendText(true); } }}>
-              {t("mobile.terminals.send")}
+            <button type="button" className="m-btn m-btn--primary m-send" disabled={busy || !canType} onPointerDown={sendDown} onClick={sendClick}>
+              {t(text ? "mobile.terminals.fill" : "mobile.terminals.send")}
             </button>
           </div>
         </div>

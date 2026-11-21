@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
 import { useTranslation } from "react-i18next";
-import { ArrowDownToLine, ArrowUpFromLine, Check, ChevronRight, Copy, Eye, EyeOff, File, FilePlus, Folder, FolderPlus, FolderSymlink, Link2, LocateFixed, RefreshCw, X } from "lucide-react";
+import { ArrowDownToLine, ArrowUpFromLine, Check, ChevronRight, Copy, Eye, EyeOff, File, FilePlus, Folder, FolderPlus, FolderSymlink, Link2, LocateFixed, Maximize2, Minimize2, RefreshCw, X } from "lucide-react";
 import { useContextMenu, type MenuEntry } from "../../components";
 import { formatError } from "../../errors";
 import i18n from "../../i18n";
@@ -55,7 +55,7 @@ function formatTime(sec: number): string {
  * 文件面板：显示终端当前目录的文件（含隐藏文件），终端里 cd 后跟着切换。
  * 手动进入别的目录后暂停跟随，点顶部的“跟随终端目录”按钮恢复。可以把选中的文件拖到另一个窗格的文件面板上传输。
  */
-export function FilePanel({ paneId, spec, title, cwd, commands, sessionId, onClose }: {
+export function FilePanel({ paneId, spec, title, cwd, commands, sessionId, full, onToggleFull, onClose }: {
   paneId: string;
   spec: OpenSpec;
   /** 窗格标题（拖放提示里显示目标） */
@@ -66,6 +66,10 @@ export function FilePanel({ paneId, spec, title, cwd, commands, sessionId, onClo
   commands: number;
   /** 终端会话 ID（服务器终端查询当前目录用；未连接时为 null） */
   sessionId: string | null;
+  /** 面板正铺满整个窗格、盖着终端 */
+  full?: boolean;
+  /** 铺满或还原（不传时没有这个按钮） */
+  onToggleFull?: () => void;
   onClose: () => void;
 }) {
   const { t } = useTranslation();
@@ -430,6 +434,9 @@ export function FilePanel({ paneId, spec, title, cwd, commands, sessionId, onClo
   const isOver = drag && drag.over === paneId && drag.payload.paneId !== paneId && !!path;
   const following = follow && !!termDir && path === termDir;
 
+  // 铺满窗格时终端被盖住：键盘交给文件列表（方向键、回车直接能用）
+  useEffect(() => { if (full) listRef.current?.focus(); }, [full]);
+
   return (
     <div className={`files${isOver ? " files--over" : ""}`} data-file-drop={paneId} aria-label={t("files.panelLabel", { name: title })} role="region">
       <div className="files__head">
@@ -454,6 +461,11 @@ export function FilePanel({ paneId, spec, title, cwd, commands, sessionId, onClo
           <button type="button" className={`pane__btn${following ? " pane__btn--on" : ""}${noFollow && spec.kind !== "local" && follow ? " files__follow--off" : ""}`} aria-pressed={following} title={noFollow ? `${t("files.followUnavailable")}\n${t("files.followUnavailableHint")}` : t("files.follow")} aria-label={t("files.follow")} disabled={!termDir && !home} onClick={backToTerminal}>
             <LocateFixed size={14} />
           </button>
+          {onToggleFull && (
+            <button type="button" className={`pane__btn${full ? " pane__btn--on" : ""}`} aria-pressed={!!full} title={t(full ? "files.restoreSize" : "files.fillPane")} aria-label={t(full ? "files.restoreSize" : "files.fillPane")} onClick={onToggleFull}>
+              {full ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
+            </button>
+          )}
           <button type="button" className="pane__btn" title={t("common.close")} aria-label={t("common.close")} onClick={onClose}><X size={14} /></button>
         </div>
       </div>

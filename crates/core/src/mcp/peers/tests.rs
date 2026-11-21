@@ -456,6 +456,7 @@ impl McpHost for PeerHost {
             windows_commands: false,
             folders: vec![],
             servers: vec!["srv".into()],
+            server_dirs: Default::default(),
         }))
     }
     fn targets(&self, _entry: &Entry, permissions: &Permissions) -> Result<Vec<Target>, AppError> {

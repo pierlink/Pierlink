@@ -776,7 +776,8 @@ fn quote(value: &OsStr) -> Result<Vec<u16>, AppError> {
 }
 fn environment(overrides: &[(String, String)]) -> Result<Vec<u16>, AppError> {
     let mut entries = std::collections::BTreeMap::new();
-    for (key, value) in std::env::vars_os() {
+    // 每次都从系统重新取：新加的环境变量、改过的 PATH，新开的终端马上能用
+    for (key, value) in crate::process::user_env::base() {
         entries.insert(key.to_string_lossy().to_uppercase(), (key, value));
     }
     for (key, value) in overrides {

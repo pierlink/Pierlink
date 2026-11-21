@@ -902,9 +902,22 @@ async fn 危险命令要求确认并保护分次提交和密码输入() {
             .status,
         200
     );
+    // 同一次请求里 ↑ 后面跟着回车：↑ 调出来的命令还没在屏幕上，核对不了，要确认
     assert_eq!(
         entry
             .request("POST", path, &cookie, json!({"keys":["ArrowUp","Enter"]}))
+            .await
+            .status,
+        409
+    );
+    assert_eq!(
+        entry
+            .request(
+                "POST",
+                path,
+                &cookie,
+                json!({"keys":["ArrowUp","Enter"],"confirmed":true})
+            )
             .await
             .status,
         200

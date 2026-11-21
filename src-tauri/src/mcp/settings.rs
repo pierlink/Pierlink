@@ -47,6 +47,8 @@ pub struct EntrySettingsDto {
     pub folders: Vec<String>,
     /// 允许操作的服务器 ID
     pub servers: Vec<String>,
+    /// 各服务器的工作目录（服务器 ID → 目录）：AI 在这台服务器上执行命令、开终端时默认从这里开始
+    pub server_dirs: std::collections::BTreeMap<String, String>,
     /// 新连接先请用户确认（只对服务器入口有效；默认不问，旧设置里的“总是允许”不再使用）
     pub confirm_connections: bool,
 }
@@ -122,6 +124,13 @@ impl McpSettingsDto {
             windows_commands: e.windows_commands,
             folders: e.folders.iter().map(PathBuf::from).collect(),
             servers: e.servers.clone(),
+            // 只给勾上的服务器
+            server_dirs: e
+                .server_dirs
+                .iter()
+                .filter(|(id, _)| e.servers.contains(id))
+                .map(|(id, dir)| (id.clone(), dir.clone()))
+                .collect(),
         })
     }
 }
@@ -237,6 +246,19 @@ fn normalize_entry(
     e.folders = folders;
     e.servers.sort();
     e.servers.dedup();
+    // 工作目录：去掉空的；是服务器上的目录，要以 / 开头（执行命令时原样放进 cd，~ 不会展开）
+    let mut dirs = std::collections::BTreeMap::new();
+    for (id, dir) in e.server_dirs {
+        let dir = dir.trim().to_owned();
+        if dir.is_empty() {
+            continue;
+        }
+        if !dir.starts_with('/') || dir.contains(['\n', '\r', '\0']) {
+            return Err(invalid("serverDirs").with("value", dir));
+        }
+        dirs.insert(id, dir);
+    }
+    e.server_dirs = dirs;
     Ok(e)
 }
 
@@ -328,6 +350,51 @@ mod tests {
         assert_eq!(n.servers.len(), 1);
         s.servers = vec![server_entry("a", 22, true)];
         assert_eq!(normalize(s, &[]).unwrap_err().code, "mcp.invalid_setting");
+    }
+
+    #[test]
+    fn 服务器的工作目录去掉空的_只给勾上的服务器_不是服务器上的绝对路径不收() {
+        let mut s = McpSettingsDto {
+            enabled: true,
+            ..McpSettingsDto::default()
+        };
+        s.windows.enabled = true;
+        s.windows.servers = vec!["a".into(), "b".into()];
+        s.windows.server_dirs = [("a", " /home/me/project "), ("b", "   "), ("c", "/srv")]
+            .into_iter()
+            .map(|(id, dir)| (id.to_owned(), dir.to_owned()))
+            .collect();
+        let n = normalize(s.clone(), &[]).unwrap();
+        assert_eq!(
+            n.windows
+                .server_dirs
+                .clone()
+                .into_iter()
+                .collect::<Vec<_>>(),
+            [
+                ("a".to_owned(), "/home/me/project".to_owned()),
+                ("c".to_owned(), "/srv".to_owned()),
+            ]
+        );
+        // 没勾上的服务器（c）不进权限
+        let p = n.permissions(&Entry::Windows).unwrap();
+        assert_eq!(
+            p.server_dirs.into_iter().collect::<Vec<_>>(),
+            [("a".to_owned(), "/home/me/project".to_owned())]
+        );
+        // 执行命令时目录原样放进 cd：~ 不会展开，盘符开终端时不认，都不收
+        for bad in ["project", "./x", "~/work", "C:/work", "/a\nb"] {
+            s.windows.server_dirs = [("a".to_owned(), bad.to_owned())].into_iter().collect();
+            assert_eq!(
+                normalize(s.clone(), &[]).unwrap_err().code,
+                "mcp.invalid_setting",
+                "{bad:?}"
+            );
+        }
+        // 旧设置里没有这一项
+        let old: EntrySettingsDto =
+            serde_json::from_str(r#"{"enabled":true,"servers":["a"]}"#).unwrap();
+        assert!(old.server_dirs.is_empty());
     }
 
     #[test]

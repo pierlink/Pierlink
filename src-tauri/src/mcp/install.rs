@@ -1,6 +1,6 @@
-//! 一键接入：把 Pierlink 的 MCP 加进本机的 Claude Code / Codex / Cursor 配置，
-//! 或在服务器上把服务器入口加进那里的 Claude Code。
-//! 本机用各客户端自己的命令行（Cursor 没有命令行，合并它的 mcp.json）；
+//! 一键接入：把 Pierlink 的 MCP 加进本机的 Claude Code / Codex / Cursor / Antigravity / Gemini CLI 配置，
+//! 或在服务器上把服务器入口加进那里的 Claude Code、Codex、Antigravity、Gemini CLI。
+//! 本机用各客户端自己的命令行（Cursor、Antigravity、Gemini CLI 合并它们的 JSON 配置文件）；
 //! 服务器上用后台连接执行脚本，令牌由 Pierlink 直接给，不依赖服务器上的地址文件。
 use pierlink_core::error::AppError;
 use serde::Serialize;
@@ -32,7 +32,7 @@ pub struct McpInstallDto {
 #[derive(Serialize, Type, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct McpRemoveDto {
-    /// claude / codex / cursor / gemini
+    /// claude / codex / cursor / gemini / antigravity
     pub client: String,
     /// false 表示本来就没有添加过
     pub removed: bool,
@@ -44,6 +44,7 @@ fn display(client: &str) -> &str {
         "claude" => "Claude Code",
         "codex" => "Codex",
         "gemini" => "Gemini CLI",
+        "antigravity" => "Antigravity",
         "cursor" => "Cursor",
         other => other,
     }
@@ -108,11 +109,16 @@ fn find_client(client: &str) -> Option<PathBuf> {
     let names: &[&str] = if cfg!(windows) {
         match client {
             "claude" => &["claude.exe", "claude.cmd"],
+            "gemini" => &["gemini.cmd", "gemini.exe"],
+            // Antigravity 的命令行叫 agy
+            "antigravity" => &["agy.exe", "agy.cmd"],
             _ => &["codex.exe", "codex.cmd"],
         }
     } else {
         match client {
             "claude" => &["claude"],
+            "gemini" => &["gemini"],
+            "antigravity" => &["agy"],
             _ => &["codex"],
         }
     };
@@ -294,12 +300,25 @@ fn install_cli(client: &str, exe: &str) -> Result<McpInstallDto, AppError> {
     })
 }
 
-/// 把 pierlink 合并进 Cursor 的 mcp.json；文件读不懂时不改，返回错误
+/// 靠合并 JSON 配置文件接入的本机客户端：配置文件所在的目录和文件名；不是这类客户端返回 None。
+/// Antigravity 的桌面端、IDE、命令行（agy）共用 ~/.gemini/config/mcp_config.json；
+/// Gemini CLI 用的是另一个文件 ~/.gemini/settings.json
+fn json_config(client: &str, home: &Path) -> Option<(PathBuf, &'static str)> {
+    match client {
+        "cursor" => Some((home.join(".cursor"), "mcp.json")),
+        "antigravity" => Some((home.join(".gemini").join("config"), "mcp_config.json")),
+        "gemini" => Some((home.join(".gemini"), "settings.json")),
+        _ => None,
+    }
+}
+
+/// 把 pierlink 合并进 client 的 JSON 配置（mcpServers 里加一项，别的内容不动）；文件读不懂时不改，返回错误
 ///
-/// :param path: mcp.json 路径
+/// :param client: cursor / antigravity / gemini
+/// :param existing: 原来的文件内容（没有文件时为 None）
 /// :param exe: Pierlink 程序路径
 /// :return: 合并后的文本
-fn merge_cursor(existing: Option<&str>, exe: &str) -> Result<String, AppError> {
+fn merge_json(client: &str, existing: Option<&str>, exe: &str) -> Result<String, AppError> {
     let mut root: serde_json::Value = match existing.map(str::trim) {
         None | Some("") => serde_json::json!({}),
         Some(text) => {
@@ -315,43 +334,56 @@ fn merge_cursor(existing: Option<&str>, exe: &str) -> Result<String, AppError> {
     let servers = servers
         .as_object_mut()
         .ok_or_else(|| AppError::new("mcp.cursor_config_invalid"))?;
-    servers.insert(
-        NAME.into(),
-        serde_json::json!({ "type": "stdio", "command": exe, "args": ["--mcp"] }),
-    );
-    serde_json::to_string_pretty(&root).map_err(|e| failed("cursor", e.to_string()))
+    // Cursor 要写明 type；Antigravity、Gemini CLI 只要程序和参数
+    let entry = if client == "cursor" {
+        serde_json::json!({ "type": "stdio", "command": exe, "args": ["--mcp"] })
+    } else {
+        serde_json::json!({ "command": exe, "args": ["--mcp"] })
+    };
+    servers.insert(NAME.into(), entry);
+    serde_json::to_string_pretty(&root).map_err(|e| failed(client, e.to_string()))
 }
 
-/// 写回 Cursor 的 mcp.json：普通文件先写临时文件再替换，写到一半出错不会弄坏原来的配置；
+/// 写回 JSON 配置文件：普通文件先写临时文件再替换，写到一半出错不会弄坏原来的配置；
 /// 符号链接（dotfiles 管理的）直接写到它指向的文件，不把链接换成普通文件
 fn write_cursor_config(dir: &Path, path: &Path, text: &str) -> std::io::Result<()> {
     if path.is_symlink() {
         return std::fs::write(path, text);
     }
-    let part = dir.join("mcp.json.pierlink-part");
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "mcp.json".into());
+    let part = dir.join(format!("{name}.pierlink-part"));
     std::fs::write(&part, text)?;
     std::fs::rename(&part, path).inspect_err(|_| {
         let _ = std::fs::remove_file(&part);
     })
 }
 
-fn install_cursor(exe: &str) -> Result<McpInstallDto, AppError> {
+/// 把本机入口写进 client 的 JSON 配置文件（Cursor、Antigravity、Gemini CLI）
+fn install_json(client: &str, exe: &str) -> Result<McpInstallDto, AppError> {
     let home = home_dir()
-        .ok_or_else(|| failed_text("cursor", "mcp.home_folder_not_found", "找不到用户目录"))?;
-    let dir = home.join(".cursor");
-    let path = dir.join("mcp.json");
+        .ok_or_else(|| failed_text(client, "mcp.home_folder_not_found", "找不到用户目录"))?;
+    let (dir, file) = json_config(client, &home)
+        .ok_or_else(|| AppError::new("mcp.client_not_found").with("client", client))?;
+    let path = dir.join(file);
     let existing = match std::fs::read_to_string(&path) {
         Ok(t) => Some(t),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-        Err(e) => return Err(failed("cursor", e.to_string())),
+        Err(e) => return Err(failed(client, e.to_string())),
     };
-    let text = merge_cursor(existing.as_deref(), exe)
+    let text = merge_json(client, existing.as_deref(), exe)
         .map_err(|e| e.with("path", path.to_string_lossy()))?;
-    std::fs::create_dir_all(&dir).map_err(|e| failed("cursor", e.to_string()))?;
-    write_cursor_config(&dir, &path, &text).map_err(|e| failed("cursor", e.to_string()))?;
-    eprintln!("已把 Pierlink 加进 Cursor: 文件={}", path.to_string_lossy());
+    std::fs::create_dir_all(&dir).map_err(|e| failed(client, e.to_string()))?;
+    write_cursor_config(&dir, &path, &text).map_err(|e| failed(client, e.to_string()))?;
+    eprintln!(
+        "已把 Pierlink 加进 {}: 文件={}",
+        display(client),
+        path.to_string_lossy()
+    );
     Ok(McpInstallDto {
-        client: "cursor".into(),
+        client: client.into(),
         detail: path.to_string_lossy().into_owned(),
     })
 }
@@ -377,7 +409,7 @@ fn remove_cli(client: &str) -> Result<McpRemoveDto, AppError> {
     })
 }
 
-/// 从 Cursor 的 mcp.json 里去掉 pierlink
+/// 从 JSON 配置（Cursor 的 mcp.json，Antigravity、Gemini CLI 的配置同样写法）里去掉 pierlink
 ///
 /// :param existing: 原来的文件内容
 /// :return: 去掉后的文本；没有这一项时为 None；文件读不懂时返回错误
@@ -400,32 +432,37 @@ fn unmerge_cursor(existing: &str) -> Result<Option<String>, AppError> {
         .map_err(|e| remove_failed("cursor", e.to_string()))
 }
 
-fn remove_cursor() -> Result<McpRemoveDto, AppError> {
+/// 从 client 的 JSON 配置文件（Cursor、Antigravity、Gemini CLI）里去掉本机入口
+fn remove_json(client: &str) -> Result<McpRemoveDto, AppError> {
     let not_added = || {
         Ok(McpRemoveDto {
-            client: "cursor".into(),
+            client: client.into(),
             removed: false,
         })
     };
-    let home = home_dir().ok_or_else(|| {
-        remove_failed_text("cursor", "mcp.home_folder_not_found", "找不到用户目录")
-    })?;
-    let dir = home.join(".cursor");
-    let path = dir.join("mcp.json");
+    let home = home_dir()
+        .ok_or_else(|| remove_failed_text(client, "mcp.home_folder_not_found", "找不到用户目录"))?;
+    let (dir, file) = json_config(client, &home)
+        .ok_or_else(|| AppError::new("mcp.client_not_found").with("client", client))?;
+    let path = dir.join(file);
     let existing = match std::fs::read_to_string(&path) {
         Ok(t) => t,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return not_added(),
-        Err(e) => return Err(remove_failed("cursor", e.to_string())),
+        Err(e) => return Err(remove_failed(client, e.to_string())),
     };
     let Some(text) =
         unmerge_cursor(&existing).map_err(|e| e.with("path", path.to_string_lossy()))?
     else {
         return not_added();
     };
-    write_cursor_config(&dir, &path, &text).map_err(|e| remove_failed("cursor", e.to_string()))?;
-    eprintln!("已从 Cursor 移除 Pierlink: 文件={}", path.to_string_lossy());
+    write_cursor_config(&dir, &path, &text).map_err(|e| remove_failed(client, e.to_string()))?;
+    eprintln!(
+        "已从 {} 移除 Pierlink: 文件={}",
+        display(client),
+        path.to_string_lossy()
+    );
     Ok(McpRemoveDto {
-        client: "cursor".into(),
+        client: client.into(),
         removed: true,
     })
 }
@@ -439,7 +476,7 @@ fn remove_cursor() -> Result<McpRemoveDto, AppError> {
 pub async fn mcp_remove_local(client: String) -> Result<McpRemoveDto, AppError> {
     tauri::async_runtime::spawn_blocking(move || match client.as_str() {
         "claude" | "codex" => remove_cli(&client),
-        "cursor" => remove_cursor(),
+        "cursor" | "antigravity" | "gemini" => remove_json(&client),
         _ => Err(AppError::new("mcp.client_not_found").with("client", &client)),
     })
     .await
@@ -460,7 +497,7 @@ pub async fn mcp_install_local(client: String) -> Result<McpInstallDto, AppError
             .into_owned();
         match client.as_str() {
             "claude" | "codex" => install_cli(&client, &exe),
-            "cursor" => install_cursor(&exe),
+            "cursor" | "antigravity" | "gemini" => install_json(&client, &exe),
             _ => Err(AppError::new("mcp.client_not_found").with("client", &client)),
         }
     })
@@ -522,6 +559,53 @@ printf '%s\n' '{{"ok":true}}'
 "#,
         find = find_on_server("gemini"),
         name = NAME
+    ))
+}
+
+/// 写回服务器上 Antigravity 配置的 python 片段（data 是改好的内容，path 是配置文件）：
+/// 符号链接直接写到它指向的文件，普通文件先写临时文件再替换；文件含令牌，权限 600
+const ANTIGRAVITY_WRITE: &str = r#"out = json.dumps(data, indent=2, ensure_ascii=False) + "\n"
+if os.path.islink(path):
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(out)
+else:
+    tmp = path + ".pierlink-part"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(out)
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, path)"#;
+
+/// 在服务器上把服务器入口写进 Antigravity 的 ~/.gemini/config/mcp_config.json
+/// （桌面端、IDE、命令行 agy 共用这一个文件）：mcpServers 里加 pierlink（serverUrl + Authorization 头），其他内容不动。
+/// Antigravity 没有添加入口的命令，用 python3 合并 JSON；地址和令牌经标准输入交给 python，不出现在进程参数里。
+/// 没有 python3、原来的文件读不懂（不改它）、写失败都以 4 退出。
+pub(crate) fn server_antigravity_script(url: &str, token: &str) -> Result<String, AppError> {
+    let url = pierlink_core::ssh::quote::sh_quote(url)?;
+    let auth = pierlink_core::ssh::quote::sh_quote(&format!("Bearer {token}"))?;
+    Ok(format!(
+        r#"url={url}
+auth={auth}
+command -v python3 >/dev/null 2>&1 || exit 4
+umask 077
+d="$HOME/.gemini/config"
+mkdir -p "$d" || exit 4
+printf '%s\n%s\n' "$url" "$auth" | python3 -c '
+import json, os, sys
+url, auth = sys.stdin.read().split("\n")[:2]
+path = sys.argv[1]
+try:
+    with open(path, encoding="utf-8") as f:
+        text = f.read()
+    data = json.loads(text) if text.strip() else {{}}
+except FileNotFoundError:
+    data = {{}}
+if not isinstance(data, dict) or not isinstance(data.setdefault("mcpServers", {{}}), dict):
+    sys.exit(1)
+data["mcpServers"]["{NAME}"] = {{"serverUrl": url, "headers": {{"Authorization": auth}}}}
+{ANTIGRAVITY_WRITE}
+' "$d/mcp_config.json" 2>/dev/null || exit 4
+printf '%s\n' '{{"ok":true}}'
+"#
     ))
 }
 
@@ -617,6 +701,29 @@ if out=$("$c" mcp remove --scope user {NAME} 2>&1) || out=$("$c" mcp remove {NAM
 printf '{{"removed":%s}}\n' "$r"
 "#,
             find = find_on_server("gemini"),
+        )),
+        "antigravity" => Ok(format!(
+            r#"f="$HOME/.gemini/config/mcp_config.json"
+if [ ! -f "$f" ] || ! grep -q '"{NAME}"' "$f"; then
+  printf '%s\n' '{{"removed":false}}'
+  exit 0
+fi
+command -v python3 >/dev/null 2>&1 || exit 4
+umask 077
+python3 -c '
+import json, os, sys
+path = sys.argv[1]
+with open(path, encoding="utf-8") as f:
+    data = json.load(f)
+servers = data.get("mcpServers") if isinstance(data, dict) else None
+if not isinstance(servers, dict) or "{NAME}" not in servers:
+    print(json.dumps({{"removed": False}}))
+    sys.exit(0)
+del servers["{NAME}"]
+{ANTIGRAVITY_WRITE}
+print(json.dumps({{"removed": True}}))
+' "$f" 2>/dev/null || exit 4
+"#
         )),
         "codex" => Ok(format!(
             r#"f="$HOME/.codex/config.toml"
@@ -718,6 +825,7 @@ fn install_on_server(
         "claude" => server_install_script(&url, &token)?,
         "codex" => server_codex_script(&url, &token)?,
         "gemini" => server_gemini_script(&url, &token)?,
+        "antigravity" => server_antigravity_script(&url, &token)?,
         _ => return Err(AppError::new("mcp.client_not_found").with("client", client)),
     };
     let (program, cmd, name) = crate::deploy::background_command(
@@ -870,8 +978,10 @@ pub struct McpClientsDto {
     pub claude: bool,
     pub codex: bool,
     pub cursor: bool,
-    /// 只在服务器上检测（本机固定为 false）
+    /// Gemini CLI
     pub gemini: bool,
+    /// Antigravity（桌面端、IDE、命令行 agy 共用一份配置，算一个）
+    pub antigravity: bool,
     /// 客户端的配置里有没有这个入口：current（加好了，地址和令牌或程序路径都是现在的）/
     /// stale（有 pierlink，但地址、令牌或程序路径是旧的，要重新添加）/ none（没加）；查不了的客户端不列
     pub added: std::collections::BTreeMap<String, String>,
@@ -970,6 +1080,12 @@ fn local_added(exe: &str) -> std::collections::BTreeMap<String, String> {
         ("claude", home.join(".claude.json"), false),
         ("codex", codex_dir.join("config.toml"), true),
         ("cursor", home.join(".cursor").join("mcp.json"), false),
+        (
+            "antigravity",
+            home.join(".gemini").join("config").join("mcp_config.json"),
+            false,
+        ),
+        ("gemini", home.join(".gemini").join("settings.json"), false),
     ];
     for (client, path, toml) in files {
         // 读不了（权限等）就不列，界面显示“查不到”
@@ -1007,6 +1123,24 @@ fn cursor_installed() -> bool {
     local || all_users || in_path || used
 }
 
+/// Antigravity 装没装：PATH 里的 agy、桌面端装的位置，或用过它留下的目录
+/// （桌面端和 IDE 留 ~/.gemini/antigravity，命令行留 ~/.gemini/antigravity-cli）
+fn antigravity_installed() -> bool {
+    let app = std::env::var_os("LOCALAPPDATA")
+        .map(|d| {
+            PathBuf::from(d)
+                .join("Programs")
+                .join("Antigravity")
+                .join("Antigravity.exe")
+        })
+        .is_some_and(|p| p.is_file());
+    let used = home_dir().is_some_and(|h| {
+        let gemini = h.join(".gemini");
+        gemini.join("antigravity").is_dir() || gemini.join("antigravity-cli").is_dir()
+    });
+    app || used || find_client("antigravity").is_some()
+}
+
 /// 检测这台电脑上装了 Claude Code、Codex、Cursor 中的哪些
 #[tauri::command]
 #[specta::specta]
@@ -1015,7 +1149,8 @@ pub async fn mcp_detect_clients() -> Result<McpClientsDto, AppError> {
         claude: find_client("claude").is_some(),
         codex: find_client("codex").is_some(),
         cursor: cursor_installed(),
-        gemini: false,
+        gemini: find_client("gemini").is_some(),
+        antigravity: antigravity_installed(),
         added: std::env::current_exe()
             .map(|exe| local_added(&exe.to_string_lossy()))
             .unwrap_or_default(),
@@ -1038,14 +1173,15 @@ const SERVER_DETECT_SCRIPT: &str = r#"has() {
 claude=false; has claude && claude=true
 codex=false; has codex && codex=true
 gemini=false; has gemini && gemini=true
+antigravity=false; { has agy || [ -d "$HOME/.gemini/antigravity-cli" ] || [ -d "$HOME/.gemini/antigravity" ]; } && antigravity=true
 "#;
 
 /// 没有入口时接在 SERVER_DETECT_SCRIPT 后面：只报装了哪些客户端
-const DETECT_TAIL_NO_ENTRY: &str = r#"printf '{"claude":%s,"codex":%s,"gemini":%s,"added":{}}\n' "$claude" "$codex" "$gemini"
+const DETECT_TAIL_NO_ENTRY: &str = r#"printf '{"claude":%s,"codex":%s,"gemini":%s,"antigravity":%s,"added":{}}\n' "$claude" "$codex" "$gemini" "$antigravity"
 "#;
 
-/// 查服务器上 Claude Code（~/.claude.json）、Codex（~/.codex/config.toml）、Gemini CLI（~/.gemini/settings.json）
-/// 的配置里有没有 pierlink、地址和令牌是不是现在的；接在 SERVER_DETECT_SCRIPT 后面，最后输出一行 JSON。
+/// 查服务器上 Claude Code（~/.claude.json）、Codex（~/.codex/config.toml）、Gemini CLI（~/.gemini/settings.json）、
+/// Antigravity（~/.gemini/config/mcp_config.json）的配置里有没有 pierlink、地址和令牌是不是现在的；接在 SERVER_DETECT_SCRIPT 后面，最后输出一行 JSON。
 /// 令牌写在脚本正文里（经标准输入发送），比较时也只经标准输入交给 grep/python，不出现在进程参数里。
 /// 有 python3 时按 JSON/TOML 解析，没有时按文字粗查。
 fn server_added_script(url: &str, token: &str) -> Result<String, AppError> {
@@ -1058,6 +1194,7 @@ cj="${{CLAUDE_CONFIG_DIR:-$HOME}}/.claude.json"
 [ -f "$cj" ] || cj="$HOME/.claude.json"
 ct="${{CODEX_HOME:-$HOME/.codex}}/config.toml"
 gj="$HOME/.gemini/settings.json"
+aj="$HOME/.gemini/config/mcp_config.json"
 added=''
 if command -v python3 >/dev/null 2>&1; then
   added=$(printf '%s\n%s\n' "$url" "$auth" | python3 -c '
@@ -1103,8 +1240,8 @@ def codex(path):
     except Exception:
         return "unknown"
 import os
-print(json.dumps({{"claude": from_json(sys.argv[1], ["url"]), "codex": codex(sys.argv[2]), "gemini": from_json(sys.argv[3], ["httpUrl", "url"])}}))
-' "$cj" "$ct" "$gj" 2>/dev/null)
+print(json.dumps({{"claude": from_json(sys.argv[1], ["url"]), "codex": codex(sys.argv[2]), "gemini": from_json(sys.argv[3], ["httpUrl", "url"]), "antigravity": from_json(sys.argv[4], ["serverUrl", "url"])}}))
+' "$cj" "$ct" "$gj" "$aj" 2>/dev/null)
 fi
 if [ -z "$added" ]; then
   # 没有 python3：按文字粗查（有 pierlink 字样算加过；同时含现在的地址和令牌算是现在的）
@@ -1113,9 +1250,9 @@ if [ -z "$added" ]; then
     grep -q 'pierlink' "$1" 2>/dev/null || {{ printf none; return; }}
     if grep -qF -- "$url" "$1" && printf '%s\n' "$auth" | grep -qF -f - "$1"; then printf current; else printf stale; fi
   }}
-  added=$(printf '{{"claude":"%s","codex":"%s","gemini":"%s"}}' "$(st "$cj")" "$(st "$ct")" "$(st "$gj")")
+  added=$(printf '{{"claude":"%s","codex":"%s","gemini":"%s","antigravity":"%s"}}' "$(st "$cj")" "$(st "$ct")" "$(st "$gj")" "$(st "$aj")")
 fi
-printf '{{"claude":%s,"codex":%s,"gemini":%s,"added":%s}}\n' "$claude" "$codex" "$gemini" "$added"
+printf '{{"claude":%s,"codex":%s,"gemini":%s,"antigravity":%s,"added":%s}}\n' "$claude" "$codex" "$gemini" "$antigravity" "$added"
 "#
     ))
 }
@@ -1177,6 +1314,7 @@ pub async fn mcp_detect_server_clients(
             codex: v["codex"].as_bool().unwrap_or(false),
             cursor: false,
             gemini: v["gemini"].as_bool().unwrap_or(false),
+            antigravity: v["antigravity"].as_bool().unwrap_or(false),
             added,
         })
     })
@@ -1190,7 +1328,7 @@ pub async fn mcp_detect_server_clients(
 /// :param reason: token / port
 pub(crate) fn readd(app: &AppHandle, server_id: &str, reason: &'static str) {
     let list = installed(app);
-    let clients: Vec<String> = ["claude", "codex", "gemini"]
+    let clients: Vec<String> = ["claude", "codex", "gemini", "antigravity"]
         .into_iter()
         .filter(|c| list.iter().any(|x| *x == installed_key(server_id, c)))
         .map(str::to_owned)
@@ -1278,7 +1416,7 @@ mod tests {
     #[test]
     fn cursor配置合并时保留其他服务器() {
         let old = r#"{"mcpServers":{"other":{"command":"x"}},"theme":"dark"}"#;
-        let text = merge_cursor(Some(old), r"C:\Pierlink\Pierlink.exe").unwrap();
+        let text = merge_json("cursor", Some(old), r"C:\Pierlink\Pierlink.exe").unwrap();
         let v: serde_json::Value = serde_json::from_str(&text).unwrap();
         assert_eq!(v["mcpServers"]["other"]["command"], "x");
         assert_eq!(v["theme"], "dark");
@@ -1310,7 +1448,8 @@ mod tests {
 
     #[test]
     fn cursor条目写明stdio() {
-        let v: serde_json::Value = serde_json::from_str(&merge_cursor(None, "p").unwrap()).unwrap();
+        let v: serde_json::Value =
+            serde_json::from_str(&merge_json("cursor", None, "p").unwrap()).unwrap();
         assert_eq!(v["mcpServers"]["pierlink"]["type"], "stdio");
     }
 
@@ -1318,7 +1457,7 @@ mod tests {
     fn cursor配置为空或不存在时新建() {
         for old in [None, Some(""), Some("  \n")] {
             let v: serde_json::Value =
-                serde_json::from_str(&merge_cursor(old, "p").unwrap()).unwrap();
+                serde_json::from_str(&merge_json("cursor", old, "p").unwrap()).unwrap();
             assert_eq!(v["mcpServers"]["pierlink"]["command"], "p");
         }
     }
@@ -1327,7 +1466,7 @@ mod tests {
     fn cursor配置读不懂时不改() {
         for old in ["{", "[]", r#"{"mcpServers":[]}"#] {
             assert_eq!(
-                merge_cursor(Some(old), "p").unwrap_err().code,
+                merge_json("cursor", Some(old), "p").unwrap_err().code,
                 "mcp.cursor_config_invalid"
             );
         }
@@ -1361,7 +1500,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             String::from_utf8_lossy(&out.stdout).trim(),
-            r#"{"claude":false,"codex":true,"gemini":false,"added":{}}"#
+            r#"{"claude":false,"codex":true,"gemini":false,"antigravity":false,"added":{}}"#
         );
     }
 
@@ -1410,11 +1549,22 @@ mod tests {
             "[mcp_servers.pierlink]\nurl = \"http://127.0.0.1:47000/mcp\"\nhttp_headers = { \"Authorization\" = \"Bearer tok_-1\" }\n",
         )
         .unwrap();
-        // Gemini：没有配置文件
+        // Gemini：没有配置文件。Antigravity：地址和令牌都是现在的
+        std::fs::create_dir_all(home.join(".gemini/config")).unwrap();
+        std::fs::write(
+            home.join(".gemini/config/mcp_config.json"),
+            r#"{"mcpServers":{"pierlink":{"serverUrl":"http://127.0.0.1:47821/mcp","headers":{"Authorization":"Bearer tok_-1"}}}}"#,
+        )
+        .unwrap();
         let v = detect_added(home, None);
         assert_eq!(v["added"]["claude"], "current", "{v}");
         assert_eq!(v["added"]["codex"], "stale", "{v}");
         assert_eq!(v["added"]["gemini"], "none", "{v}");
+        assert_eq!(v["added"]["antigravity"], "current", "{v}");
+        // 用过 Antigravity 留下的目录也算装了
+        assert_eq!(v["antigravity"], false, "{v}");
+        std::fs::create_dir_all(home.join(".gemini/antigravity-cli")).unwrap();
+        assert_eq!(detect_added(home, None)["antigravity"], true);
         // 没有 python3 时按文字粗查：PATH 里只放 grep
         let bin = home.join("bin");
         std::fs::create_dir_all(&bin).unwrap();
@@ -1427,6 +1577,7 @@ mod tests {
         assert_eq!(v["added"]["claude"], "current", "{v}");
         assert_eq!(v["added"]["codex"], "stale", "{v}");
         assert_eq!(v["added"]["gemini"], "none", "{v}");
+        assert_eq!(v["added"]["antigravity"], "current", "{v}");
     }
 
     #[cfg(unix)]
@@ -1586,6 +1737,100 @@ mod tests {
             out.status.code(),
             String::from_utf8_lossy(&out.stdout).trim().to_owned(),
         )
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn 服务器上给antigravity添加和移除只动pierlink这一项() {
+        let dir = tempfile::tempdir().unwrap();
+        let add = server_antigravity_script("http://127.0.0.1:47821/mcp", "tok_-1").unwrap();
+        let remove = server_remove_script("antigravity").unwrap();
+        let file = dir.path().join(".gemini/config/mcp_config.json");
+        let read = || -> serde_json::Value {
+            serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap()
+        };
+        // 没有文件：新建，权限只给自己读写
+        assert_eq!(
+            run_in(dir.path(), &remove),
+            (Some(0), r#"{"removed":false}"#.into())
+        );
+        assert_eq!(run_in(dir.path(), &add), (Some(0), r#"{"ok":true}"#.into()));
+        assert_eq!(
+            read(),
+            serde_json::json!({"mcpServers": {"pierlink": {
+                "serverUrl": "http://127.0.0.1:47821/mcp",
+                "headers": {"Authorization": "Bearer tok_-1"}
+            }}})
+        );
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(&file).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        // 已有别的服务和别的设置：都留着；旧的 pierlink 换成新的
+        std::fs::write(
+            &file,
+            r#"{"theme":"暗色","mcpServers":{"其他":{"command":"x"},"pierlink":{"serverUrl":"http://127.0.0.1:1/mcp"}}}"#,
+        )
+        .unwrap();
+        assert_eq!(run_in(dir.path(), &add).0, Some(0));
+        let v = read();
+        assert_eq!(v["theme"], "暗色");
+        assert_eq!(v["mcpServers"]["其他"]["command"], "x");
+        assert_eq!(
+            v["mcpServers"]["pierlink"]["serverUrl"],
+            "http://127.0.0.1:47821/mcp"
+        );
+        // 移除：只去掉 pierlink
+        let (code, out) = run_in(dir.path(), &remove);
+        assert_eq!(code, Some(0));
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&out).unwrap()["removed"],
+            true
+        );
+        let v = read();
+        assert_eq!(v["theme"], "暗色");
+        assert_eq!(
+            v["mcpServers"],
+            serde_json::json!({"其他": {"command": "x"}})
+        );
+        // 读不懂的文件不改，以 4 退出
+        let bad = r#"{ 坏的 "pierlink""#;
+        std::fs::write(&file, bad).unwrap();
+        assert_eq!(run_in(dir.path(), &add).0, Some(4));
+        assert_eq!(run_in(dir.path(), &remove).0, Some(4));
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), bad);
+    }
+
+    #[test]
+    fn 本机给antigravity和gemini合并配置不带type() {
+        for client in ["antigravity", "gemini"] {
+            let old = r#"{"mcpServers":{"其他":{"command":"x"}},"theme":"暗色"}"#;
+            let v: serde_json::Value =
+                serde_json::from_str(&merge_json(client, Some(old), r"C:\P\Pierlink.exe").unwrap())
+                    .unwrap();
+            assert_eq!(v["theme"], "暗色");
+            assert_eq!(v["mcpServers"]["其他"]["command"], "x");
+            assert_eq!(
+                v["mcpServers"]["pierlink"],
+                serde_json::json!({"command": r"C:\P\Pierlink.exe", "args": ["--mcp"]})
+            );
+            assert!(
+                unmerge_cursor(&serde_json::to_string(&v).unwrap())
+                    .unwrap()
+                    .is_some()
+            );
+        }
+        let home = Path::new("/家");
+        assert_eq!(
+            json_config("antigravity", home).unwrap(),
+            (home.join(".gemini").join("config"), "mcp_config.json")
+        );
+        assert_eq!(
+            json_config("gemini", home).unwrap(),
+            (home.join(".gemini"), "settings.json")
+        );
+        assert!(json_config("claude", home).is_none());
     }
 
     #[cfg(unix)]

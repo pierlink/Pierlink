@@ -768,18 +768,6 @@ impl Drop for CancelOnDrop {
     }
 }
 
-/// 手机上的按键名换成终端按键名
-fn key_name(key: &str) -> &str {
-    match key {
-        "ArrowUp" => "Up",
-        "ArrowDown" => "Down",
-        "ArrowLeft" => "Left",
-        "ArrowRight" => "Right",
-        "Escape" => "Esc",
-        other => other,
-    }
-}
-
 impl MobileHost for TauriMobileHost {
     fn theme(&self) -> Option<String> {
         self.app
@@ -1012,8 +1000,11 @@ impl MobileHost for TauriMobileHost {
             for key in &keys {
                 // 和 AI 发按键共用一套规则；往上翻、往下翻（WheelUp、WheelDown）只在全屏程序里发，
                 // 其他时候不发（手机自己翻历史行）
-                let bytes =
-                    pierlink_core::mcp::tools::terminal::key_sequence(manager, &id, key_name(key))?;
+                let bytes = pierlink_core::mcp::tools::terminal::key_sequence(
+                    manager,
+                    &id,
+                    &pierlink_core::mobile::terminal_key_name(key),
+                )?;
                 if let Some(bytes) = bytes {
                     manager.write(&id, &bytes)?;
                 }

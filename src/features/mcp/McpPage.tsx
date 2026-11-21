@@ -4,7 +4,7 @@ import { Check, Monitor, Plus, Server, Trash2 } from "lucide-react";
 import { Banner, Button, Checkbox, Dialog, Notice, Segmented, Select, Switch } from "../../components";
 import { formatError } from "../../errors";
 import { getServersApi, type ServerRecord } from "../servers/api";
-import { defaultServerEntry, getMcpApi, type EntrySettings, type McpActivity, type McpAdded, type McpClients, type McpComputers, type McpConnectInfo, type McpEntryState, type McpJob, type McpReadd, type McpSession, type McpSettings, type McpStatus } from "./api";
+import { defaultServerEntry, getMcpApi, type EntrySettings, type McpActivity, type McpAdded, type McpClients, type McpComputers, type McpConnectInfo, type McpEntryState, type McpJob, type McpLocalClient, type McpReadd, type McpServerClient, type McpSession, type McpSettings, type McpStatus } from "./api";
 import { agoText } from "./McpIndicator";
 import { CommandLine, EntryPermissions, PortInput } from "./McpParts";
 import "./mcp.css";
@@ -448,12 +448,18 @@ function EntryDetail({ id, settings, servers, status, info, serverName, sessions
 }
 
 /** 客户端的显示名 */
-const CLIENT_NAMES = { claude: "Claude Code", codex: "Codex", cursor: "Cursor", gemini: "Gemini CLI" } as const;
+const CLIENT_NAMES = { claude: "Claude Code", codex: "Codex", cursor: "Cursor", antigravity: "Antigravity", gemini: "Gemini CLI" } as const;
 type ClientKey = keyof typeof CLIENT_NAMES;
 /** 本机能一键添加的；服务器上能一键添加的 */
-const LOCAL_CLIENTS: readonly ClientKey[] = ["claude", "codex", "cursor"];
-// 1.2.3 起服务器上只给 Claude Code、Codex 的入口；Gemini CLI 的添加、移除功能都还在，要恢复把 "gemini" 加回来
-const SERVER_CLIENTS: readonly ClientKey[] = ["claude", "codex"];
+const LOCAL_CLIENTS: readonly ClientKey[] = ["claude", "codex", "cursor", "antigravity", "gemini"];
+// Antigravity 的桌面端、IDE、命令行（agy）共用一份配置，算一个；Gemini CLI 用的是另一个文件，单独一项
+const SERVER_CLIENTS: readonly ClientKey[] = ["claude", "codex", "antigravity", "gemini"];
+/** 本机靠合并 JSON 配置文件接入的客户端：配置文件在哪（手动添加的说明里写） */
+const JSON_CONFIG: Partial<Record<ClientKey, string>> = {
+  cursor: "~/.cursor/mcp.json",
+  antigravity: "~/.gemini/config/mcp_config.json",
+  gemini: "~/.gemini/settings.json",
+};
 
 type T = ReturnType<typeof useTranslation>["t"];
 
@@ -551,7 +557,7 @@ function ClientSetup({ serverId, serverName, commands, fileHint, onAdded, onCurr
         // 没选过的话默认选第一个装了的
         if (!picked.current) setClient(clients.find((x) => c[x]) ?? clients[0]);
       },
-      () => { if (alive) setInstalled({ claude: true, codex: true, cursor: true, gemini: true, added: {} }); },
+      () => { if (alive) setInstalled({ claude: true, codex: true, cursor: true, gemini: true, antigravity: true, added: {} }); },
     );
     return () => { alive = false; };
     // clients 只由 serverId 决定
@@ -569,7 +575,8 @@ function ClientSetup({ serverId, serverName, commands, fileHint, onAdded, onCurr
       : addedState ? t(addedState === "current" ? "mcp.clientAdded" : addedState === "stale" ? "mcp.clientStale" : "mcp.clientNotAdded", { client: name })
         : "";
   const statusTone = installed === null ? " mcp-oneclick__status--checking" : !missing && addedState ? ` mcp-added--${addedState}` : "";
-  const commandsOf = (c: ClientKey) => commands.filter((x) => x.client === (c === "cursor" ? "json" : c));
+  // 本机靠配置文件接入的几个都用同一段 JSON；服务器上按客户端各有各的命令
+  const commandsOf = (c: ClientKey) => commands.filter((x) => x.client === (serverId === null && JSON_CONFIG[c] ? "json" : c));
   const run = async (kind: "add" | "remove", f: () => Promise<string>) => {
     setBusy(kind);
     setResult(null);
@@ -586,24 +593,24 @@ function ClientSetup({ serverId, serverName, commands, fileHint, onAdded, onCurr
   const add = () => run("add", async () => {
     const api = await getMcpApi();
     if (serverId !== null) {
-      await api.installServer(serverId, client as "claude" | "codex" | "gemini");
+      await api.installServer(serverId, client as McpServerClient);
       onAdded();
       return t("mcp.addedServer", { server: serverName, client: name });
     }
-    const detail = await api.installLocal(client as "claude" | "codex" | "cursor");
+    const detail = await api.installLocal(client as McpLocalClient);
     onAdded();
-    return client === "cursor" ? t("mcp.addedCursor", { path: detail }) : t("mcp.added", { client: name });
+    return JSON_CONFIG[client] ? t("mcp.addedFile", { path: detail, client: name }) : t("mcp.added", { client: name });
   });
   const remove = () => run("remove", async () => {
     const api = await getMcpApi();
     const removed = serverId !== null
-      ? await api.removeServer(serverId, client as "claude" | "codex" | "gemini")
-      : await api.removeLocal(client as "claude" | "codex" | "cursor");
+      ? await api.removeServer(serverId, client as McpServerClient)
+      : await api.removeLocal(client as McpLocalClient);
     if (!removed) return t("mcp.notAdded", { client: name });
     return serverId !== null ? t("mcp.removedServer", { server: serverName, client: name }) : t("mcp.removed", { client: name });
   });
   const manualOf = (c: ClientKey, count: number) => (serverId === null
-    ? (c === "cursor" ? t("mcp.manualCursor") : t("mcp.manualLocal"))
+    ? (JSON_CONFIG[c] ? t("mcp.manualFile", { path: JSON_CONFIG[c] }) : t("mcp.manualLocal"))
     : count > 1 ? t("mcp.manualServerJq") : t("mcp.manualServer"));
   return (
     <div className="mcp-oneclick">

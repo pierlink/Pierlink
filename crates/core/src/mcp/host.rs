@@ -49,6 +49,8 @@ pub struct Permissions {
     pub folders: Vec<PathBuf>,
     /// 允许操作的服务器 ID
     pub servers: Vec<String>,
+    /// 服务器 ID → 用户给这台服务器填的工作目录：agent 在它上面执行命令、开终端时没传 cwd 就从这里开始
+    pub server_dirs: std::collections::BTreeMap<String, String>,
 }
 
 /// 目标的种类

@@ -8,8 +8,9 @@ use tokio::sync::broadcast;
 /// 可取消的宿主调用；连接关闭或超时会释放 future，宿主须同时释放等待框及未执行的工作。
 pub type HostFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, AppError>> + Send + 'a>>;
 
-/// 手机终端输入；keys 只接受 Enter、Tab、Shift+Tab、Backspace、Escape、方向键、Home、End、Ctrl+C/D/J/M/U，
-/// 以及 WheelUp、WheelDown（全屏程序里像滚一格滚轮，其他时候宿主不发）。
+/// 手机终端输入；keys 接受终端认得的按键名（Enter、Tab、Esc、Backspace、方向键、Home、End、功能键，
+/// Ctrl、Alt、Shift 的组合键，见 terminal_key_name），以及 WheelUp、WheelDown（全屏程序里像滚一格滚轮，
+/// 其他时候宿主不发）。不带修饰键的字母、数字、符号不算按键，只能作为 text 发。
 /// text 与 keys 二选一，confirmed 只表示手机已完成危险命令的二次确认。
 /// paste 只能用于 text，将含换行和制表符的正文作为一次粘贴；正文末尾可带一个回车表示提交：
 /// 宿主须将该回车放在括号粘贴结束标记之后，隔 SUBMIT_GAP 再写。
@@ -29,6 +30,30 @@ impl Drop for TerminalInput {
         if let Some(text) = &mut self.text {
             text.zeroize();
         }
+    }
+}
+
+/// 手机上的按键名换成终端的按键名：手机用浏览器的叫法（ArrowUp、Escape），终端用 Up、Esc；
+/// 带修饰键时只换加号后面的部分；Ctrl 加字母统一成大写，Alt 加字母统一成小写
+/// （电脑上按 Alt+b 发的是 ESC 加小写 b，大写是 Alt+Shift+b，有的程序分开认）。不认识的原样返回。
+pub fn terminal_key_name(key: &str) -> String {
+    let (prefix, base) = match key.split_once('+') {
+        Some((prefix, base)) if !base.is_empty() => (Some(prefix), base),
+        _ => (None, key),
+    };
+    let base = match base {
+        "ArrowUp" => "Up",
+        "ArrowDown" => "Down",
+        "ArrowLeft" => "Left",
+        "ArrowRight" => "Right",
+        "Escape" => "Esc",
+        other => other,
+    };
+    match prefix {
+        Some("Ctrl") if base.len() == 1 => format!("Ctrl+{}", base.to_ascii_uppercase()),
+        Some("Alt") if base.len() == 1 => format!("Alt+{}", base.to_ascii_lowercase()),
+        Some(prefix) => format!("{prefix}+{base}"),
+        None => base.to_owned(),
     }
 }
 

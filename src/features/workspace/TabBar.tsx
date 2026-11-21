@@ -12,7 +12,7 @@ import { formatCombo } from "../shortcuts/keys";
 const dotTone = { online: "ok", connecting: "warn", offline: "neutral" } as const;
 
 /** 终端标签栏：标签、新建（默认终端 + 下拉选择服务器或本机终端）、分屏。 */
-export function TabBar({ tabs, activeId, servers, localShells, onActivate, onClose, onCloseHover, onRename, onNewDefault, onPickServer, onPickShell, onQuickConnect, onSplit, onTabPointerDown, panelOpen, onTogglePanel, sidebarOpen, onToggleSidebar, broadcast }: {
+export function TabBar({ tabs, activeId, servers, localShells, onActivate, onClose, onCloseHover, onRename, onDuplicate, onNewDefault, onPickServer, onPickShell, onQuickConnect, onSplit, onTabPointerDown, panelOpen, onTogglePanel, sidebarOpen, onToggleSidebar, broadcast }: {
   tabs: TabView[];
   activeId: string;
   servers: ServerView[];
@@ -26,6 +26,8 @@ export function TabBar({ tabs, activeId, servers, localShells, onActivate, onClo
    * null 表示取消了。不传时标签不能改名
    */
   onRename?: (id: string, name: string | null) => void;
+  /** 右键“复制标签”：把这个标签当前的终端在新标签里再开一个。不传时没有这一项 */
+  onDuplicate?: (id: string) => void;
   /** “+”主按钮：打开默认本机终端 */
   onNewDefault: () => void;
   onPickServer: (serverId: string) => void;
@@ -113,6 +115,7 @@ export function TabBar({ tabs, activeId, servers, localShells, onActivate, onClo
             const el = e.currentTarget;
             tabMenu.open(e, [
               ...(onRename ? [{ id: "rename", label: t("workspace.renameTab"), shortcut: "F2", onSelect: () => startRename(tab.id, el) }] : []),
+              ...(onDuplicate ? [{ id: "duplicate", label: t("workspace.duplicateTab"), onSelect: () => onDuplicate(tab.id) }] : []),
               { id: "close", label: t("workspace.closeTab"), onSelect: () => onClose(tab.id) },
             ]);
           }}

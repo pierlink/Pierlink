@@ -14,6 +14,8 @@ export interface EntrySettings {
   folders: string[];
   /** 允许操作的服务器 ID */
   servers: string[];
+  /** 各服务器的工作目录（服务器 ID → 目录）：AI 在这台服务器上执行命令、开终端时默认从这里开始 */
+  serverDirs: Record<string, string>;
   /** 新连接先请用户确认（只对服务器入口有效，默认不问） */
   confirmConnections: boolean;
 }
@@ -107,12 +109,18 @@ export interface McpReadd {
 /** 客户端配置里有没有加好这个入口：current 加好了 / stale 地址、令牌或程序位置是旧的 / none 没加 */
 export type McpAdded = "current" | "stale" | "none";
 
+/** 本机能一键添加的客户端；服务器上能一键添加的客户端 */
+export type McpLocalClient = "claude" | "codex" | "cursor" | "antigravity" | "gemini";
+export type McpServerClient = "claude" | "codex" | "antigravity" | "gemini";
+
 /** 装了哪些客户端，以及各自加好没有（查不了的客户端不在 added 里） */
 export interface McpClients {
   claude: boolean;
   codex: boolean;
   cursor: boolean;
   gemini: boolean;
+  /** Antigravity（桌面端、IDE、命令行共用一份配置） */
+  antigravity: boolean;
   added: Partial<Record<string, McpAdded>>;
 }
 
@@ -226,13 +234,13 @@ export interface McpApi {
   /** 用户接管终端（拒绝 AI 的输入）或交还给 AI */
   setUserControl(terminalId: string, takenOver: boolean): Promise<void>;
   /** 一键把本机入口加进 claude / codex / cursor；返回用的程序或改的文件 */
-  installLocal(client: "claude" | "codex" | "cursor"): Promise<string>;
+  installLocal(client: McpLocalClient): Promise<string>;
   /** 在服务器上把这台服务器的入口加进 Claude Code、Codex 或 Gemini CLI */
-  installServer(serverId: string, client: "claude" | "codex" | "gemini"): Promise<void>;
+  installServer(serverId: string, client: McpServerClient): Promise<void>;
   /** 把本机入口从 claude / codex / cursor 里移除；返回 false 表示本来就没有 */
-  removeLocal(client: "claude" | "codex" | "cursor"): Promise<boolean>;
+  removeLocal(client: McpLocalClient): Promise<boolean>;
   /** 在服务器上把这台服务器的入口从客户端里移除；返回 false 表示本来就没有 */
-  removeServer(serverId: string, client: "claude" | "codex" | "gemini"): Promise<boolean>;
+  removeServer(serverId: string, client: McpServerClient): Promise<boolean>;
   /** 这台电脑上装了哪些客户端、各自加好本机入口没有 */
   detectClients(): Promise<McpClients>;
   /** 服务器上装了哪些客户端、各自加好这台服务器的入口没有（要连过去查；连不上时抛错） */
@@ -262,24 +270,24 @@ export interface McpApi {
 export function defaultSettings(): McpSettings {
   return {
     enabled: false,
-    windows: { enabled: false, approval: "dangerous", windowsCommands: true, folders: [], servers: [], confirmConnections: false },
+    windows: { enabled: false, approval: "dangerous", windowsCommands: true, folders: [], servers: [], serverDirs: {}, confirmConnections: false },
     servers: [],
   };
 }
 
 /** 服务器入口的默认设置：不给 Windows 命令、不给文件夹、不给其他服务器 */
 export function defaultServerEntry(serverId: string): ServerEntrySettings {
-  return { serverId, port: 47821, entry: { enabled: true, approval: "dangerous", windowsCommands: false, folders: [], servers: [], confirmConnections: false } };
+  return { serverId, port: 47821, entry: { enabled: true, approval: "dangerous", windowsCommands: false, folders: [], servers: [], serverDirs: {}, confirmConnections: false } };
 }
 
 /** 浏览器预览的示例数据（#mcp 打开 MCP 板块时用，方便看样稿） */
 function sampleSettings(): McpSettings {
   return {
     enabled: true,
-    windows: { enabled: true, approval: "dangerous", windowsCommands: true, folders: ["D:\\work\\pierlink", "D:\\work\\demo"], servers: ["s1", "s3"], confirmConnections: false },
+    windows: { enabled: true, approval: "dangerous", windowsCommands: true, folders: ["D:\\work\\pierlink", "D:\\work\\demo"], servers: ["s1", "s3"], serverDirs: { s1: "/home/dev/ml-exp" }, confirmConnections: false },
     servers: [
-      { serverId: "s1", port: 47821, entry: { enabled: true, approval: "dangerous", windowsCommands: true, folders: ["D:\\work\\web-app"], servers: [], confirmConnections: false } },
-      { serverId: "s5", port: 47821, entry: { enabled: false, approval: "dangerous", windowsCommands: false, folders: [], servers: [], confirmConnections: true } },
+      { serverId: "s1", port: 47821, entry: { enabled: true, approval: "dangerous", windowsCommands: true, folders: ["D:\\work\\web-app"], servers: [], serverDirs: {}, confirmConnections: false } },
+      { serverId: "s5", port: 47821, entry: { enabled: false, approval: "dangerous", windowsCommands: false, folders: [], servers: [], serverDirs: {}, confirmConnections: true } },
     ],
   };
 }
@@ -350,12 +358,12 @@ function previewApi(): McpApi {
     pickFolder: async () => "D:\\work\\new-project",
     setUserControl: async () => {},
     reportCwd: async () => {},
-    installLocal: async (client) => { await new Promise((r) => setTimeout(r, 600)); if (client === "codex") throw { code: "mcp.client_not_found", params: { client: "codex" } }; return client === "cursor" ? "C:\\Users\\you\\.cursor\\mcp.json" : "C:\\Users\\you\\.local\\bin\\claude.exe"; },
+    installLocal: async (client) => { await new Promise((r) => setTimeout(r, 600)); if (client === "codex") throw { code: "mcp.client_not_found", params: { client: "codex" } }; return client === "cursor" ? "C:\\Users\\you\\.cursor\\mcp.json" : client === "antigravity" ? "C:\\Users\\you\\.gemini\\config\\mcp_config.json" : client === "gemini" ? "C:\\Users\\you\\.gemini\\settings.json" : "C:\\Users\\you\\.local\\bin\\claude.exe"; },
     installServer: async () => { await new Promise((r) => setTimeout(r, 900)); },
     removeLocal: async (client) => { await new Promise((r) => setTimeout(r, 500)); return client !== "cursor"; },
     removeServer: async () => { await new Promise((r) => setTimeout(r, 800)); return true; },
-    detectClients: async () => ({ claude: true, codex: false, cursor: true, gemini: false, added: { claude: "current", cursor: "none" } }),
-    detectServerClients: async () => { await new Promise((r) => setTimeout(r, 500)); return { claude: true, codex: true, cursor: false, gemini: true, added: { claude: "current", codex: "stale", gemini: "none" } }; },
+    detectClients: async () => ({ claude: true, codex: false, cursor: true, gemini: false, antigravity: true, added: { claude: "current", cursor: "none", antigravity: "none" } }),
+    detectServerClients: async () => { await new Promise((r) => setTimeout(r, 500)); return { claude: true, codex: true, cursor: false, gemini: true, antigravity: false, added: { claude: "current", codex: "stale", gemini: "none" } }; },
     onSessions: noop,
     onActivity: noop,
     onConfirm: async (cb) => { confirms.add(cb); return () => { confirms.delete(cb); }; },

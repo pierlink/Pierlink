@@ -52,6 +52,8 @@ interface Pane {
   status: "running" | "exited";
   /** 文件面板：是否打开、宽度（像素） */
   files: { open: boolean; width: number };
+  /** 文件面板临时铺满整个窗格、盖住终端（面板上的按钮切换；关掉面板、重启后不保留） */
+  filesFull?: boolean;
   /** 本机终端由提示符钩子报告的当前目录 */
   cwd: string | null;
   /** 终端里每按一次回车加一（服务器终端据此重新查询当前目录） */
@@ -70,6 +72,8 @@ interface Pane {
   connecting?: Connecting;
   /** 手机正按手机宽度查看这个终端（手机的列数） */
   phoneCols?: number;
+  /** 服务器终端第一次连上时 shell 从这个目录启动（在旁边分屏、复制标签时沿用原来那个终端的目录；只在装了提示符钩子时生效） */
+  startDir?: string;
 }
 
 
@@ -107,6 +111,8 @@ interface Conn {
   startedAt?: number;
   /** 连上后自动输入并运行的命令（桌面窗格里点“安装桌面”时） */
   run?: string;
+  /** 连上后 shell 从这个目录启动（在旁边分屏、复制标签时沿用原来那个终端的目录） */
+  startDir?: string | null;
 }
 type Pending =
   | { kind: "paste"; text: string; resolve: (ok: boolean) => void }
@@ -302,14 +308,25 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
    * 这个标签里的远程桌面不自己拿键盘（拿了以后按键都归远程桌面，再按 Ctrl+Tab 就切不出去了），点一下画面才交给它。
    */
   const [keyFocus, setKeyFocus] = useState<{ tab: string; pane: string } | null>(null);
+  /**
+   * 把键盘给一个窗格：平时给它的终端；文件面板正铺满窗格、盖着终端时给文件列表
+   * （给了终端的话，按的键会进到看不见的命令行里）
+   */
+  const focusPaneContent = (paneId: string) => {
+    if (panesRef.current[paneId]?.filesFull) {
+      const list = document.querySelector<HTMLElement>(`[data-pane="${CSS.escape(paneId)}"] .files__list`);
+      if (list) { list.focus({ preventScroll: true }); return; }
+    }
+    handles.current.get(paneId)?.focus();
+  };
   useEffect(() => {
     if (!keyFocus) return;
-    handles.current.get(keyFocus.pane)?.focus();
+    focusPaneContent(keyFocus.pane);
     setKeyFocus(null);
   }, [keyFocus]);
   useEffect(() => {
     const tab = focusRequest ? tabsRef.current.find((x) => x.key === activeTabRef.current) : undefined;
-    if (tab) handles.current.get(tab.active)?.focus();
+    if (tab) focusPaneContent(tab.active);
   }, [focusRequest]);
   // 切回一个标签、回到工作区页面时，键盘焦点回到离开前的地方：那个窗格的终端，或者当时在打字的输入框
   // （文件栏的路径框等）；没有记录时给当前窗格的终端。以前点完标签还要再点一下终端才能打字
@@ -332,8 +349,8 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
   }, []);
   const restoreFocus = (tabKey: string) => {
     requestAnimationFrame(() => {
-      // 等界面切过去；期间又切走了、开着对话框、正在给标签改名（双击标签：第一下切标签，第二下开始改名）时不动
-      if (activeTabRef.current !== tabKey || document.querySelector(".pl-dialog") || document.activeElement?.classList.contains("tab__rename")) return;
+      // 等界面切过去；期间又切走了、开着对话框或文件编辑器、正在给标签改名（双击标签：第一下切标签，第二下开始改名）时不动
+      if (activeTabRef.current !== tabKey || document.querySelector(".pl-dialog, .editor-overlay") || document.activeElement?.classList.contains("tab__rename")) return;
       const tab = tabsRef.current.find((x) => x.key === tabKey);
       if (!tab) return;
       const saved = lastFocus.current.get(tabKey);
@@ -344,9 +361,40 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
       // 回到的不是当前窗格（分屏里点过别的窗格）：当前窗格跟着换，快捷键、命令片段才作用在键盘所在的窗格
       if (pane !== tab.active) focusPane(tabKey, pane);
       if (saved?.el && saved.pane === pane && saved.el.isConnected && saved.el.offsetWidth > 0) saved.el.focus({ preventScroll: true });
-      else handles.current.get(pane)?.focus();
+      else focusPaneContent(pane);
     });
   };
+  // 键盘一直留在终端里（和一般的终端一样）：窗口回到前台时焦点不在任何控件上，或者用鼠标点了标签栏、
+  // 窗格标题栏上的按钮和空白处之后，把焦点还给当前标签离开前的地方。弹出了菜单、对话框、输入框，
+  // 或者正拖着选中文字时不动；用键盘按的按钮也不动（焦点留在按钮上，还能接着按 Tab）
+  useEffect(() => {
+    const main = mainRef.current;
+    if (!active || !main) return;
+    const idle = (el: Element | null) => !el || el === document.body || el === document.documentElement;
+    const giveBack = () => { if (activeTabRef.current) restoreFocus(activeTabRef.current); };
+    const onWindowFocus = () => { if (idle(document.activeElement)) giveBack(); };
+    const onClick = (e: MouseEvent) => {
+      // detail 为 0：键盘触发的点击
+      if (e.detail === 0 || !(e.target instanceof Element) || !e.target.closest(".tabbar, .pane__bar")) return;
+      // 点的是哪个窗格的标题栏：键盘给这个窗格（分屏里点另一格的标题栏就是选中它），不回到之前那一格
+      const clicked = e.target.closest<HTMLElement>(".pane__bar")?.closest<HTMLElement>("[data-pane]")?.dataset.pane;
+      // 等这次点击要弹的东西弹出来再看
+      requestAnimationFrame(() => {
+        const el = document.activeElement;
+        const onChrome = el instanceof HTMLButtonElement && !!el.closest(".tabbar, .pane__bar");
+        if (!idle(el) && !onChrome) return;
+        if (document.querySelector(".pl-menu, .pl-dialog, .editor-overlay") || !(window.getSelection()?.isCollapsed ?? true)) return;
+        const p = clicked ? panesRef.current[clicked] : undefined;
+        if (!p) { giveBack(); return; }
+        // 远程桌面点画面才拿键盘；AI 正在用的终端（你没接管）不抢焦点
+        if (!p.desktop && !(p.ai && !p.ai.takenOver)) focusPaneContent(p.id);
+      });
+    };
+    window.addEventListener("focus", onWindowFocus);
+    main.addEventListener("click", onClick);
+    return () => { window.removeEventListener("focus", onWindowFocus); main.removeEventListener("click", onClick); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active]);
   // 从别的页面回到工作区
   const wasActive = useRef(active);
   useEffect(() => {
@@ -430,11 +478,11 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
   }, [tabs, panes, activeTab]);
 
   /** 打开一个终端：新标签，或在指定窗格旁拆分。返回新窗格 ID */
-  const add = (spec: OpenSpec, title: string, subtitle: string, target: Target, files = false, ai?: number, desktop = false, connecting?: Connecting): string => {
+  const add = (spec: OpenSpec, title: string, subtitle: string, target: Target, files = false, ai?: number, desktop = false, connecting?: Connecting, startDir?: string | null): string => {
     const id = `pane-${++seq.current}`;
     const aiState = ai === undefined ? undefined : { request: ai, takenOver: false, waiting: false };
     if (ai === undefined) focusOnMount.current.add(id);
-    const pane: Pane = { id, spec, title, subtitle, status: "running", files: { open: files, width: FILES_DEFAULT }, cwd: null, commands: 0, session: null, restored: false, ai: aiState, overview: overviewDefault(), ...(desktop ? { desktop: true } : {}), ...(connecting ? { connecting } : {}) };
+    const pane: Pane = { id, spec, title, subtitle, status: "running", files: { open: files, width: FILES_DEFAULT }, cwd: null, commands: 0, session: null, restored: false, ai: aiState, overview: overviewDefault(), ...(desktop ? { desktop: true } : {}), ...(connecting ? { connecting } : {}), ...(startDir ? { startDir } : {}) };
     panesRef.current = { ...panesRef.current, [id]: pane };
     setPanes((ps) => ({ ...ps, [id]: pane }));
     const tab = target && tabsRef.current.find((x) => x.key === target.tab);
@@ -452,16 +500,28 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
     }
     return id;
   };
-  const openShellIn = (shellId: string, target: Target): string | null => {
+  /**
+   * 新开终端时沿用的目录：在旁边分屏时看旁边那个窗格，新开标签时看当前窗格；
+   * 它和要开的是同一类（都是本机终端，或同一台服务器）且报过当前目录才沿用
+   */
+  const inheritDir = (target: Target, like: (spec: OpenSpec) => boolean): string | null => {
+    const tab = target ? null : tabsRef.current.find((x) => x.key === activeTabRef.current);
+    const from = panesRef.current[target ? target.pane : tab?.active ?? ""];
+    return from && !from.desktop && like(from.spec) && from.cwd ? from.cwd : null;
+  };
+  /** @param inherit 从当前本机终端所在的目录开始（手机上新开的不沿用，从主目录开始） */
+  const openShellIn = (shellId: string, target: Target, inherit = true): string | null => {
     const s = shells.find((x) => x.id === shellId);
-    return s ? add({ kind: "local", shellId: s.id }, localShellName(s), t("workspace.local"), target) : null;
+    if (!s) return null;
+    const startDir = inherit ? inheritDir(target, (spec) => spec.kind === "local") : null;
+    return add({ kind: "local", shellId: s.id, ...(startDir ? { startDir } : {}) }, localShellName(s), t("workspace.local"), target);
   };
   /** 设置里选了默认终端且仍存在就用它，否则用检测出的默认项 */
   const defaultShell = () => shells.find((x) => x.id === settings.terminal.defaultShell) ?? shells.find((x) => x.isDefault) ?? shells[0];
-  const openDefault = (target: Target): string | null => {
+  const openDefault = (target: Target, inherit = true): string | null => {
     if (!shellsLoaded) { pendingDefault.current = { target }; return null; }
     const d = defaultShell();
-    return d ? openShellIn(d.id, target) : null;
+    return d ? openShellIn(d.id, target, inherit) : null;
   };
   // 资源管理器右键“在 Pierlink 中打开”：每个目录新开一个标签，默认本机终端从那个目录开始。
   // 启动时命令行带的、运行中转过来的目录都在后端排队，这里取走；本机终端列表还没出来就先记着
@@ -500,7 +560,7 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
     if (!shellsLoaded || !pendingDefault.current) return;
     const { target, phone } = pendingDefault.current;
     pendingDefault.current = null;
-    const pane = openDefault(target);
+    const pane = openDefault(target, phone === undefined);
     if (phone !== undefined) {
       if (pane) phoneOpens.current[pane] = phone;
       else reportPhoneOpen(phone, null, { code: "terminal.shell_not_found", params: { shell_id: settings.terminal.defaultShell ?? "" } }).catch((e: unknown) => console.error(e));
@@ -586,7 +646,7 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
       id = conn.revive;
       updatePane(id, () => ({ restored: false, connecting }));
     } else {
-      id = add(conn.spec, conn.title, conn.subtitle, conn.target, conn.files, conn.ai, false, connecting);
+      id = add(conn.spec, conn.title, conn.subtitle, conn.target, conn.files, conn.ai, false, connecting, conn.startDir);
     }
     if (conn.run) {
       autoCommands.current.set(id, conn.run);
@@ -740,7 +800,8 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
     connect({ spec, title: spec.host, subtitle: spec.user ? `${spec.user}@${spec.host}` : spec.host, quick: value, target, startedAt: performance.now() });
   };
   const popouts = useDesktopPopouts();
-  const openServer = (id: string, target: Target, desktop = false) => {
+  /** @param startDir 连上后 shell 从这个目录启动（在旁边分屏、复制标签时沿用原来那个终端的目录） */
+  const openServer = (id: string, target: Target, desktop = false, startDir: string | null = null) => {
     const s = servers.find((x) => x.id === id);
     if (!s) return;
     // 每台服务器只开一个桌面：已经弹到独立窗口里了，就把那个窗口提到前面；主窗口里已经开着，就切到那个窗格
@@ -751,7 +812,7 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
       if (open && tab) { setActiveTab(tab.key); focusPane(tab.key, open.id); return; }
     }
     if (desktop) connect({ spec: { kind: "server", serverId: s.id }, title: t("desktop.paneTitle", { name: s.name }), subtitle: s.address, quick: null, target, desktop: true });
-    else connectPane({ spec: { kind: "server", serverId: s.id }, title: s.name, subtitle: s.address, quick: null, target });
+    else connectPane({ spec: { kind: "server", serverId: s.id }, title: s.name, subtitle: s.address, quick: null, target, startDir });
   };
   /**
    * 桌面窗格里点了“安装桌面”：在它下面开一个连同一台服务器的终端，连上后输入并运行安装命令
@@ -844,7 +905,7 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
         return;
       }
       if (!shellsLoaded) { pendingDefault.current = { target: null, phone: r.id }; return; }
-      const pane = openDefault(null);
+      const pane = openDefault(null, false);
       if (pane) phoneOpens.current[pane] = r.id;
       else reportPhoneOpen(r.id, null, { code: "terminal.shell_not_found", params: { shell_id: settings.terminal.defaultShell ?? "" } }).catch((e: unknown) => console.error(e));
     }).then((u) => { if (alive) off = u; else u(); });
@@ -1444,14 +1505,25 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
   });
   tabViewsRef.current = tabViews;
 
-  /** 在窗格旁边开一个同样的终端：同一台服务器，或同一种本机终端 */
-  const splitSame = (tab: string, paneId: string, dir: Dir) => {
+  /** 开一个和 paneId 同样的终端（同一台服务器，或同一种本机终端），从它现在所在的目录开始；target 为 null 时开在新标签里 */
+  const openSame = (paneId: string, target: Target) => {
     const cur = panesRef.current[paneId];
     if (!cur) return;
-    const target: Target = { tab, pane: paneId, dir };
-    if (cur.spec.kind === "local") openShellIn(cur.spec.shellId, target);
-    else if (cur.spec.kind === "server") openServer(cur.spec.serverId, target);
-    else connect({ spec: cur.spec, title: cur.title, subtitle: cur.subtitle, quick: null, target });
+    // 服务器桌面每台只开一个：复制它时开这台服务器的终端
+    const dir = cur.desktop ? null : cur.cwd;
+    if (cur.spec.kind === "local") {
+      const shellId = cur.spec.shellId;
+      const s = shells.find((x) => x.id === shellId);
+      if (s) add({ kind: "local", shellId, ...(dir ? { startDir: dir } : {}) }, localShellName(s), t("workspace.local"), target);
+    } else if (cur.spec.kind === "server") openServer(cur.spec.serverId, target, false, dir);
+    else connect({ spec: cur.spec, title: cur.title, subtitle: cur.subtitle, quick: null, target, startDir: dir });
+  };
+  /** 在窗格旁边开一个同样的终端 */
+  const splitSame = (tab: string, paneId: string, dir: Dir) => openSame(paneId, { tab, pane: paneId, dir });
+  /** 复制标签：把这个标签当前的终端在新标签里再开一个 */
+  const duplicateTab = (key: string) => {
+    const tab = tabsRef.current.find((x) => x.key === key);
+    if (tab) openSame(tab.active, null);
   };
 
   /** 分屏菜单：新窗格里打开哪个终端。窗格太小、拆开后会小于最小尺寸时只显示原因 */
@@ -1519,7 +1591,7 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
     if (!p || p.desktop) return;
     // 收起时焦点在这个文件栏里：还给终端，不然焦点掉到页面上
     const inside = !!document.activeElement?.closest(`[data-pane="${CSS.escape(p.id)}"] .files`);
-    updatePane(p.id, (x) => ({ files: { ...x.files, open: !x.files.open } }));
+    updatePane(p.id, (x) => ({ files: { ...x.files, open: !x.files.open }, filesFull: false }));
     if (p.files.open && inside) requestAnimationFrame(() => handles.current.get(p.id)?.focus());
   }, active);
   useShortcut("toggleOverview", () => {
@@ -1581,6 +1653,7 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
           const back = activeTabRef.current;
           if (back) setTimeout(() => { if (!document.activeElement || document.activeElement === document.body) restoreFocus(back); }, 0);
         }}
+        onDuplicate={duplicateTab}
         onNewDefault={() => openDefault(null)}
         onPickShell={(id) => openShellIn(id, null)}
         onPickServer={(id) => openServer(id, null)}
@@ -1658,7 +1731,7 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
                           </button>
                         )}
                         <button type="button" className={`pane__btn${p.files.open ? " pane__btn--on" : ""}`} aria-pressed={p.files.open} title={withKey(t("terminal.files"), keyText.files)} aria-label={t("terminal.files")}
-                          onClick={() => updatePane(id, (x) => ({ files: { ...x.files, open: !x.files.open } }))}>
+                          onClick={() => updatePane(id, (x) => ({ files: { ...x.files, open: !x.files.open }, filesFull: false }))}>
                           <FolderOpen size={14} />
                         </button>
                         <button type="button" className="pane__btn pane__btn--split" title={withKey(t("workspace.splitRight"), keyText.splitRight)} aria-label={t("workspace.splitRight")} aria-haspopup="menu"
@@ -1695,6 +1768,7 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
                       </>
                     )}
                     files={p.files}
+                    full={!!p.filesFull}
                     onFilesWidth={(width) => updatePane(id, (x) => ({ files: { ...x.files, width } }))}
                     panel={p.files.open && !p.restored ? (
                       <FilePanel
@@ -1704,7 +1778,17 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
                         cwd={p.cwd}
                         commands={p.commands}
                         sessionId={p.session}
-                        onClose={() => updatePane(id, (x) => ({ files: { ...x.files, open: false } }))}
+                        full={!!p.filesFull}
+                        onToggleFull={() => {
+                          updatePane(id, (x) => ({ filesFull: !x.filesFull }));
+                          // 还原：终端露出来了，键盘还给它
+                          if (p.filesFull) requestAnimationFrame(() => handles.current.get(id)?.focus());
+                        }}
+                        onClose={() => {
+                          updatePane(id, (x) => ({ files: { ...x.files, open: false }, filesFull: false }));
+                          // 铺满时终端被盖着、键盘在面板里：关掉后还给终端
+                          if (p.filesFull) requestAnimationFrame(() => handles.current.get(id)?.focus());
+                        }}
                       />
                     ) : null}
                   >
@@ -1781,6 +1865,7 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
                       confirmPaste={(text) => new Promise((resolve) => setPending({ kind: "paste", text, resolve }))}
                       openLink={(url) => setPending({ kind: "link", url })}
                       cwd={p.cwd}
+                      initialDir={p.startDir}
                       onSplit={(dir) => splitSame(tab.key, id, dir)}
                       canSplit={(dir) => canSplit(id, dir)}
                       fileDrop={fileDrop === id}
@@ -2040,11 +2125,13 @@ function PaneStage({ tabs, activeTab, onResize, render }: {
 /**
  * 窗格内容：终端 + 右侧文件面板（可拖动调整宽度）。
  * 窗格太窄、两者放不下时，文件面板浮在终端上面（终端尺寸不变，不会被挤到看不清）。
+ * full：文件面板临时铺满整个窗格、盖住终端（终端尺寸不变，收回来时画面原样）。
  */
-function PaneBody({ bar, files, onFilesWidth, panel, children }: {
+function PaneBody({ bar, files, full, onFilesWidth, panel, children }: {
   /** 终端上方的窗格标题栏（右边是按钮；放在终端那一侧，不压住文件面板） */
   bar: ReactNode;
   files: { open: boolean; width: number };
+  full: boolean;
   onFilesWidth: (width: number) => void;
   panel: ReactNode;
   children: ReactNode;
@@ -2082,11 +2169,12 @@ function PaneBody({ bar, files, onFilesWidth, panel, children }: {
   };
 
   return (
-    <div ref={ref} className={`pane__body${panel && overlay ? " pane__body--overlay" : ""}`}>
+    <div ref={ref} className={`pane__body${panel && overlay ? " pane__body--overlay" : ""}${panel && full ? " pane__body--full" : ""}`}>
       <div className="pane__term">{bar}{children}</div>
       {panel && (
-        <div className="pane__files" style={{ width: panelWidth }}>
-          {!overlay && <div className="pane__files-handle" role="separator" aria-orientation="vertical" onPointerDown={startDrag} />}
+        // 铺满时面板照旧占着原来的位置（终端大小不变，程序不用重画），只是里面的内容盖满整个窗格
+        <div className="pane__files" style={full && overlay ? undefined : { width: panelWidth }}>
+          {!overlay && !full && <div className="pane__files-handle" role="separator" aria-orientation="vertical" onPointerDown={startDrag} />}
           {panel}
         </div>
       )}

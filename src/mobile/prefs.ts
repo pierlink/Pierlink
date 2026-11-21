@@ -1,7 +1,8 @@
+import { DEFAULT_PRESETS, parsePresets, type KeyPreset } from "./keys";
 import type { MobileThemePref } from "./theme";
 
 /**
- * 手机上的显示偏好（字号、自动换行、深浅色），只存在这台手机的浏览器里。
+ * 手机上的偏好（字号、自动换行、深浅色、键盘栏上存的组合键），只存在这台手机的浏览器里。
  * 私密浏览、禁用存储时读写会失败：当成没存过，不影响使用。
  */
 
@@ -17,12 +18,14 @@ export interface Prefs {
   fit: boolean;
   /** 深浅色：默认跟随电脑（终端内容多半是按电脑上的配色写的） */
   theme: MobileThemePref;
+  /** 键盘栏上存的组合键（终端页的“组合键”面板里增删） */
+  presets: KeyPreset[];
 }
 
 const THEMES: readonly MobileThemePref[] = ["pc", "phone", "dark", "light"];
 
 const KEY = "pierlink.mobile.prefs";
-const DEFAULTS: Prefs = { font: 1, wrap: true, fit: true, theme: "pc" };
+const DEFAULTS: Prefs = { font: 1, wrap: true, fit: true, theme: "pc", presets: [...DEFAULT_PRESETS] };
 
 export function loadPrefs(): Prefs {
   try {
@@ -33,6 +36,7 @@ export function loadPrefs(): Prefs {
       wrap: typeof raw?.wrap === "boolean" ? raw.wrap : DEFAULTS.wrap,
       fit: typeof raw?.fit === "boolean" ? raw.fit : DEFAULTS.fit,
       theme: THEMES.includes(raw?.theme as MobileThemePref) ? (raw?.theme as MobileThemePref) : DEFAULTS.theme,
+      presets: parsePresets(raw?.presets) ?? DEFAULTS.presets,
     };
   } catch {
     return DEFAULTS;

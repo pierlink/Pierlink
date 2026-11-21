@@ -200,6 +200,8 @@ pub(super) fn execute(
                     value["shells"] = json!(available);
                     value["path_style"] = json!("windows");
                     value["computer"] = json!(local::computer_name());
+                } else if let Some(dir) = work_dir(&permissions, target) {
+                    value["work_dir"] = json!(dir);
                 }
                 values.push(value);
             }
@@ -235,7 +237,22 @@ pub(super) fn execute(
         "run_command" => {
             let target = target(&targets, required(args, "target"))?;
             windows_commands_allowed(&permissions, target)?;
-            run_command(shared, target, args, cancelled, &mut approval)
+            // 服务器目标没传 cwd：从用户给这台服务器填的工作目录开始
+            let in_work_dir = match work_dir(&permissions, target) {
+                Some(dir) if string(args, "cwd").is_none() => {
+                    let mut args = args.clone();
+                    args.insert("cwd".into(), json!(dir));
+                    Some(args)
+                }
+                _ => None,
+            };
+            run_command(
+                shared,
+                target,
+                in_work_dir.as_ref().unwrap_or(args),
+                cancelled,
+                &mut approval,
+            )
         }
         "open_terminal" => {
             let target = target(&targets, required(args, "target"))?;
@@ -245,7 +262,9 @@ pub(super) fn execute(
                 TerminalOpenRequest {
                     session: info.id.clone(),
                     target: target.clone(),
-                    cwd: string(args, "cwd").map(str::to_owned),
+                    cwd: string(args, "cwd")
+                        .or_else(|| work_dir(&permissions, target))
+                        .map(str::to_owned),
                     title: string(args, "title").map(str::to_owned),
                 },
                 &cancelled,
@@ -440,6 +459,18 @@ fn command_allowed(host: &dyn super::McpHost, entry: &super::Entry, target: &Tar
         Err(_) => true,
     }
 }
+/// 用户给服务器目标填的工作目录；Windows 目标、没填的服务器为 None
+fn work_dir<'a>(permissions: &'a Permissions, target: &Target) -> Option<&'a str> {
+    if target.kind != TargetKind::Server {
+        return None;
+    }
+    permissions
+        .server_dirs
+        .get(&target.id)
+        .map(|dir| dir.trim())
+        .filter(|dir| !dir.is_empty())
+}
+
 /// Windows 目标可能只因为允许了文件夹才出现：执行命令和开本机终端还要单独的“执行命令”权限
 fn windows_commands_allowed(permissions: &Permissions, target: &Target) -> Result<(), AppError> {
     if target.kind == TargetKind::Windows && !permissions.windows_commands {

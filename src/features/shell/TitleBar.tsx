@@ -51,7 +51,8 @@ export function TitleBar({ page, onPage, showGallery }: { page: Page; onPage: (p
         <TransferButton />
       </div>
       {/* 窗口按钮：和 Windows 自带的一样，占满标题栏高度、贴住右边缘 */}
-      <div className="titlebar__caps">
+      {/* 按下时不拿键盘焦点：最小化再回来、最大化之后，接着就能在终端里打字（Tab 键仍然能走到这几个按钮） */}
+      <div className="titlebar__caps" onMouseDown={(e) => e.preventDefault()}>
         <button type="button" className="titlebar__cap" aria-label={t("window.minimize")} title={t("window.minimize")} onClick={() => void windowAction("minimize")}><Minus size={15} strokeWidth={1.5} /></button>
         <button type="button" className="titlebar__cap" aria-label={t("window.maximize")} title={t("window.maximize")} onClick={() => void windowAction("toggleMaximize")}><Square size={12} strokeWidth={1.5} /></button>
         <button type="button" className="titlebar__cap titlebar__cap--close" aria-label={closeLabel} title={closeLabel} onClick={() => void windowAction("close")}><X size={16} strokeWidth={1.5} /></button>

@@ -7,7 +7,7 @@ mod image;
 mod input;
 mod log;
 
-pub use host::{AuditRecord, HostFuture, MobileHost, TerminalInput};
+pub use host::{AuditRecord, HostFuture, MobileHost, TerminalInput, terminal_key_name};
 pub use log::MobileLog;
 
 use crate::{error::AppError, storage::Db};

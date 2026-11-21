@@ -265,6 +265,12 @@
 /* 从窗格标题栏下面开始，不盖住标题栏的按钮 */
 .pane__body--overlay .pane__files { position: absolute; top: 31px; right: 0; bottom: 0; z-index: 4; box-shadow: var(--shadow-pop); border-top: 1px solid var(--border); }
 
+/* 文件面板临时铺满整个窗格（面板上的按钮切换）：内容盖在终端上面，终端大小不变；窗格标题栏留着 */
+.pane__body--full:not(.pane__body--overlay) .pane__files { position: static; }
+.pane__body--full:not(.pane__body--overlay) .pane__files > .files { position: absolute; top: 31px; left: 0; right: 0; bottom: 0; z-index: 4; border-top: 1px solid var(--border); background: var(--panel-solid); }
+/* 窗格太窄、面板本来就浮着：直接拉满 */
+.pane__body--full.pane__body--overlay .pane__files { left: 0; }
+
 .term-placeholder--actions { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; }
 
 /* ---------- 拖动窗格和标签 ---------- */

@@ -128,6 +128,18 @@ body { margin: 0; background: var(--bg-solid); color: var(--text); font-family: 
 .m-key { flex: none; min-width: 48px; height: 44px; padding: 0 10px; border: 1px solid var(--border-strong); border-radius: var(--r-md); background: var(--chip); color: var(--text); font-family: var(--font-mono); font-size: 15px; -webkit-tap-highlight-color: transparent; }
 .m-key:active { background: var(--field-solid); }
 .m-key:disabled { opacity: 0.45; }
+.m-key--on { border-color: var(--accent); color: var(--accent); }
+/* 组合键面板：在键盘栏上面，键多时在面板里滚 */
+.m-keysheet { flex: 0 1 auto; min-height: 0; max-height: 46vh; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; padding: 8px; border: 1px solid var(--border-strong); border-radius: var(--r-lg); background: var(--card); }
+.m-keysheet__head { display: flex; align-items: center; gap: 4px; }
+.m-keysheet__steps { flex: 1; min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 4px; min-height: 44px; font-size: 14px; }
+.m-keysheet__grid { display: flex; flex-wrap: wrap; gap: 4px; }
+.m-key--mod { flex: 1; }
+.m-key--cell { min-width: 40px; height: 40px; padding: 0 6px; touch-action: manipulation; }
+.m-kbd { padding: 2px 8px; border: 1px solid var(--border-strong); border-radius: 6px; background: var(--chip); font-family: var(--font-mono); font-size: 14px; white-space: pre; }
+.m-keysheet__saved { display: flex; flex-wrap: wrap; gap: 6px; padding-top: 6px; border-top: 1px solid var(--border); }
+.m-keysheet__preset { display: inline-flex; align-items: center; }
+.m-keysheet__remove { display: grid; place-items: center; width: 36px; height: 36px; border: 0; background: none; color: var(--text-muted); -webkit-tap-highlight-color: transparent; }
 .m-term__line { display: flex; align-items: flex-end; gap: 6px; }
 .m-term__line textarea {
   flex: 1; min-width: 0; min-height: 44px; max-height: 160px; box-sizing: border-box; padding: 11px 12px; resize: none;

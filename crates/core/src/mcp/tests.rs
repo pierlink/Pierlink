@@ -63,6 +63,7 @@ impl Host {
                 windows_commands: true,
                 folders: vec!["C:\\work".into()],
                 servers: vec!["server-id".into()],
+                server_dirs: Default::default(),
             }),
             block: AtomicBool::new(false),
             started: AtomicUsize::new(0),
@@ -213,6 +214,13 @@ impl McpHost for Host {
         assert!(limits.timeout <= Duration::from_secs(1800));
         if command == "pwd" {
             assert_eq!(cwd, Some("/a b"));
+        }
+        // 没传 cwd 时用用户给这台服务器填的工作目录；传了就用传的
+        if command == "in-work-dir" {
+            assert_eq!(cwd, Some("/srv/project"));
+        }
+        if command == "in-own-dir" {
+            assert_eq!(cwd, Some("/tmp/own"));
         }
         lock(&self.commands).push(command.into());
         self.started.fetch_add(1, Ordering::AcqRel);
@@ -607,6 +615,35 @@ async fn 入口没要求确认时连接直接可用() {
     assert_eq!(fixture.host.confirmations.load(Ordering::Acquire), 0);
     client.close().await;
 }
+#[tokio::test]
+async fn 服务器的工作目录列在目标里且是命令的默认目录() {
+    let fixture = Fixture::new();
+    lock(&fixture.host.permissions)
+        .server_dirs
+        .insert("server-id".into(), " /srv/project ".into());
+    let mut client = fixture.legacy().await;
+    let targets = client.call("list_targets", json!({})).await.to_string();
+    assert!(
+        targets.contains("work_dir") && targets.contains("/srv/project"),
+        "{targets}"
+    );
+    for args in [
+        json!({"target":"server-id","command":"in-work-dir"}),
+        json!({"target":"server-id","command":"in-own-dir","cwd":"/tmp/own"}),
+    ] {
+        let result = client.call("run_command", args).await;
+        assert_eq!(
+            result["result"]["structuredContent"]["exit_code"], 7,
+            "{result}"
+        );
+    }
+    assert_eq!(
+        lock(&fixture.host.commands).as_slice(),
+        ["in-work-dir", "in-own-dir"]
+    );
+    client.close().await;
+}
+
 #[tokio::test]
 async fn 按名称和编号匹配目标且服务器命令原样交给宿主() {
     let fixture = Fixture::new();

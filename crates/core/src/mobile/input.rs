@@ -7,6 +7,18 @@ use serde_json::{Value, json};
 pub(super) struct PendingLine {
     text: String,
     pub(super) edited: bool,
+    /// 按过搜索历史的键（Ctrl+R 等）：命令行上是搜出来的内容，屏幕最后一行又不是命令本身，
+    /// 核对不了，下一次回车一律要确认
+    unknown: bool,
+}
+
+/// 核对不了屏幕上的命令时给手机看的说明（和危险命令一样要确认）
+const UNVERIFIED: &str = "回车前按过会改命令行的键，无法核对要执行的命令，请看屏幕确认";
+
+fn unverified(dangerous: &mut Vec<String>) {
+    if !dangerous.iter().any(|line| line == UNVERIFIED) {
+        dangerous.push(UNVERIFIED.into());
+    }
 }
 impl Drop for PendingLine {
     fn drop(&mut self) {
@@ -70,7 +82,9 @@ impl Shared {
                 pending.text.push_str(body);
                 dangerous.extend(dangerous_lines(&pending.text));
                 if text.ends_with('\r') {
-                    if pending.edited {
+                    if pending.unknown {
+                        unverified(&mut dangerous);
+                    } else if pending.edited {
                         self.check_edited(id, &mut dangerous).await;
                     }
                     pending = PendingLine::default();
@@ -89,19 +103,59 @@ impl Shared {
             }
         }
         if let Some(keys) = &input.keys {
+            // 这次请求里前面的键可能改了命令行：它们要等下面一起写进终端，现在读屏看到的还是改之前的
+            let mut unseen = false;
             for key in keys {
-                match key.as_str() {
-                    "Enter" | "Ctrl+J" | "Ctrl+M" => {
-                        self.submit(id, &mut pending, &mut dangerous).await;
+                // 手机和终端对同一个键叫法不同（ArrowUp 和 Up），按终端的名字判断
+                let name = terminal_key_name(key);
+                match name.as_str() {
+                    // 回车，以及会被 shell 当回车的换行键：这一行到此提交
+                    "Enter" | "Ctrl+J" | "Ctrl+M" | "Ctrl+O" | "Shift+Enter" | "Ctrl+Enter"
+                    | "Alt+Enter" => {
+                        if unseen {
+                            // 一组键里“↑ 回车”这样连着发：屏幕上还没有 ↑ 调出来的命令，核对不了
+                            unverified(&mut dangerous);
+                            pending = PendingLine::default();
+                        } else {
+                            self.submit(id, &mut pending, &mut dangerous).await;
+                        }
+                        // Ctrl+O 执行完会把历史里的下一条放到命令行上：下一次回车要按屏幕核对
+                        unseen = name == "Ctrl+O";
+                        pending.edited = unseen;
                     }
                     "Backspace" => {
                         pending.text.pop();
+                        // 命令行是从历史里调出来或改过的：删掉字以后屏幕上的也变了
+                        unseen |= pending.edited;
                     }
-                    "Ctrl+C" | "Ctrl+U" => pending = PendingLine::default(),
-                    // 往上翻、往下翻在全屏程序里可能变成方向键，按改过这一行处理
-                    "Tab" | "ArrowUp" | "ArrowDown" | "ArrowLeft" | "ArrowRight" | "Home"
-                    | "End" | "WheelUp" | "WheelDown" => pending.edited = true,
-                    "Escape" | "Shift+Tab" | "Ctrl+D" => {}
+                    "Ctrl+C" => {
+                        pending = PendingLine::default();
+                        unseen = false;
+                    }
+                    "Ctrl+U" => {
+                        // 搜索历史时 Ctrl+U 只清掉搜索词，还在搜索里
+                        let unknown = pending.unknown;
+                        pending = PendingLine::default();
+                        pending.unknown = unknown;
+                        pending.edited = unknown;
+                    }
+                    "Esc" | "Shift+Tab" | "Ctrl+D" => {}
+                    // 搜索历史：命令行上是搜出来的内容，屏幕最后一行又不是命令本身，核对不了
+                    "Ctrl+R" | "Ctrl+S" | "Alt+p" | "Alt+n" => {
+                        pending.unknown = true;
+                        pending.edited = true;
+                        unseen = true;
+                    }
+                    // 其余终端认得的键（方向键、功能键、组合键）可能改了这一行，
+                    // 提交时按屏幕上的内容核对；往上翻、往下翻在全屏程序里可能变成方向键，同样处理
+                    "WheelUp" | "WheelDown" => {
+                        pending.edited = true;
+                        unseen = true;
+                    }
+                    name if crate::mcp::tools::terminal::key_bytes(name).is_ok() => {
+                        pending.edited = true;
+                        unseen = true;
+                    }
                     _ => {
                         return Err(error(
                             "mobile.invalid_request",
@@ -190,7 +244,9 @@ impl Shared {
     }
 
     async fn submit(&self, id: &str, pending: &mut PendingLine, dangerous: &mut Vec<String>) {
-        if pending.edited {
+        if pending.unknown {
+            unverified(dangerous);
+        } else if pending.edited {
             self.check_edited(id, dangerous).await;
         } else {
             dangerous.extend(dangerous_lines(&pending.text));

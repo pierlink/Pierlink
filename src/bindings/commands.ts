@@ -1482,6 +1482,8 @@ export type EntrySettingsDto_Deserialize = {
 	folders?: string[],
 	/**  允许操作的服务器 ID */
 	servers?: string[],
+	/**  各服务器的工作目录（服务器 ID → 目录）：AI 在这台服务器上执行命令、开终端时默认从这里开始 */
+	serverDirs?: { [key in string]: string },
 	/**  新连接先请用户确认（只对服务器入口有效；默认不问，旧设置里的“总是允许”不再使用） */
 	confirmConnections?: boolean,
 };
@@ -1497,6 +1499,8 @@ export type EntrySettingsDto_Serialize = {
 	folders: string[],
 	/**  允许操作的服务器 ID */
 	servers: string[],
+	/**  各服务器的工作目录（服务器 ID → 目录）：AI 在这台服务器上执行命令、开终端时默认从这里开始 */
+	serverDirs: { [key in string]: string },
 	/**  新连接先请用户确认（只对服务器入口有效；默认不问，旧设置里的“总是允许”不再使用） */
 	confirmConnections: boolean,
 };
@@ -2035,8 +2039,10 @@ export type McpClientsDto = {
 	claude: boolean,
 	codex: boolean,
 	cursor: boolean,
-	/**  只在服务器上检测（本机固定为 false） */
+	/**  Gemini CLI */
 	gemini: boolean,
+	/**  Antigravity（桌面端、IDE、命令行 agy 共用一份配置，算一个） */
+	antigravity: boolean,
 	/**
 	 *  客户端的配置里有没有这个入口：current（加好了，地址和令牌或程序路径都是现在的）/
 	 *  stale（有 pierlink，但地址、令牌或程序路径是旧的，要重新添加）/ none（没加）；查不了的客户端不列
@@ -2271,7 +2277,7 @@ export type McpReaddDto = {
 
 /**  移除的结果 */
 export type McpRemoveDto = {
-	/**  claude / codex / cursor / gemini */
+	/**  claude / codex / cursor / gemini / antigravity */
 	client: string,
 	/**  false 表示本来就没有添加过 */
 	removed: boolean,

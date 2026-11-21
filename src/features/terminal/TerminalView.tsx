@@ -47,6 +47,8 @@ interface Props {
   closeLabel?: string;
   /** 终端报告了当前目录（本机 shell 的提示符钩子输出 OSC 7 或 OSC 9;9） */
   onCwd?: (path: string) => void;
+  /** 服务器终端第一次连上时 shell 从这个目录启动（复制标签、在旁边分屏时沿用原来那个终端的目录）；只看挂载时的值 */
+  initialDir?: string | null;
   /** 用户在终端里按了回车（可能执行了 cd，服务器终端据此重新查询当前目录） */
   onCommand?: () => void;
   /** 程序要你注意：响铃、OSC 9 / 777 通知（Codex 等你确认或回答、做完一轮时会发） */
@@ -128,7 +130,7 @@ const WHEEL_LINE_PX = 33;
  * 会话断开或退出后，终端内容留着，最下面写一行说明，正中间放一张带“重新连接”的卡片，按 Enter 也能重新连接；
  * 登录失败、没能打开时盖上一块提示，提供“重新连接”和“关闭标签”。不自动重连，也不自动关闭标签（设计 3.9）。
  */
-export function TerminalView({ backend, spec, visible, confirmPaste, openLink, onStatus, onError, onCloseTab, closeLabel, onCwd, onCommand, onAttention, onSession, broadcasting, onInput, onOutput, onHandle, cwd, onSplit, canSplit, fileDrop, prediction, serverPrediction, connectTitle, phoneCols, precheck, onCancelConnect, onRetryConnect, autoCommand, onAutoCommandSent, onAutoCommandBlocked }: Props) {
+export function TerminalView({ backend, spec, visible, confirmPaste, openLink, onStatus, onError, onCloseTab, closeLabel, onCwd, onCommand, onAttention, onSession, broadcasting, onInput, onOutput, onHandle, cwd, initialDir, onSplit, canSplit, fileDrop, prediction, serverPrediction, connectTitle, phoneCols, precheck, onCancelConnect, onRetryConnect, autoCommand, onAutoCommandSent, onAutoCommandBlocked }: Props) {
   const { t } = useTranslation();
   const host = useRef<HTMLDivElement>(null);
   // 回调放进 ref，避免它们变化时重建终端
@@ -318,6 +320,16 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
     // kitty 键盘协议（只支持“消除歧义”）：程序开启后 Shift+Enter 等能和 Enter 区分开
     const kitty = new KittyKeyboard();
     const num = (p: number | number[] | undefined, d: number) => (typeof p === "number" && p > 0 ? p : d);
+    // 程序清掉了历史行（CSI 3 J）：Claude Code、Codex 在终端大小变了以后（比如把标签并进分屏）会清屏、清历史、
+    // 从头重画。之前往上翻过哪怕一行，xterm 就认为你还在翻看、不跟着新输出走，画面会停在重画内容的最上面。
+    // 翻看的位置已经不存在了：从这里起跟着新输出走。返回 false，清历史本身照常由 xterm 做
+    term.parser.registerCsiHandler({ final: "J" }, (params) => {
+      if (params[0] === 3) {
+        const buffers = (term as unknown as { _core?: { _bufferService?: { isUserScrolling?: boolean } } })._core?._bufferService;
+        if (buffers) buffers.isUserScrolling = false;
+      }
+      return false;
+    });
     term.parser.registerCsiHandler({ prefix: ">", final: "u" }, (p) => { kitty.push(num(p[0], 0)); return true; });
     term.parser.registerCsiHandler({ prefix: "<", final: "u" }, (p) => { kitty.pop(num(p[0], 1)); return true; });
     term.parser.registerCsiHandler({ prefix: "=", final: "u" }, (p) => { kitty.set(num(p[0], 0), num(p[1], 1)); return true; });
@@ -465,7 +477,7 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
     let earlyReplies: string[] = [];
     let exited = false;
     /** 服务器 shell 最后报告的目录（装了命令预测的钩子时每次出提示符都报）：只在这个窗格断开后重连时用 */
-    let lastCwd: string | null = null;
+    let lastCwd: string | null = spec.kind === "local" ? null : initialDir ?? null;
     let disposed = false;
     // 这次连接走到的最后一步（会话可以用了以后为 null）；连接卡片还盖在终端上时 covering 为 true；
     // stageSeen：收到过后端报的阶段（系统 OpenSSH 建不了日志时一个都不报）；
@@ -789,7 +801,7 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
       kitty.reset();
       prediction.reset();
       if (focus) term.focus();
-      // 只有断开后在同一个窗格重连才回到原来的目录（新开的终端、重启后恢复的都从主目录开始）
+      // 断开后在同一个窗格重连回到原来的目录；复制标签、在旁边分屏开出来的从原来那个终端的目录开始（其余新开的、重启后恢复的从主目录开始）
       void open(spec.kind === "local" ? null : lastCwd);
     };
     reopenRef.current = reopen;
@@ -938,7 +950,8 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
     // 窗格里先核对指纹的：通过后由下面的 effect 打开（之前空终端里不显示光标）
     if (!cb.current.precheck || cb.current.precheck.phase === "go") {
       startedRef.current = true;
-      void open();
+      // 复制标签、在旁边分屏开出来的服务器终端：从原来那个终端的目录开始
+      void open(lastCwd);
     } else term.write("\x1b[?25l");
     cb.current.onHandle?.({
       paste: (text) => term.paste(text),

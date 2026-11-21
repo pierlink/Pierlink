@@ -98,7 +98,8 @@ fn 固定端口不更换_远程转发失败退避_保留端口致命() {
             .code,
         "tunnel.port_in_use"
     );
-    for (attempt, delay) in [1, 2, 5, 10, 30, 60, 60].into_iter().enumerate() {
+    // 登录成功、只是服务器上的端口被占着：至少隔 30 秒再登录
+    for (attempt, delay) in [30, 30, 30, 30, 30, 60, 60].into_iter().enumerate() {
         let before = Instant::now();
         entry.fail(
             AppError::new("tunnel.remote_forward_failed").with("port", 12345),
@@ -110,6 +111,18 @@ fn 固定端口不更换_远程转发失败退避_保留端口致命() {
         assert!(entry.due >= before + Duration::from_secs(delay));
         assert_eq!(entry.ports, [1080]);
     }
+    // 端口被占着时网络恢复的通知不让它马上再登录，等原定的时间到
+    entry.network_restored(&events());
+    assert!(entry.due > Instant::now() + Duration::from_secs(50));
+    // 别的失败按 1、5、10、20、30、60 秒退避
+    entry.event.attempt = 0;
+    for delay in [1, 5, 10, 20, 30, 60, 60] {
+        let before = Instant::now();
+        entry.fail(AppError::new("ssh.connection_lost"), &events());
+        assert!(entry.due >= before + Duration::from_secs(delay));
+        assert!(entry.due < before + Duration::from_secs(delay + 1));
+    }
+    // 别的失败之后网络恢复：马上重试
     entry.network_restored(&events());
     assert!(entry.due <= Instant::now());
     entry.fail(AppError::new("tunnel.port_reserved"), &events());

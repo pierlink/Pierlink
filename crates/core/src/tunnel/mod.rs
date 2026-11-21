@@ -301,7 +301,20 @@ fn now_ms() -> u64 {
         .as_millis()
         .min(u64::MAX as u128) as u64
 }
+/// 连上多久才算稳定、把连续失败的次数清零。网络时通时断时每次都能连上几秒：
+/// 连上就清零的话会一直按最短的间隔重新登录，服务器的安全检测会把短时间内的多次登录当成有人在试密码。
+const STABLE_AFTER: Duration = Duration::from_secs(60);
+/// 登录成功、但服务器上的转发端口被占着（多半是断网前那条连接在服务器上还没结束）：
+/// 马上再登录一次端口也还是被占着，至少隔这么久再试。
+const REMOTE_BUSY_DELAY: Duration = Duration::from_secs(30);
+
+/// 第 attempt 次连续失败后隔多久重试：第一次 1 秒（连得好好的断了，尽快接上），之后 5、10、20、30 秒，再往后每 60 秒。
 pub(crate) fn retry_delay(attempt: u32) -> Duration {
+    Duration::from_secs([1, 5, 10, 20, 30, 60][attempt.saturating_sub(1).min(5) as usize])
+}
+/// 隧道连着、但那头的服务一直探不通时，第 attempt 次重建前隔多久：1、2、5、10、30 秒，再往后每 60 秒。
+/// 每次重建后还要等探活的宽限时间，登录不会密。
+fn probe_rebuild_delay(attempt: u32) -> Duration {
     Duration::from_secs([1, 2, 5, 10, 30, 60][attempt.saturating_sub(1).min(5) as usize])
 }
 fn port_error(port: u16) -> AppError {
@@ -625,6 +638,11 @@ impl Entry {
             self.change(TunnelState::Error, Some(error), true, events);
         } else {
             let delay = retry_delay(self.event.attempt);
+            let delay = if error.code == "tunnel.remote_forward_failed" {
+                delay.max(REMOTE_BUSY_DELAY)
+            } else {
+                delay
+            };
             self.due = Instant::now() + delay;
             self.event.next_retry_at_ms = Some(now_ms().saturating_add(delay.as_millis() as u64));
             self.change(TunnelState::Reconnecting, Some(error), false, events);
@@ -700,6 +718,16 @@ impl Entry {
             return;
         }
         if !self.has_connection() {
+            // 登录成功、只是服务器上的端口被占着：网络恢复的通知不让它马上再登录一次，等原定的时间到
+            // （见 REMOTE_BUSY_DELAY；网络切换时这种通知会连着来几次）
+            let busy = self
+                .event
+                .error
+                .as_ref()
+                .is_some_and(|e| e.code == "tunnel.remote_forward_failed");
+            if busy && self.due > Instant::now() {
+                return;
+            }
             self.reconnect(events);
         } else if self.event.state == TunnelState::Connected {
             self.notify_connected();
@@ -713,7 +741,7 @@ impl Entry {
             // 连续探活失败按 1、2、5、10、30、60 秒退避，之后维持 60 秒；
             // 每次连接还会等待五秒探活宽限，避免服务停机时反复 SSH 登录。
             self.probe_rebuild_attempt = self.probe_rebuild_attempt.saturating_add(1);
-            self.reconnect_after(retry_delay(self.probe_rebuild_attempt), events);
+            self.reconnect_after(probe_rebuild_delay(self.probe_rebuild_attempt), events);
         }
     }
     fn probe_succeeded_if_current(&mut self, connected_at: Option<u64>) {
@@ -916,7 +944,7 @@ impl Entry {
                 drop(data);
                 self.change(TunnelState::Connected, None, false, events);
             }
-        } else if now.saturating_duration_since(connection.started) >= Duration::from_secs(3) {
+        } else if now.saturating_duration_since(connection.started) >= STABLE_AFTER {
             self.event.attempt = 0;
         }
         Ok(())
@@ -1076,7 +1104,7 @@ mod tests {
             (1..=8)
                 .map(|n| retry_delay(n).as_secs())
                 .collect::<Vec<_>>(),
-            vec![1, 2, 5, 10, 30, 60, 60, 60]
+            vec![1, 5, 10, 20, 30, 60, 60, 60]
         );
         assert_eq!(
             serde_json::to_string(&TunnelState::Reconnecting).unwrap(),

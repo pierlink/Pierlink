@@ -112,6 +112,9 @@ impl ConnectionManager {
                 let shared = shared_worker;
                 let cancelled = cancel_worker;
                 let mut attempt = 0;
+                // 连上后没稳住（不到 STABLE_AFTER）就断的连续次数；现在这条连接是什么时候连上的
+                let mut drops = 0;
+                let mut connected_at: Option<Instant> = None;
                 let mut ever_connected = false;
                 let mut next = Instant::now();
                 let mut waiting = false;
@@ -147,14 +150,23 @@ impl ConnectionManager {
                         let mut state = shared.state.lock().unwrap_or_else(|p| p.into_inner());
                         if state.connection.as_ref().is_some_and(Connection::is_closed) {
                             state.connection = None;
-                            attempt = 0;
+                            // 连稳过才从头算间隔：网络时通时断时每次都能连上一会儿，连上就清零的话
+                            // 会一直隔一秒就重新登录，服务器的安全检测会当成有人在试密码
+                            if connected_at
+                                .take()
+                                .is_none_or(|at| at.elapsed() >= STABLE_AFTER)
+                            {
+                                drops = 0;
+                            }
                             next = Instant::now()
                                 + if immediate {
                                     Duration::ZERO
                                 } else {
-                                    backoff(attempt)
+                                    backoff(drops)
                                 };
-                            attempt = 1;
+                            drops += 1;
+                            // 接下来要是连不上，从这里接着往后排
+                            attempt = drops;
                             shared.changed.notify_all();
                             manager.publish(&server.id, ConnectionState::Reconnecting, None);
                         }
@@ -190,6 +202,7 @@ impl ConnectionManager {
                                 *revision = slot.revision.load(Ordering::Acquire);
                             }
                             attempt = 0;
+                            connected_at = Some(Instant::now());
                         }
                         Err(error) => {
                             // 登录上限也在这里等：连接池记着这个结果，等待期间的重试不会再去服务器登录；
@@ -225,8 +238,12 @@ impl ConnectionManager {
     }
 }
 
+/// 连上多久才算稳定、把连续失败的次数清零
+const STABLE_AFTER: Duration = Duration::from_secs(60);
+
+/// 第 attempt 次（从 0 数）连续失败后隔多久重试
 fn backoff(attempt: usize) -> Duration {
-    Duration::from_secs([1, 2, 5, 10, 30][attempt.min(4)])
+    Duration::from_secs([1, 5, 10, 20, 30][attempt.min(4)])
 }
 
 #[cfg(test)]
@@ -236,7 +253,7 @@ mod tests {
     fn 退避在长时间断网时持续保持三十秒() {
         assert_eq!(
             (0..8).map(|n| backoff(n).as_secs()).collect::<Vec<_>>(),
-            vec![1, 2, 5, 10, 30, 30, 30, 30]
+            vec![1, 5, 10, 20, 30, 30, 30, 30]
         );
     }
 }

@@ -4,7 +4,7 @@ import { Check, Copy, FolderOpen, Plus, Trash2 } from "lucide-react";
 import { Button, Checkbox, Select, TextField } from "../../components";
 import type { ServerRecord } from "../servers/api";
 import { getMcpApi, type EntrySettings, type McpApproval } from "./api";
-import { addFolder, removeFolder, toggleServer } from "./model";
+import { addFolder, removeFolder, setServerDir, toggleServer } from "./model";
 import "./mcp.css";
 import { writeClipboardText } from "../shell/clipboard";
 
@@ -53,6 +53,29 @@ export function PortInput({ value, label, onCommit }: { value: number; label: st
   );
 }
 
+/** 一台服务器的工作目录：离开输入框或按回车时才保存（每敲一个键就保存会反复写设置）；Esc 恢复 */
+function WorkDirInput({ name, value, onCommit }: { name: string; value: string; onCommit: (dir: string) => void }) {
+  const { t } = useTranslation();
+  const [text, setText] = useState(value);
+  useEffect(() => setText(value), [value]);
+  // 要写完整路径（/ 开头）：执行命令时原样用它，~ 不会展开。不对时不保存，框标红
+  const bad = !!text.trim() && !text.trim().startsWith("/");
+  const commit = () => { if (!bad && text.trim() !== value) onCommit(text); };
+  return (
+    <div className="mcp-perms__dir">
+      <span className="mcp-perms__dir-name pl-ellipsis" title={name}>{name}</span>
+      <input className="pl-input mono" aria-label={t("mcp.workDirOf", { name })} placeholder={t("mcp.workDirPlaceholder")} value={text} spellCheck={false}
+        aria-invalid={bad} title={bad ? t("mcp.workDirInvalid") : undefined}
+        onChange={(e) => setText(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") commit();
+          if (e.key === "Escape") setText(value);
+        }} />
+    </div>
+  );
+}
+
 /**
  * 一个入口的权限。服务器入口（AI 在服务器上）先列这台 Windows 的命令和文件夹，再列其他服务器，
  * 另有“每次连接都问”；本机入口（AI 在这台电脑上）主要用来操作服务器，服务器放最前面。
@@ -80,6 +103,16 @@ export function EntryPermissions({ entry, servers, exclude, server, onChange }: 
           <Checkbox key={s.id} label={s.name} checked={entry.servers.includes(s.id)} onChange={() => onChange(toggleServer(entry, s.id))} />
         ))}
       </div>
+      {/* 勾上的服务器各有一个工作目录（可不填）：AI 在它上面执行命令、开终端时默认从这里开始 */}
+      {others.some((s) => entry.servers.includes(s.id)) && (
+        <>
+          <div className="mcp-perms__label">{t("mcp.workDir")}</div>
+          <span className="set-row__hint">{t("mcp.workDirHint")}</span>
+          {others.filter((s) => entry.servers.includes(s.id)).map((s) => (
+            <WorkDirInput key={s.id} name={s.name} value={entry.serverDirs?.[s.id] ?? ""} onCommit={(dir) => onChange(setServerDir(entry, s.id, dir))} />
+          ))}
+        </>
+      )}
     </>
   );
   return (

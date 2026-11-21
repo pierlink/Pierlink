@@ -49,13 +49,15 @@ async fn 编辑后只确认屏幕上的危险命令且读屏失败仍确认() {
         "End",
     ] {
         *lock(&entry.host.screen) = "选择权限\n> 允许本次\n \n".into();
-        assert_eq!(
-            entry
-                .request("POST", INPUT, &cookie, json!({"keys":[key,"Enter"]}))
-                .await
-                .status,
-            200
-        );
+        for keys in [json!([key]), json!(["Enter"])] {
+            assert_eq!(
+                entry
+                    .request("POST", INPUT, &cookie, json!({"keys":keys}))
+                    .await
+                    .status,
+                200
+            );
+        }
         for prompt in [
             "$ ",
             "user@host:~ $ ",
@@ -145,6 +147,150 @@ async fn 反向制表和退出键保留未提交命令且默认不是粘贴() {
         .await;
     assert_eq!(reply.status, 409);
     assert_eq!(reply.json()["lines"], json!(["rm -rf /"]));
+}
+
+#[tokio::test]
+async fn 组合键和功能键能发且算改过这一行() {
+    let entry = MemoryEntry::new();
+    let (_, cookie) = input_device(&entry).await;
+    for key in [
+        "Ctrl+A",
+        "Alt+B",
+        "F5",
+        "PageUp",
+        "Ctrl+ArrowLeft",
+        "Ctrl+]",
+        "Delete",
+    ] {
+        assert_eq!(
+            entry
+                .request("POST", INPUT, &cookie, json!({"keys":[key]}))
+                .await
+                .status,
+            200,
+            "{key}"
+        );
+    }
+    assert!(
+        lock(&entry.server.shared.pending_lines)
+            .get("term")
+            .is_some_and(|line| line.edited)
+    );
+    // 不带修饰键的字不是按键，修饰键叠着用终端也不认
+    for key in ["a", "Ctrl+Shift+A", "Ctrl+", "Shift+F5"] {
+        assert_eq!(
+            entry
+                .request("POST", INPUT, &cookie, json!({"keys":[key]}))
+                .await
+                .status,
+            400,
+            "{key}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn 小写的回车组合键和换行键也要确认危险命令() {
+    for key in ["Ctrl+j", "Ctrl+m", "Ctrl+O", "Shift+Enter", "Alt+Enter"] {
+        let entry = MemoryEntry::new();
+        let (_, cookie) = input_device(&entry).await;
+        entry
+            .request("POST", INPUT, &cookie, json!({"text":"rm -rf /"}))
+            .await;
+        let reply = entry
+            .request("POST", INPUT, &cookie, json!({"keys":[key]}))
+            .await;
+        assert_eq!(reply.status, 409, "{key}");
+        assert_eq!(reply.json()["lines"], json!(["rm -rf /"]));
+    }
+}
+
+#[tokio::test]
+async fn 核对不了屏幕上的命令时回车要确认() {
+    let unverified = |reply: &Reply| {
+        reply.status == 409
+            && reply.json()["lines"][0]
+                .as_str()
+                .is_some_and(|line| line.contains("无法核对"))
+    };
+    // 一组键里改命令行的键后面连着回车：屏幕还是改之前的
+    for keys in [
+        json!(["ArrowUp", "Enter"]),
+        json!(["Ctrl+P", "Ctrl+M"]),
+        json!(["Ctrl+O", "Enter"]),
+    ] {
+        let entry = MemoryEntry::new();
+        let (_, cookie) = input_device(&entry).await;
+        *lock(&entry.host.screen) = "$ \n".into();
+        let reply = entry
+            .request("POST", INPUT, &cookie, json!({"keys":keys}))
+            .await;
+        assert!(unverified(&reply), "{keys}");
+    }
+    // 搜索历史：屏幕最后一行不是命令本身，之后的回车一律要确认（中间打字、清搜索词也一样）
+    for key in ["Ctrl+R", "Ctrl+S", "Alt+P", "Alt+N"] {
+        let entry = MemoryEntry::new();
+        let (_, cookie) = input_device(&entry).await;
+        *lock(&entry.host.screen) = "(reverse-i-search)`rm': rm -rf build\n".into();
+        for body in [
+            json!({"keys":[key]}),
+            json!({"text":"rm"}),
+            json!({"keys":["Ctrl+U"]}),
+        ] {
+            assert_eq!(
+                entry.request("POST", INPUT, &cookie, body).await.status,
+                200
+            );
+        }
+        let reply = entry
+            .request("POST", INPUT, &cookie, json!({"keys":["Enter"]}))
+            .await;
+        assert!(unverified(&reply), "{key}");
+        // 确认过就发出去，之后回到平常的核对
+        for (body, status) in [
+            (json!({"keys":["Enter"],"confirmed":true}), 200),
+            (json!({"keys":["Enter"]}), 200),
+        ] {
+            assert_eq!(
+                entry.request("POST", INPUT, &cookie, body).await.status,
+                status
+            );
+        }
+    }
+    // Ctrl+O 执行完把历史里的下一条放到命令行上：下一次回车按屏幕核对
+    let entry = MemoryEntry::new();
+    let (_, cookie) = input_device(&entry).await;
+    *lock(&entry.host.screen) = "$ \n".into();
+    assert_eq!(
+        entry
+            .request("POST", INPUT, &cookie, json!({"keys":["Ctrl+O"]}))
+            .await
+            .status,
+        200
+    );
+    *lock(&entry.host.screen) = "$ rm -rf /\n".into();
+    let reply = entry
+        .request("POST", INPUT, &cookie, json!({"keys":["Enter"]}))
+        .await;
+    assert_eq!(reply.status, 409);
+    assert_eq!(reply.json()["lines"], json!(["rm -rf /"]));
+}
+
+#[test]
+fn 手机按键名换成终端按键名() {
+    for (from, to) in [
+        ("ArrowUp", "Up"),
+        ("Escape", "Esc"),
+        ("Ctrl+ArrowLeft", "Ctrl+Left"),
+        ("Ctrl+a", "Ctrl+A"),
+        ("Alt+x", "Alt+x"),
+        ("Alt+B", "Alt+b"),
+        ("Shift+Tab", "Shift+Tab"),
+        ("Ctrl+", "Ctrl+"),
+        ("F5", "F5"),
+    ] {
+        assert_eq!(terminal_key_name(from), to);
+    }
 }
 
 #[tokio::test]
