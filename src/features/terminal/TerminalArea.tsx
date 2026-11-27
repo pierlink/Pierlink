@@ -477,6 +477,8 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
     return () => clearTimeout(timer);
   }, [tabs, panes, activeTab]);
 
+  /** 复制标签时新标签放在哪个标签后面：下一次新开标签时用掉（快速连接要先核对指纹，晚一点才开出来，所以留一段时间） */
+  const placeAfter = useRef<{ key: string; until: number } | null>(null);
   /** 打开一个终端：新标签，或在指定窗格旁拆分。返回新窗格 ID */
   const add = (spec: OpenSpec, title: string, subtitle: string, target: Target, files = false, ai?: number, desktop = false, connecting?: Connecting, startDir?: string | null): string => {
     const id = `pane-${++seq.current}`;
@@ -493,8 +495,16 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
       setActiveTab(target.tab);
     } else {
       const key = `tab-${++seq.current}`;
-      tabsRef.current = [...tabsRef.current, { key, layout: leaf(id), active: id }];
-      setTabs((ts) => [...ts, { key, layout: leaf(id), active: id }]);
+      // 复制标签：新标签紧跟在被复制的那个后面；其余新开的排在最后
+      const after = ai === undefined ? placeAfter.current : null;
+      if (ai === undefined) placeAfter.current = null;
+      const insert = (ts: Tab[]): Tab[] => {
+        const at = after && performance.now() < after.until ? ts.findIndex((x) => x.key === after.key) : -1;
+        const tab: Tab = { key, layout: leaf(id), active: id };
+        return at < 0 ? [...ts, tab] : [...ts.slice(0, at + 1), tab, ...ts.slice(at + 1)];
+      };
+      tabsRef.current = insert(tabsRef.current);
+      setTabs(insert);
       // AI 开的终端在后台新开标签，不切过去，免得打断你正在看的终端（标签上有 AI 标记）；工作区里原来一个标签都没有时才切过去
       if (ai === undefined || tabsRef.current.length === 1) setActiveTab(key);
     }
@@ -1523,7 +1533,9 @@ export function TerminalArea({ servers, serversLoaded = true, openRequest, onCon
   /** 复制标签：把这个标签当前的终端在新标签里再开一个 */
   const duplicateTab = (key: string) => {
     const tab = tabsRef.current.find((x) => x.key === key);
-    if (tab) openSame(tab.active, null);
+    if (!tab) return;
+    placeAfter.current = { key, until: performance.now() + 30_000 };
+    openSame(tab.active, null);
   };
 
   /** 分屏菜单：新窗格里打开哪个终端。窗格太小、拆开后会小于最小尺寸时只显示原因 */
@@ -2093,10 +2105,13 @@ function PaneStage({ tabs, activeTab, onResize, render }: {
       el.removeEventListener("pointermove", move);
       el.removeEventListener("pointerup", up);
       el.removeEventListener("pointercancel", up);
+      el.removeEventListener("lostpointercapture", up);
     };
     el.addEventListener("pointermove", move);
     el.addEventListener("pointerup", up);
     el.addEventListener("pointercancel", up);
+    // 松开鼠标的事件没收到（比如拖到一半窗口被别的程序抢走）：也算结束，不然窗格会一直点不动
+    el.addEventListener("lostpointercapture", up);
   };
 
   return (
@@ -2162,10 +2177,13 @@ function PaneBody({ bar, files, full, onFilesWidth, panel, children }: {
       el.removeEventListener("pointermove", move);
       el.removeEventListener("pointerup", up);
       el.removeEventListener("pointercancel", up);
+      el.removeEventListener("lostpointercapture", up);
     };
     el.addEventListener("pointermove", move);
     el.addEventListener("pointerup", up);
     el.addEventListener("pointercancel", up);
+    // 松开鼠标的事件没收到（比如拖到一半窗口被别的程序抢走）：也算结束
+    el.addEventListener("lostpointercapture", up);
   };
 
   return (

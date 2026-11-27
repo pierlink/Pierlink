@@ -423,7 +423,12 @@ mod tests {
     }
 }
 
-/// data 必须全部由焦点、设备属性、状态、光标位置、键盘协议、版本或颜色应答组成。
+/// data 必须全部由焦点、设备属性、状态、光标位置、键盘协议、版本、颜色应答或鼠标报告组成。
+/// 鼠标报告也算：程序开了鼠标模式时，鼠标在终端上移动、点一下窗格都会发一串，
+/// 这不是“用户在命令行上打了字”，不能因此作废 AI 的待提交行（否则 AI 每次回车都要问“内容未知”）。
+/// 只认数字写法（ESC [ < 按钮 ; 列 ; 行 M/m，界面只会发这一种）。代价：鼠标模式漏到 shell 提示符上时
+/// （程序被强杀、终端里的 ssh 断了），报告会以“数字;数字;数字M”的样子落到命令行上而不再提示；
+/// 装了钩子的 shell 回到提示符时界面会把鼠标模式关掉，本机 PowerShell、命令提示符收到的是鼠标事件不是字符。
 fn is_terminal_report(mut data: &[u8]) -> bool {
     if data.is_empty() {
         return false;
@@ -448,8 +453,12 @@ fn terminal_report_len(data: &[u8]) -> Option<usize> {
         };
         let pair =
             |bytes: &[u8]| bytes.iter().filter(|b| **b == b';').count() == 1 && numbers(bytes);
+        let triple =
+            |bytes: &[u8]| bytes.iter().filter(|b| **b == b';').count() == 2 && numbers(bytes);
         let valid = match body[end] {
             b'I' | b'O' => params.is_empty(),
+            // 鼠标报告：ESC [ < 按钮 ; 列 ; 行 M（按下、移动）或 m（松开）
+            b'M' | b'm' => params.strip_prefix(b"<").is_some_and(triple),
             b'c' => {
                 params.first().is_some_and(|b| matches!(b, b'?' | b'>')) && numbers(&params[1..])
             }
@@ -547,6 +556,10 @@ mod report_tests {
             b"\x1b]4;0;rgb:0000/1111/2222;15;rgb:f/e/d\x1b\\",
             b"\x1b[I",
             b"\x1b[O",
+            // 鼠标报告（数字写法）：移动、按下、松开
+            b"\x1b[<35;120;7M",
+            b"\x1b[<0;1;1M",
+            b"\x1b[<0;1;1m",
         ]
     }
 
@@ -567,7 +580,14 @@ mod report_tests {
             b"\x1b[?1;2;3R",
             b"\x1b[?;2R",
             b"\x1b[?1;2y",
+            b"\x1b[32;10;5M",
+            b"\x1b[<0;1M",
+            b"\x1b[<0;1;1;1M",
+            b"\x1b[M !!",
+            b"\x1b[0;1;1m",
+            b"\x1b[8;40;120t",
             b"\x1b[1;2$y",
+            b"\x1bP1$r0m\x1b\\",
             b"\x1b[?1;$y",
             b"\x1b[?1;2;3$y",
             b"\x1b[5n",

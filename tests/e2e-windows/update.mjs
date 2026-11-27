@@ -63,13 +63,15 @@ await rec.step(p, "检查更新：发现测试用的新版本", async () => {
 await rec.step(() => p, "更新：先下载、核对签名（不自动安装），点“安装更新”后关闭、安装、重新打开；装好的程序变成新版本", async () => {
   const before = installedVersion();
   await u.clickText("Download update");
-  // 下完只弹“已下载好”，不自动安装：点了“安装更新”才装
-  await u.waitFor(`/is downloaded/.test(document.querySelector('.pl-dialog')?.innerText||'')`, "下载好、等你点安装", 180000);
+  // 下载进度写在右下角的卡片上，不弹对话框（下载期间别的地方照常能点）
+  if (await p.js(`!!document.querySelector('.pl-dialog')`)) throw new Error("下载更新时不该弹对话框");
+  // 下完卡片上写“已下载好”，不自动安装：点了“安装更新”才装
+  await u.waitFor(`/is downloaded/.test(document.querySelector('.upd-float')?.innerText||'')`, "下载好、等你点安装", 180000);
   await sleep(3000);
   if (installedVersion() !== before) throw new Error("没点“安装更新”就装上了");
-  const downloaded = await u.waitFor(`[...document.querySelectorAll('.pl-dialog button')].some(b=>b.textContent.trim()==='Install update')`, "“安装更新”按钮", 10000);
+  const downloaded = await u.waitFor(`[...document.querySelectorAll('.upd-float button')].some(b=>b.textContent.trim()==='Install update')`, "“安装更新”按钮", 10000);
   if (!downloaded) throw new Error("没有“安装更新”按钮");
-  await u.clickText("Install update", ".pl-dialog");
+  await u.clickText("Install update", ".upd-float");
   // 更新时 Pierlink 先正常关闭（同步、终端、隧道），安装程序装好后再打开
   const deadline = Date.now() + 240000;
   let now = before;

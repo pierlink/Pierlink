@@ -99,3 +99,5 @@ export function endedLine(text: string, warn: boolean, alt: boolean): string {
  * 鼠标一动 shell 就收到一串“35;33;34M”。只改模式，不动画面内容，也不退出全屏画面。
  */
 export const MODES_OFF = "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1005l\x1b[?1006l\x1b[?1015l\x1b[?1016l\x1b[?1004l\x1b[?2004l\x1b[?1l\x1b>";
+/** 只关鼠标上报（各种编码）：shell 回到提示符时程序留下的鼠标模式用它关掉 */
+export const MOUSE_OFF = "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1005l\x1b[?1006l\x1b[?1015l\x1b[?1016l";

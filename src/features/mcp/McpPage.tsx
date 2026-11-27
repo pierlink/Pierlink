@@ -450,7 +450,7 @@ function EntryDetail({ id, settings, servers, status, info, serverName, sessions
 }
 
 /** 客户端的显示名 */
-const CLIENT_NAMES = { claude: "Claude Code", codex: "Codex", cursor: "Cursor", antigravity: "Antigravity", gemini: "Gemini CLI" } as const;
+const CLIENT_NAMES = { claude: "Claude Code", codex: "Codex", cursor: "Cursor", antigravity: "Antigravity / agy", gemini: "Gemini CLI" } as const;
 type ClientKey = keyof typeof CLIENT_NAMES;
 /** 本机能一键添加的；服务器上能一键添加的 */
 const LOCAL_CLIENTS: readonly ClientKey[] = ["claude", "codex", "cursor", "antigravity", "gemini"];

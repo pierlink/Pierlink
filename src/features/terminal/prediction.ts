@@ -1,4 +1,5 @@
 import type { IDecoration, IDisposable, IMarker, Terminal } from "@xterm/xterm";
+import { MOUSE_OFF } from "./ended";
 import { historyOf, onHistoryLoaded, remember } from "./history";
 import { nextWord, suggest } from "./predict";
 import { launchesShell, parse133, runsScreen, parseMark, PIERLINK_OSC, ShellTracker, type Mark } from "./shellMarks";
@@ -101,6 +102,9 @@ export class Prediction {
   private onMark(mark: Mark | null): void {
     if (!mark || !this.opts.scope) return;
     const entry = this.tracker.onMark(mark, this.term, this.opts.cwd());
+    // shell 回到提示符了，鼠标模式却还开着：是被强杀的程序、断掉的 ssh 留下的。关掉它，
+    // 否则鼠标一动提示符上就多出一串“35;33;34M”，直接拖也选不中文字
+    if (mark.kind === "inputStart" && this.term.modes.mouseTrackingMode !== "none") this.term.write(MOUSE_OFF);
     // 只记装了钩子的会话里的命令：没收到过提示符标记就来的记录，多半是程序输出里伪造的
     if (entry && this.tracker.integrated && this.opts.record()) remember(this.opts.scope, entry);
     this.schedule();

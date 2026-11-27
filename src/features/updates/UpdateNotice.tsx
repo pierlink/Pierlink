@@ -25,7 +25,8 @@ export function announceUpdate(u: UpdateInfo) {
 }
 
 /**
- * 有新版本时的提示卡片（窗口右下角）：显示版本和说明。启动 20 秒后查一次，之后每 6 小时查一次；
+ * 有新版本时的提示卡片（窗口右下角）：显示版本和说明；下载进度、下载好了、出错也都写在这张卡片上，
+ * 不弹对话框，下载期间照常用别的地方（只有点了“安装更新”、程序马上要关闭时才弹一个框）。启动 20 秒后查一次，之后每 6 小时查一次；
  * 点“稍后”时这个版本一天内不再提示（过了一天还没更新再提示一次，出了更新的版本马上提示）。“下载更新”只下载并核对签名，下完由用户点“安装更新”才装：
  * Pierlink 先正常关闭（同步、终端、隧道），安装程序装好后自动重新打开。选“稍后”时提示条上的按钮变成“安装更新”。
  */
@@ -39,17 +40,15 @@ export function UpdateNotice() {
   const [error, setError] = useState<string | null>(null);
   /** 下载好的版本号（还没下或下的不是这个版本时为 null） */
   const [ready, setReady] = useState<string | null>(null);
-  /** 下载好后弹出的“安装更新”框开着 */
-  const [askInstall, setAskInstall] = useState(false);
   /** 点了“安装更新”：Pierlink 马上关闭 */
   const [installing, setInstalling] = useState(false);
   // 有对话框开着（包括这里的更新说明）时提示条先不显示：它浮在最上层，会压住对话框
   const dialogOpen = useAnyDialogOpen();
   // 窗口底部有提示条、删除浮窗或文本编辑器时也先不显示，免得盖住它们的按钮
   const bottomBusy = useBottomOccupied();
-  /** 正在下载、安装或等用户点安装：这时定时检查说没有新版本也不撤卡片 */
+  /** 正在下载、安装，或下载好了等用户点安装：这时定时检查说没有新版本也不撤卡片 */
   const busy = useRef(false);
-  useEffect(() => { busy.current = progress !== null || installing || askInstall; });
+  useEffect(() => { busy.current = progress !== null || installing || ready !== null; });
   useEffect(() => {
     // 自己点了“检查更新”：之前的“稍后”不算了
     showUpdate = (u) => { clearSnooze(); setUpdate(u); setDismissed(false); };
@@ -96,7 +95,8 @@ export function UpdateNotice() {
         if (attempt.current !== mine) return;
         setProgress(null);
         setReady(version);
-        setAskInstall(true);
+        // 下好了：之前点过“稍后”把卡片收起的，重新显示出来等用户点“安装更新”
+        setDismissed(false);
       })
       .catch((e: unknown) => {
         if (attempt.current !== mine || (isAppError(e) && e.code === "update.superseded")) return;
@@ -111,7 +111,6 @@ export function UpdateNotice() {
       .then((api) => api.install())
       .catch((e: unknown) => {
         setInstalling(false);
-        setAskInstall(false);
         setError(formatError(e));
         // 下载好的不是最新版本（后来又出了新版本，旧包已删）或者包不见了：重新查一次，按钮变回“下载更新”
         if (isAppError(e) && (e.code === "update.outdated" || e.code === "update.not_downloaded")) {
@@ -143,10 +142,14 @@ export function UpdateNotice() {
   // 下载好的就是提示条上的这个版本（这次下的，或者检查时后端说之前已经下好了）
   const downloaded = ready === update.version || (update.downloaded && ready === null);
   const pct = progress?.total ? Math.min(100, Math.round((progress.downloaded / progress.total) * 100)) : null;
-  const action = downloaded
-    ? <Button size="sm" variant="primary" disabled={installing} onClick={() => { setNotesOpen(false); install(); }}>{t("updates.installNow")}</Button>
-    : <Button size="sm" variant="primary" disabled={progress !== null} onClick={() => { setNotesOpen(false); download(); }}>{t("updates.download")}</Button>;
+  const downloading = progress !== null;
+  const action = error
+    ? <Button size="sm" variant="primary" onClick={downloaded ? install : download}>{t("common.retry")}</Button>
+    : downloaded
+      ? <Button size="sm" variant="primary" disabled={installing} onClick={() => { setNotesOpen(false); install(); }}>{t("updates.installNow")}</Button>
+      : <Button size="sm" variant="primary" disabled={downloading} onClick={() => { setNotesOpen(false); download(); }}>{t("updates.download")}</Button>;
   const later = () => {
+    setError(null);
     snooze(update.version);
     setDismissed(true);
   };
@@ -158,14 +161,21 @@ export function UpdateNotice() {
             <div className="upd-banner__head">
               <Download size={16} aria-hidden />
               <span className="upd-banner__text">
-                <b>{t("updates.available", { version: update.version })}</b>
-                <span>{t("updates.availableHint", { current: update.currentVersion })}</span>
+                <b>{downloading ? t("updates.installing", { version: update.version }) : downloaded ? t("updates.installTitle", { version: update.version }) : t("updates.available", { version: update.version })}</b>
+                {error
+                  ? <span className="upd-error">{t("updates.failed", { text: error })}</span>
+                  : <span>{downloading ? (pct === null ? t("updates.downloading") : `${pct}%`) : downloaded ? t("updates.readyHint") : t("updates.availableHint", { current: update.currentVersion })}</span>}
               </span>
             </div>
+            {downloading && (
+              <div className="upd-progress" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={pct ?? undefined}>
+                <div className="upd-progress__bar" style={{ width: `${pct ?? 100}%` }} data-indeterminate={pct === null ? "" : undefined} />
+              </div>
+            )}
             <div className="upd-banner__actions">
               {update.notes && <Button size="sm" variant="ghost" onClick={() => setNotesOpen(true)}>{t("updates.notes")}</Button>}
-              <Button size="sm" variant="ghost" onClick={later}>{t("updates.later")}</Button>
-              {action}
+              {!downloading && <Button size="sm" variant="ghost" onClick={later}>{t("updates.later")}</Button>}
+              {!downloading && action}
             </div>
           </div>
         </div>,
@@ -178,30 +188,9 @@ export function UpdateNotice() {
           <pre className="upd-notes" tabIndex={0}>{pickNotes(update.notes ?? "", i18n.language)}</pre>
         </Dialog>
       )}
-      {(progress || error || installing || (askInstall && downloaded)) && (
-        <Dialog
-          title={installing || (askInstall && downloaded && !error) ? t("updates.installTitle", { version: update.version }) : t("updates.installing", { version: update.version })}
-          onDismiss={error ? () => setError(null) : askInstall && !installing ? () => setAskInstall(false) : undefined}
-          actions={error
-            ? <><Button onClick={() => setError(null)}>{t("common.close")}</Button><Button variant="primary" onClick={downloaded ? install : download}>{t("common.retry")}</Button></>
-            : askInstall && downloaded && !installing
-              ? <><Button onClick={() => setAskInstall(false)}>{t("updates.later")}</Button><Button variant="primary" onClick={install}>{t("updates.installNow")}</Button></>
-              : null}
-        >
-          {error ? (
-            <p className="upd-error">{t("updates.failed", { text: error })}</p>
-          ) : installing ? (
-            <p>{t("updates.restarting")}</p>
-          ) : askInstall && downloaded ? (
-            <p>{t("updates.readyHint")}</p>
-          ) : (
-            <>
-              <p>{t("updates.downloading")}</p>
-              <div className="upd-progress" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={pct ?? undefined}>
-                <div className="upd-progress__bar" style={{ width: `${pct ?? 100}%` }} data-indeterminate={pct === null ? "" : undefined} />
-              </div>
-            </>
-          )}
+      {installing && (
+        <Dialog title={t("updates.installTitle", { version: update.version })} actions={null}>
+          <p>{t("updates.restarting")}</p>
         </Dialog>
       )}
     </>

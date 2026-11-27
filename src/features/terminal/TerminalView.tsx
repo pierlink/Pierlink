@@ -904,6 +904,21 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
     el.addEventListener("mousedown", onRightButton, true);
     el.addEventListener("mouseup", onRightButton, true);
 
+    // 程序开了鼠标模式（鼠标交给程序）时直接拖是选不中文字的：拖了一小段就提示按住 Shift 拖（每次拖只提示一次）
+    let dragFrom: { x: number; y: number } | null = null;
+    const onDragStart = (ev: MouseEvent) => {
+      dragFrom = ev.button === 0 && !ev.shiftKey && term.modes.mouseTrackingMode !== "none" ? { x: ev.clientX, y: ev.clientY } : null;
+    };
+    const onDragMove = (ev: MouseEvent) => {
+      if (!dragFrom) return;
+      if (!(ev.buttons & 1)) { dragFrom = null; return; }
+      if (Math.hypot(ev.clientX - dragFrom.x, ev.clientY - dragFrom.y) < 12) return;
+      dragFrom = null;
+      showNotice.current(cb.current.t("terminal.shiftSelect"));
+    };
+    el.addEventListener("mousedown", onDragStart, true);
+    el.addEventListener("mousemove", onDragMove, true);
+
     // 窗口大小变化：节流 100 毫秒，只在行列真的变化时通知后端（异常 R5）
     let timer: ReturnType<typeof setTimeout> | null = null;
     const doResize = () => {
@@ -961,6 +976,8 @@ export function TerminalView({ backend, spec, visible, confirmPaste, openLink, o
       blockCursor.disconnect();
       term.textarea?.removeEventListener("focus", restartBlink);
       term.textarea?.removeEventListener("paste", onPaste, true);
+      el.removeEventListener("mousedown", onDragStart, true);
+      el.removeEventListener("mousemove", onDragMove, true);
       for (const name of imeEvents) term.textarea?.removeEventListener(name, anchorIme);
       term.textarea?.removeEventListener("blur", dropIme);
       term.textarea?.removeEventListener("compositionupdate", alignSoon);

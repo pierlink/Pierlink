@@ -1941,6 +1941,7 @@
     },
     "pasteImageUploading": "正在上传图片…",
     "pasteImageBusy": "上一张图片还在上传",
+    "shiftSelect": "程序正在用鼠标：按住 Shift 拖动可选中文字",
     "pasteImageExpired": "终端已继续，图片没有粘贴",
     "phoneView": "手机正以 {{cols}} 列查看这个终端，在这里打字就恢复",
     "phoneOpenEnded": "连接在终端可用之前就结束了",

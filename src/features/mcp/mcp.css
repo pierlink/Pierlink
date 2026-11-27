@@ -125,6 +125,8 @@
 .mcp-table__resize:hover { border-right-color: var(--accent); }
 /* 一键添加：按钮一行，结果固定一行 */
 .mcp-oneclick { display: flex; flex-direction: column; gap: 6px; }
+/* 客户端多、窗口不够宽时换行，不伸到旁边的卡片上 */
+.mcp-oneclick .pl-seg { flex-wrap: wrap; }
 .mcp-oneclick__buttons { display: flex; flex-wrap: wrap; gap: 6px; }
 .mcp-oneclick__result { min-height: 18px; font-size: var(--fs-xs); color: var(--text-muted); }
 .mcp-oneclick__result--ok { color: var(--ok); }

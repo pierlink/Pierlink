@@ -1943,6 +1943,7 @@
     },
     "pasteImageUploading": "Uploading image…",
     "pasteImageBusy": "Still uploading the previous image",
+    "shiftSelect": "The program is using the mouse: hold Shift and drag to select text",
     "pasteImageExpired": "The terminal moved on; image not pasted",
     "phoneView": "A phone is viewing this terminal at {{cols}} columns; type here to restore",
     "phoneOpenEnded": "The connection ended before the terminal was ready",
